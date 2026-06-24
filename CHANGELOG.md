@@ -7,8 +7,31 @@ All notable changes to PDFOxide are documented here.
 ### Fixed
 
 - **Non-Identity-ordered Type0 fonts no longer emit a wrong character for CIDs missing from `/ToUnicode` (#773)** — for an embedded Type0 font whose `/ToUnicode` CMap omits some drawn CIDs (e.g. a ligature glyph with no single Unicode codepoint), the decode path fell back to a numeric guess — the GID via the standard glyph-name table → AGL, or the CID itself as a code point (`char::from_u32`) — emitting a plausible-but-wrong, content-like character that varied per subset (e.g. a `ti` ligature → `:` / `D`, so `notificacao` → `no:ficacao`). The glyph has no Unicode anywhere in the file (no `/ToUnicode` entry, no `post` name, no GSUB), so the letters are unrecoverable, but substituting a wrong character is silent corruption. When a usable `/ToUnicode` is present, the GID→AGL guess is now suppressed for all Type0 fonts, and the CID-as-Unicode guess is suppressed for fonts whose `CIDSystemInfo` ordering is **not** `Identity`, so an uncovered CID there decodes to `U+FFFD` instead. Identity-ordered (Adobe-Identity-0) fonts retain the CID-as-Unicode mapping that Identity ordering conventionally implies; the residual wrong-character case for ligature/private-use slots in Identity-ordered fonts remains a known limitation. Subtractive for the no-`/ToUnicode` path — a font with no `/ToUnicode` still uses the CID-as-Unicode heuristic exactly as before, and the authoritative embedded-`cmap`/`post` lookups are unchanged.
-- **Symbolic TrueType fonts without `/ToUnicode` no longer mis-decode characters (#760)** — a simple symbolic TrueType font (FontDescriptor `Flags` bit 3, no `/Encoding`, no `/ToUnicode`) decoded its content bytes by treating each byte directly as a glyph id and looking it up in the reversed Unicode `(3,1)` `cmap`. For a symbolic font the content byte indexes a glyph through the font's `(3,0)` symbol (or `(1,0)` Macintosh) `cmap` subtable — the byte is *not* the GID — so characters came out wrong-but-plausible (e.g. `Ç` → `Ê`, `SOLUÇÃO` → `SOLUÊÃO`) while pdftotext/PyMuPDF read the same files correctly. The embedded font's `(3,0)`/`(1,0)` subtable is now parsed into a byte→GID map (via `ttf-parser`) and the simple-font `cmap` fallback resolves byte→GID before GID→Unicode. Purely subtractive — a font without such a subtable still uses the byte as the GID, exactly as before.
-- **Same-row spans no longer reordered or split in plain-text output (#752)** — when a producer emits one logical line as several spans at the same Y in different reading-order groups whose boxes overlap by a fraction of a point, `to_plain_text` interleaved the overlapping group as if it were a vertical column (hoisting a fragment to the front) and forced a space between the overlapping fragments (splitting a word). A group whose spans share a Y row is now excluded from columnar detection, and the cross-group same-Y space special case is removed in favour of the standard `has_horizontal_gap` threshold the other converters already use — so overlapping fragments join. Fixes e.g. `ALPHA BETA GAMMA DELTA EPSILON` extracted as `A EPSILON ALPHA BETA GAMMA DELT`.
+
+## [0.3.68] - 2026-06-24
+
+> Extraction fidelity release — symbolic TrueType character mis-decoding corrected via the `(3,0)`/`(1,0)` cmap, same-row span ordering preserved in plain-text output, JPEG 2000 (`JPXDecode`) image XObjects decoded via OpenJPEG, and RTL Farsi body text recovered from tagged Type0/CID PDFs.
+
+### Added
+
+- **JPEG 2000 (`JPXDecode`) image XObjects decoded via OpenJPEG** — `render_page` previously skipped image XObjects whose stream was compressed with `/JPXDecode`, silently dropping page content. The OpenJPEG library (via `jpeg2k`) now decodes them at render time; multi-component images are colour-managed and alpha-composited exactly as other image types. Thanks @potatochipcoconut for the report.
+
+### Fixed
+
+- **RTL Farsi body text recovered from tagged Type0/CID PDFs (#758)** — Type0/CID composite fonts with a valid `/ToUnicode` CMap had ~92% of their body text silently dropped in v0.3.66 on RTL (Farsi) documents. The tagged-structure traversal now correctly assembles CID-encoded spans before the RTL reconstruction pass, recovering the full body. Thanks @Goldziher for the report.
+- **Symbolic TrueType fonts no longer mis-decode characters (#760)** — a simple symbolic TrueType font (FontDescriptor `Flags` bit 3, no `/Encoding`, no `/ToUnicode`) decoded its content bytes by treating each byte directly as a glyph ID, producing wrong-but-plausible characters (e.g. `Ç` → `Ê`, `SOLUÇÃO` → `SOLUÊÃO`). The fix parses the embedded font's `(3,0)` symbol (or `(1,0)` Macintosh) `cmap` subtable into a byte→GID map so the correct byte→GID→Unicode hop is applied; fonts without such a subtable still use the byte as the GID. Thanks @schelip for the report and fix.
+- **Same-row spans no longer reordered or split in plain-text output (#752)** — when one logical line was emitted as spans at the same Y in different reading-order groups whose boxes overlapped by a fraction of a point, `to_plain_text` interleaved the overlapping group as a vertical column (hoisting a fragment to the front) and forced a space between the overlapping fragments (splitting a word). A group whose spans share a Y row is now excluded from columnar detection, and the cross-group same-Y space rule is replaced by the standard `has_horizontal_gap` threshold used by the other converters. Thanks @schelip for the report and fix.
+
+### Documentation
+
+- **macOS/Rust OCR setup guide corrected** — `ORT_LIB_LOCATION` is inert with the `load-dynamic` ONNX Runtime feature; the guide now documents `ORT_DYLIB_PATH`, the variable actually read at runtime.
+
+### Dependencies
+
+- **pyo3 0.28 → 0.29** — fixes two security vulnerabilities: a missing `Sync` bound on `PyCFunction::new_closure` closures, and a possible out-of-bounds read in `BoundTupleIterator::nth_back` / `BoundListIterator::nth_back`.
+- **phf 0.13 → 0.14**, **bytes 1.11 → 1.12**, **log 0.4.32 → 0.4.33**, **p12-keystore 0.3.0 → 0.3.1**.
+- GitHub Actions: `actions/checkout` v7.0.0, `actions/setup-java` v5.3.0, `softprops/action-gh-release` v3.0.1, `ruby/setup-ruby` v1.314.0, `taiki-e/install-action` v2.82.2.
+- Patch/minor updates for `rustls`, `time`, `zerocopy`, `zeroize`, `wasm-bindgen`, `wide`, and ~35 other transitive crates.
 
 ## [0.3.67] - 2026-06-20
 

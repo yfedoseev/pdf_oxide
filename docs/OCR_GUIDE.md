@@ -369,21 +369,33 @@ wget https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxrunt
 tar xzf onnxruntime-linux-x64-1.23.0.tgz
 ```
 
-### Option 2: Environment Variables
+### Option 2: Point to an installed ONNX Runtime (runtime)
+
+This crate loads ONNX Runtime **dynamically at runtime** (the `ort` `load-dynamic`
+feature), so you point it at an installed library — no rebuild needed. Note that
+`ORT_LIB_LOCATION` is a *build-time* variable for `ort`'s download/static-link
+strategies and has **no effect** here; use one of:
 
 ```bash
-export ORT_LIB_LOCATION=/path/to/onnxruntime/lib
-export ORT_PREFER_DYNAMIC_LINK=1
+# Either give ort the full path to the shared-library FILE:
+export ORT_DYLIB_PATH=/path/to/onnxruntime/lib/libonnxruntime.so   # .dylib (macOS) / onnxruntime.dll (Windows)
 
-# Then build
-cargo build --features ocr
+# …or add its directory to the OS loader search path:
+export LD_LIBRARY_PATH=/path/to/onnxruntime/lib:$LD_LIBRARY_PATH    # DYLD_LIBRARY_PATH on macOS
+
+cargo run --features ocr --example ocr_scanned_pdf -- ...
 ```
 
 ### macOS
 
 ```bash
 brew install onnxruntime
-export ORT_LIB_LOCATION=$(brew --prefix onnxruntime)/lib
+
+# Let the dynamic loader find it (simplest):
+export DYLD_LIBRARY_PATH="$(brew --prefix onnxruntime)/lib:$DYLD_LIBRARY_PATH"
+
+# …or point ort at the exact dylib FILE (note: a file, not a directory):
+export ORT_DYLIB_PATH="$(brew --prefix onnxruntime)/lib/libonnxruntime.dylib"
 ```
 
 ### WebAssembly
@@ -498,7 +510,7 @@ Make sure you're using `OcrConfig::v5()` (Rust) or `OcrConfig(use_v5=True)` (Pyt
 
 ### Build error: `no method named tls_config`
 
-This is a known bug in `ort-sys` 2.0.0-rc.11 when using the `download-binaries` feature. Install ONNX Runtime manually and set `ORT_LIB_LOCATION` instead.
+This is a known bug in `ort-sys` 2.0.0-rc.11 when using the `download-binaries` feature. This crate uses the `load-dynamic` feature instead, so install ONNX Runtime manually and point to it at runtime — `ORT_DYLIB_PATH=/path/to/libonnxruntime.<so|dylib|dll>`, or add its directory to `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). See "Point to an installed ONNX Runtime" above.
 
 ### Python segfault (exit code 139)
 

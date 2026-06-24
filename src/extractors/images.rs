@@ -809,8 +809,14 @@ pub fn extract_image_from_xobject(
         .iter()
         .any(|n| n.eq_ignore_ascii_case("JBIG2Decode"));
 
+    let is_jpx = filter_names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case("JPXDecode"));
+
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
+    } else if is_jpx {
+        decode_jpx_image(xobject, obj_ref, doc, &color_space)?
     } else if is_jpeg_only || is_jpeg_chain {
         let decoded = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
             d.decode_stream_with_encryption(xobject, ref_id)?
@@ -1813,6 +1819,60 @@ fn decode_jbig2_image(
     _height: u32,
 ) -> Result<ImageData> {
     Err(Error::UnsupportedFilter("JBIG2Decode".to_string()))
+}
+
+/// Decode a JPEG 2000 (`/JPXDecode`) image stream into raw interleaved samples.
+///
+/// `JpxDecoder` is a pass-through, so `decode_stream_*` yields the raw JPEG 2000
+/// codestream, which OpenJPEG (`decoders::jpx::decode_jpx`) decodes to 8-bit
+/// component-interleaved samples.
+#[cfg(feature = "jpeg2000")]
+fn decode_jpx_image(
+    xobject: &crate::object::Object,
+    obj_ref: Option<ObjectRef>,
+    doc: Option<&crate::document::PdfDocument>,
+    color_space: &ColorSpace,
+) -> Result<ImageData> {
+    let codestream: Vec<u8> = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
+        d.decode_stream_with_encryption(xobject, ref_id)?
+    } else {
+        xobject.decode_stream_data()?
+    };
+
+    let img = crate::decoders::jpx::decode_jpx(&codestream)?;
+
+    // The decoded sample layout is fixed by the codestream's component count
+    // (ISO 32000-1 §7.4.9: a JPX stream carries its own colour space, which
+    // agrees with the component count). The XObject's /ColorSpace is reserved
+    // for future disambiguation (e.g. SMask/alpha handling).
+    let _ = color_space;
+    let format = match img.num_components {
+        1 => PixelFormat::Grayscale,
+        3 => PixelFormat::RGB,
+        4 => PixelFormat::CMYK,
+        n => {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: unsupported JPEG 2000 component count {n}"
+            )))
+        },
+    };
+
+    Ok(ImageData::Raw {
+        pixels: img.samples,
+        format,
+    })
+}
+
+#[cfg(not(feature = "jpeg2000"))]
+fn decode_jpx_image(
+    _xobject: &crate::object::Object,
+    _obj_ref: Option<ObjectRef>,
+    _doc: Option<&crate::document::PdfDocument>,
+    _color_space: &ColorSpace,
+) -> Result<ImageData> {
+    Err(Error::UnsupportedFilter(
+        "JPXDecode (JPEG 2000) — rebuild with the `jpeg2000` feature to decode".to_string(),
+    ))
 }
 
 /// Expand abbreviated inline image dictionary keys to full names.

@@ -122,6 +122,24 @@ pub struct TextSpan {
     /// split onto its own line by the row-band sort.
     #[serde(skip_serializing_if = "is_zero_f32", default)]
     pub text_rise: f32,
+    /// True when this span's glyphs were drawn **right-to-left** — successive
+    /// glyphs placed at decreasing x (the producer stored RTL text in LOGICAL
+    /// order and positioned each glyph individually, ISO 32000-1 §14.8.2.3.3
+    /// method 1). Such a span's characters are already in logical order, so the
+    /// structure-path `push_span_text_bidi` must NOT apply its visual→logical
+    /// character reversal to it. Detected from raw draw geometry before any
+    /// reading-order sort (`detect_rtl_draw_direction`) and OR-ed through
+    /// `merge_adjacent_spans`. Default `false` = VISUAL storage (glyphs drawn
+    /// left-to-right, the common case), kept byte-identical. The draw direction
+    /// is the only signal that separates logical- from visual-stored RTL when
+    /// both use base-form characters (no presentation forms, no `/ReversedChars`).
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub rtl_draw_logical: bool,
+}
+
+/// serde skip helper: omit a `false` flag (the common case) from serialized output.
+pub(crate) fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// serde skip helper: omit a `0` writing mode (horizontal, the common case)
@@ -162,6 +180,7 @@ impl Default for TextSpan {
             rotation_degrees: 0.0,
             wmode: 0,
             text_rise: 0.0,
+            rtl_draw_logical: false,
         }
     }
 }

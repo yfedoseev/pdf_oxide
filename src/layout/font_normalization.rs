@@ -139,6 +139,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }
     }
 

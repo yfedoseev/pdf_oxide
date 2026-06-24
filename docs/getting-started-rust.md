@@ -444,7 +444,7 @@ let config = OcrConfig::v5();
 let engine = OcrEngine::new("v5_det.onnx", "v5_rec.onnx", "v5_dict.txt", config)?;
 ```
 
-> **Note:** ONNX Runtime (`libonnxruntime.so` v1.23+) must be available at runtime. Set `ORT_LIB_LOCATION` to the directory containing the shared library during build, or install the ONNX Runtime system package. You can also set `ORT_PREFER_DYNAMIC_LINK=1` to link dynamically.
+> **Note:** ONNX Runtime (`libonnxruntime` v1.23+) is loaded dynamically at runtime. Install it (system package, `brew install onnxruntime`, or a manual download) and either set `ORT_DYLIB_PATH` to the shared-library **file** (`libonnxruntime.so` / `.dylib` / `onnxruntime.dll`), or add its directory to `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). `ORT_LIB_LOCATION` is a build-time variable and has no effect with the dynamic backend this crate uses.
 
 ## Lower-Level APIs
 

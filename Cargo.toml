@@ -60,7 +60,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.67"
+version = "0.3.68"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -161,7 +161,7 @@ taffy = { version = "0.11", default-features = false, features = [
 unicode-linebreak = "0.1" # UAX #14 line-break opportunities for the inline formatter (LAYOUT-3)
 # Block/flex/grid layout (Dioxus; MIT, no MPL). Used by Phase LAYOUT to position
 # box tree nodes; inline formatting is ours (Phase LAYOUT inline_formatting module).
-phf = { version = "0.13", features = ["macros"] } # Perfect hash maps for Adobe Glyph List
+phf = { version = "0.14", features = ["macros"] } # Perfect hash maps for Adobe Glyph List
 encoding_rs = "0.8"                               # Shift-JIS, EUC-JP, and other CJK encodings for predefined CMaps
 
 # Unicode bidirectional algorithm (UAX #9) — used by both the HTML+CSS
@@ -255,7 +255,7 @@ quick-xml = "0.40"
 
 # Python bindings (optional)
 # Using latest version to support Python 3.14+
-pyo3 = { version = "0.28", features = ["abi3-py38", "generate-import-lib"], optional = true }
+pyo3 = { version = "0.29", features = ["abi3-py38", "generate-import-lib"], optional = true }
 # Bridges Rust `log` macros to Python `logging` module (issue #280)
 pyo3-log = { version = "0.13", optional = true }
 
@@ -275,8 +275,9 @@ pdfium-render = { version = "0.9", optional = true }
 
 # Rendering (optional - for page to image conversion)
 tiny-skia = { version = "0.12", optional = true }
-fast_image_resize = { version = "6", optional = true }                       # SIMD-accelerated image downscaling
-hayro-jbig2 = { version = "0.3", optional = true, default-features = false } # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
+fast_image_resize = { version = "6", optional = true }                          # SIMD-accelerated image downscaling
+hayro-jbig2 = { version = "0.3", optional = true, default-features = false }    # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
+hayro-jpeg2000 = { version = "0.4", optional = true, default-features = false } # Pure-Rust JPEG 2000 decoder, no_std + WASM-safe (Apache-2.0 OR MIT)
 fontdb = { version = "0.23", optional = true }
 rustybuzz = { version = "0.20", optional = true }
 
@@ -451,8 +452,19 @@ debug-span-merging = []
 # when the feature is off.
 test-support = []
 
+# JPEG 2000 (/JPXDecode) image decoding via hayro-jpeg2000 (pure Rust, no_std,
+# WASM-safe). Pulled in by `rendering`; can also be enabled standalone so
+# `extract_image_bytes` decodes JPX images without the full rendering stack.
+jpeg2000 = ["dep:hayro-jpeg2000"]
+
 # Page rendering to images (pure Rust via tiny-skia)
-rendering = ["dep:tiny-skia", "dep:fast_image_resize", "system-fonts", "dep:hayro-jbig2"]
+rendering = [
+    "dep:tiny-skia",
+    "dep:fast_image_resize",
+    "system-fonts",
+    "dep:hayro-jbig2",
+    "jpeg2000",
+]
 
 # System font discovery (fontdb) + shaping (rustybuzz). v0.3.35 splits
 # this out of `rendering` so HTML+CSS→PDF can pick it up without pulling
