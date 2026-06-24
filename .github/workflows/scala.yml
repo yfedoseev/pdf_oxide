@@ -86,9 +86,17 @@ jobs:
         working-directory: java
         run: mvn -q -B -P'!dev' -DskipTests install
 
-      - name: Format check (scalafmt) + Test (api-coverage)
+      - name: Format check (scalafmt)
         working-directory: scala
-        run: sbt -DPDF_OXIDE_JNI_LIB="${PDF_OXIDE_JNI_LIB}" "scalafmtCheckAll; test"
+        run: sbt scalafmtCheckAll
+
+      - name: Lint check (scalafix)
+        working-directory: scala
+        run: sbt "scalafixAll --check"
+
+      - name: Test (api-coverage)
+        working-directory: scala
+        run: sbt -DPDF_OXIDE_JNI_LIB="${PDF_OXIDE_JNI_LIB}" test
 
       - name: Run example (BasicExtraction, with assertion)
         working-directory: scala

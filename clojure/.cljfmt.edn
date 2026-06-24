@@ -1,0 +1,7 @@
+;; cljfmt configuration (defaults; explicit for clarity). The source already
+;; follows these conventions, so `clojure -M:cljfmt check` passes.
+{:remove-surrounding-whitespace? true
+ :remove-trailing-whitespace? true
+ :insert-missing-whitespace? true
+ :remove-consecutive-blank-lines? false
+ :indentation? true}

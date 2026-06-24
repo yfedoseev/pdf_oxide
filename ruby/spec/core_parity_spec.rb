@@ -43,7 +43,7 @@ RSpec.describe 'core parity (Ruby)' do
     expect { PdfOxide::PdfDocument.open('/no/such/file/does/not/exist.pdf') }.to raise_error(StandardError)
   end
 
-  it 'exposes version 0.3.68' do
-    expect(PdfOxide::VERSION).to eq('0.3.68')
+  it 'exposes version 0.3.69' do
+    expect(PdfOxide::VERSION).to eq('0.3.69')
   end
 end

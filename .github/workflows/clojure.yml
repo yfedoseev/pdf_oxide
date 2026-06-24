@@ -93,6 +93,10 @@ jobs:
         working-directory: clojure
         run: clj-kondo --lint src test
 
+      - name: Format check (cljfmt)
+        working-directory: clojure
+        run: clojure -M:cljfmt check
+
       - name: Test (api-coverage, JNI lib via fyi.oxide.pdf.lib.path)
         working-directory: clojure
         shell: bash

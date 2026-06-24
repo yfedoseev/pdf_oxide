@@ -80,6 +80,10 @@ jobs:
         working-directory: elixir
         run: mix credo --strict
 
+      - name: Static analysis (Dialyzer)
+        working-directory: elixir
+        run: mix dialyzer
+
       - name: Test (api-coverage)
         working-directory: elixir
         shell: bash

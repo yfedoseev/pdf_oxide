@@ -12,6 +12,24 @@ types (`Pdf`, `PdfDocument`, `DocumentEditor`) are `AutoCloseable`, so use
 > native bridge is written and tested **once** (in the Java binding); Clojure-Java
 > interop is trivial.
 
+## Install
+
+Published to [Clojars](https://clojars.org/) as `fyi.oxide/pdf-oxide-clojure`:
+
+```clojure
+;; deps.edn
+{:deps {fyi.oxide/pdf-oxide-clojure {:mvn/version "0.3.69"}}}
+```
+
+```clojure
+;; Leiningen
+[fyi.oxide/pdf-oxide-clojure "0.3.69"]
+```
+
+The JNI native library (`libpdf_oxide_jni`) is not bundled — make it loadable via
+`System.loadLibrary("pdf_oxide_jni")` on your `java.library.path`, or point the
+Java `NativeLoader` at it with `-Dfyi.oxide.pdf.lib.path=<path>`.
+
 ## Build & test
 
 ```bash

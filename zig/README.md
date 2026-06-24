@@ -8,6 +8,26 @@ are copied into a caller-provided allocator and the C buffer freed via
 > Pinned to **Zig 0.15.1** (pre-1.0 — the build/C-import API drifts between
 > releases). CI uses the same version.
 
+## Install
+
+Zig has no central registry — depend on a release tarball by URL + content hash.
+`zig fetch --save` downloads it, computes the hash, and writes the dependency
+into your `build.zig.zon`:
+
+```bash
+zig fetch --save https://github.com/yfedoseev/pdf_oxide/archive/refs/tags/v0.3.69.tar.gz
+```
+
+Then in `build.zig`:
+
+```zig
+const pdf_oxide = b.dependency("pdf_oxide", .{});
+exe.root_module.addImport("pdf_oxide", pdf_oxide.module("pdf_oxide"));
+```
+
+The wrapper links the native `libpdf_oxide` cdylib — see "Build & test" for
+building it and pointing the build at the header + library.
+
 ## Build & test
 
 The binding links the **default-feature cdylib** (not the Python wheel):

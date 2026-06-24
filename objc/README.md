@@ -6,6 +6,23 @@ own the C handles and free them in `-dealloc` (ARC); returned C strings/buffers
 are copied into `NSString`/`NSData` and freed via `free_string`; non-success
 C-ABI error codes surface as `NSError` (`POXErrorDomain`).
 
+## Install (CocoaPods, macOS)
+
+CocoaPods [Trunk goes read-only on 2026-12-02](https://blog.cocoapods.org/CocoaPods-Specs-Repo/),
+so this pod is **not** distributed through the central Trunk index. It is a
+binary pod published as a GitHub release asset — reference its podspec directly
+from your `Podfile` (no Trunk account required, works indefinitely):
+
+```ruby
+# Podfile
+pod 'PdfOxide', :podspec =>
+  'https://github.com/yfedoseev/pdf_oxide/releases/download/v0.3.69/PdfOxide.podspec'
+```
+
+The pod vendors a prebuilt `PdfOxide.xcframework` (the Rust native static lib),
+so consumers do not build Rust. See `PUBLISHING.md` for how the release assembles
+and uploads the asset.
+
 ## Build & test (macOS)
 
 The binding links the **default-feature cdylib** (not the Python wheel):

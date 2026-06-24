@@ -94,6 +94,8 @@ def rules() -> list[tuple[str, str, bool]]:
         ("zig/build.zig.zon", r'\.version\s*=\s*"([^"]+)"', False),
         ("cpp/CMakeLists.txt", r"project\(pdf_oxide_cpp VERSION ([0-9][^\s]+)", False),
         ("elixir/mix.exs", r'version:\s*"([^"]+)"', False),
+        ("objc/include/POXPdfOxide.h", r'POX_PDF_OXIDE_VERSION "([^"]+)"', False),
+        ("objc/PdfOxide.podspec", r"spec\.version\s*=\s*'([^']+)'", False),
     ]
 
 

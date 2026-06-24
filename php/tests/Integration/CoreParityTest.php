@@ -92,6 +92,6 @@ final class CoreParityTest extends IntegrationTestCase
 
     public function testVersionConstant(): void
     {
-        $this->assertSame('0.3.68', Pdf::VERSION);
+        $this->assertSame('0.3.69', Pdf::VERSION);
     }
 }

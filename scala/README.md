@@ -12,6 +12,20 @@ works on the `AutoCloseable` handles.
 > is written and tested **once** (in the Java binding). The Scala module is a
 > pure-JVM library that depends on it.
 
+## Install
+
+Published to Maven Central. The artifact is cross-versioned for Scala 3, so use
+sbt's `%%` (which resolves the `_3` suffix → `pdf-oxide-scala_3`):
+
+```scala
+// build.sbt
+libraryDependencies += "fyi.oxide" %% "pdf-oxide-scala" % "0.3.69"
+```
+
+The JNI native library (`libpdf_oxide_jni`) is not bundled — make it loadable via
+`System.loadLibrary("pdf_oxide_jni")` on your `java.library.path`, or point the
+Java `NativeLoader` at it with `-Dfyi.oxide.pdf.lib.path=<path>`.
+
 ## Build & test
 
 ```bash

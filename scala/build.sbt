@@ -4,8 +4,13 @@
 // (Optional -> Option, java.util.List -> Seq, Using on AutoCloseable handles).
 ThisBuild / organization := "fyi.oxide"
 ThisBuild / organizationName := "PDF Oxide"
-ThisBuild / version := "0.3.68"
+ThisBuild / version := "0.3.69"
 ThisBuild / scalaVersion := "3.3.4"
+
+// scalafix needs SemanticDB. On Scala 3 it's emitted by the compiler itself
+// (sbt-scalafix wires `-Xsemanticdb` via semanticdbEnabled); no extra compiler
+// plugin/version pin is required as it is on Scala 2.
+ThisBuild / semanticdbEnabled := true
 
 // Maven Central publishing via the post-OSSRH Sonatype Central Portal
 // (mirrors the Java binding). sbt-ci-release + sbt-sonatype target
@@ -32,7 +37,7 @@ lazy val root = (project in file("."))
     description := "Idiomatic Scala 3 bindings for pdf_oxide — a thin facade over the fyi.oxide:pdf-oxide Java binding (JNI).",
     resolvers += Resolver.mavenLocal, // resolve the locally-installed Java artifact during dev/CI
     libraryDependencies ++= Seq(
-      "fyi.oxide" % "pdf-oxide" % "0.3.68",
+      "fyi.oxide" % "pdf-oxide" % "0.3.69",
       "org.scalatest" %% "scalatest" % "3.2.19" % Test
     ),
     // The Java NativeLoader resolves the JNI cdylib via this property; override

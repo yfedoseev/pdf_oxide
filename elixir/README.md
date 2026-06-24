@@ -6,6 +6,22 @@ it never blocks the BEAM scheduler. Document/Pdf handles are NIF resources freed
 by the GC; functions return `{:ok, value}` / `{:error, code}`. Page indices are
 0-based.
 
+## Install
+
+Published to [Hex.pm](https://hex.pm/) as `pdf_oxide`:
+
+```elixir
+# mix.exs
+def deps do
+  [
+    {:pdf_oxide, "~> 0.3.69"}
+  ]
+end
+```
+
+The NIF is built from source on install via `elixir_make`, linking the
+default-feature `libpdf_oxide` cdylib — see "Build & test" for building it.
+
 ## Build & test
 
 The NIF links the **default-feature cdylib** (not the Python wheel):

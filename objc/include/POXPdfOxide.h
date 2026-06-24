@@ -7,6 +7,10 @@
 // is asserted by POXApiCoverageTests (one test per method).
 #import <Foundation/Foundation.h>
 
+/// Binding version, kept in lock-step with the workspace crate by
+/// scripts/sync_version.py (the single source of truth is Cargo.toml).
+#define POX_PDF_OXIDE_VERSION "0.3.69"
+
 NS_ASSUME_NONNULL_BEGIN
 
 extern NSString* const POXErrorDomain;

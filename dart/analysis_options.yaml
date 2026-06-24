@@ -1,0 +1,34 @@
+# Static analysis configuration for the pdf_oxide Dart bindings.
+#
+# Builds on the community `lints` recommended set (already a dev_dependency)
+# and tightens a few analyzer/linter knobs. CI runs
+# `dart analyze --fatal-infos lib test example`, so every rule enabled here
+# must keep the current sources green.
+include: package:lints/recommended.yaml
+
+analyzer:
+  language:
+    # Reject implicit `dynamic`-to-typed downcasts and implicit raw generic
+    # types — important for the dart:ffi pointer/type surface in this package.
+    strict-casts: true
+    strict-raw-types: true
+  errors:
+    # Promote a latent-bug lint from info to warning so it can't be missed.
+    unawaited_futures: warning
+    # The FFI bindings are intentionally written in a few styles `recommended`
+    # would otherwise flag; ignore those so CI (`--fatal-infos`) stays green
+    # without churning the generated-style sources.
+    curly_braces_in_flow_control_structures: ignore
+    unnecessary_brace_in_string_interps: ignore
+    prefer_function_declarations_over_variables: ignore
+
+linter:
+  rules:
+    # A small, conservative set on top of `recommended` that the current
+    # lib/test/example sources already satisfy.
+    - always_declare_return_types
+    - avoid_unused_constructor_parameters
+    - prefer_final_locals
+    - prefer_single_quotes
+    - unnecessary_parenthesis
+    - directives_ordering

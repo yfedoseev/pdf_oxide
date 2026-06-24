@@ -5,6 +5,23 @@ library (`libpdf_oxide.{so,dylib,dll}`) is loaded at runtime; handles are freed
 by a `NativeFinalizer` (and explicit `close()`); C strings/buffers are copied
 into Dart and freed for you; C-ABI error codes are thrown as `PdfOxideError`.
 
+## Install
+
+Published to [pub.dev](https://pub.dev/) as `pdf_oxide`:
+
+```bash
+dart pub add pdf_oxide
+```
+
+```yaml
+# or in pubspec.yaml
+dependencies:
+  pdf_oxide: ^0.3.69
+```
+
+The native `libpdf_oxide.{so,dylib,dll}` is loaded at runtime and is **not**
+bundled — see "Setup" for building it and pointing the loader at it.
+
 ## Setup
 
 The binding links the **default-feature cdylib** (not the Python wheel):

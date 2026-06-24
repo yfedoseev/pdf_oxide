@@ -18,10 +18,24 @@ on:
       - 'Cargo.lock'
       - 'pyproject.toml'
       - 'js/**'
+      - 'wasm-pkg/**'
       - 'csharp/**'
       - 'go/**'
       - 'java/**'
       - 'pdf_oxide_jni/**'
+      - 'ruby/**'
+      - 'php/**'
+      - 'cpp/**'
+      - 'swift/**'
+      - 'objc/**'
+      - 'kotlin/**'
+      - 'scala/**'
+      - 'clojure/**'
+      - 'dart/**'
+      - 'elixir/**'
+      - 'r/**'
+      - 'julia/**'
+      - 'zig/**'
       - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
@@ -110,6 +124,13 @@ jobs:
           done
           if [ $ERRORS -gt 0 ]; then exit 1; fi
           echo "✓ All language binding versions match: $VERSION"
+
+      # Authoritative, exhaustive check across EVERY binding manifest (the
+      # manual loop above predates the 11 new bindings). sync_version.py's
+      # rules() list is the single source of truth — covers cpp/swift/objc/
+      # kotlin/scala/clojure/dart/elixir/r/julia/zig too.
+      - name: Validate ALL binding versions in sync (sync_version.py)
+        run: python3 scripts/sync_version.py --check
 
       - name: Verify release is from main branch
         # #515: a pull_request dry-run is BY DEFINITION not yet on main
@@ -2013,3 +2034,276 @@ jobs:
             echo "Pushing $g"
             gem push "$g"
           done
+
+  # ── New v0.3.69 language bindings ────────────────────────────────────
+  # All gated identically to the established publish jobs: a pull_request
+  # dry-run can NEVER publish; only a real tag push or dispatch+publish,
+  # and never for a prerelease version (contains '-').
+
+  # Kotlin facade → Maven Central (Sonatype Central Portal). The
+  # vanniktech plugin is configured with automaticRelease=false, so the
+  # upload reaches VALIDATED and a maintainer flips Publish — same human
+  # release-gate as publish-maven (Java).
+  publish-kotlin:
+    name: Publish Kotlin to Maven Central (staged)
+    needs: [validate, create-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4
+
+      # The facade is pure-JVM and depends on fyi.oxide:pdf-oxide — install
+      # it to the local Maven repo so the publish build resolves it (skip
+      # the dev profile's Rust rebuild + tests).
+      - name: Build & install Java binding to local Maven repo
+        working-directory: java
+        run: mvn -q -B -P'!dev' -DskipTests install
+
+      - name: Publish to Maven Central Portal (VALIDATED; human flips Publish)
+        working-directory: kotlin
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: gradle publishToMavenCentral --no-daemon --console=plain
+
+      - name: Notice — Central Portal staging done
+        run: |
+          echo "::notice::Kotlin artifact uploaded to Central Portal (VALIDATED)."
+          echo "::notice::Sign in at https://central.sonatype.com/ and flip Publish."
+
+  # Scala facade → Maven Central via sbt-ci-release (already in
+  # scala/project/plugins.sbt). Credentials reuse the Java GPG/Sonatype
+  # secrets. ci-release performs a full release on a non-SNAPSHOT version.
+  publish-scala:
+    name: Publish Scala to Maven Central
+    needs: [validate, create-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0   # sbt-ci-release/dynver need full history + tags
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@234370af1319038bf8dc432f8a7e4b83078a1781 # v1
+
+      - name: Build & install Java binding to local Maven repo
+        working-directory: java
+        run: mvn -q -B -P'!dev' -DskipTests install
+
+      - name: Publish to Maven Central (sbt ci-release)
+        working-directory: scala
+        env:
+          CI: 'true'
+          SONATYPE_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          PGP_SECRET: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          PGP_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: sbt ci-release
+
+  # Clojure facade → Clojars via clojure/build.clj (tools.build + deps-deploy).
+  publish-clojure:
+    name: Publish Clojure to Clojars
+    needs: [validate, create-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Clojure
+        uses: DeLaGuardo/setup-clojure@52716660ff0e592e21f16f47743ee9e996cb96be # 13.4
+        with:
+          cli: latest
+
+      - name: Build & install Java binding to local Maven repo
+        working-directory: java
+        run: mvn -q -B -P'!dev' -DskipTests install
+
+      - name: Deploy to Clojars
+        working-directory: clojure
+        env:
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+        run: clojure -T:build deploy
+
+  # Elixir → Hex.pm. The package ships source; the NIF is compiled on the
+  # user's machine via elixir_make. We build the cdylib + set the env so
+  # `mix hex.publish` can compile the project during packaging.
+  publish-elixir:
+    name: Publish Elixir to Hex.pm
+    needs: [validate, create-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Build cdylib (shipped binding feature set)
+        run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+
+      - name: Set up Erlang/Elixir
+        uses: erlef/setup-beam@e6d7c94229049569db56a7ad5a540c051a010af9 # v1
+        with:
+          otp-version: '27'
+          elixir-version: '1.17'
+
+      - name: Publish package to Hex.pm
+        working-directory: elixir
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+          PDF_OXIDE_INCLUDE_DIR: ${{ github.workspace }}/include
+          PDF_OXIDE_LIB_DIR: ${{ github.workspace }}/target/release
+        run: |
+          mix deps.get
+          mix hex.publish package --yes
+
+  # Dart → pub.dev via OIDC (no long-lived token). The package must have
+  # "Automated publishing" enabled on pub.dev, pointed at this repo + the
+  # v*.*.* tag pattern. Publishes the Dart source; the native lib is
+  # provisioned separately by the consumer (see dart/README.md).
+  publish-dart:
+    name: Publish Dart to pub.dev
+    needs: [validate, create-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    permissions:
+      contents: read
+      id-token: write   # pub.dev OIDC automated publishing
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@e51d8e571e22473a2ddebf0ef8a2123f0ab2c02c # v1.7.0
+
+      - name: pub get
+        working-directory: dart
+        run: dart pub get
+
+      # Idempotent like publish-rubygems: pub.dev rejects a re-publish of an
+      # existing version, and the first release is published manually by a
+      # maintainer (to claim the name + enable OIDC). Skip if already there.
+      - name: Skip if this version is already on pub.dev
+        id: pubcheck
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          if curl -fsSL "https://pub.dev/api/packages/pdf_oxide" \
+               | grep -q "\"version\":\"$V\""; then
+            echo "pdf_oxide $V already on pub.dev — skipping publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to pub.dev
+        if: steps.pubcheck.outputs.skip != 'true'
+        working-directory: dart
+        run: dart pub publish --force
+
+  # Objective-C → CocoaPods, WITHOUT the central Trunk index.
+  #
+  # CocoaPods Trunk goes permanently read-only on 2026-12-02
+  # (https://blog.cocoapods.org/CocoaPods-Specs-Repo/), and new Trunk
+  # accounts/pushes are no longer viable. A pod does NOT need Trunk to be
+  # installable, though: this job builds a universal-macOS PdfOxide.xcframework,
+  # zips it with the objc/ sources as the pod's :http source (a binary pod —
+  # the xcframework is never committed), and uploads BOTH that zip and the
+  # podspec as release assets. Consumers then reference it directly:
+  #
+  #   pod 'PdfOxide', :podspec =>
+  #     'https://github.com/yfedoseev/pdf_oxide/releases/download/v0.3.69/PdfOxide.podspec'
+  #
+  # No Trunk account, no COCOAPODS_TRUNK_TOKEN. See objc/PUBLISHING.md.
+  # Requires verification on a real macOS runner (no Apple toolchain in dev).
+  package-cocoapods:
+    name: Package Objective-C CocoaPods asset (no Trunk)
+    needs: [validate, create-release]
+    runs-on: macos-latest
+    if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
+    permissions:
+      contents: write   # upload the xcframework zip + podspec as release assets
+    env:
+      FEATURES: ocr,rendering,signatures,barcodes,tsa-client,system-fonts
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust (+ Apple targets)
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: false
+          rustflags: ''
+          target: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build static libs for both macOS arches
+        run: |
+          cargo build --release --lib --features "$FEATURES" --target aarch64-apple-darwin
+          cargo build --release --lib --features "$FEATURES" --target x86_64-apple-darwin
+
+      - name: Assemble PdfOxide.xcframework
+        run: |
+          mkdir -p build/macos/Headers
+          lipo -create \
+            target/aarch64-apple-darwin/release/libpdf_oxide.a \
+            target/x86_64-apple-darwin/release/libpdf_oxide.a \
+            -output build/macos/libpdf_oxide.a
+          cp include/pdf_oxide_c/pdf_oxide.h build/macos/Headers/
+          rm -rf objc/Frameworks/PdfOxide.xcframework
+          mkdir -p objc/Frameworks
+          xcodebuild -create-xcframework \
+            -library build/macos/libpdf_oxide.a -headers build/macos/Headers \
+            -output objc/Frameworks/PdfOxide.xcframework
+
+      - name: Zip pod source + xcframework as the release asset
+        run: |
+          ASSET="PdfOxide-objc-${VERSION}.zip"
+          # Zip the objc/ tree (sources + Frameworks/) so the entries match
+          # the podspec's source_files / vendored_frameworks globs.
+          zip -r "$ASSET" objc -x 'objc/*.o' 'objc/test_api_coverage' 'objc/basic_extraction'
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Validate podspec (structural lint; no Trunk account needed)
+        run: |
+          gem install cocoapods --no-document
+          # --allow-warnings: vendored static framework + deployment-target
+          # advisories are expected for a binary pod.
+          pod spec lint objc/PdfOxide.podspec --allow-warnings || \
+            echo "::warning::pod spec lint reported issues — review before relying on the pod"
+
+      - name: Upload xcframework zip + podspec to the release
+        run: |
+          gh release upload "v${VERSION}" "$ASSET" objc/PdfOxide.podspec --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Notice — how to consume (no Trunk)
+        run: |
+          echo "::notice::CocoaPods (Trunk-free). Add to Podfile:"
+          echo "::notice::pod 'PdfOxide', :podspec => 'https://github.com/yfedoseev/pdf_oxide/releases/download/v${VERSION}/PdfOxide.podspec'"

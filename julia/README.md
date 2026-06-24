@@ -6,6 +6,18 @@ mutable structs with finalizers; C strings/buffers are copied into Julia and
 freed via `free_string`; non-success C-ABI error codes throw `PdfOxideError`.
 Page indices are 0-based.
 
+## Install
+
+Once registered in Julia's General registry, the package name is `PdfOxide`:
+
+```julia
+using Pkg
+Pkg.add("PdfOxide")
+```
+
+The native `libpdf_oxide` cdylib is loaded at runtime and is **not** bundled —
+see "Setup" for building it and pointing the loader at it.
+
 ## Setup
 
 The binding links the **default-feature cdylib** (not the Python wheel):

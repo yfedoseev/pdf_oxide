@@ -13,6 +13,22 @@ handles.
 > is written and tested **once** (in the Java binding). The Kotlin module is a
 > pure-JVM library that depends on it.
 
+## Install
+
+Published to Maven Central as `fyi.oxide:pdf-oxide-kotlin`:
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("fyi.oxide:pdf-oxide-kotlin:0.3.69")
+}
+```
+
+The JNI native library (`libpdf_oxide_jni`) is not bundled — load it via
+`System.loadLibrary("pdf_oxide_jni")` (ship the `.so`/`.dylib` on your
+`java.library.path`, or in `jniLibs/<abi>/` on Android), or point the Java
+`NativeLoader` at it with `-Dfyi.oxide.pdf.lib.path=<path>`.
+
 ## Build & test
 
 The Java binding owns the JNI library (`pdf_oxide_jni`); build it, install the

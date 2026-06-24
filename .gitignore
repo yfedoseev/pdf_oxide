@@ -347,6 +347,8 @@ tests/golden_files/
 .agents/
 .cursor/
 .antigravitycli/
+# Playwright MCP local state/cache
+.playwright-mcp/
 
 
 # pdm-python
@@ -413,7 +415,8 @@ ruby/.bundle/
 r/src/*.o
 r/src/*.so
 r/src/*.dll
-r/..Rcheck/
+# R CMD check output dir — named <pkg>.Rcheck, emitted wherever check is run.
+*.Rcheck/
 r/*.tar.gz
 
 # Kotlin binding artifacts

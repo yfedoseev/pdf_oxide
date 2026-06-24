@@ -1,7 +1,14 @@
 name: pdf_oxide
 description: Idiomatic Dart/Flutter bindings for pdf_oxide — fast PDF text, Markdown and HTML extraction via dart:ffi over the C ABI.
-version: 0.3.68
+version: 0.3.69
 repository: https://github.com/yfedoseev/pdf_oxide
+homepage: https://github.com/yfedoseev/pdf_oxide
+issue_tracker: https://github.com/yfedoseev/pdf_oxide/issues
+topics:
+  - pdf
+  - ffi
+  - text-extraction
+  - markdown
 environment:
   sdk: ^3.4.0
 

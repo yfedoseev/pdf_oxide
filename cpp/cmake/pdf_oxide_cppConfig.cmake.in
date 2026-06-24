@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+# CMake package config for the header-only pdf_oxide C++ wrapper.
+#
+# Provides the imported INTERFACE target `pdf_oxide::pdf_oxide_cpp`. The wrapper
+# is headers only; it expects the prebuilt native `pdf_oxide` library to be
+# available to the linker (the consumer supplies it, e.g. via a Conan package
+# or by adding its directory to the link search path).
+include("${CMAKE_CURRENT_LIST_DIR}/pdf_oxide_cppTargets.cmake")
+
+check_required_components(pdf_oxide_cpp)

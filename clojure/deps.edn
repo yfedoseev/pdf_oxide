@@ -4,7 +4,7 @@
 ;; Java NativeLoader resolves the JNI cdylib via the `fyi.oxide.pdf.lib.path`
 ;; system property (pointed at the freshly built libpdf_oxide_jni below).
 {:paths ["src"]
- :deps {fyi.oxide/pdf-oxide {:mvn/version "0.3.68"}}
+ :deps {fyi.oxide/pdf-oxide {:mvn/version "0.3.69"}}
  :aliases
  {:test
   {:extra-paths ["test"]
@@ -18,4 +18,14 @@
    :main-opts ["-m" "cognitect.test-runner"]}
   :example
   {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
-   :main-opts ["-m" "pdf-oxide.example"]}}}
+   :main-opts ["-m" "pdf-oxide.example"]}
+  ;; Build + deploy to Clojars: `clojure -T:build jar` / `clojure -T:build deploy`
+  ;; (deploy reads CLOJARS_USERNAME / CLOJARS_PASSWORD from the environment).
+  :build
+  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
+          slipset/deps-deploy {:mvn/version "0.2.2"}}
+   :ns-default build}
+  ;; Format check: `clojure -M:cljfmt check` (and `clojure -M:cljfmt fix`).
+  :cljfmt
+  {:deps {dev.weavejester/cljfmt {:mvn/version "0.13.0"}}
+   :main-opts ["-m" "cljfmt.main"]}}}

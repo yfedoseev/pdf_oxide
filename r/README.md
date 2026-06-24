@@ -7,7 +7,14 @@ by the GC; C-ABI error codes are raised as R errors. Page indices are 0-based.
 
 ## Install
 
-The package links the **default-feature cdylib** (not the Python wheel):
+Once accepted on CRAN, the package name is `pdfoxide`:
+
+```r
+install.packages("pdfoxide")
+```
+
+To build from this checkout instead, the package links the **default-feature
+cdylib** (not the Python wheel):
 
 ```bash
 # 1. build the native library (shipped binding feature set)
