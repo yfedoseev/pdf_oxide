@@ -1494,7 +1494,7 @@ jobs:
           fail_on_unmatched_files: false
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+        uses: taiki-e/install-action@ace6ebe54a6a0c86dfb5f7764b17f793b6925bc3 # v2
         with:
           tool: cargo-cyclonedx
 
