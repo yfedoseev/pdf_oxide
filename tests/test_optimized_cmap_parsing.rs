@@ -341,11 +341,12 @@ end
     assert_eq!(font.char_to_unicode(0x1000), Some("\u{4E00}".to_string()), "bfrange 0 start");
     assert_eq!(font.char_to_unicode(0x1100), Some("\u{4F00}".to_string()), "bfrange 1 lookup");
 
-    // CID 0x6400 not in bfchar/bfrange, falls through to CID-as-Unicode fallback
+    // CID 0x6400 not in bfchar/bfrange; with a /ToUnicode present and non-Identity
+    // ordering, an uncovered code is unmapped → U+FFFD, not a CID-as-Unicode guess
     assert_eq!(
         font.char_to_unicode(0x6400),
-        Some("\u{6400}".to_string()),
-        "CID-as-Unicode fallback for unmapped code"
+        Some("\u{FFFD}".to_string()),
+        "uncovered code with /ToUnicode present must not be guessed as CID-as-Unicode"
     );
 }
 
