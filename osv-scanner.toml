@@ -24,29 +24,11 @@ id = "RUSTSEC-2023-0071"
 ignoreUntil = 2026-08-23
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2026-0176"
-# `pyo3` crate: out-of-bounds read in the optimized `nth` / `nth_back`
-# iterator methods for `PyList` / `PyTuple` when called with a large `n`
-# (unchecked `index + n` before bounds-checking). NOT reachable in our
-# usage: the binding only constructs lists via `PyList::empty` + `append`
-# and never calls `nth` / `nth_back` on a Python list/tuple iterator with a
-# caller-controlled index, so the vulnerable path is never executed.
-# Fixed upstream in pyo3 0.29.0, but not yet adoptable: pyo3-log (latest
-# 0.13.3) requires pyo3 `>=0.26, <0.29`, so taking 0.29 would mean dropping
-# the Rust->Python logging bridge. Re-evaluate when pyo3-log adds pyo3 0.29
-# support (then bump both).
-ignoreUntil = 2026-09-10
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0177"
-# `pyo3` crate: missing `Sync` bound on closures passed to
-# `PyCFunction::new_closure` (a non-Sync closure could be invoked
-# concurrently from multiple Python threads — a soundness data race).
-# NOT reachable in our usage: the binding does not call
-# `PyCFunction::new_closure` / `new_closure_bound` anywhere (all Python
-# callables are `#[pyfunction]`/`#[pymethods]`, not runtime closures).
-# Same fix and same blocker as RUSTSEC-2026-0176 above: resolved in pyo3
-# 0.29.0, which pyo3-log (latest 0.13.3, pyo3 `>=0.26, <0.29`) does not yet
-# allow. The only two advisories OSV reports for pyo3 0.28.3. Re-evaluate
-# and bump pyo3 + pyo3-log together when pyo3-log adds 0.29 support.
-ignoreUntil = 2026-09-10
+id = "RUSTSEC-2026-0173"
+# `proc-macro-error2` crate: advisory marks it as unmaintained (no CVE, no
+# memory-safety implication). Pulled in transitively:
+#   env_logger → defmt → defmt-macros → proc-macro-error2
+# `env_logger` is a dev dependency only; this crate does not reach published
+# builds. No fix version available upstream. Re-evaluate when defmt or
+# env_logger migrates off proc-macro-error2.
+ignoreUntil = 2026-09-23
