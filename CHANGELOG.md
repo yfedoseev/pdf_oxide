@@ -4,7 +4,7 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
-## [0.3.68] - 2026-06-23
+## [0.3.68] - 2026-06-24
 
 > Extraction fidelity release — symbolic TrueType character mis-decoding corrected via the `(3,0)`/`(1,0)` cmap, same-row span ordering preserved in plain-text output, JPEG 2000 (`JPXDecode`) image XObjects decoded via OpenJPEG, and RTL Farsi body text recovered from tagged Type0/CID PDFs.
 
