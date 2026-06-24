@@ -7852,6 +7852,21 @@ impl PdfDocument {
     /// so no glyph geometry is needed for the pure-RTL case.
     fn push_span_text_bidi(out: &mut String, span: &TextSpan, rtl_run: bool) {
         use crate::text::rtl_detector::is_rtl_text;
+        // A span whose glyphs were drawn right-to-left (logical storage — the
+        // producer positioned each glyph individually at decreasing x, ISO
+        // 32000-1 §14.8.2.3.3 method 1; detected by `detect_rtl_draw_direction`)
+        // already carries its CHARACTERS in LOGICAL order. The visual→logical
+        // character reversal below assumes VISUAL storage and would corrupt
+        // them, so emit the text verbatim — the letters are already correct.
+        // (Word ORDER within such a span is left as the reading-order sort
+        // produced it: a producer may emit words logically or visually within
+        // the same document, so a blanket word reversal would corrupt the
+        // logical ones.) Visual storage — the default — is never flagged and
+        // keeps the character-reversal below, so it stays byte-identical.
+        if span.rtl_draw_logical {
+            Self::push_span_text(out, span);
+            return;
+        }
         let mut rtl = 0usize;
         let mut has_latin = false;
         for c in span.text.chars() {
@@ -8506,6 +8521,7 @@ impl PdfDocument {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 text_rise: 0.0,
+                rtl_draw_logical: false,
             });
         }
 
@@ -8674,6 +8690,7 @@ impl PdfDocument {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 text_rise: 0.0,
+                rtl_draw_logical: false,
             });
         }
 
@@ -9549,11 +9566,23 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // Per-key rendered glyph text for the §14.9.4 conformance gate.
+        let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
+        for (scope, m) in &mcid_order {
+            if let Some(sp) = mcid_map.get(m) {
+                let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
+                glyph_text
+                    .entry((scope.clone(), *m))
+                    .or_default()
+                    .push_str(&joined);
+            }
+        }
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
             |_scope, m| mcid_map.contains_key(&m),
             &mc_wins,
+            &glyph_text,
         );
 
         // Step 4: Assemble text in structure order
@@ -9577,6 +9606,17 @@ impl PdfDocument {
             let Some(mcid) = content.mcid else {
                 continue;
             };
+            // ISO 32000-1 §14.7: a marked-content sequence's MCID is unique
+            // within its content stream and is referenced from the structure
+            // hierarchy at most once. A malformed struct tree that re-references
+            // the same MCID multiple times would otherwise emit that MCID's
+            // glyphs once per reference. Emit each MCID once. (A destructive
+            // /ActualText replacement — now declined by the §14.9.4 conformance
+            // gate — can mask this by collapsing each consecutive run to a
+            // single emit.)
+            if !consumed_mcids.insert(mcid) {
+                continue;
+            }
             let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
 
             // ActualText action dispatch. `EmitAndSuppress` is set only
@@ -10204,11 +10244,15 @@ impl PdfDocument {
 
         let default_scope = crate::structure::McidScope::Page(page_index as u32);
         // Visibility = "has at least one raw span at this (scope, mcid)".
+        // glyph_text accumulates each key's rendered text for the §14.9.4
+        // conformance gate (decline destructive replacements).
         let mut present: HashSet<(crate::structure::McidScope, u32)> = HashSet::new();
+        let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for s in spans.iter() {
             if let Some(m) = s.mcid {
                 let scope = s.mcid_scope.clone().unwrap_or(default_scope.clone());
-                present.insert((scope, m));
+                present.insert((scope.clone(), m));
+                glyph_text.entry((scope, m)).or_default().push_str(&s.text);
             }
         }
         // Walk the structure-tree's per-page MCID order so the
@@ -10222,6 +10266,7 @@ impl PdfDocument {
             &mcid_order,
             |scope, m| present.contains(&(scope.clone(), m)),
             &mc_wins,
+            &glyph_text,
         );
         if actions.is_empty() {
             return;
@@ -10343,10 +10388,15 @@ impl PdfDocument {
 
         let default_scope = crate::structure::McidScope::Page(page_index as u32);
         let mut present: HashSet<(crate::structure::McidScope, u32)> = HashSet::new();
+        let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for o in ordered.iter() {
             if let Some(m) = o.span.mcid {
                 let scope = o.span.mcid_scope.clone().unwrap_or(default_scope.clone());
-                present.insert((scope, m));
+                present.insert((scope.clone(), m));
+                glyph_text
+                    .entry((scope, m))
+                    .or_default()
+                    .push_str(&o.span.text);
             }
         }
         let mcid_order = self
@@ -10358,6 +10408,7 @@ impl PdfDocument {
             &mcid_order,
             |scope, m| present.contains(&(scope.clone(), m)),
             &mc_wins,
+            &glyph_text,
         );
         if actions.is_empty() {
             return;
@@ -10411,11 +10462,31 @@ impl PdfDocument {
     /// replacement applied by the extractor and are exempt from the
     /// ancestor struct-tree scope; they do not break the run dedup —
     /// the run can still find a non-MC-wins MCID to emit at.
+    /// §14.9.4 conformance test for a struct-tree `/ActualText` replacement.
+    ///
+    /// Per ISO 32000-1 §14.9.4 (pdf.md:39253) an `/ActualText` value "shall be
+    /// used as a replacement … providing text that is *equivalent to what a
+    /// person would see when viewing the content*"; per §14.8.2.4 NOTE 2
+    /// (pdf.md:37380) a conforming reader *may choose* whether to use it. We
+    /// decline a replacement that is **destructive**: it would suppress glyphs
+    /// carrying alphanumeric (letter/digit, any script) content while itself
+    /// carrying none — e.g. a producer tagging whole words with `" "` or `"-"`.
+    /// Such a value is not "equivalent to what a person would see", so we keep
+    /// the rendered glyphs (extracted via ToUnicode, §14.8.2.4) instead.
+    /// Legitimate ActualText — the spec's hyphenation EXAMPLE `(c)`→`k-`,
+    /// ligature/soft-hyphen substitution (NOTE 3), any real-character
+    /// replacement — is alphanumeric and passes.
+    fn actual_text_is_destructive(replacement: &str, covered_glyphs: &str) -> bool {
+        covered_glyphs.chars().any(char::is_alphanumeric)
+            && !replacement.chars().any(char::is_alphanumeric)
+    }
+
     fn actualtext_actions_for_page<F: Fn(&crate::structure::McidScope, u32) -> bool>(
         idx: Option<&crate::structure::ActualTextIndex>,
         mcid_order: &[(crate::structure::McidScope, u32)],
         visible: F,
         mc_wins: &HashSet<u32>,
+        glyph_text: &HashMap<(crate::structure::McidScope, u32), String>,
     ) -> HashMap<(crate::structure::McidScope, u32), ActualTextAction> {
         let mut out: HashMap<(crate::structure::McidScope, u32), ActualTextAction> = HashMap::new();
         let Some(idx) = idx else {
@@ -10462,6 +10533,20 @@ impl PdfDocument {
             }
 
             if let Some(repl) = repl_opt {
+                // §14.9.4 conformance gate (pdf.md:39253 + NOTE 2 pdf.md:37380):
+                // if this replacement would suppress alphanumeric glyphs while
+                // carrying none itself, it is not "equivalent to what a person
+                // would see" — decline it (emit no action for the run) so the
+                // rendered glyphs survive. See `actual_text_is_destructive`.
+                let run_glyphs: String = entries[i..j]
+                    .iter()
+                    .filter_map(|e| glyph_text.get(&(e.0.clone(), e.1)))
+                    .map(String::as_str)
+                    .collect();
+                if Self::actual_text_is_destructive(repl, &run_glyphs) {
+                    i = j;
+                    continue;
+                }
                 // Find first emit-eligible entry (visible, not MC-wins).
                 // MC-wins keys are skipped because their replacement
                 // came from the extractor's in-stream BDC /ActualText.
@@ -10619,11 +10704,23 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // Per-key rendered glyph text for the §14.9.4 conformance gate.
+        let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
+        for (scope, m) in &mcid_order {
+            if let Some(sp) = mcid_map.get(m) {
+                let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
+                glyph_text
+                    .entry((scope.clone(), *m))
+                    .or_default()
+                    .push_str(&joined);
+            }
+        }
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
             |_scope, m| mcid_map.contains_key(&m),
             &mc_wins,
+            &glyph_text,
         );
 
         log::debug!(
@@ -10651,6 +10748,17 @@ impl PdfDocument {
             let Some(mcid) = content.mcid else {
                 continue;
             };
+            // ISO 32000-1 §14.7: a marked-content sequence's MCID is unique
+            // within its content stream and is referenced from the structure
+            // hierarchy at most once. A malformed struct tree that re-references
+            // the same MCID multiple times would otherwise emit that MCID's
+            // glyphs once per reference. Emit each MCID once. (A destructive
+            // /ActualText replacement — now declined by the §14.9.4 conformance
+            // gate — can mask this by collapsing each consecutive run to a
+            // single emit.)
+            if !consumed_mcids.insert(mcid) {
+                continue;
+            }
             let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
 
             match actions.get(&(mcid_scope_key, mcid)) {
@@ -16647,6 +16755,7 @@ impl PdfDocument {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 text_rise: 0.0,
+                rtl_draw_logical: false,
             })
             .collect();
 
@@ -18388,6 +18497,7 @@ impl PdfDocument {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 text_rise: 0.0,
+                rtl_draw_logical: false,
             })
             .collect();
 
@@ -23178,6 +23288,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }
     }
 
@@ -23605,6 +23716,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }
     }
 
@@ -27444,6 +27556,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             }
         }
 
@@ -27510,6 +27623,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }
     }
 
@@ -28077,6 +28191,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             }
         }
 
@@ -28149,6 +28264,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             }
         }
 
@@ -28220,6 +28336,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             }
         }
 

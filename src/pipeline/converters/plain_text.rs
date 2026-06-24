@@ -72,6 +72,23 @@ impl PlainTextConverter {
         table.render_text()
     }
 
+    /// Whether a run of spans occupies distinct vertical rows — a real table
+    /// column has one cell per row. A group whose spans share a Y row (e.g. a
+    /// name split into adjacent same-line fragments) is a broken-up line, not a
+    /// column; treating it as one makes the row-interleave hoist same-row spans
+    /// out of left-to-right order.
+    fn run_has_distinct_rows(spans: &[&OrderedTextSpan]) -> bool {
+        let mut ys: Vec<f32> = spans.iter().map(|s| s.span.bbox.y).collect();
+        ys.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        let tol = spans
+            .iter()
+            .map(|s| s.span.font_size)
+            .fold(0.0_f32, f32::max)
+            .max(1.0)
+            * 0.5;
+        ys.windows(2).all(|w| (w[1] - w[0]).abs() >= tol)
+    }
+
     /// Detect consecutive groups that form a columnar layout and reorder
     /// their spans row-by-row instead of column-by-column.
     ///
@@ -126,8 +143,12 @@ impl PlainTextConverter {
 
         while i < runs.len() {
             let base_count = runs[i].2;
-            // Need at least 2 rows per column (header + data) and at least 2 columns.
-            if base_count < 2 {
+            // Need at least 2 rows per column (header + data) and at least 2
+            // columns. A column must also occupy distinct Y rows (one cell per
+            // row); a group whose spans share a row is a split line, not a column.
+            if base_count < 2
+                || !Self::run_has_distinct_rows(&sorted[runs[i].1..runs[i].1 + runs[i].2])
+            {
                 i += 1;
                 continue;
             }
@@ -142,6 +163,13 @@ impl PlainTextConverter {
                 // Check that groups are horizontally separated.
                 let prev_spans = &sorted[runs[j - 1].1..runs[j - 1].1 + runs[j - 1].2];
                 let curr_spans = &sorted[runs[j].1..runs[j].1 + runs[j].2];
+
+                // A candidate column must occupy distinct Y rows (one cell per
+                // row). A group with two spans on the same row is a split line,
+                // not a column — interleaving it reorders same-row spans.
+                if !Self::run_has_distinct_rows(curr_spans) {
+                    break;
+                }
 
                 // Compute X range for each group.
                 let prev_min_x = prev_spans
@@ -466,17 +494,6 @@ impl PlainTextConverter {
                         let columnar_same_row_space = in_columnar
                             && !result.ends_with(' ')
                             && !span.span.text.starts_with(' ');
-                        // Cross-group same-Y: spans merged from different groups
-                        // at the same vertical position always need a space
-                        // (the large horizontal gap is expected for label+value pairs).
-                        let cross_group_same_y_space = same_y
-                            && !in_columnar
-                            && !result.ends_with(' ')
-                            && !span.span.text.starts_with(' ')
-                            && match (span.group_id, prev.group_id) {
-                                (Some(a), Some(b)) => a != b,
-                                _ => false,
-                            };
                         let needs_gap_space = !result.ends_with(' ')
                             && !span.span.text.starts_with(' ')
                             && super::has_horizontal_gap(&prev.span, &span.span);
@@ -489,11 +506,7 @@ impl PlainTextConverter {
                             && !span.span.text.starts_with(' ')
                             && y_diff > 2.0
                             && !super::has_horizontal_gap(&prev.span, &span.span);
-                        if columnar_same_row_space
-                            || cross_group_same_y_space
-                            || needs_gap_space
-                            || stacked_needs_space
-                        {
+                        if columnar_same_row_space || needs_gap_space || stacked_needs_space {
                             result.push(' ');
                         }
                     }
@@ -562,11 +575,19 @@ impl PlainTextConverter {
             let mut insertions: Vec<(usize, f32, String)> = Vec::new();
             for (orphan_y, group) in &orphan_lines {
                 let mut orphan_text = String::new();
+                let mut prev: Option<&OrderedTextSpan> = None;
                 for span in group {
-                    if !orphan_text.is_empty() {
-                        orphan_text.push(' ');
+                    // Space between same-line orphan fragments only when there
+                    // is a real horizontal gap. Overlapping fragments are one
+                    // continuous run the producer's kerning split across spans;
+                    // a space there would break a word.
+                    if let Some(p) = prev {
+                        if super::has_horizontal_gap(&p.span, &span.span) {
+                            orphan_text.push(' ');
+                        }
                     }
                     orphan_text.push_str(&span.span.text);
+                    prev = Some(span);
                 }
 
                 // Find the best insertion point: the last line_marker whose
@@ -687,6 +708,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             0,
         )
@@ -873,6 +895,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             0,
         )
@@ -1079,6 +1102,77 @@ mod tests {
     }
 
     #[test]
+    fn test_orphan_overlapping_fragments_no_spurious_space() {
+        // Same overlapping-fragment defect as the main converter path, but in
+        // the in-table orphan-recovery path: a value drawn as a Td-chain of
+        // runs lands inside a detected table region without matching any cell,
+        // so the spans become orphans. Adjacent orphan fragments whose boxes
+        // overlap are one continuous run the producer split; joining them with
+        // a space would break the word ("DELT" + "A" -> "DELT A").
+        let converter = PlainTextConverter::new();
+        let config = TextPipelineConfig::default();
+
+        // Table region x=50..250, y=100..300, with a cell that does NOT contain
+        // the fragment text, forcing the fragments to be treated as orphans.
+        let mut table = Table::new();
+        table.bbox = Some(Rect::new(50.0, 100.0, 200.0, 200.0));
+        table.col_count = 1;
+        let mut row = TableRow::new(false);
+        row.add_cell(TableCell::new("Label".to_string(), false));
+        table.add_row(row);
+
+        // "DELT" ends at x = 100 + 30 = 130; "A" starts at 129.5 (overlap),
+        // same Y (y=200), both inside the table region.
+        let mut frag1 = make_span_with_width("DELT", 100.0, 200.0, 30.0);
+        frag1.reading_order = 0;
+        let mut frag2 = make_span_with_width("A", 129.5, 200.0, 8.0);
+        frag2.reading_order = 1;
+
+        let result = converter
+            .convert_with_tables(&[frag1, frag2], &[table], &config)
+            .unwrap();
+
+        assert!(result.contains("DELTA"), "overlapping orphan fragments must join: {:?}", result,);
+        assert!(
+            !result.contains("DELT A"),
+            "no spurious space between overlapping orphan fragments: {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn test_orphan_gapped_fragments_keep_space() {
+        // Counterpart to the overlap case: orphan fragments on the same line
+        // with a real horizontal gap are distinct tokens and must keep their
+        // space ("Field" + wide gap + "Value" -> "Field Value").
+        let converter = PlainTextConverter::new();
+        let config = TextPipelineConfig::default();
+
+        let mut table = Table::new();
+        table.bbox = Some(Rect::new(50.0, 100.0, 400.0, 200.0));
+        table.col_count = 1;
+        let mut row = TableRow::new(false);
+        row.add_cell(TableCell::new("Label".to_string(), false));
+        table.add_row(row);
+
+        // "Field" ends at x = 100 + 40 = 140; "Value" starts at 200 (60pt gap).
+        let mut frag1 = make_span_with_width("Field", 100.0, 200.0, 40.0);
+        frag1.reading_order = 0;
+        let mut frag2 = make_span_with_width("Value", 200.0, 200.0, 40.0);
+        frag2.reading_order = 1;
+
+        let result = converter
+            .convert_with_tables(&[frag1, frag2], &[table], &config)
+            .unwrap();
+
+        assert!(
+            result.contains("Field Value"),
+            "gapped orphan fragments must keep their space: {:?}",
+            result,
+        );
+    }
+
+    #[test]
     fn test_no_extra_space_when_overlapping_spans() {
         // Spans with overlapping/touching bboxes should NOT get an extra space.
         let converter = PlainTextConverter::new();
@@ -1093,6 +1187,81 @@ mod tests {
 
         let result = converter.convert(&[span1, span2], &config).unwrap();
         assert_eq!(result, "Hello World\n");
+    }
+
+    #[test]
+    fn test_split_line_not_misdetected_as_column() {
+        // Regression: one line of text is emitted as several spans in distinct
+        // reading-order groups, with adjacent spans overlapping by a fraction
+        // of a point. Here "ALPHA BETA GAMMA
+        // DELT" (group 0) is continued by "A EP" + "SILON" (group 1) on the SAME
+        // row. The columnar detector used to treat group 1 (two spans sharing a
+        // Y) as a vertical column and interleave it, hoisting "A EP" to the front
+        // ("A EP ALPHA ... DELT SILON"). A real column has one cell per row, so a
+        // group whose spans share a row must not be a column candidate.
+        let converter = PlainTextConverter::new();
+        let config = TextPipelineConfig::default();
+
+        let mut header = make_span_with_width("Header", 35.0, 634.0, 64.0);
+        header.reading_order = 0;
+        header.group_id = Some(0);
+        // wide span ending at x≈138
+        let mut name_a = make_span_with_width("ALPHA BETA GAMMA DELT", 35.0, 622.0, 103.0);
+        name_a.reading_order = 1;
+        name_a.group_id = Some(0);
+        let mut row_c = make_span_with_width("LabelC", 35.0, 606.0, 30.0);
+        row_c.reading_order = 2;
+        row_c.group_id = Some(0);
+        let mut row_d = make_span_with_width("LabelD", 35.0, 578.0, 51.0);
+        row_d.reading_order = 3;
+        row_d.group_id = Some(0);
+        // group 1: two fragments on the SAME row (y=622), overlapping group 0
+        let mut frag_a = make_span_with_width("A EP", 137.7, 622.0, 18.4);
+        frag_a.reading_order = 4;
+        frag_a.group_id = Some(1);
+        let mut frag_b = make_span_with_width("SILON", 155.5, 622.0, 15.1);
+        frag_b.reading_order = 5;
+        frag_b.group_id = Some(1);
+        let mut right_c = make_span_with_width("RightC", 167.0, 606.0, 66.0);
+        right_c.reading_order = 6;
+        right_c.group_id = Some(1);
+
+        let spans = vec![header, name_a, row_c, row_d, frag_a, frag_b, right_c];
+        let result = converter.convert(&spans, &config).unwrap();
+
+        // Reconstructed left-to-right, the fragments form one word: DELT + A EP +
+        // SILON = "DELTA EPSILON". Order preserved, no spurious mid-word space.
+        assert!(
+            result.contains("ALPHA BETA GAMMA DELTA EPSILON"),
+            "name should read in order with no spurious split: {:?}",
+            result,
+        );
+        assert!(
+            !result.contains("A EP ALPHA"),
+            "fragment must not be hoisted ahead of the line: {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn test_overlapping_cross_group_spans_no_spurious_space() {
+        // Two same-row spans from different reading-order groups that OVERLAP
+        // horizontally are one continuous run the grouping split — they must not
+        // get the cross-group "label/value" space.
+        let converter = PlainTextConverter::new();
+        let config = TextPipelineConfig::default();
+
+        // "DELT" ends at x = 100 + 30 = 130; "A" starts at 129.5 (overlap).
+        let mut s1 = make_span_with_width("DELT", 100.0, 200.0, 30.0);
+        s1.reading_order = 0;
+        s1.group_id = Some(0);
+        let mut s2 = make_span_with_width("A", 129.5, 200.0, 8.0);
+        s2.reading_order = 1;
+        s2.group_id = Some(1);
+
+        let result = converter.convert(&[s1, s2], &config).unwrap();
+        assert!(result.contains("DELTA"), "overlapping fragments must join: {:?}", result);
+        assert!(!result.contains("DELT A"), "no spurious cross-group space: {:?}", result);
     }
 
     // ============================================================================

@@ -2740,7 +2740,8 @@ fn blit_image_plane_to_plate(
 }
 
 /// Returns true if the image XObject's `/Filter` chain contains a filter we
-/// can't decode (currently only `/JPXDecode` — JPEG 2000 decoder not bundled).
+/// can't decode. `/JPXDecode` (JPEG 2000) is decodable only when the `jpeg2000`
+/// feature is built in; without it, JPX images are still skipped here.
 fn image_has_unsupported_filter(image_dict: &HashMap<String, Object>) -> bool {
     let filter = match image_dict.get("Filter") {
         Some(f) => f,
@@ -2751,7 +2752,15 @@ fn image_has_unsupported_filter(image_dict: &HashMap<String, Object>) -> bool {
         Object::Array(arr) => arr.iter().filter_map(|o| o.as_name()).collect(),
         _ => vec![],
     };
-    names.iter().any(|f| matches!(*f, "JPXDecode" | "J2"))
+    #[cfg(feature = "jpeg2000")]
+    {
+        let _ = &names;
+        false
+    }
+    #[cfg(not(feature = "jpeg2000"))]
+    {
+        names.iter().any(|f| matches!(*f, "JPXDecode" | "J2"))
+    }
 }
 
 /// Paint an image XObject into the separation plates.

@@ -44,6 +44,9 @@ fn mac_roman_to_unicode(byte: u8) -> char {
 pub struct TrueTypeCMap {
     /// Mapping from Glyph ID to Unicode character
     gid_to_unicode: HashMap<u16, char>,
+    /// Content-byte → GID, from a `(3,0)`/`(1,0)` subtable. Empty unless the
+    /// font is symbolic-style; lets decode do byte→GID before GID→Unicode.
+    symbol_code_to_gid: HashMap<u32, u16>,
 }
 
 impl TrueTypeCMap {
@@ -86,7 +89,8 @@ impl TrueTypeCMap {
             .read_u16::<BigEndian>()
             .map_err(|e| format!("Failed to read cmap subtable count: {}", e))?;
 
-        // Read all subtable records
+        // Read all subtable records and pick the best Unicode subtable for the
+        // GID→Unicode map.
         let mut best_subtable: Option<(u32, u32, u32)> = None; // (platform_id, encoding_id, offset)
         let mut best_priority = -1i32;
 
@@ -101,7 +105,6 @@ impl TrueTypeCMap {
                 .read_u32::<BigEndian>()
                 .map_err(|e| format!("Failed to read subtable offset: {}", e))?;
 
-            // Calculate priority: higher is better
             let priority = match (platform_id, encoding_id) {
                 (3, 10) => 30, // Windows, Unicode full repertoire
                 (3, 1) => 20,  // Windows, Unicode BMP
@@ -125,11 +128,60 @@ impl TrueTypeCMap {
             subtable_offset
         );
 
-        // Parse the selected cmap subtable
         cursor.set_position((cmap_offset + subtable_offset) as u64);
         let gid_to_unicode = Self::parse_cmap_subtable(&mut cursor)?;
 
-        Ok(TrueTypeCMap { gid_to_unicode })
+        Ok(TrueTypeCMap {
+            gid_to_unicode,
+            // Symbolic fonts index glyphs by content byte, not GID — build
+            // byte→GID from the (3,0)/(1,0) subtable so decode can do that hop.
+            symbol_code_to_gid: Self::build_symbol_code_to_gid(data),
+        })
+    }
+
+    /// Build a content-byte→GID map from the font's `(3,0)` symbol or `(1,0)`
+    /// Macintosh cmap subtable, resolving the `0xF000` symbol-PUA offset at build
+    /// time. Reuses `ttf-parser` (already a dependency). Empty when the font has
+    /// no such subtable or fails to parse — decode then treats the byte as a GID.
+    fn build_symbol_code_to_gid(data: &[u8]) -> HashMap<u32, u16> {
+        use ttf_parser::PlatformId;
+        let mut map = HashMap::new();
+        let Ok(face) = ttf_parser::Face::parse(data, 0) else {
+            return map;
+        };
+        let Some(cmap) = face.tables().cmap else {
+            return map;
+        };
+        let mut chosen = None;
+        let mut best = 0;
+        for sub in cmap.subtables {
+            let pri = match (sub.platform_id, sub.encoding_id) {
+                (PlatformId::Windows, 0) => 2,   // symbol
+                (PlatformId::Macintosh, 0) => 1, // Roman
+                _ => 0,
+            };
+            if pri > best {
+                best = pri;
+                chosen = Some(sub);
+            }
+        }
+        if let Some(sub) = chosen {
+            for code in 0u32..256 {
+                if let Some(gid) = sub
+                    .glyph_index(code)
+                    .or_else(|| sub.glyph_index(0xF000 | code))
+                {
+                    map.insert(code, gid.0);
+                }
+            }
+        }
+        map
+    }
+
+    /// Content-byte → GID via the font's symbol/Mac cmap. `None` when the font
+    /// has no such subtable (decode then falls back to treating the byte as a GID).
+    pub fn code_to_gid(&self, code: u16) -> Option<u16> {
+        self.symbol_code_to_gid.get(&(code as u32)).copied()
     }
 
     /// Get Unicode character for a glyph ID
@@ -669,6 +721,138 @@ mod tests {
         }
 
         data
+    }
+
+    /// A standalone cmap format-4 subtable body (format … idRangeOffset), one
+    /// segment per `(code, gid)` mapping plus the `0xFFFF` sentinel.
+    fn fmt4_subtable(mappings: &[(u16, u16)]) -> Vec<u8> {
+        let mut segs: Vec<(u16, u16, i16)> = mappings
+            .iter()
+            .map(|&(c, g)| (c, c, (g as i32 - c as i32) as i16))
+            .collect();
+        segs.push((0xFFFF, 0xFFFF, 1));
+        let mut s = Vec::new();
+        s.write_u16::<BigEndian>(4).unwrap(); // format
+        let len_pos = s.len();
+        s.write_u16::<BigEndian>(0).unwrap(); // length placeholder
+        s.write_u16::<BigEndian>(0).unwrap(); // language
+        s.write_u16::<BigEndian>((segs.len() * 2) as u16).unwrap(); // segCountX2
+        for _ in 0..3 {
+            s.write_u16::<BigEndian>(0).unwrap(); // searchRange/entrySelector/rangeShift
+        }
+        for seg in &segs {
+            s.write_u16::<BigEndian>(seg.1).unwrap(); // endCode
+        }
+        s.write_u16::<BigEndian>(0).unwrap(); // reserved pad
+        for seg in &segs {
+            s.write_u16::<BigEndian>(seg.0).unwrap(); // startCode
+        }
+        for seg in &segs {
+            s.write_i16::<BigEndian>(seg.2).unwrap(); // idDelta
+        }
+        for _ in &segs {
+            s.write_u16::<BigEndian>(0).unwrap(); // idRangeOffset
+        }
+        let len = (s.len() as u16).to_be_bytes();
+        s[len_pos] = len[0];
+        s[len_pos + 1] = len[1];
+        s
+    }
+
+    /// Two-subtable cmap: a `(3,1)` Unicode subtable and a `(3,0)` symbol one.
+    fn cmap_two_subtables(unicode: &[(u16, u16)], symbol: &[(u16, u16)]) -> Vec<u8> {
+        let body_uni = fmt4_subtable(unicode);
+        let body_sym = fmt4_subtable(symbol);
+        let off_uni = 4 + 2 * 8; // version+numTables + 2 encoding records
+        let off_sym = off_uni + body_uni.len();
+        let mut t = Vec::new();
+        t.write_u16::<BigEndian>(0).unwrap(); // version
+        t.write_u16::<BigEndian>(2).unwrap(); // numTables
+        for (plat, enc, off) in [(3u16, 1u16, off_uni), (3, 0, off_sym)] {
+            t.write_u16::<BigEndian>(plat).unwrap();
+            t.write_u16::<BigEndian>(enc).unwrap();
+            t.write_u32::<BigEndian>(off as u32).unwrap();
+        }
+        t.extend(body_uni);
+        t.extend(body_sym);
+        t
+    }
+
+    /// Assemble an sfnt from `(tag, data)` tables — sorted by tag (the directory
+    /// is binary-searched), 4-byte aligned. Just enough for `ttf-parser`.
+    fn assemble(mut tables: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+        tables.sort_by_key(|(tag, _)| *tag);
+        let mut out = Vec::new();
+        out.write_u32::<BigEndian>(0x0001_0000).unwrap(); // sfnt version
+        out.write_u16::<BigEndian>(tables.len() as u16).unwrap();
+        for _ in 0..3 {
+            out.write_u16::<BigEndian>(0).unwrap(); // searchRange/entrySelector/rangeShift
+        }
+        let mut offset = 12 + tables.len() * 16;
+        for (tag, data) in &tables {
+            out.write_u32::<BigEndian>(*tag).unwrap();
+            out.write_u32::<BigEndian>(0).unwrap(); // checksum (unchecked)
+            out.write_u32::<BigEndian>(offset as u32).unwrap();
+            out.write_u32::<BigEndian>(data.len() as u32).unwrap();
+            offset += (data.len() + 3) & !3;
+        }
+        for (_, data) in &tables {
+            out.extend_from_slice(data);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    /// Regression for the symbolic-font Ç→Ê bug, exercising the real
+    /// `from_font_data` → `ttf-parser` extraction path. The content byte is NOT
+    /// the GID: the `(3,0)` subtable maps byte 3 → GID 2 (the `Ç` glyph), while
+    /// the byte used directly as a GID hits GID 3 → `Ê` (the old behaviour).
+    #[test]
+    fn symbolic_byte_resolves_via_symbol_cmap() {
+        // head/hhea/maxp are the minimum ttf-parser's Face::parse requires.
+        let mut head = Vec::new();
+        head.write_u16::<BigEndian>(1).unwrap(); // majorVersion
+        head.write_u16::<BigEndian>(0).unwrap(); // minorVersion
+        head.write_u32::<BigEndian>(0).unwrap(); // fontRevision
+        head.write_u32::<BigEndian>(0).unwrap(); // checkSumAdjustment
+        head.write_u32::<BigEndian>(0x5F0F_3CF5).unwrap(); // magicNumber
+        head.write_u16::<BigEndian>(0).unwrap(); // flags
+        head.write_u16::<BigEndian>(1000).unwrap(); // unitsPerEm (offset 18)
+        head.write_u64::<BigEndian>(0).unwrap(); // created
+        head.write_u64::<BigEndian>(0).unwrap(); // modified
+        for v in [0i16, 0, 1000, 1000, 0, 0, 0, 0, 0] {
+            head.write_i16::<BigEndian>(v).unwrap(); // xMin..glyphDataFormat (incl. indexToLocFormat=0)
+        }
+        assert_eq!(head.len(), 54);
+
+        let mut hhea = Vec::new();
+        hhea.write_u16::<BigEndian>(1).unwrap(); // majorVersion
+        hhea.write_u16::<BigEndian>(0).unwrap(); // minorVersion
+        for v in [800i16, -200, 0, 1000, 0, 0, 1000, 1, 0, 0, 0, 0, 0, 0, 0] {
+            hhea.write_i16::<BigEndian>(v).unwrap();
+        }
+        hhea.write_u16::<BigEndian>(1).unwrap(); // numberOfHMetrics (offset 34)
+        assert_eq!(hhea.len(), 36);
+
+        let mut maxp = Vec::new();
+        maxp.write_u32::<BigEndian>(0x0000_5000).unwrap(); // version 0.5
+        maxp.write_u16::<BigEndian>(4).unwrap(); // numGlyphs
+
+        let cmap = cmap_two_subtables(&[(0x00C7, 2), (0x00CA, 3)], &[(3, 2)]);
+        let font = assemble(vec![
+            (0x6865_6164, head), // 'head'
+            (0x6868_6561, hhea), // 'hhea'
+            (0x6D61_7870, maxp), // 'maxp'
+            (0x636D_6170, cmap), // 'cmap'
+        ]);
+
+        let parsed = TrueTypeCMap::from_font_data(&font).expect("parse synthetic font");
+        assert_eq!(parsed.code_to_gid(3), Some(2)); // byte → GID via (3,0)
+        assert_eq!(parsed.get_unicode(2), Some('Ç')); // fixed: byte → GID → Unicode
+        assert_eq!(parsed.get_unicode(3), Some('Ê')); // old byte-as-GID path was wrong
+        assert_eq!(parsed.code_to_gid(99), None); // no symbol entry → fallback to byte-as-GID
     }
 
     #[test]

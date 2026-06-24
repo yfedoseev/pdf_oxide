@@ -3637,6 +3637,10 @@ impl<'doc> TextExtractor<'doc> {
         // Flush any remaining Tj buffer at end of content stream
         self.flush_tj_span_buffer()?;
 
+        // Detect RTL glyph DRAW DIRECTION on the raw stream order, BEFORE the
+        // reading-order sort destroys it (ISO 32000-1 §14.8.2.3.3 method 1).
+        self.detect_rtl_draw_direction();
+
         // Sort spans by reading order (top-to-bottom, left-to-right)
         if log::log_enabled!(log::Level::Debug) {
             let space_spans = self
@@ -4369,6 +4373,61 @@ impl<'doc> TextExtractor<'doc> {
     /// - On the same line (Y coordinates within 1pt)
     /// - Very close horizontally (gap < 3pt, approximately average char width)
     ///
+    /// Mark spans whose RTL glyphs were drawn **right-to-left** — the producer
+    /// stored the text in LOGICAL order and positioned each glyph individually at
+    /// decreasing x (ISO 32000-1 §14.8.2.3.3 method 1). Such spans' characters are
+    /// already logical and must NOT be character-reversed by the structure-path
+    /// `push_span_text_bidi`. VISUAL storage (glyphs drawn left-to-right) is never
+    /// marked, so it keeps the default character-reversal and stays byte-identical.
+    ///
+    /// MUST run on the raw stream order (right after the content stream is parsed),
+    /// before `sort_spans_by_reading_order`, which reorders the spans into
+    /// left-to-right and erases the draw direction.
+    ///
+    /// The draw direction is the only signal that separates logical-stored RTL
+    /// from visual-stored RTL when both use base-form characters with no Arabic
+    /// presentation forms and no `/ReversedChars` (the two are otherwise
+    /// indistinguishable yet need opposite treatment).
+    fn detect_rtl_draw_direction(&mut self) {
+        use crate::text::rtl_detector::is_rtl_text;
+        fn is_rtl_span(s: &TextSpan) -> bool {
+            let mut rtl = false;
+            for c in s.text.chars() {
+                if c.is_ascii_alphabetic() {
+                    return false;
+                }
+                if is_rtl_text(c as u32) {
+                    rtl = true;
+                }
+            }
+            rtl
+        }
+        let n = self.spans.len();
+        // Index of the previous RTL span in stream order; a pure-whitespace span
+        // between two RTL glyphs (a word break) does not break the run.
+        let mut prev: Option<usize> = None;
+        for i in 0..n {
+            if self.spans[i].text.chars().all(char::is_whitespace) {
+                continue;
+            }
+            if !is_rtl_span(&self.spans[i]) {
+                prev = None;
+                continue;
+            }
+            if let Some(p) = prev {
+                let same_line = (self.spans[i].bbox.y - self.spans[p].bbox.y).abs()
+                    < self.spans[p].font_size.max(1.0) * 0.6;
+                // The incoming glyph sits to the LEFT of the previous one on the
+                // same baseline ⇒ right-to-left placement ⇒ logical storage.
+                if same_line && self.spans[i].bbox.x < self.spans[p].bbox.x - 0.5 {
+                    self.spans[i].rtl_draw_logical = true;
+                    self.spans[p].rtl_draw_logical = true;
+                }
+            }
+            prev = Some(i);
+        }
+    }
+
     /// This matches the behavior of industry-standard PDF tools.
     fn merge_adjacent_spans(&mut self) {
         if self.spans.is_empty() {
@@ -4736,6 +4795,9 @@ impl<'doc> TextExtractor<'doc> {
             }
 
             if decimal_merge || should_merge || cross_font_word_glue {
+                // A merged span is logical-draw RTL if any of its glyph runs was
+                // drawn right-to-left (see `detect_rtl_draw_direction`).
+                current.rtl_draw_logical |= span.rtl_draw_logical;
                 // Extend bounding box to include both spans
                 let new_width = (span.bbox.x + span.bbox.width) - current.bbox.x;
                 let new_height = current.bbox.height.max(span.bbox.height);
@@ -7024,6 +7086,7 @@ impl<'doc> TextExtractor<'doc> {
             rotation_degrees: buffer.rotation_degrees,
             wmode: buffer.wmode,
             text_rise: buffer.text_rise,
+            rtl_draw_logical: false,
         };
         self.span_sequence_counter += 1;
 
@@ -7549,6 +7612,7 @@ impl<'doc> TextExtractor<'doc> {
             } else {
                 0.0
             },
+            rtl_draw_logical: false,
         };
 
         // Step 6: Increment sequence counter and add to spans
@@ -8259,6 +8323,7 @@ impl<'doc> TextExtractor<'doc> {
             } else {
                 0.0
             },
+            rtl_draw_logical: false,
         };
         self.span_sequence_counter += 1;
 
@@ -8426,6 +8491,7 @@ impl<'doc> TextExtractor<'doc> {
                     rotation_degrees: buffer.rotation_degrees,
                     wmode: buffer.wmode,
                     text_rise: buffer.text_rise,
+                    rtl_draw_logical: false,
                 };
                 self.span_sequence_counter += 1;
 
@@ -9221,6 +9287,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -9251,6 +9318,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -10132,6 +10200,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }
     }
 
@@ -11111,6 +11180,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11136,6 +11206,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -11186,6 +11257,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             };
 
         // (glyph, Helvetica per-em advance width)
@@ -11244,6 +11316,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         };
 
         // Stroke pass + fill pass at ~2 % of advance apart.
@@ -11298,6 +11371,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             });
         }
 
@@ -11494,6 +11568,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11519,6 +11594,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -11558,6 +11634,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11583,6 +11660,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -11627,6 +11705,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11652,6 +11731,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -11689,6 +11769,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11714,6 +11795,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -11739,6 +11821,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -14170,6 +14253,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -14195,6 +14279,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -14230,6 +14315,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -14255,6 +14341,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -14350,6 +14437,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }];
 
         extractor.split_fused_words();
@@ -14386,6 +14474,7 @@ mod tests {
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
+            rtl_draw_logical: false,
         }];
 
         extractor.split_fused_words();
@@ -14569,6 +14658,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -14594,6 +14684,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -14675,6 +14766,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -14700,6 +14792,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15001,6 +15094,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -15026,6 +15120,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15204,6 +15299,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -15229,6 +15325,7 @@ mod tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15771,6 +15868,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -15796,6 +15894,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15840,6 +15939,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -15865,6 +15965,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15909,6 +16010,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -15934,6 +16036,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -15984,6 +16087,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -16009,6 +16113,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -16051,6 +16156,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -16076,6 +16182,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -16115,6 +16222,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -16140,6 +16248,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
@@ -16183,6 +16292,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
             TextSpan {
                 text_rise: 0.0,
@@ -16208,6 +16318,7 @@ mod profile_based_space_tests {
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
+                rtl_draw_logical: false,
             },
         ];
 
