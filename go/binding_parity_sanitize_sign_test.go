@@ -2,9 +2,9 @@
 
 package pdfoxide
 
-// v0.3.50 cgo binding-parity tests: the standalone document
-// sanitization (#231) and document-scoped PAdES-B-LTA reader signal
-// (#235) that the other bindings expose must also exist here.
+// cgo binding-parity tests: the standalone document sanitization and
+// document-scoped PAdES-B-LTA reader signal that the other bindings
+// expose must also exist here.
 
 import (
 	"strings"

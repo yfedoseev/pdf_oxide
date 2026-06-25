@@ -1,8 +1,8 @@
-//! v0.3.65 followup — regression TARGETS (`#[ignore]`d, pass when the deferred
-//! fix lands) and behaviour LOCKS (assert current correct behaviour so it can't
-//! silently change). All fixtures are hand-written minimal PDFs (no third-party
-//! files). Targets document the expected post-fix output for the unfinished
-//! items (RW-1 reading order, SEG-AR/SEG-HE RTL); un-ignore them when fixed.
+//! Regression TARGETS (`#[ignore]`d, pass when the deferred fix lands) and
+//! behaviour LOCKS (assert current correct behaviour so it can't silently
+//! change). All fixtures are hand-written minimal PDFs (no third-party files).
+//! Targets document the expected post-fix output for the unfinished items
+//! (RW-1 reading order, SEG-AR/SEG-HE RTL); un-ignore them when fixed.
 
 use pdf_oxide::PdfDocument;
 

@@ -2,7 +2,7 @@
 
 package pdfoxide
 
-// API-coverage tests for the v0.3.68 C-ABI gap closure: one test per newly
+// API-coverage tests for the extended C-ABI surface: one test per newly
 // bound symbol. Symbols that need a feature-gated build / signing material
 // assert return-or-error (invoke + accept success or the binding error);
 // the pure global tunables assert invokability.

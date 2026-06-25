@@ -1,5 +1,5 @@
 /**
- * Phase 1 Tests: XFA and Form Fields (43 functions)
+ * XFA and Form Fields tests (43 functions)
  *
  * Tests for:
  * - XfaManager: 11 functions
@@ -11,7 +11,7 @@ import { FormFieldManager } from '../src/form-field-manager';
 import { PdfDocument } from '../src/index';
 import { XfaForm, XfaManager } from '../src/xfa-manager';
 
-describe('Phase 1: XFA & Form Fields Implementation', () => {
+describe('XFA & Form Fields Implementation', () => {
   let testDocPath: string;
 
   beforeEach(() => {

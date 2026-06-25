@@ -2,11 +2,11 @@
 
 package pdfoxide
 
-// v0.3.50 purego-backend parity tests: the cgo-free build must now
-// expose #230 crypto-governance, #231 sanitize, #235 PAdES read side,
-// and #482 split-by-bookmarks with the SAME signatures as the cgo
-// backend. Runtime tests need the shared lib (skipped without it);
-// the frozen-enum check is pure-Go and always runs.
+// purego-backend parity tests: the cgo-free build must now expose
+// crypto-governance, sanitize, the PAdES read side, and
+// split-by-bookmarks with the SAME signatures as the cgo backend.
+// Runtime tests need the shared lib (skipped without it); the
+// frozen-enum check is pure-Go and always runs.
 
 import (
 	"os"

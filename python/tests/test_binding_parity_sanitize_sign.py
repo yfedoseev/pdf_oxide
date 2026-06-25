@@ -1,15 +1,15 @@
 """
-v0.3.50 cross-binding API-parity tests (issues #230 / #231 / #235 / #482).
+Cross-binding API-parity tests.
 
 These assert the Python package surfaces the same idiomatic API the
 other bindings expose:
 
-  - #230  crypto-governance: set/get policy, inventory, CBOM
-  - #231  destructive redaction + standalone sanitize_document
-  - #235  PAdES signing + DSS read side + has_document_timestamp
-  - #482  split-by-bookmarks
+  - crypto-governance: set/get policy, inventory, CBOM
+  - destructive redaction + standalone sanitize_document
+  - PAdES signing + DSS read side + has_document_timestamp
+  - split-by-bookmarks
 
-The gap these guard against: the #235 surface and crypto_cbom were
+The gap these guard against: the PAdES surface and crypto_cbom were
 reachable only via the private `pdf_oxide.pdf_oxide` extension under
 non-idiomatic ``py_``-prefixed names; they must now import straight
 from the public ``pdf_oxide`` package.

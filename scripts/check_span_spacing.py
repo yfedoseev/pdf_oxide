@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test Phase 2: Tj operator buffering results."""
+"""Check span extraction spacing: Tj operator buffering must not split words."""
 
 import pdf_oxide
 

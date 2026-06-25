@@ -1,6 +1,7 @@
-// v0.3.50 cross-binding API-parity tests for the Node binding
-// (issues #230 / #231 / #235 / #482). Self-contained: PDFs are
-// generated from Markdown. Skips gracefully when the lib isn't built.
+// Cross-binding API-parity tests for the Node binding: crypto
+// governance, document sanitization, the PAdES read side, and
+// split-by-bookmarks. Self-contained: PDFs are generated from
+// Markdown. Skips gracefully when the lib isn't built.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';

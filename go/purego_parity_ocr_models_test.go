@@ -2,19 +2,18 @@
 
 package pdfoxide
 
-// v0.3.51 purego-backend parity test: the cgo-free build must now
-// expose the #519 OCR model provisioning trio with the SAME
-// signatures as the cgo backend. Runtime tests need the shared lib
-// (skipped without it). Network-free — only the air-gapped manifest
-// is asserted (no downloads; those belong to the model-gated Rust
-// lane).
+// purego-backend parity test: the cgo-free build must now expose the
+// OCR model provisioning trio with the SAME signatures as the cgo
+// backend. Runtime tests need the shared lib (skipped without it).
+// Network-free — only the air-gapped manifest is asserted (no
+// downloads; those belong to the model-gated Rust lane).
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestPurego_ModelManifest_V0351(t *testing.T) {
+func TestPurego_ModelManifest(t *testing.T) {
 	requireLib(t)
 	manifest := ModelManifest()
 	if !strings.Contains(manifest, "det.onnx") {

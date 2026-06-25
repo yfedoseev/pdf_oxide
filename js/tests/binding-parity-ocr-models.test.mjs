@@ -1,7 +1,6 @@
-// v0.3.51 cross-binding API-parity tests for the Node binding
-// (issue #519 — OCR model provisioning). Network-free: only the
-// air-gapped manifest is asserted (no downloads). Skips gracefully
-// when the lib isn't built.
+// Cross-binding API-parity tests for the Node binding: OCR model
+// provisioning. Network-free: only the air-gapped manifest is
+// asserted (no downloads). Skips gracefully when the lib isn't built.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# API-coverage spec for the v0.3.68 C-ABI gap closure: three symbols
+# API-coverage spec for the extended C-ABI surface: three symbols
 # that previously had no Ruby binding.
 #
 #   pdf_oxide_set_max_ops_per_stream        — global int toggle, no err channel
@@ -12,7 +12,7 @@
 
 require 'spec_helper'
 
-RSpec.describe 'C-ABI coverage: phase-4 symbols' do
+RSpec.describe 'C-ABI coverage: extended symbols' do
   it 'binds pdf_oxide_set_max_ops_per_stream' do
     expect(PdfOxide::Bindings).to respond_to(:pdf_oxide_set_max_ops_per_stream)
     expect(PdfOxide).to respond_to(:set_max_ops_per_stream)

@@ -7,18 +7,18 @@ using Xunit;
 namespace PdfOxide.Tests
 {
     /// <summary>
-    /// v0.3.50 cross-binding API-parity tests: the standalone document
-    /// sanitization (#231) and the document-scoped PAdES-B-LTA reader
-    /// signal (#235) the other bindings expose must also exist in the
-    /// managed surface, plus the frozen PAdES level enum (#235) and the
-    /// process-wide crypto-governance readers (#230).
+    /// Cross-binding API-parity tests: the standalone document
+    /// sanitization and the document-scoped PAdES-B-LTA reader signal
+    /// the other bindings expose must also exist in the managed
+    /// surface, plus the frozen PAdES level enum and the process-wide
+    /// crypto-governance readers.
     ///
     /// The native-touching cases swallow <see cref="UnsupportedFeatureException"/>
     /// so they no-op on the bare-features regression-guard build (the
     /// lib compiled without the optional feature), matching the
     /// established pattern in CertificateTests / PadesTests.
     /// </summary>
-    public class BindingParityV0350Tests
+    public class BindingParitySanitizeSignTests
     {
         private static string CreateTestPdf(string markdown = "# Parity\n\nConfidential body.")
         {
