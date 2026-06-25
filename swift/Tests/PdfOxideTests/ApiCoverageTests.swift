@@ -739,7 +739,12 @@ final class ApiCoverageTests: XCTestCase {
         // pdf_get_page_count (Pdf-builder alias) errors (code 1) on a freshly
         // built Pdf in this cdylib: invoke and accept a count or the error type.
         expectReturnOrPdfError("Pdf.pageCount") {
-            XCTAssertGreaterThanOrEqual(try pdf.pageCount(), 1)  // pdf_get_page_count
+            // Call through `try` directly so a thrown PdfOxideError propagates to
+            // the wrapper's catch. Passing `try pdf.pageCount()` *inside*
+            // XCTAssertGreaterThanOrEqual would let the assert swallow the throw
+            // and record its own failure instead.
+            let n = try pdf.pageCount()  // pdf_get_page_count
+            XCTAssertGreaterThanOrEqual(n, 1)
         }
     }
 

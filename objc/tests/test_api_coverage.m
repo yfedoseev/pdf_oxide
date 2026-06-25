@@ -3,6 +3,22 @@
 // returns non-zero on any failure. Self-contained: builds its own PDF.
 #import "POXPdfOxide.h"
 #import <Foundation/Foundation.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+// Print a symbolicated backtrace if a coverage call crashes, so CI shows which
+// API faulted instead of a bare exit 139. `g_phase` is updated as the test
+// advances, giving a human-readable marker even when symbols are inlined.
+static const char* g_phase = "startup";
+static void crash_handler(int sig) {
+    fprintf(stderr, "\n*** caught signal %d during phase: %s ***\n", sig, g_phase);
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    _exit(139);
+}
 
 static int g_failures = 0;
 #define CHECK(cond)                                                                    \
@@ -23,9 +39,13 @@ static NSData* samplePdf(void) {
 
 int main(void) {
     @autoreleasepool {
+        signal(SIGSEGV, crash_handler);
+        signal(SIGABRT, crash_handler);
+        signal(SIGBUS, crash_handler);
         NSError* err = nil;
 
         // ── Pdf builder ──────────────────────────────────────────────────────
+        g_phase = "Pdf builder";
         CHECK([[[POXPdf fromMarkdown:@"# md\n\nbody\n"
                                error:&err] toBytesWithError:&err] length] > 100);
         CHECK([[[POXPdf fromHtml:@"<h1>h</h1><p>b</p>"
@@ -42,6 +62,7 @@ int main(void) {
         }
 
         // ── Document open paths ──────────────────────────────────────────────
+        g_phase = "Document open paths";
         POXDocument* doc = [POXDocument openFromBytes:samplePdf()
                                                 error:&err]; // openFromBytes
         CHECK(doc != nil);
@@ -56,6 +77,7 @@ int main(void) {
         }
 
         // ── Document inspection + extraction ─────────────────────────────────
+        g_phase = "Document inspection + extraction";
         POXVersion ver = [doc version]; // version
         CHECK(ver.major >= 1);
         CHECK([doc isEncrypted] == NO); // isEncrypted
@@ -71,6 +93,7 @@ int main(void) {
                                     error:&err] length] > 0); // extractStructuredJson
 
         // ── Phase-1 element extraction ───────────────────────────────────────
+        g_phase = "Phase-1 element extraction";
         {
             NSArray<POXWord*>* words = [doc extractWords:0 error:&err]; // extractWords
             CHECK(words != nil && words.count > 0);
@@ -92,6 +115,7 @@ int main(void) {
         }
 
         // ── Phase-2 extraction ───────────────────────────────────────────────
+        g_phase = "Phase-2 extraction";
         {
             NSError* fe = nil;
             NSArray<POXFont*>* fonts =
@@ -130,6 +154,7 @@ int main(void) {
         }
 
         // ── authenticate (wrong password on unencrypted doc returns a bool) ──
+        g_phase = "authenticate (wrong password on unencrypted doc returns a bool)";
         {
             NSError* ae = nil;
             BOOL authed = [doc authenticate:@"any-password" error:&ae]; // authenticate
@@ -137,6 +162,7 @@ int main(void) {
         }
 
         // ── Page model ───────────────────────────────────────────────────────
+        g_phase = "Page model";
         {
             POXPage* page = [doc pageAtIndex:0];               // pageAtIndex
             CHECK([[page text:&err] containsString:@"Alpha"]); // Page text
@@ -146,6 +172,7 @@ int main(void) {
         }
 
         // ── Phase-3 page rendering ───────────────────────────────────────────
+        g_phase = "Phase-3 page rendering";
         {
             NSError* re = nil;
             POXRenderedImage* img = [doc renderPage:0
@@ -179,6 +206,7 @@ int main(void) {
         }
 
         // ── DocumentEditor ───────────────────────────────────────────────────
+        g_phase = "DocumentEditor";
         {
             NSError* ee = nil;
             POXDocumentEditor* ed =
@@ -202,6 +230,7 @@ int main(void) {
         }
 
         // ── PDF creation builder API ─────────────────────────────────────────
+        g_phase = "PDF creation builder API";
         {
             NSError* be = nil;
             POXDocumentBuilder* db = [POXDocumentBuilder createWithError:&be]; // create
@@ -233,6 +262,7 @@ int main(void) {
         }
 
         // ── Phase-6: conformance validation (fully testable on the sample) ───
+        g_phase = "Phase-6: conformance validation (fully testable on the sample)";
         {
             NSError* ve = nil;
             POXPdfAResults* a = [doc validatePdfA:0 error:&ve]; // validatePdfA
@@ -290,6 +320,7 @@ int main(void) {
         }
 
         // ── Phase-6: log level round-trip ────────────────────────────────────
+        g_phase = "Phase-6: log level round-trip";
         {
             [POXSigning setLogLevel:3];        // setLogLevel
             CHECK([POXSigning logLevel] == 3); // logLevel round-trip
@@ -298,6 +329,7 @@ int main(void) {
         }
 
         // ── Phase-6: signing / PKI / timestamp / TSA / DSS exercise ──────────
+        g_phase = "Phase-6: signing / PKI / timestamp / TSA / DSS exercise";
         // No real PKCS#12 cert or network is required: every wrapper is invoked
         // with minimal/empty inputs and must either return a value or surface the
         // POXErrorDomain error type. The goal is symbol coverage, not success.
@@ -445,6 +477,7 @@ int main(void) {
         }
 
         // ── Phase-7: barcodes ────────────────────────────────────────────────
+        g_phase = "Phase-7: barcodes";
         {
             NSError* qe = nil;
             POXBarcode* qr = [POXBarcode generateQrCode:@"https://oxide.fyi"
@@ -480,6 +513,7 @@ int main(void) {
         }
 
         // ── Phase-7: render variants ─────────────────────────────────────────
+        g_phase = "Phase-7: render variants";
         {
             NSError* e = nil;
             POXRenderedImage* opt =
@@ -561,6 +595,7 @@ int main(void) {
         }
 
         // ── Phase-7: page getters ────────────────────────────────────────────
+        g_phase = "Phase-7: page getters";
         {
             NSError* e = nil;
             CHECK([doc pageWidth:0 error:&e] > 0);     // pageWidth
@@ -588,6 +623,7 @@ int main(void) {
         }
 
         // ── Phase-7: redaction (on an editor) ────────────────────────────────
+        g_phase = "Phase-7: redaction (on an editor)";
         {
             NSError* ee = nil;
             POXDocumentEditor* red = [POXDocumentEditor openFromBytes:samplePdf()
@@ -638,6 +674,7 @@ int main(void) {
         }
 
         // ── Phase-7: from_image_bytes / from_html_css / merge ────────────────
+        g_phase = "Phase-7: from_image_bytes / from_html_css / merge";
         {
             // from_image_bytes on bogus data must raise the binding error.
             NSError* ibe = nil;
@@ -690,6 +727,7 @@ int main(void) {
         }
 
         // ── Phase-7: OCR (needs model files) — invoke + assert raises/returns ─
+        g_phase = "Phase-7: OCR (needs model files) — invoke + assert raises/returns";
         {
             // Engine create with bogus model paths: must raise the binding error.
             NSError* oce = nil;
@@ -715,6 +753,7 @@ int main(void) {
         }
 
         // ── Final phase: in-rect extractors ─────────────────────────────────
+        g_phase = "Final phase: in-rect extractors";
         {
             NSError* re = nil;
             NSString* rt = [doc extractTextInRect:0
@@ -762,6 +801,7 @@ int main(void) {
         }
 
         // ── Final phase: auto extraction / classification ───────────────────
+        g_phase = "Final phase: auto extraction / classification";
         {
             NSError* ae = nil;
             NSString* ta = [doc extractTextAuto:0 error:&ae]; // extractTextAuto
@@ -783,6 +823,7 @@ int main(void) {
         }
 
         // ── Final phase: header / footer / artifact removal ─────────────────
+        g_phase = "Final phase: header / footer / artifact removal";
         {
             NSError* he = nil;
             CHECK([doc eraseHeader:0 error:&he] >= -1 || he != nil); // eraseHeader
@@ -803,6 +844,7 @@ int main(void) {
         }
 
         // ── Final phase: AcroForm fields & form data ─────────────────────────
+        g_phase = "Final phase: AcroForm fields & form data";
         {
             NSError* fe = nil;
             NSArray<POXFormField*>* ff = [doc formFieldsWithError:&fe]; // formFields
@@ -827,6 +869,7 @@ int main(void) {
         }
 
         // ── Final phase: document structure / metadata ───────────────────────
+        g_phase = "Final phase: document structure / metadata";
         {
             NSError* se = nil;
             NSString* ol = [doc outlineWithError:&se]; // outline
@@ -851,6 +894,7 @@ int main(void) {
         }
 
         // ── Final phase: fonts / search / annotations as JSON ────────────────
+        g_phase = "Final phase: fonts / search / annotations as JSON";
         {
             NSError* je = nil;
             NSString* fj = [doc embeddedFontsJson:0 error:&je]; // fontsToJson
@@ -872,6 +916,7 @@ int main(void) {
         }
 
         // ── Final phase: annotation extras (via constructed PDF — list ok) ───
+        g_phase = "Final phase: annotation extras (via constructed PDF — list ok)";
         {
             NSError* ae = nil;
             NSArray<POXAnnotation*>* anns = [doc pageAnnotations:0
@@ -893,6 +938,7 @@ int main(void) {
         }
 
         // ── Final phase: PDF/A conversion (may error on this sample) ─────────
+        g_phase = "Final phase: PDF/A conversion (may error on this sample)";
         {
             NSError* ce = nil;
             BOOL ok = [doc convertToPdfA:0 error:&ce]; // convertToPdfA
@@ -900,6 +946,7 @@ int main(void) {
         }
 
         // ── Final phase: document signatures (need a cert) ───────────────────
+        g_phase = "Final phase: document signatures (need a cert)";
         {
             NSError* sigErr = nil;
             int32_t sc = [doc signatureCountWithError:&sigErr]; // signatureCount
@@ -939,6 +986,7 @@ int main(void) {
         }
 
         // ── Final phase: office export (may error on this sample) ────────────
+        g_phase = "Final phase: office export (may error on this sample)";
         {
             NSError* oe = nil;
             NSData* docx = [doc toDocxWithError:&oe]; // toDocx
@@ -952,6 +1000,7 @@ int main(void) {
         }
 
         // ── Final phase: office open from bytes (need real office files) ─────
+        g_phase = "Final phase: office open from bytes (need real office files)";
         {
             NSData* junk = [@"PK\x03\x04 not a real office file"
                 dataUsingEncoding:NSUTF8StringEncoding];
@@ -974,6 +1023,7 @@ int main(void) {
         }
 
         // ── Final phase: editor FDF/XFDF import (may error on junk) ──────────
+        g_phase = "Final phase: editor FDF/XFDF import (may error on junk)";
         {
             NSString* path = [NSTemporaryDirectory()
                 stringByAppendingPathComponent:@"pdfoxide_objc_editor.pdf"];
@@ -996,6 +1046,7 @@ int main(void) {
         }
 
         // ── Final phase: Pdf page count alias ────────────────────────────────
+        g_phase = "Final phase: Pdf page count alias";
         {
             POXPdf* p = [POXPdf fromMarkdown:@"# p\n\nbody\n" error:&err];
             NSError* pe = nil;
@@ -1003,6 +1054,7 @@ int main(void) {
         }
 
         // ── Final phase: crypto / FIPS / models / config / renderer ──────────
+        g_phase = "Final phase: crypto / FIPS / models / config / renderer";
         {
             NSError* ce = nil;
             NSString* prov = [POXCrypto activeProviderWithError:&ce]; // activeProvider
@@ -1055,6 +1107,7 @@ int main(void) {
         }
 
         // ── Phase-7: add_timestamp (needs TSA) — invoke + assert raises ──────
+        g_phase = "Phase-7: add_timestamp (needs TSA) — invoke + assert raises";
         {
             NSError* te = nil;
             NSData* stamped = [POXTools addTimestamp:samplePdf()
@@ -1065,10 +1118,12 @@ int main(void) {
         }
 
         // ── close (idempotent) ───────────────────────────────────────────────
+        g_phase = "close (idempotent)";
         [doc close];
         [doc close]; // idempotent — safe to call twice
 
         // ── Error path ───────────────────────────────────────────────────────
+        g_phase = "Error path";
         NSError* e2 = nil;
         POXDocument* bad = [POXDocument openPath:@"/nonexistent/nope.pdf" error:&e2];
         CHECK(bad == nil && e2 != nil);
