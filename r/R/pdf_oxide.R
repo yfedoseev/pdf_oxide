@@ -2741,7 +2741,9 @@ pdf_has_timestamp <- function(doc) .Call(C_r_doc_has_timestamp, doc)
 # ── Annotation extras (page + index addressed) ────────────────────────────────
 
 #' Annotation color (packed 0xRRGGBB) for the i-th annotation on a page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page. @param index 0-based annotation index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page.
+#' @param index 0-based annotation index.
 #' @export
 pdf_annotation_get_color <- function(doc, page, index) {
   .Call(C_r_annotation_get_color, doc, as.integer(page), as.integer(index))

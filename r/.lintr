@@ -6,5 +6,8 @@ linters: linters_with_defaults(
     # The native routines (C_r_*) are bound via useDynLib(.registration);
     # object_usage_linter can't see them and false-positives "no visible
     # binding for global variable 'C_r_*'".
-    object_usage_linter = NULL
+    object_usage_linter = NULL,
+    # Opinionated hanging-indent rule that flags the conventional
+    # `structure(\n  list(...))` 2-space style used throughout this file.
+    indentation_linter = NULL
   )
