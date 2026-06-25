@@ -4488,8 +4488,14 @@ impl FontInfo {
                     // present, a code reaching here is genuinely unmapped (e.g. a ligature
                     // glyph with no codepoint), so guessing would emit a plausible-but-wrong
                     // char — prefer U+FFFD so the gap is detectable.
-                    let has_usable_tounicode =
-                        self.to_unicode.as_ref().and_then(|c| c.get()).is_some();
+                    // A present-but-empty /ToUnicode (0 bfchar/bfrange) maps nothing, so it
+                    // counts as absent — otherwise an Identity-ordered font with an empty CMap
+                    // would suppress the CID-as-Unicode fallback and drop all its text.
+                    let has_usable_tounicode = self
+                        .to_unicode
+                        .as_ref()
+                        .and_then(|c| c.get())
+                        .is_some_and(|cmap| !cmap.is_empty());
 
                     if !has_usable_tounicode {
                         if let Some(ref cid_to_gid) = self.cid_to_gid_map {
@@ -10681,6 +10687,21 @@ mod tests {
         .to_vec()
     }
 
+    /// A structurally-valid `/ToUnicode` CMap with zero `bfchar`/`bfrange` entries:
+    /// present but maps nothing. Must count as *absent*.
+    fn make_tounicode_empty() -> Vec<u8> {
+        concat!(
+            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n",
+            "/CIDSystemInfo 3 dict dup begin\n",
+            "  /Registry (Adobe) def\n  /Ordering (UCS) def\n  /Supplement 0 def\nend def\n",
+            "/CMapName /Test-Empty def\n/CMapType 2 def\n",
+            "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+            "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n",
+        )
+        .as_bytes()
+        .to_vec()
+    }
+
     /// With a present-but-incomplete `/ToUnicode` on an Identity-H Type0 font, a
     /// drawn CID absent from it has no Unicode anywhere in the file, so it must
     /// decode to U+FFFD rather than a numeric *guess* — the CID read as a code
@@ -10739,6 +10760,37 @@ mod tests {
             Some("\u{FFFD}".to_string()),
             "uncovered non-space Identity CID must be U+FFFD"
         );
+    }
+
+    /// A present-but-*empty* `/ToUnicode` (0 bfchar/bfrange) maps nothing, so it must
+    /// count as absent: an Identity-ordered font keeps the CID-as-Unicode heuristic and
+    /// recovers its text, rather than dropping every glyph to U+FFFD.
+    #[test]
+    fn test_type0_identity_empty_tounicode_keeps_cid_as_unicode() {
+        let csi = CIDSystemInfo {
+            registry: "Adobe".to_string(),
+            ordering: "Identity".to_string(),
+            supplement: 1,
+        };
+        let mut font = make_type0_font(Some(make_tounicode_empty()), "Identity-H", Some(csi));
+        font.cid_to_gid_map = Some(CIDToGIDMap::Identity);
+
+        // "Justin" — CID == Unicode under Identity ordering; an empty ToUnicode must not
+        // suppress this fallback.
+        for (cid, ch) in [
+            (0x004A, "J"),
+            (0x0075, "u"),
+            (0x0073, "s"),
+            (0x0074, "t"),
+            (0x0069, "i"),
+            (0x006E, "n"),
+        ] {
+            assert_eq!(
+                font.char_to_unicode(cid),
+                Some(ch.to_string()),
+                "empty /ToUnicode must fall back to CID-as-Unicode for 0x{cid:04X}"
+            );
+        }
     }
 
     /// #504: `make_type0_font` must mirror the real `parse_encoding`
