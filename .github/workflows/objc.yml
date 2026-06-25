@@ -56,6 +56,9 @@ jobs:
       - name: Build cdylib (release, shipped binding feature set)
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
+      - name: Install clang-format (macOS runner lacks it on PATH)
+        run: brew install clang-format
+
       - name: clang-format check (blocking)
         working-directory: objc
         shell: bash

@@ -665,7 +665,7 @@ class Document {
                 p.has_stroke = pdf_oxide_path_has_stroke(list, i, &code);
                 p.has_fill = pdf_oxide_path_has_fill(list, i, &code);
                 p.operation_count = pdf_oxide_path_get_operation_count(list, i, &code);
-                out.push_back(std::move(p));
+                out.push_back(p);
             }
         } catch (...) {
             pdf_oxide_path_list_free(list);
@@ -2858,7 +2858,8 @@ class PageBuilder {
             throw Error(code, "PageBuilder::done");
         }
         // The C side consumed the handle; release so the dtor does not free it.
-        (void)handle_.release();
+        auto* released = handle_.release();
+        static_cast<void>(released);
     }
 
     /// Drop an uncommitted page handle now (idempotent). RAII also frees at
