@@ -96,6 +96,9 @@ def rules() -> list[tuple[str, str, bool]]:
         ("elixir/mix.exs", r'version:\s*"([^"]+)"', False),
         ("objc/include/POXPdfOxide.h", r'POX_PDF_OXIDE_VERSION "([^"]+)"', False),
         ("objc/PdfOxide.podspec", r"spec\.version\s*=\s*'([^']+)'", False),
+        # uv lockfile — the editable pdf-oxide package entry (matches only the
+        # pdf-oxide block, not the hundreds of other package version lines).
+        ("uv.lock", r'name = "pdf-oxide"\nversion = "([^"]+)"', False),
     ]
 
 
