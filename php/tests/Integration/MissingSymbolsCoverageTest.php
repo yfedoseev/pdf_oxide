@@ -67,8 +67,8 @@ final class MissingSymbolsCoverageTest extends IntegrationTestCase
                 90,         // jpeg quality
                 ['HiddenLayer'] // excluded OCG names
             );
-            // Success path: a non-null image handle.
-            $this->assertNotNull($image);
+            // Success path: a valid image handle.
+            $this->assertInstanceOf(\FFI\CData::class, $image);
             $bindings->pdfRenderedImageFree($image);
         } catch (\Throwable $e) {
             // Render may be unavailable in this build (feature-gated);
