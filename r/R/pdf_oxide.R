@@ -28,7 +28,8 @@ pdf_from_text <- function(text) {
 }
 
 #' Save a built PDF to a path.
-#' @param pdf A `pdfoxide_pdf`. @param path Output path.
+#' @param pdf A `pdfoxide_pdf`.
+#' @param path Output path.
 #' @export
 pdf_save <- function(pdf, path) {
   invisible(.Call(C_r_pdf_save, pdf, path))
@@ -53,7 +54,8 @@ pdf_open <- function(path) {
 }
 
 #' Open a password-protected PDF document.
-#' @param path Path to a PDF. @param password The document password.
+#' @param path Path to a PDF.
+#' @param password The document password.
 #' @return A `pdfoxide_document` handle.
 #' @export
 pdf_open_with_password <- function(path, password) {
@@ -93,7 +95,8 @@ pdf_is_encrypted <- function(doc) .Call(C_r_doc_is_encrypted, doc)
 pdf_has_structure_tree <- function(doc) .Call(C_r_doc_has_structure_tree, doc)
 
 #' Extract reading-order text for one (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_extract_text <- function(doc, page) {
   .Call(C_r_doc_extract_text, doc, as.integer(page))
@@ -138,7 +141,8 @@ pdf_to_plain_text_all <- function(doc) .Call(C_r_doc_to_plain_text_all, doc)
 #'
 #' Returns `TRUE` if the password unlocks the document and `FALSE` for a wrong
 #' password; raises only on a real C-ABI failure.
-#' @param doc A `pdfoxide_document`. @param password The document password.
+#' @param doc A `pdfoxide_document`.
+#' @param password The document password.
 #' @return A logical scalar.
 #' @export
 pdf_authenticate <- function(doc, password) {
@@ -149,7 +153,8 @@ pdf_authenticate <- function(doc, password) {
 
 #' Extract positioned characters for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Char` records, each `list(character=, bbox=, font_name=,
 #'   font_size=)` where `bbox` is `list(x=, y=, width=, height=)` and
 #'   `character` is the Unicode codepoint as an integer.
@@ -160,7 +165,8 @@ pdf_extract_chars <- function(doc, page) {
 
 #' Extract positioned words for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Word` records, each `list(text=, bbox=, font_name=,
 #'   font_size=, bold=)`.
 #' @export
@@ -170,7 +176,8 @@ pdf_extract_words <- function(doc, page) {
 
 #' Extract reading-order text lines for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `TextLine` records, each `list(text=, bbox=, word_count=)`.
 #' @export
 pdf_extract_text_lines <- function(doc, page) {
@@ -179,7 +186,8 @@ pdf_extract_text_lines <- function(doc, page) {
 
 #' Extract detected tables for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Table` records, each `list(row_count=, col_count=,
 #'   has_header=, cells=)` where `cells` is a `row_count` x `col_count` character
 #'   matrix; index a cell with `tbl$cells[row, col]` (1-based).
@@ -192,7 +200,8 @@ pdf_extract_tables <- function(doc, page) {
 
 #' Extract embedded fonts for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Font` records, each `list(name=, type=, encoding=,
 #'   embedded=, subset=)`.
 #' @export
@@ -202,7 +211,8 @@ pdf_embedded_fonts <- function(doc, page) {
 
 #' Extract embedded images for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Image` records, each `list(width=, height=,
 #'   bits_per_component=, format=, colorspace=, data=)` where `data` is a `raw`
 #'   vector of the image bytes.
@@ -213,7 +223,8 @@ pdf_embedded_images <- function(doc, page) {
 
 #' Extract annotations for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Annotation` records, each `list(type=, subtype=, content=,
 #'   author=, rect=, border_width=)` where `rect` is `list(x=, y=, width=,
 #'   height=)`.
@@ -224,7 +235,8 @@ pdf_page_annotations <- function(doc, page) {
 
 #' Extract vector paths for one (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
 #' @return A list of `Path` records, each `list(bbox=, stroke_width=, has_stroke=,
 #'   has_fill=, operation_count=)`.
 #' @export
@@ -234,8 +246,10 @@ pdf_extract_paths <- function(doc, page) {
 
 #' Search a single (0-based) page for a term.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
-#' @param term The search term. @param case_sensitive Whether to match case.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
+#' @param term The search term.
+#' @param case_sensitive Whether to match case.
 #' @return A list of `SearchResult` records, each `list(text=, page=, bbox=)`.
 #' @export
 pdf_search <- function(doc, page, term, case_sensitive = FALSE) {
@@ -245,7 +259,8 @@ pdf_search <- function(doc, page, term, case_sensitive = FALSE) {
 
 #' Search the whole document for a term.
 #'
-#' @param doc A `pdfoxide_document`. @param term The search term.
+#' @param doc A `pdfoxide_document`.
+#' @param term The search term.
 #' @param case_sensitive Whether to match case.
 #' @return A list of `SearchResult` records, each `list(text=, page=, bbox=)`.
 #' @export
@@ -258,9 +273,12 @@ pdf_search_all <- function(doc, term, case_sensitive = FALSE) {
 #' Render a (0-based) page to a raster image.
 #'
 #' `format` is an integer image format (`0` = PNG, the default).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index (required).
-#' @param zoom Scale factor (`render_page_zoom`). @param size Largest side in
-#'   pixels (`render_page_thumbnail`). @param format Image format (`0` = PNG).
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index (required).
+#' @param zoom Scale factor (`render_page_zoom`).
+#' @param size Largest side in
+#'   pixels (`render_page_thumbnail`).
+#' @param format Image format (`0` = PNG).
 #' @return A `pdfoxide_rendered_image` with elements `width`, `height` and `data`
 #'   (a `raw` vector of the encoded image bytes), plus a `save(path)` method.
 #' @export
@@ -300,7 +318,8 @@ new_rendered_image <- function(handle) {
 #'
 #' Writes the encoded image (format chosen at render time) using the live native
 #' handle.
-#' @param image A `pdfoxide_rendered_image`. @param path Output file path.
+#' @param image A `pdfoxide_rendered_image`.
+#' @param path Output file path.
 #' @export
 pdf_rendered_image_save <- function(image, path) {
   if (!inherits(image, "pdfoxide_rendered_image"))
@@ -323,7 +342,8 @@ pdf_rendered_image_close <- function(image) {
 #'
 #' Holds a reference to its parent `pdfoxide_document` so the document is kept
 #' alive for as long as the page is reachable; the page must not outlive it.
-#' @param doc A `pdfoxide_document`. @param index 0-based page index (required).
+#' @param doc A `pdfoxide_document`.
+#' @param index 0-based page index (required).
 #' @return A `pdfoxide_page`.
 #' @export
 pdf_page <- function(doc, index) {
@@ -418,7 +438,8 @@ pdf_editor_source_path <- function(editor) {
 }
 
 #' Get / set the document producer (`/Info.Producer`).
-#' @param editor A `pdfoxide_editor`. @param value New producer string.
+#' @param editor A `pdfoxide_editor`.
+#' @param value New producer string.
 #' @export
 pdf_editor_get_producer <- function(editor) {
   .Call(C_r_editor_get_producer, editor)
@@ -430,7 +451,8 @@ pdf_editor_set_producer <- function(editor, value) {
 }
 
 #' Get / set the document creation date (`/Info.CreationDate`, raw PDF date).
-#' @param editor A `pdfoxide_editor`. @param value Raw PDF date string.
+#' @param editor A `pdfoxide_editor`.
+#' @param value Raw PDF date string.
 #' @export
 pdf_editor_get_creation_date <- function(editor) {
   .Call(C_r_editor_get_creation_date, editor)
@@ -442,21 +464,24 @@ pdf_editor_set_creation_date <- function(editor, value) {
 }
 
 #' Delete a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_delete_page <- function(editor, page) {
   invisible(.Call(C_r_editor_delete_page, editor, as.integer(page)))
 }
 
 #' Move a page from one (0-based) index to another.
-#' @param editor A `pdfoxide_editor`. @param from,to 0-based page indices.
+#' @param editor A `pdfoxide_editor`.
+#' @param from,to 0-based page indices.
 #' @export
 pdf_editor_move_page <- function(editor, from, to) {
   invisible(.Call(C_r_editor_move_page, editor, as.integer(from), as.integer(to)))
 }
 
 #' Rotate a single (0-based) page by `degrees` (additive).
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param degrees Degrees to rotate.
 #' @export
 pdf_editor_rotate_page_by <- function(editor, page, degrees) {
@@ -465,14 +490,16 @@ pdf_editor_rotate_page_by <- function(editor, page, degrees) {
 }
 
 #' Rotate all pages by `degrees` (additive).
-#' @param editor A `pdfoxide_editor`. @param degrees Degrees to rotate.
+#' @param editor A `pdfoxide_editor`.
+#' @param degrees Degrees to rotate.
 #' @export
 pdf_editor_rotate_all_pages <- function(editor, degrees) {
   invisible(.Call(C_r_editor_rotate_all_pages, editor, as.integer(degrees)))
 }
 
 #' Get / set the absolute rotation of a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param degrees Absolute rotation in degrees.
 #' @export
 pdf_editor_get_page_rotation <- function(editor, page) {
@@ -486,7 +513,8 @@ pdf_editor_set_page_rotation <- function(editor, page, degrees) {
 }
 
 #' Crop all pages by the given margins (left, right, top, bottom).
-#' @param editor A `pdfoxide_editor`. @param left,right,top,bottom Margins.
+#' @param editor A `pdfoxide_editor`.
+#' @param left,right,top,bottom Margins.
 #' @export
 pdf_editor_crop_margins <- function(editor, left, right, top, bottom) {
   invisible(.Call(C_r_editor_crop_margins, editor, as.double(left),
@@ -494,7 +522,8 @@ pdf_editor_crop_margins <- function(editor, left, right, top, bottom) {
 }
 
 #' Get / set the CropBox for a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param x,y,w,h Box coordinates and size.
 #' @return For the getter, a Bbox `list(x=, y=, width=, height=)`.
 #' @export
@@ -509,7 +538,8 @@ pdf_editor_set_page_crop_box <- function(editor, page, x, y, w, h) {
 }
 
 #' Get / set the MediaBox for a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param x,y,w,h Box coordinates and size.
 #' @return For the getter, a Bbox `list(x=, y=, width=, height=)`.
 #' @export
@@ -531,14 +561,16 @@ pdf_editor_apply_all_redactions <- function(editor) {
 }
 
 #' Apply pending redactions on a single (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_apply_page_redactions <- function(editor, page) {
   invisible(.Call(C_r_editor_apply_page_redactions, editor, as.integer(page)))
 }
 
 #' Whether a (0-based) page is marked for redaction.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @return A logical scalar.
 #' @export
 pdf_editor_is_page_marked_for_redaction <- function(editor, page) {
@@ -546,14 +578,16 @@ pdf_editor_is_page_marked_for_redaction <- function(editor, page) {
 }
 
 #' Remove the redaction mark from a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_unmark_page_for_redaction <- function(editor, page) {
   invisible(.Call(C_r_editor_unmark_page_for_redaction, editor, as.integer(page)))
 }
 
 #' Erase a single rectangular region on a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param x,y,w,h Rectangle in page user-space.
 #' @export
 pdf_editor_erase_region <- function(editor, page, x, y, w, h) {
@@ -565,7 +599,8 @@ pdf_editor_erase_region <- function(editor, page, x, y, w, h) {
 #'
 #' `rects` is a flat numeric vector of `[x, y, w, h]` quads (length 4*N) or a
 #' 4-column matrix/data.frame of rectangles.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param rects Flat numeric vector or 4-column matrix of rectangles.
 #' @export
 pdf_editor_erase_regions <- function(editor, page, rects) {
@@ -578,7 +613,8 @@ pdf_editor_erase_regions <- function(editor, page, rects) {
 }
 
 #' Clear all pending erase-region entries for a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_clear_erase_regions <- function(editor, page) {
   invisible(.Call(C_r_editor_clear_erase_regions, editor, as.integer(page)))
@@ -592,21 +628,25 @@ pdf_editor_flatten_forms <- function(editor) {
 }
 
 #' Flatten forms on a single (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_flatten_forms_on_page <- function(editor, page) {
   invisible(.Call(C_r_editor_flatten_forms_on_page, editor, as.integer(page)))
 }
 
 #' Set a form field value.
-#' @param editor A `pdfoxide_editor`. @param name Field name. @param value Value.
+#' @param editor A `pdfoxide_editor`.
+#' @param name Field name.
+#' @param value Value.
 #' @export
 pdf_editor_set_form_field_value <- function(editor, name, value) {
   invisible(.Call(C_r_editor_set_form_field_value, editor, name, value))
 }
 
 #' Flatten annotations on a single (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_flatten_annotations <- function(editor, page) {
   invisible(.Call(C_r_editor_flatten_annotations, editor, as.integer(page)))
@@ -627,14 +667,16 @@ pdf_editor_flatten_warnings_count <- function(editor) {
 }
 
 #' Get the `index`-th flatten warning.
-#' @param editor A `pdfoxide_editor`. @param index 0-based warning index.
+#' @param editor A `pdfoxide_editor`.
+#' @param index 0-based warning index.
 #' @export
 pdf_editor_flatten_warning <- function(editor, index) {
   .Call(C_r_editor_flatten_warning, editor, as.integer(index))
 }
 
 #' Whether a (0-based) page is marked for annotation-flatten.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @return A logical scalar.
 #' @export
 pdf_editor_is_page_marked_for_flatten <- function(editor, page) {
@@ -642,21 +684,24 @@ pdf_editor_is_page_marked_for_flatten <- function(editor, page) {
 }
 
 #' Remove the flatten mark from a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_editor_unmark_page_for_flatten <- function(editor, page) {
   invisible(.Call(C_r_editor_unmark_page_for_flatten, editor, as.integer(page)))
 }
 
 #' Merge pages from another PDF file into this document.
-#' @param editor A `pdfoxide_editor`. @param source_path Path to the source PDF.
+#' @param editor A `pdfoxide_editor`.
+#' @param source_path Path to the source PDF.
 #' @export
 pdf_editor_merge_from <- function(editor, source_path) {
   invisible(.Call(C_r_editor_merge_from, editor, source_path))
 }
 
 #' Merge pages from an in-memory PDF (raw vector) into this document.
-#' @param editor A `pdfoxide_editor`. @param bytes A `raw` vector.
+#' @param editor A `pdfoxide_editor`.
+#' @param bytes A `raw` vector.
 #' @export
 pdf_editor_merge_from_bytes <- function(editor, bytes) {
   invisible(.Call(C_r_editor_merge_from_bytes, editor, bytes))
@@ -665,14 +710,16 @@ pdf_editor_merge_from_bytes <- function(editor, bytes) {
 #' Convert the document to PDF/A in place.
 #'
 #' `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
-#' @param editor A `pdfoxide_editor`. @param level PDF/A conformance level.
+#' @param editor A `pdfoxide_editor`.
+#' @param level PDF/A conformance level.
 #' @export
 pdf_editor_convert_to_pdf_a <- function(editor, level) {
   invisible(.Call(C_r_editor_convert_to_pdf_a, editor, as.integer(level)))
 }
 
 #' Embed a file attachment into the document.
-#' @param editor A `pdfoxide_editor`. @param name Attachment name.
+#' @param editor A `pdfoxide_editor`.
+#' @param name Attachment name.
 #' @param bytes A `raw` vector of the file contents.
 #' @export
 pdf_editor_embed_file <- function(editor, name, bytes) {
@@ -680,7 +727,8 @@ pdf_editor_embed_file <- function(editor, name, bytes) {
 }
 
 #' Extract a subset of (0-based) pages to a new in-memory PDF.
-#' @param editor A `pdfoxide_editor`. @param pages Integer vector of 0-based pages.
+#' @param editor A `pdfoxide_editor`.
+#' @param pages Integer vector of 0-based pages.
 #' @return A `raw` vector.
 #' @export
 pdf_editor_extract_pages_to_bytes <- function(editor, pages) {
@@ -688,7 +736,8 @@ pdf_editor_extract_pages_to_bytes <- function(editor, pages) {
 }
 
 #' Save the edited document to a path.
-#' @param editor A `pdfoxide_editor`. @param path Output path.
+#' @param editor A `pdfoxide_editor`.
+#' @param path Output path.
 #' @export
 pdf_editor_save <- function(editor, path) {
   invisible(.Call(C_r_editor_save, editor, path))
@@ -715,7 +764,8 @@ pdf_editor_save_to_bytes_with_options <- function(editor, compress = TRUE,
 }
 
 #' Save the edited document with AES-256 encryption to a path.
-#' @param editor A `pdfoxide_editor`. @param path Output path.
+#' @param editor A `pdfoxide_editor`.
+#' @param path Output path.
 #' @param user_password,owner_password Encryption passwords.
 #' @export
 pdf_editor_save_encrypted <- function(editor, path, user_password,
@@ -806,7 +856,8 @@ pdf_builder_close <- function(builder) {
 #' Set document metadata on the builder.
 #'
 #' Each returns the `builder` invisibly so calls chain.
-#' @param builder A `pdfoxide_builder`. @param value The metadata string.
+#' @param builder A `pdfoxide_builder`.
+#' @param value The metadata string.
 #' @export
 pdf_builder_set_title <- function(builder, value) {
   .Call(C_r_builder_set_title, builder, value)
@@ -838,7 +889,8 @@ pdf_builder_set_creator <- function(builder, value) {
 }
 
 #' Run JavaScript when the document is opened (`/OpenAction`).
-#' @param builder A `pdfoxide_builder`. @param script JavaScript source.
+#' @param builder A `pdfoxide_builder`.
+#' @param script JavaScript source.
 #' @export
 pdf_builder_on_open <- function(builder, script) {
   .Call(C_r_builder_on_open, builder, script)
@@ -846,7 +898,8 @@ pdf_builder_on_open <- function(builder, script) {
 }
 
 #' Set the document's natural language tag (e.g. "en-US"), emitted as `/Lang`.
-#' @param builder A `pdfoxide_builder`. @param lang BCP-47 language tag.
+#' @param builder A `pdfoxide_builder`.
+#' @param lang BCP-47 language tag.
 #' @export
 pdf_builder_language <- function(builder, lang) {
   .Call(C_r_builder_language, builder, lang)
@@ -862,7 +915,8 @@ pdf_builder_tagged_pdf_ua1 <- function(builder) {
 }
 
 #' Add a role-map entry: custom structure type to standard PDF structure type.
-#' @param builder A `pdfoxide_builder`. @param custom Custom structure type.
+#' @param builder A `pdfoxide_builder`.
+#' @param custom Custom structure type.
 #' @param standard Standard PDF structure type.
 #' @export
 pdf_builder_role_map <- function(builder, custom, standard) {
@@ -873,7 +927,8 @@ pdf_builder_role_map <- function(builder, custom, standard) {
 #' Register a TTF / OTF font for embedding under `name`.
 #'
 #' On success the builder takes ownership of `font`; do not use or close it after.
-#' @param builder A `pdfoxide_builder`. @param name Font name to register under.
+#' @param builder A `pdfoxide_builder`.
+#' @param name Font name to register under.
 #' @param font A `pdfoxide_embedded_font`.
 #' @export
 pdf_builder_register_embedded_font <- function(builder, name, font) {
@@ -888,7 +943,8 @@ pdf_builder_register_embedded_font <- function(builder, name, font) {
 #' `pdf_builder_page` takes custom dimensions in PDF points (72 pt = 1 inch);
 #' `pdf_builder_a4_page` and `pdf_builder_letter_page` use standard sizes. Only
 #' one page may be open at a time; call [pdf_page_done()] to commit it.
-#' @param builder A `pdfoxide_builder`. @param width,height Page size in points.
+#' @param builder A `pdfoxide_builder`.
+#' @param width,height Page size in points.
 #' @return A `pdfoxide_page_builder` handle.
 #' @export
 pdf_builder_page <- function(builder, width, height) {
@@ -917,14 +973,16 @@ pdf_builder_build <- function(builder) {
 }
 
 #' Build and save the document to a path.
-#' @param builder A `pdfoxide_builder`. @param path Output path.
+#' @param builder A `pdfoxide_builder`.
+#' @param path Output path.
 #' @export
 pdf_builder_save <- function(builder, path) {
   invisible(.Call(C_r_builder_save, builder, path))
 }
 
 #' Build and save the document with AES-256 encryption to a path.
-#' @param builder A `pdfoxide_builder`. @param path Output path.
+#' @param builder A `pdfoxide_builder`.
+#' @param path Output path.
 #' @param user_password,owner_password Encryption passwords.
 #' @export
 pdf_builder_save_encrypted <- function(builder, path, user_password,
@@ -947,7 +1005,9 @@ pdf_builder_to_bytes_encrypted <- function(builder, user_password,
 # All ops return the page invisibly so they chain via the pipe.
 
 #' Set the font + size for subsequent text on this page.
-#' @param page A `pdfoxide_page_builder`. @param name Font name. @param size pt.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Font name.
+#' @param size pt.
 #' @export
 pdf_page_font <- function(page, name, size) {
   .Call(C_r_page_font, page, name, as.double(size))
@@ -955,7 +1015,8 @@ pdf_page_font <- function(page, name, size) {
 }
 
 #' Move the cursor to absolute coordinates (PDF points, from lower-left).
-#' @param page A `pdfoxide_page_builder`. @param x,y Coordinates in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y Coordinates in points.
 #' @export
 pdf_page_at <- function(page, x, y) {
   .Call(C_r_page_at, page, as.double(x), as.double(y))
@@ -963,7 +1024,8 @@ pdf_page_at <- function(page, x, y) {
 }
 
 #' Emit a line of text at the cursor, then advance one line-height.
-#' @param page A `pdfoxide_page_builder`. @param text The text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param text The text.
 #' @export
 pdf_page_builder_text <- function(page, text) {
   .Call(C_r_page_text, page, text)
@@ -971,7 +1033,8 @@ pdf_page_builder_text <- function(page, text) {
 }
 
 #' Emit a heading with the given level (1-6) and text.
-#' @param page A `pdfoxide_page_builder`. @param level Heading level 1-6.
+#' @param page A `pdfoxide_page_builder`.
+#' @param level Heading level 1-6.
 #' @param text Heading text.
 #' @export
 pdf_page_heading <- function(page, level, text) {
@@ -980,7 +1043,8 @@ pdf_page_heading <- function(page, level, text) {
 }
 
 #' Emit a paragraph with automatic line wrapping.
-#' @param page A `pdfoxide_page_builder`. @param text The paragraph text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param text The paragraph text.
 #' @export
 pdf_page_paragraph <- function(page, text) {
   .Call(C_r_page_paragraph, page, text)
@@ -988,7 +1052,8 @@ pdf_page_paragraph <- function(page, text) {
 }
 
 #' Advance the cursor down by `points`.
-#' @param page A `pdfoxide_page_builder`. @param points Vertical advance in pts.
+#' @param page A `pdfoxide_page_builder`.
+#' @param points Vertical advance in pts.
 #' @export
 pdf_page_space <- function(page, points) {
   .Call(C_r_page_space, page, as.double(points))
@@ -1006,8 +1071,12 @@ pdf_page_horizontal_rule <- function(page) {
 #' Attach a link to the previously-emitted text element.
 #'
 #' `pdf_page_link_page` targets a 0-based internal page index.
-#' @param page A `pdfoxide_page_builder`. @param url URL. @param index 0-based
-#'   page index. @param destination Named destination. @param script JavaScript.
+#' @param page A `pdfoxide_page_builder`.
+#' @param url URL.
+#' @param index 0-based
+#'   page index.
+#' @param destination Named destination.
+#' @param script JavaScript.
 #' @export
 pdf_page_link_url <- function(page, url) {
   .Call(C_r_page_link_url, page, url)
@@ -1033,7 +1102,8 @@ pdf_page_link_javascript <- function(page, script) {
 }
 
 #' Run JavaScript on page open / close (`/AA /O`, `/AA /C`).
-#' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
+#' @param page A `pdfoxide_page_builder`.
+#' @param script JavaScript source.
 #' @export
 pdf_page_on_open <- function(page, script) {
   .Call(C_r_page_on_open, page, script)
@@ -1047,7 +1117,8 @@ pdf_page_on_close <- function(page, script) {
 }
 
 #' Set a JS action on the most-recently-added form field.
-#' @param page A `pdfoxide_page_builder`. @param script JavaScript source.
+#' @param page A `pdfoxide_page_builder`.
+#' @param script JavaScript source.
 #' @export
 pdf_page_field_keystroke <- function(page, script) {
   .Call(C_r_page_field_keystroke, page, script)
@@ -1073,7 +1144,8 @@ pdf_page_field_calculate <- function(page, script) {
 }
 
 #' Decorate the previous text with an RGB colour (channels 0.0-1.0).
-#' @param page A `pdfoxide_page_builder`. @param r,g,b Colour channels (0-1).
+#' @param page A `pdfoxide_page_builder`.
+#' @param r,g,b Colour channels (0-1).
 #' @export
 pdf_page_highlight <- function(page, r, g, b) {
   .Call(C_r_page_highlight, page, as.double(r), as.double(g), as.double(b))
@@ -1099,7 +1171,8 @@ pdf_page_squiggly <- function(page, r, g, b) {
 }
 
 #' Attach a sticky-note annotation to the previous text.
-#' @param page A `pdfoxide_page_builder`. @param text Note text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param text Note text.
 #' @export
 pdf_page_sticky_note <- function(page, text) {
   .Call(C_r_page_sticky_note, page, text)
@@ -1107,7 +1180,8 @@ pdf_page_sticky_note <- function(page, text) {
 }
 
 #' Place a free-standing sticky note at an absolute page position.
-#' @param page A `pdfoxide_page_builder`. @param x,y Position in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y Position in points.
 #' @param text Note text.
 #' @export
 pdf_page_sticky_note_at <- function(page, x, y, text) {
@@ -1116,7 +1190,8 @@ pdf_page_sticky_note_at <- function(page, x, y, text) {
 }
 
 #' Apply a text watermark to the page.
-#' @param page A `pdfoxide_page_builder`. @param text Watermark text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param text Watermark text.
 #' @export
 pdf_page_watermark <- function(page, text) {
   .Call(C_r_page_watermark, page, text)
@@ -1138,7 +1213,8 @@ pdf_page_watermark_draft <- function(page) {
 }
 
 #' Attach a standard stamp annotation at the current cursor position.
-#' @param page A `pdfoxide_page_builder`. @param type_name Stamp name.
+#' @param page A `pdfoxide_page_builder`.
+#' @param type_name Stamp name.
 #' @export
 pdf_page_stamp <- function(page, type_name) {
   .Call(C_r_page_stamp, page, type_name)
@@ -1146,7 +1222,8 @@ pdf_page_stamp <- function(page, type_name) {
 }
 
 #' Place a free-flowing text annotation inside a rectangle.
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
 #' @param text The annotation text.
 #' @export
 pdf_page_freetext <- function(page, x, y, w, h, text) {
@@ -1156,7 +1233,8 @@ pdf_page_freetext <- function(page, x, y, w, h, text) {
 }
 
 #' Add a footnote reference mark inline and record its body for page-end placement.
-#' @param page A `pdfoxide_page_builder`. @param ref_mark Superscript label.
+#' @param page A `pdfoxide_page_builder`.
+#' @param ref_mark Superscript label.
 #' @param note_text Footnote body text.
 #' @export
 pdf_page_footnote <- function(page, ref_mark, note_text) {
@@ -1165,8 +1243,10 @@ pdf_page_footnote <- function(page, ref_mark, note_text) {
 }
 
 #' Lay out text across `column_count` balanced columns at the cursor.
-#' @param page A `pdfoxide_page_builder`. @param column_count Number of columns.
-#' @param gap_pt Inter-column gap in points. @param text Text to flow.
+#' @param page A `pdfoxide_page_builder`.
+#' @param column_count Number of columns.
+#' @param gap_pt Inter-column gap in points.
+#' @param text Text to flow.
 #' @export
 pdf_page_columns <- function(page, column_count, gap_pt, text) {
   .Call(C_r_page_columns, page, as.integer(column_count), as.double(gap_pt), text)
@@ -1176,7 +1256,8 @@ pdf_page_columns <- function(page, column_count, gap_pt, text) {
 #' Emit an inline run (advances the cursor horizontally, not vertically).
 #'
 #' Call [pdf_page_newline()] to advance to the next line.
-#' @param page A `pdfoxide_page_builder`. @param text The text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param text The text.
 #' @export
 pdf_page_inline <- function(page, text) {
   .Call(C_r_page_inline, page, text)
@@ -1196,7 +1277,8 @@ pdf_page_inline_italic <- function(page, text) {
 }
 
 #' Emit an inline coloured run (RGB 0.0-1.0).
-#' @param page A `pdfoxide_page_builder`. @param r,g,b Colour channels (0-1).
+#' @param page A `pdfoxide_page_builder`.
+#' @param r,g,b Colour channels (0-1).
 #' @param text The text.
 #' @export
 pdf_page_inline_color <- function(page, r, g, b, text) {
@@ -1214,7 +1296,8 @@ pdf_page_newline <- function(page) {
 }
 
 #' Add a single-line text form field.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
 #' @param x,y,w,h Field rectangle in points.
 #' @param default_value Initial value, or `NULL` for blank.
 #' @export
@@ -1225,8 +1308,10 @@ pdf_page_text_field <- function(page, name, x, y, w, h, default_value = NULL) {
 }
 
 #' Add a checkbox form field.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
-#' @param x,y,w,h Field rectangle in points. @param checked Initially ticked?
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
+#' @param x,y,w,h Field rectangle in points.
+#' @param checked Initially ticked?
 #' @export
 pdf_page_checkbox <- function(page, name, x, y, w, h, checked = FALSE) {
   .Call(C_r_page_checkbox, page, name, as.double(x), as.double(y), as.double(w),
@@ -1235,7 +1320,8 @@ pdf_page_checkbox <- function(page, name, x, y, w, h, checked = FALSE) {
 }
 
 #' Add a dropdown combo-box form field.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
 #' @param x,y,w,h Field rectangle in points.
 #' @param options Character vector of options.
 #' @param selected Initially-selected option, or `NULL`.
@@ -1249,7 +1335,8 @@ pdf_page_combo_box <- function(page, name, x, y, w, h, options, selected = NULL)
 #' Add a radio-button group.
 #'
 #' `values`, `xs`, `ys`, `ws`, `hs` are parallel vectors of equal length.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
 #' @param values Character vector of export values.
 #' @param xs,ys,ws,hs Numeric vectors of per-button rectangles.
 #' @param selected Initially-selected export value, or `NULL`.
@@ -1262,8 +1349,10 @@ pdf_page_radio_group <- function(page, name, values, xs, ys, ws, hs,
 }
 
 #' Add a clickable push button with a visible caption.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
-#' @param x,y,w,h Field rectangle in points. @param caption Button caption.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
+#' @param x,y,w,h Field rectangle in points.
+#' @param caption Button caption.
 #' @export
 pdf_page_push_button <- function(page, name, x, y, w, h, caption) {
   .Call(C_r_page_push_button, page, name, as.double(x), as.double(y),
@@ -1272,7 +1361,8 @@ pdf_page_push_button <- function(page, name, x, y, w, h, caption) {
 }
 
 #' Add an unsigned signature placeholder field.
-#' @param page A `pdfoxide_page_builder`. @param name Field name.
+#' @param page A `pdfoxide_page_builder`.
+#' @param name Field name.
 #' @param x,y,w,h Field rectangle in points.
 #' @export
 pdf_page_signature_field <- function(page, name, x, y, w, h) {
@@ -1285,8 +1375,10 @@ pdf_page_signature_field <- function(page, name, x, y, w, h) {
 #'
 #' `barcode_type`: 0=Code128 1=Code39 2=EAN13 3=EAN8 4=UPCA 5=ITF 6=Code93
 #' 7=Codabar.
-#' @param page A `pdfoxide_page_builder`. @param barcode_type Symbology code.
-#' @param data Barcode data. @param x,y,w,h Rectangle in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param barcode_type Symbology code.
+#' @param data Barcode data.
+#' @param x,y,w,h Rectangle in points.
 #' @export
 pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
   .Call(C_r_page_barcode_1d, page, as.integer(barcode_type), data, as.double(x),
@@ -1295,8 +1387,10 @@ pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
 }
 
 #' Place a QR-code image on the page (square: `size` x `size` points).
-#' @param page A `pdfoxide_page_builder`. @param data QR data.
-#' @param x,y Position in points. @param size Side length in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param data QR data.
+#' @param x,y Position in points.
+#' @param size Side length in points.
 #' @export
 pdf_page_barcode_qr <- function(page, data, x, y, size) {
   .Call(C_r_page_barcode_qr, page, data, as.double(x), as.double(y),
@@ -1309,8 +1403,10 @@ pdf_page_barcode_qr <- function(page, data, x, y, size) {
 #' `bytes` is a `raw` vector of raw JPEG / PNG / WebP image data.
 #' `pdf_page_image_with_alt` adds accessibility alt text; `pdf_page_image_artifact`
 #' marks the image as a decorative `/Artifact`.
-#' @param page A `pdfoxide_page_builder`. @param bytes A `raw` vector.
-#' @param x,y,w,h Image rectangle in points. @param alt_text Accessibility text.
+#' @param page A `pdfoxide_page_builder`.
+#' @param bytes A `raw` vector.
+#' @param x,y,w,h Image rectangle in points.
+#' @param alt_text Accessibility text.
 #' @export
 pdf_page_image <- function(page, bytes, x, y, w, h) {
   .Call(C_r_page_image, page, bytes, as.double(x), as.double(y), as.double(w),
@@ -1333,7 +1429,8 @@ pdf_page_image_artifact <- function(page, bytes, x, y, w, h) {
 }
 
 #' Draw a stroked rectangle outline (1pt black).
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
 #' @export
 pdf_page_rect <- function(page, x, y, w, h) {
   .Call(C_r_page_rect, page, as.double(x), as.double(y), as.double(w),
@@ -1342,7 +1439,8 @@ pdf_page_rect <- function(page, x, y, w, h) {
 }
 
 #' Draw a filled rectangle in RGB colour (channels 0-1).
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
 #' @param r,g,b Fill colour channels (0-1).
 #' @export
 pdf_page_filled_rect <- function(page, x, y, w, h, r, g, b) {
@@ -1352,7 +1450,8 @@ pdf_page_filled_rect <- function(page, x, y, w, h, r, g, b) {
 }
 
 #' Draw a line with a 1pt black stroke.
-#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x1,y1,x2,y2 Endpoints in points.
 #' @export
 pdf_page_line <- function(page, x1, y1, x2, y2) {
   .Call(C_r_page_line, page, as.double(x1), as.double(y1), as.double(x2),
@@ -1361,8 +1460,10 @@ pdf_page_line <- function(page, x1, y1, x2, y2) {
 }
 
 #' Draw a stroked rectangle with explicit width and RGB colour.
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
-#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
+#' @param width Stroke width in points.
+#' @param r,g,b Stroke colour (0-1).
 #' @export
 pdf_page_stroke_rect <- function(page, x, y, w, h, width, r, g, b) {
   .Call(C_r_page_stroke_rect, page, as.double(x), as.double(y), as.double(w),
@@ -1372,8 +1473,10 @@ pdf_page_stroke_rect <- function(page, x, y, w, h, width, r, g, b) {
 }
 
 #' Draw a stroked line with explicit width and RGB colour.
-#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
-#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
+#' @param page A `pdfoxide_page_builder`.
+#' @param x1,y1,x2,y2 Endpoints in points.
+#' @param width Stroke width in points.
+#' @param r,g,b Stroke colour (0-1).
 #' @export
 pdf_page_stroke_line <- function(page, x1, y1, x2, y2, width, r, g, b) {
   .Call(C_r_page_stroke_line, page, as.double(x1), as.double(y1), as.double(x2),
@@ -1386,9 +1489,12 @@ pdf_page_stroke_line <- function(page, x1, y1, x2, y2, width, r, g, b) {
 #'
 #' `dash` is a numeric vector of alternating on/off lengths in points (empty for
 #' solid); `phase` is the starting offset into the pattern.
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
-#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
-#' @param dash Numeric dash pattern. @param phase Dash phase offset.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
+#' @param width Stroke width in points.
+#' @param r,g,b Stroke colour (0-1).
+#' @param dash Numeric dash pattern.
+#' @param phase Dash phase offset.
 #' @export
 pdf_page_stroke_rect_dashed <- function(page, x, y, w, h, width, r, g, b,
                                         dash = numeric(0), phase = 0) {
@@ -1399,9 +1505,12 @@ pdf_page_stroke_rect_dashed <- function(page, x, y, w, h, width, r, g, b,
 }
 
 #' Draw a dashed stroked line.
-#' @param page A `pdfoxide_page_builder`. @param x1,y1,x2,y2 Endpoints in points.
-#' @param width Stroke width in points. @param r,g,b Stroke colour (0-1).
-#' @param dash Numeric dash pattern. @param phase Dash phase offset.
+#' @param page A `pdfoxide_page_builder`.
+#' @param x1,y1,x2,y2 Endpoints in points.
+#' @param width Stroke width in points.
+#' @param r,g,b Stroke colour (0-1).
+#' @param dash Numeric dash pattern.
+#' @param phase Dash phase offset.
 #' @export
 pdf_page_stroke_line_dashed <- function(page, x1, y1, x2, y2, width, r, g, b,
                                         dash = numeric(0), phase = 0) {
@@ -1414,8 +1523,10 @@ pdf_page_stroke_line_dashed <- function(page, x1, y1, x2, y2, width, r, g, b,
 #' Lay out text inside a rectangle with an alignment.
 #'
 #' `align`: 0=Left, 1=Center, 2=Right.
-#' @param page A `pdfoxide_page_builder`. @param x,y,w,h Rectangle in points.
-#' @param text The text. @param align Alignment code (0/1/2).
+#' @param page A `pdfoxide_page_builder`.
+#' @param x,y,w,h Rectangle in points.
+#' @param text The text.
+#' @param align Alignment code (0/1/2).
 #' @export
 pdf_page_text_in_rect <- function(page, x, y, w, h, text, align = 0L) {
   .Call(C_r_page_text_in_rect, page, as.double(x), as.double(y), as.double(w),
@@ -1436,8 +1547,10 @@ pdf_page_new_page_same_size <- function(page) {
 #' `cells` is a character vector or matrix. A matrix is read row-major; a flat
 #' vector must already be row-major of length `n_rows * n_columns`. `widths` and
 #' `aligns` are length-`n_columns` vectors (aligns: 0=Left, 1=Center, 2=Right).
-#' @param page A `pdfoxide_page_builder`. @param widths Column widths (numeric).
-#' @param aligns Per-column alignment codes. @param cells Cell text (row-major).
+#' @param page A `pdfoxide_page_builder`.
+#' @param widths Column widths (numeric).
+#' @param aligns Per-column alignment codes.
+#' @param cells Cell text (row-major).
 #' @param has_header Promote the first row to a header?
 #' @param n_columns,n_rows Dimensions; defaulted from a matrix `cells`.
 #' @export
@@ -1462,8 +1575,10 @@ pdf_page_table <- function(page, widths, aligns, cells, has_header = FALSE,
 #' (aligns: 0=Left, 1=Center, 2=Right). Feed rows with
 #' [pdf_page_streaming_table_push_row()]; close with
 #' [pdf_page_streaming_table_finish()].
-#' @param page A `pdfoxide_page_builder`. @param headers Column headers.
-#' @param widths Column widths. @param aligns Per-column alignment codes.
+#' @param page A `pdfoxide_page_builder`.
+#' @param headers Column headers.
+#' @param widths Column widths.
+#' @param aligns Per-column alignment codes.
 #' @param repeat_header Repeat the header on each page break?
 #' @param n_columns Column count; defaulted from `headers`.
 #' @export
@@ -1481,7 +1596,8 @@ pdf_page_streaming_table_begin <- function(page, headers, widths, aligns,
 #' `mode`: 0=Fixed, 1=Sample(sample_rows, min/max width). `max_rowspan` of 0/1
 #' disables rowspan.
 #' @inheritParams pdf_page_streaming_table_begin
-#' @param mode Column-width mode. @param sample_rows Rows to sample (mode 1).
+#' @param mode Column-width mode.
+#' @param sample_rows Rows to sample (mode 1).
 #' @param min_col_width_pt,max_col_width_pt Width bounds (mode 1).
 #' @param max_rowspan Maximum rowspan (>=2 enables).
 #' @export
@@ -1501,7 +1617,8 @@ pdf_page_streaming_table_begin_v2 <- function(page, headers, widths, aligns,
 }
 
 #' Set the batch size for the currently-open streaming table (0 defaults to 256).
-#' @param page A `pdfoxide_page_builder`. @param batch_size Rows per batch.
+#' @param page A `pdfoxide_page_builder`.
+#' @param batch_size Rows per batch.
 #' @export
 pdf_page_streaming_table_set_batch_size <- function(page, batch_size) {
   .Call(C_r_page_streaming_table_set_batch_size, page, as.integer(batch_size))
@@ -1533,7 +1650,8 @@ pdf_page_streaming_table_flush <- function(page) {
 #' Push one row into the currently-open streaming table.
 #'
 #' `cells` length must equal the column count given to begin.
-#' @param page A `pdfoxide_page_builder`. @param cells Character vector of cells.
+#' @param page A `pdfoxide_page_builder`.
+#' @param cells Character vector of cells.
 #' @export
 pdf_page_streaming_table_push_row <- function(page, cells) {
   .Call(C_r_page_streaming_table_push_row, page, as.character(cells))
@@ -1544,7 +1662,8 @@ pdf_page_streaming_table_push_row <- function(page, cells) {
 #'
 #' `rowspans` is an integer vector parallel to `cells` (1=normal, >=2=span), or
 #' `NULL` to treat all cells as rowspan=1.
-#' @param page A `pdfoxide_page_builder`. @param cells Character vector of cells.
+#' @param page A `pdfoxide_page_builder`.
+#' @param cells Character vector of cells.
 #' @param rowspans Integer rowspan vector, or `NULL`.
 #' @export
 pdf_page_streaming_table_push_row_v2 <- function(page, cells, rowspans = NULL) {
@@ -1621,7 +1740,8 @@ pdf_certificate_load_from_bytes <- function(bytes, password = NULL) {
 }
 
 #' Load signing credentials from PEM-encoded certificate + private-key strings.
-#' @param cert_pem PEM certificate string. @param key_pem PEM private-key string.
+#' @param cert_pem PEM certificate string.
+#' @param key_pem PEM private-key string.
 #' @return A `pdfoxide_certificate` handle.
 #' @export
 pdf_certificate_load_from_pem <- function(cert_pem, key_pem) {
@@ -1668,7 +1788,8 @@ pdf_certificate_close <- function(cert) {
 #' Sign raw PDF bytes with a certificate, returning the signed PDF.
 #' @param pdf A `raw` vector of PDF bytes.
 #' @param cert A `pdfoxide_certificate`.
-#' @param reason Signing reason, or `NULL`. @param location Location, or `NULL`.
+#' @param reason Signing reason, or `NULL`.
+#' @param location Location, or `NULL`.
 #' @return A `raw` vector of the signed PDF.
 #' @export
 pdf_sign_bytes <- function(pdf, cert, reason = NULL, location = NULL) {
@@ -1682,9 +1803,12 @@ pdf_sign_bytes <- function(pdf, cert, reason = NULL, location = NULL) {
 #' `level`: `0` = B-B, `1` = B-T, `2` = B-LT (`3` = B-LTA is unsupported).
 #' `tsa_url` is required for `level >= 1`. `certs`, `crls`, `ocsps` are lists of
 #' `raw` vectors (DER) carrying the B-LT revocation material.
-#' @param pdf A `raw` vector of PDF bytes. @param cert A `pdfoxide_certificate`.
-#' @param level PAdES baseline level (0-2). @param tsa_url RFC 3161 TSA URL.
-#' @param reason Signing reason. @param location Location.
+#' @param pdf A `raw` vector of PDF bytes.
+#' @param cert A `pdfoxide_certificate`.
+#' @param level PAdES baseline level (0-2).
+#' @param tsa_url RFC 3161 TSA URL.
+#' @param reason Signing reason.
+#' @param location Location.
 #' @param certs,crls,ocsps Lists of `raw` DER vectors (may be empty).
 #' @return A `raw` vector of the signed PDF.
 #' @export
@@ -1722,7 +1846,8 @@ pdf_sign_bytes_pades_opts <- function(pdf, cert, level = 0L, tsa_url = NULL,
 pdf_signature_count <- function(doc) .Call(C_r_doc_signature_count, doc)
 
 #' Get the `index`-th signature (0-based) of a document.
-#' @param doc A `pdfoxide_document`. @param index 0-based signature index.
+#' @param doc A `pdfoxide_document`.
+#' @param index 0-based signature index.
 #' @return A `pdfoxide_signature` handle.
 #' @export
 pdf_get_signature <- function(doc, index) {
@@ -1788,7 +1913,8 @@ pdf_signature_timestamp <- function(sig) {
 }
 
 #' Attach a timestamp to a signature.
-#' @param sig A `pdfoxide_signature`. @param timestamp A `pdfoxide_timestamp`.
+#' @param sig A `pdfoxide_signature`.
+#' @param timestamp A `pdfoxide_timestamp`.
 #' @return A logical scalar (TRUE on success).
 #' @export
 pdf_signature_add_timestamp <- function(sig, timestamp) {
@@ -1807,7 +1933,8 @@ pdf_signature_verify <- function(sig) .Call(C_r_signature_verify, sig)
 #' Verify a signature end-to-end against the full PDF bytes.
 #'
 #' Returns `1` valid, `0` invalid, `-1` unknown / unsupported.
-#' @param sig A `pdfoxide_signature`. @param pdf A `raw` vector of the full PDF.
+#' @param sig A `pdfoxide_signature`.
+#' @param pdf A `raw` vector of the full PDF.
 #' @export
 pdf_signature_verify_detached <- function(sig, pdf) {
   .Call(C_r_signature_verify_detached, sig, pdf)
@@ -1895,9 +2022,12 @@ pdf_timestamp_close <- function(timestamp) {
 # ── TSA client ──
 
 #' Create an RFC 3161 Time-Stamping-Authority client.
-#' @param url TSA endpoint URL. @param username,password HTTP auth, or `NULL`.
-#' @param timeout Request timeout in seconds. @param hash_algo Hash algorithm code.
-#' @param use_nonce Include a nonce? @param cert_req Request the TSA certificate?
+#' @param url TSA endpoint URL.
+#' @param username,password HTTP auth, or `NULL`.
+#' @param timeout Request timeout in seconds.
+#' @param hash_algo Hash algorithm code.
+#' @param use_nonce Include a nonce?
+#' @param cert_req Request the TSA certificate?
 #' @return A `pdfoxide_tsa_client` handle.
 #' @export
 pdf_tsa_client_create <- function(url, username = NULL, password = NULL,
@@ -1910,7 +2040,8 @@ pdf_tsa_client_create <- function(url, username = NULL, password = NULL,
 }
 
 #' Request a timestamp over raw data bytes.
-#' @param client A `pdfoxide_tsa_client`. @param data A `raw` vector to stamp.
+#' @param client A `pdfoxide_tsa_client`.
+#' @param data A `raw` vector to stamp.
 #' @return A `pdfoxide_timestamp` handle.
 #' @export
 pdf_tsa_request_timestamp <- function(client, data) {
@@ -1919,7 +2050,8 @@ pdf_tsa_request_timestamp <- function(client, data) {
 }
 
 #' Request a timestamp over a precomputed message-imprint hash.
-#' @param client A `pdfoxide_tsa_client`. @param hash A `raw` vector hash.
+#' @param client A `pdfoxide_tsa_client`.
+#' @param hash A `raw` vector hash.
 #' @param hash_algo Hash algorithm code matching `hash`.
 #' @return A `pdfoxide_timestamp` handle.
 #' @export
@@ -1967,7 +2099,8 @@ pdf_dss_ocsp_count <- function(dss) .Call(C_r_dss_ocsp_count, dss)
 pdf_dss_vri_count <- function(dss) .Call(C_r_dss_vri_count, dss)
 
 #' Get the `index`-th DSS certificate / CRL / OCSP entry (0-based) as `raw` DER.
-#' @param dss A `pdfoxide_dss`. @param index 0-based entry index.
+#' @param dss A `pdfoxide_dss`.
+#' @param index 0-based entry index.
 #' @export
 pdf_dss_get_cert <- function(dss, index) {
   .Call(C_r_dss_get_cert, dss, as.integer(index))
@@ -1997,7 +2130,8 @@ pdf_dss_close <- function(dss) {
 #' Validate a document against a PDF/A conformance level.
 #'
 #' `level`: 0=A1b 1=A1a 2=A2b 3=A2a 4=A2u 5=A3b 6=A3a 7=A3u.
-#' @param doc A `pdfoxide_document`. @param level PDF/A level.
+#' @param doc A `pdfoxide_document`.
+#' @param level PDF/A level.
 #' @return A `pdfoxide_pdf_a_results` handle.
 #' @export
 pdf_validate_pdf_a <- function(doc, level = 0L) {
@@ -2034,7 +2168,8 @@ pdf_a_results_close <- function(results) {
 }
 
 #' Validate a document against a PDF/UA accessibility level.
-#' @param doc A `pdfoxide_document`. @param level PDF/UA level.
+#' @param doc A `pdfoxide_document`.
+#' @param level PDF/UA level.
 #' @return A `pdfoxide_ua_results` handle.
 #' @export
 pdf_validate_pdf_ua <- function(doc, level = 0L) {
@@ -2088,7 +2223,8 @@ pdf_ua_results_close <- function(results) {
 }
 
 #' Validate a document against a PDF/X conformance level.
-#' @param doc A `pdfoxide_document`. @param level PDF/X level.
+#' @param doc A `pdfoxide_document`.
+#' @param level PDF/X level.
 #' @return A `pdfoxide_pdf_x_results` handle.
 #' @export
 pdf_validate_pdf_x <- function(doc, level = 0L) {
@@ -2127,7 +2263,8 @@ pdf_x_results_close <- function(results) {
 # 2=Q 3=H. `format`: 0=Code128 1=Code39 2=EAN13 ... (see pdf_page_barcode_1d).
 
 #' Generate a QR code.
-#' @param data The data to encode. @param error_correction 0=L 1=M 2=Q 3=H.
+#' @param data The data to encode.
+#' @param error_correction 0=L 1=M 2=Q 3=H.
 #' @param size_px Side length in pixels.
 #' @return A `pdfoxide_barcode` handle.
 #' @export
@@ -2137,7 +2274,8 @@ pdf_generate_qr_code <- function(data, error_correction = 1L, size_px = 256L) {
 }
 
 #' Generate a 1-D / 2-D barcode of the given symbology.
-#' @param data The data to encode. @param format Symbology code.
+#' @param data The data to encode.
+#' @param format Symbology code.
 #' @param size_px Target size in pixels.
 #' @return A `pdfoxide_barcode` handle.
 #' @export
@@ -2164,7 +2302,8 @@ pdf_barcode_get_confidence <- function(barcode) {
 }
 
 #' Render the barcode to PNG bytes.
-#' @param barcode A `pdfoxide_barcode`. @param size_px Render size in pixels.
+#' @param barcode A `pdfoxide_barcode`.
+#' @param size_px Render size in pixels.
 #' @return A `raw` vector of PNG bytes.
 #' @export
 pdf_barcode_get_image_png <- function(barcode, size_px = 256L) {
@@ -2172,7 +2311,8 @@ pdf_barcode_get_image_png <- function(barcode, size_px = 256L) {
 }
 
 #' Render the barcode to an SVG string.
-#' @param barcode A `pdfoxide_barcode`. @param size_px Render size in pixels.
+#' @param barcode A `pdfoxide_barcode`.
+#' @param size_px Render size in pixels.
 #' @export
 pdf_barcode_get_svg <- function(barcode, size_px = 256L) {
   .Call(C_r_barcode_get_svg, barcode, as.integer(size_px))
@@ -2188,8 +2328,10 @@ pdf_barcode_close <- function(barcode) {
 }
 
 #' Place a generated barcode onto an editor page at the given rectangle.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
-#' @param barcode A `pdfoxide_barcode`. @param x,y,width,height Rectangle (pts).
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
+#' @param barcode A `pdfoxide_barcode`.
+#' @param x,y,width,height Rectangle (pts).
 #' @export
 pdf_editor_add_barcode_to_page <- function(editor, page, barcode, x, y, width,
                                            height) {
@@ -2223,7 +2365,8 @@ pdf_ocr_engine_close <- function(engine) {
 }
 
 #' Whether a (0-based) page needs OCR (i.e. is scanned / hybrid).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @return A logical scalar.
 #' @export
 pdf_ocr_page_needs_ocr <- function(doc, page) {
@@ -2233,7 +2376,8 @@ pdf_ocr_page_needs_ocr <- function(doc, page) {
 #' Extract text from a (0-based) page using OCR.
 #'
 #' `engine` may be `NULL` to use native text extraction only.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @param engine A `pdfoxide_ocr_engine` or `NULL`.
 #' @export
 pdf_ocr_extract_text <- function(doc, page, engine = NULL) {
@@ -2247,8 +2391,10 @@ pdf_ocr_extract_text <- function(doc, page, engine = NULL) {
 #'
 #' `format`: 0=PNG 1=JPEG. Background channels are 0.0-1.0; set
 #' `transparent_background = TRUE` to drop the fill.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
-#' @param dpi Resolution. @param format Image format.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
+#' @param dpi Resolution.
+#' @param format Image format.
 #' @param bg_r,bg_g,bg_b,bg_a Background RGBA (0-1).
 #' @param transparent_background Drop the background fill?
 #' @param render_annotations Render annotations?
@@ -2293,7 +2439,8 @@ pdf_render_page_with_options_ex <- function(doc, page, dpi = 150L, format = 0L,
 }
 
 #' Render a rectangular region of a (0-based) page (crop in user-space points).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @param crop_x,crop_y,crop_width,crop_height Region in user-space points.
 #' @param format Image format (0=PNG 1=JPEG).
 #' @return A `pdfoxide_rendered_image`.
@@ -2307,8 +2454,10 @@ pdf_render_page_region <- function(doc, page, crop_x, crop_y, crop_width,
 }
 
 #' Render a (0-based) page to fit inside `w` x `h` pixels (aspect-preserving).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
-#' @param w,h Bounding box in pixels. @param format Image format.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
+#' @param w,h Bounding box in pixels.
+#' @param format Image format.
 #' @return A `pdfoxide_rendered_image`.
 #' @export
 pdf_render_page_fit <- function(doc, page, w, h, format = 0L) {
@@ -2318,7 +2467,8 @@ pdf_render_page_fit <- function(doc, page, w, h, format = 0L) {
 }
 
 #' Render a (0-based) page to a raw premultiplied RGBA8888 pixel buffer.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @param dpi Resolution.
 #' @return A `pdfoxide_rendered_image` (its `data` is the raw RGBA buffer).
 #' @export
@@ -2332,8 +2482,10 @@ pdf_render_page_raw <- function(doc, page, dpi = 150L) {
 # GC finalizer (or now via pdf_renderer_close).
 
 #' Create a reusable renderer.
-#' @param dpi Resolution. @param format Image format (0=PNG 1=JPEG).
-#' @param quality JPEG quality (1-100). @param anti_alias Enable anti-aliasing?
+#' @param dpi Resolution.
+#' @param format Image format (0=PNG 1=JPEG).
+#' @param quality JPEG quality (1-100).
+#' @param anti_alias Enable anti-aliasing?
 #' @return A `pdfoxide_renderer` handle.
 #' @export
 pdf_create_renderer <- function(dpi = 150L, format = 0L, quality = 85L,
@@ -2353,7 +2505,8 @@ pdf_renderer_close <- function(renderer) {
 }
 
 #' Estimate the render time (ms) for a (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_estimate_render_time <- function(doc, page) {
   .Call(C_r_estimate_render_time, doc, as.integer(page))
@@ -2362,7 +2515,8 @@ pdf_estimate_render_time <- function(doc, page) {
 # ── PHASE-7: redaction (methods on pdfoxide_editor) ───────────────────────────
 
 #' Queue a redaction rectangle on a (0-based) page (corners + overlay RGB).
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @param x1,y1,x2,y2 Rectangle corners in user-space points.
 #' @param r,g,b Overlay fill colour (0-1).
 #' @export
@@ -2373,14 +2527,16 @@ pdf_redaction_add <- function(editor, page, x1, y1, x2, y2, r = 0, g = 0, b = 0)
 }
 
 #' Number of queued redaction regions for a (0-based) page.
-#' @param editor A `pdfoxide_editor`. @param page 0-based page index.
+#' @param editor A `pdfoxide_editor`.
+#' @param page 0-based page index.
 #' @export
 pdf_redaction_count <- function(editor, page) {
   .Call(C_r_redaction_count, editor, as.integer(page))
 }
 
 #' Destructively apply all queued redactions; returns glyphs removed.
-#' @param editor A `pdfoxide_editor`. @param scrub_metadata Also scrub metadata?
+#' @param editor A `pdfoxide_editor`.
+#' @param scrub_metadata Also scrub metadata?
 #' @param r,g,b Overlay fill colour (0-1).
 #' @return The number of glyphs physically removed.
 #' @export
@@ -2416,7 +2572,8 @@ pdf_from_image_bytes <- function(bytes) {
 }
 
 #' Build a PDF from HTML + CSS, optionally with one embedded font.
-#' @param html HTML source. @param css CSS source.
+#' @param html HTML source.
+#' @param css CSS source.
 #' @param font_bytes Optional `raw` vector of TTF / OTF bytes, or `NULL`.
 #' @return A `pdfoxide_pdf` handle.
 #' @export
@@ -2429,7 +2586,8 @@ pdf_from_html_css <- function(html, css, font_bytes = NULL) {
 #'
 #' `families` is a character vector of family names; `font_bytes` is a parallel
 #' list of `raw` vectors of font bytes (same length).
-#' @param html HTML source. @param css CSS source.
+#' @param html HTML source.
+#' @param css CSS source.
 #' @param families Character vector of font-family names.
 #' @param font_bytes List of `raw` vectors of font bytes (parallel to `families`).
 #' @return A `pdfoxide_pdf` handle.
@@ -2450,21 +2608,24 @@ pdf_merge <- function(paths) {
 # ── PHASE-7: page getters ─────────────────────────────────────────────────────
 
 #' Page width in user-space points for a (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_page_get_width <- function(doc, page) {
   .Call(C_r_page_get_width, doc, as.integer(page))
 }
 
 #' Page height in user-space points for a (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_page_get_height <- function(doc, page) {
   .Call(C_r_page_get_height, doc, as.integer(page))
 }
 
 #' Page rotation in degrees for a (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_page_get_rotation <- function(doc, page) {
   .Call(C_r_page_get_rotation, doc, as.integer(page))
@@ -2472,7 +2633,8 @@ pdf_page_get_rotation <- function(doc, page) {
 
 #' Extract layout elements for a (0-based) page.
 #'
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @return A list of `Element` records, each `list(type=, text=, rect=)` where
 #'   `rect` is `list(x=, y=, width=, height=)`.
 #' @export
@@ -2484,7 +2646,8 @@ pdf_page_get_elements <- function(doc, page) {
 
 #' Add an RFC-3161 timestamp to an existing signature in a PDF.
 #' @param pdf_data A `raw` vector of the PDF bytes.
-#' @param sig_index 0-based signature index. @param tsa_url The TSA URL.
+#' @param sig_index 0-based signature index.
+#' @param tsa_url The TSA URL.
 #' @return A `raw` vector of the timestamped PDF bytes.
 #' @export
 pdf_add_timestamp <- function(pdf_data, sig_index, tsa_url) {
@@ -2531,7 +2694,8 @@ pdf_to_xlsx <- function(doc) .Call(C_r_doc_to_xlsx, doc)
 # ── In-rect extractors ────────────────────────────────────────────────────────
 
 #' Extract reading-order text within a rectangle on a (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @param x,y,width,height The rectangle in user-space points.
 #' @export
 pdf_extract_text_in_rect <- function(doc, page, x, y, width, height) {
@@ -2579,14 +2743,16 @@ pdf_extract_images_in_rect <- function(doc, page, x, y, width, height) {
 pdf_extract_all_text <- function(doc) .Call(C_r_doc_extract_all_text, doc)
 
 #' Auto-routed (text-vs-OCR) text extraction for one (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_extract_text_auto <- function(doc, page) {
   .Call(C_r_doc_extract_text_auto, doc, as.integer(page))
 }
 
 #' Rich per-page auto extraction (JSON `PageExtraction`).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @param options_json `{}`-tolerant `AutoExtractOptions` JSON, or `NULL`.
 #' @export
 pdf_extract_page_auto <- function(doc, page, options_json = NULL) {
@@ -2594,7 +2760,8 @@ pdf_extract_page_auto <- function(doc, page, options_json = NULL) {
 }
 
 #' Cheap per-page text-vs-OCR classification (JSON `PageClassification`).
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_classify_page <- function(doc, page) {
   .Call(C_r_doc_classify_page, doc, as.integer(page))
@@ -2608,7 +2775,8 @@ pdf_classify_document <- function(doc) .Call(C_r_doc_classify_document, doc)
 # ── Header / footer / artifact removal ────────────────────────────────────────
 
 #' Remove repeating headers / footers / artifacts across the document.
-#' @param doc A `pdfoxide_document`. @param threshold Repetition threshold (0..1).
+#' @param doc A `pdfoxide_document`.
+#' @param threshold Repetition threshold (0..1).
 #' @return The number of affected pages.
 #' @export
 pdf_remove_headers <- function(doc, threshold = 0.5) {
@@ -2626,7 +2794,8 @@ pdf_remove_artifacts <- function(doc, threshold = 0.5) {
 }
 
 #' Erase the header / footer / artifacts on a single (0-based) page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_erase_header <- function(doc, page) {
   .Call(C_r_doc_erase_header, doc, as.integer(page))
@@ -2652,27 +2821,31 @@ pdf_erase_artifacts <- function(doc, page) {
 pdf_get_form_fields <- function(doc) .Call(C_r_doc_get_form_fields, doc)
 
 #' Export form data as FDF (0) or XFDF (1) bytes.
-#' @param doc A `pdfoxide_document`. @param format_type 0=FDF, 1=XFDF.
+#' @param doc A `pdfoxide_document`.
+#' @param format_type 0=FDF, 1=XFDF.
 #' @return A `raw` vector.
 #' @export
 pdf_export_form_data_to_bytes <- function(doc, format_type = 0L) {
   .Call(C_r_doc_export_form_data_to_bytes, doc, as.integer(format_type))
 }
 #' Import form data from a file path into the document.
-#' @param doc A `pdfoxide_document`. @param data_path Path to FDF/XFDF data.
+#' @param doc A `pdfoxide_document`.
+#' @param data_path Path to FDF/XFDF data.
 #' @export
 pdf_import_form_data <- function(doc, data_path) {
   invisible(.Call(C_r_doc_import_form_data, doc, data_path))
 }
 #' Import form fields from a file into the document.
-#' @param doc A `pdfoxide_document`. @param filename Path to the form file.
+#' @param doc A `pdfoxide_document`.
+#' @param filename Path to the form file.
 #' @return `TRUE` on success.
 #' @export
 pdf_form_import_from_file <- function(doc, filename) {
   .Call(C_r_form_import_from_file, doc, filename)
 }
 #' Import FDF / XFDF bytes into an editor's form.
-#' @param editor A `pdfoxide_editor`. @param bytes A `raw` vector of FDF/XFDF.
+#' @param editor A `pdfoxide_editor`.
+#' @param bytes A `raw` vector of FDF/XFDF.
 #' @export
 pdf_editor_import_fdf_bytes <- function(editor, bytes) {
   invisible(.Call(C_r_editor_import_fdf_bytes, editor, as.raw(bytes)))
@@ -2707,7 +2880,8 @@ pdf_get_source_bytes <- function(doc) .Call(C_r_doc_get_source_bytes, doc)
 #' @export
 pdf_has_xfa <- function(doc) .Call(C_r_doc_has_xfa, doc)
 #' Plan a bookmark-based split (JSON array of segments).
-#' @param doc A `pdfoxide_document`. @param options_json `{}`-tolerant options JSON, or `NULL`.
+#' @param doc A `pdfoxide_document`.
+#' @param options_json `{}`-tolerant options JSON, or `NULL`.
 #' @export
 pdf_plan_split_by_bookmarks <- function(doc, options_json = NULL) {
   .Call(C_r_doc_plan_split_by_bookmarks, doc, options_json)
@@ -2720,7 +2894,8 @@ pdf_get_page_count <- function(pdf) .Call(C_r_pdf_get_page_count, pdf)
 # ── Signatures on a document ──────────────────────────────────────────────────
 
 #' Sign the document in place with a loaded certificate.
-#' @param doc A `pdfoxide_document`. @param certificate A `pdfoxide_certificate`.
+#' @param doc A `pdfoxide_document`.
+#' @param certificate A `pdfoxide_certificate`.
 #' @param reason,location Optional strings.
 #' @export
 pdf_sign <- function(doc, certificate, reason = NULL, location = NULL) {
@@ -2811,7 +2986,8 @@ pdf_highlight_annotation_quad_point <- function(doc, page, index, quad_index) {
         as.integer(index), as.integer(quad_index))
 }
 #' All annotations on a page serialized to JSON.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_annotations_to_json <- function(doc, page) {
   .Call(C_r_annotations_to_json, doc, as.integer(page))
@@ -2820,26 +2996,32 @@ pdf_annotations_to_json <- function(doc, page) {
 # ── Element / font / search JSON accessors ────────────────────────────────────
 
 #' Font size of the i-th embedded font on a page.
-#' @param doc A `pdfoxide_document`. @param page 0-based page. @param index 0-based font index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page.
+#' @param index 0-based font index.
 #' @export
 pdf_font_get_size <- function(doc, page, index) {
   .Call(C_r_font_get_size, doc, as.integer(page), as.integer(index))
 }
 #' Embedded fonts of a page serialized to JSON.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_fonts_to_json <- function(doc, page) {
   .Call(C_r_fonts_to_json, doc, as.integer(page))
 }
 #' Layout elements of a page serialized to JSON.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
 #' @export
 pdf_elements_to_json <- function(doc, page) {
   .Call(C_r_elements_to_json, doc, as.integer(page))
 }
 #' Search results for a term on a page serialized to JSON.
-#' @param doc A `pdfoxide_document`. @param page 0-based page index.
-#' @param term Search term. @param case_sensitive Logical.
+#' @param doc A `pdfoxide_document`.
+#' @param page 0-based page index.
+#' @param term Search term.
+#' @param case_sensitive Logical.
 #' @export
 pdf_search_results_to_json <- function(doc, page, term, case_sensitive = FALSE) {
   .Call(C_r_search_results_to_json, doc, as.integer(page), term,
@@ -2900,7 +3082,8 @@ pdf_set_preserve_unmapped_glyphs <- function(preserve) {
   .Call(C_r_set_preserve_unmapped_glyphs, as.integer(preserve))
 }
 #' Convert the document to PDF/A in place.
-#' @param doc A `pdfoxide_document`. @param level The PDF/A level.
+#' @param doc A `pdfoxide_document`.
+#' @param level The PDF/A level.
 #' @return `TRUE` on success.
 #' @export
 pdf_convert_to_pdf_a <- function(doc, level = 2L) {

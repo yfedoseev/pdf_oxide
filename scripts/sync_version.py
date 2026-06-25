@@ -12,11 +12,14 @@ Usage:
 
 Idempotent. Run from the repo root (or anywhere — paths resolve to the repo).
 """
+
 from __future__ import annotations
+
 import argparse
 import re
 import sys
 from pathlib import Path
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,7 +80,11 @@ def rules() -> list[tuple[str, str, bool]]:
         ("ruby/spec/core_parity_spec.rb", r"exposes version ([0-9][^'\s]+)", False),
         ("ruby/spec/core_parity_spec.rb", r"PdfOxide::VERSION\)\.to eq\('([^']+)'\)", False),
         ("php/src/Pdf.php", r"const VERSION\s*=\s*'([^']+)'", False),
-        ("php/tests/Integration/CoreParityTest.php", r"assertSame\('([^']+)', Pdf::VERSION\)", False),
+        (
+            "php/tests/Integration/CoreParityTest.php",
+            r"assertSame\('([^']+)', Pdf::VERSION\)",
+            False,
+        ),
         ("php/scripts/download-native-lib.php", r"PACKAGE_VERSION_DEFAULT\s*=\s*'v([^']+)'", False),
         ("php/scripts/download-native-lib.php", r"pdf_oxide-php-installer/([0-9][^']+)'", True),
         # ── v0.3.68 new bindings ───────────────────────────────────────────

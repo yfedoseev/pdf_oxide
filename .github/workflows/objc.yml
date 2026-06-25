@@ -56,8 +56,9 @@ jobs:
       - name: Build cdylib (release, shipped binding feature set)
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
-      - name: Install clang-format (macOS runner lacks it on PATH)
-        run: brew install clang-format
+      - name: Install clang-format + scan-build (macOS runner lacks them on PATH)
+        # scan-build ships inside the `llvm` formula, not as a standalone tool.
+        run: brew install clang-format llvm
 
       - name: clang-format check (blocking)
         working-directory: objc
@@ -68,9 +69,11 @@ jobs:
 
       - name: Static analysis (Clang Static Analyzer / scan-build)
         working-directory: objc
+        shell: bash
         run: |
           make clean
-          scan-build --status-bugs make build \
+          # scan-build lives in the keg-only llvm formula, not on PATH.
+          "$(brew --prefix llvm)/bin/scan-build" --status-bugs make build \
             PDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" PDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}"
 
       - name: Build (clang, -Wall -Wextra)
