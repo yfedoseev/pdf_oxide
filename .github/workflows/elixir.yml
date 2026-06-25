@@ -39,7 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macos-15 (not macos-latest): the macos-latest image advanced to
+        # macos26, which erlef/setup-beam can't map yet ("failed to map a
+        # target OS from ImageOS 'macos26'"). Pin to a supported image.
+        os: [ubuntu-latest, macos-15]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
