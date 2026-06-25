@@ -64,9 +64,20 @@ jobs:
         uses: r-lib/actions/setup-r@bd49c52ffe281809afa6f0fecbf37483c5dd0b93 # v2
         with:
           r-version: 'release'
+          # Pull prebuilt Linux binaries from Posit Public Package Manager.
+          # Source installs of roxygen2/lintr/etc. were silently failing to
+          # compile on the runner, leaving them missing for later steps.
+          use-public-rspm: true
 
       - name: Install R deps
-        run: Rscript -e 'install.packages(c("tinytest", "lintr", "roxygen2", "rcmdcheck"), repos="https://cloud.r-project.org")'
+        # Fail hard if any package is missing after install (install.packages
+        # only warns on a failed install). Uses the RSPM binary repo configured
+        # above (no explicit repos= override, which would force source).
+        run: |
+          Rscript -e 'install.packages(c("tinytest", "lintr", "roxygen2", "rcmdcheck"))' \
+                  -e 'pkgs <- c("tinytest","lintr","roxygen2","rcmdcheck")' \
+                  -e 'miss <- pkgs[!pkgs %in% rownames(installed.packages())]' \
+                  -e 'if (length(miss)) { cat("Failed to install:", miss, "\n"); quit(status=1) }'
 
       - name: Generate man/ docs (roxygen2)
         run: Rscript -e 'roxygen2::roxygenise("r")'
