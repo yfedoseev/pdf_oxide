@@ -234,7 +234,7 @@ public final class Document {
     public static func openFromBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer { buf in
-            pdf_document_open_from_bytes(buf.baseAddress, buf.count, &code)
+            pdf_document_open_from_bytes(buf.baseAddress, UInt(buf.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "openFromBytes") }
         return Document(h)
@@ -684,7 +684,7 @@ public final class Document {
             pdf_render_page_with_options_ex(
                 h, Int32(pageIndex), dpi, format, bgR, bgG, bgB, bgA,
                 transparentBackground ? 1 : 0, renderAnnotations ? 1 : 0, jpegQuality,
-                excludedLayers.isEmpty ? nil : layersPtr, excludedLayers.count, &code
+                excludedLayers.isEmpty ? nil : layersPtr, UInt(excludedLayers.count), &code
             )
         }
         guard let img else { throw PdfOxideError(code: code, op: "renderPageWithOptionsEx") }
@@ -837,7 +837,7 @@ public final class Document {
             if code != 0 { throw PdfOxideError(code: code, op: "dss") }
             return nil  // no DSS is not an error
         }
-        return Dss(h)
+        return Dss(OpaquePointer(h))
     }
 
     // ── Final phase: office import/export ────────────────────────────────────
@@ -846,7 +846,7 @@ public final class Document {
     public static func openFromDocxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer {
-            pdf_document_open_from_docx_bytes($0.baseAddress, $0.count, &code)
+            pdf_document_open_from_docx_bytes($0.baseAddress, UInt($0.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "openFromDocxBytes") }
         return Document(h)
@@ -855,7 +855,7 @@ public final class Document {
     public static func openFromPptxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer {
-            pdf_document_open_from_pptx_bytes($0.baseAddress, $0.count, &code)
+            pdf_document_open_from_pptx_bytes($0.baseAddress, UInt($0.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "openFromPptxBytes") }
         return Document(h)
@@ -864,7 +864,7 @@ public final class Document {
     public static func openFromXlsxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer {
-            pdf_document_open_from_xlsx_bytes($0.baseAddress, $0.count, &code)
+            pdf_document_open_from_xlsx_bytes($0.baseAddress, UInt($0.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "openFromXlsxBytes") }
         return Document(h)
@@ -1471,7 +1471,7 @@ public final class Pdf {
         var code: Int32 = 0
         let h = fontBytes.withUnsafeBufferPointer { buf in
             pdf_from_html_css(
-                html, css, fontBytes.isEmpty ? nil : buf.baseAddress, buf.count, &code)
+                html, css, fontBytes.isEmpty ? nil : buf.baseAddress, UInt(buf.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "fromHtmlCss") }
         return Pdf(h)
@@ -1567,7 +1567,7 @@ public final class DocumentEditor {
     public static func openFromBytes(_ bytes: [UInt8]) throws -> DocumentEditor {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer { buf in
-            document_editor_open_from_bytes(buf.baseAddress, buf.count, &code)
+            document_editor_open_from_bytes(buf.baseAddress, UInt(buf.count), &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "openFromBytes") }
         return DocumentEditor(h)
@@ -1645,7 +1645,7 @@ public final class DocumentEditor {
 
     public func rotatePageBy(_ page: Int, _ degrees: Int) throws {
         var code: Int32 = 0
-        if document_editor_rotate_page_by(try ptr(), page, Int32(degrees), &code) != 0 {
+        if document_editor_rotate_page_by(try ptr(), UInt(page), Int32(degrees), &code) != 0 {
             throw PdfOxideError(code: code, op: "rotatePageBy")
         }
     }
@@ -1683,7 +1683,7 @@ public final class DocumentEditor {
     public func getPageCropBox(_ page: Int) throws -> Bbox {
         var code: Int32 = 0
         var x = 0.0, y = 0.0, w = 0.0, h = 0.0
-        if document_editor_get_page_crop_box(try ptr(), page, &x, &y, &w, &h, &code) != 0 {
+        if document_editor_get_page_crop_box(try ptr(), UInt(page), &x, &y, &w, &h, &code) != 0 {
             throw PdfOxideError(code: code, op: "getPageCropBox")
         }
         return Bbox(x: x, y: y, width: w, height: h)
@@ -1692,7 +1692,8 @@ public final class DocumentEditor {
         throws
     {
         var code: Int32 = 0
-        if document_editor_set_page_crop_box(try ptr(), page, x, y, width, height, &code) != 0 {
+        if document_editor_set_page_crop_box(try ptr(), UInt(page), x, y, width, height, &code) != 0
+        {
             throw PdfOxideError(code: code, op: "setPageCropBox")
         }
     }
@@ -1700,7 +1701,7 @@ public final class DocumentEditor {
     public func getPageMediaBox(_ page: Int) throws -> Bbox {
         var code: Int32 = 0
         var x = 0.0, y = 0.0, w = 0.0, h = 0.0
-        if document_editor_get_page_media_box(try ptr(), page, &x, &y, &w, &h, &code) != 0 {
+        if document_editor_get_page_media_box(try ptr(), UInt(page), &x, &y, &w, &h, &code) != 0 {
             throw PdfOxideError(code: code, op: "getPageMediaBox")
         }
         return Bbox(x: x, y: y, width: w, height: h)
@@ -1709,7 +1710,9 @@ public final class DocumentEditor {
         throws
     {
         var code: Int32 = 0
-        if document_editor_set_page_media_box(try ptr(), page, x, y, width, height, &code) != 0 {
+        if document_editor_set_page_media_box(try ptr(), UInt(page), x, y, width, height, &code)
+            != 0
+        {
             throw PdfOxideError(code: code, op: "setPageMediaBox")
         }
     }
@@ -1724,7 +1727,7 @@ public final class DocumentEditor {
     }
     public func applyPageRedactions(_ page: Int) throws {
         var code: Int32 = 0
-        if document_editor_apply_page_redactions(try ptr(), page, &code) != 0 {
+        if document_editor_apply_page_redactions(try ptr(), UInt(page), &code) != 0 {
             throw PdfOxideError(code: code, op: "applyPageRedactions")
         }
     }
@@ -1744,27 +1747,27 @@ public final class DocumentEditor {
         flat.reserveCapacity(rects.count * 4)
         for r in rects { flat.append(r.0); flat.append(r.1); flat.append(r.2); flat.append(r.3) }
         let status = flat.withUnsafeBufferPointer { buf in
-            document_editor_erase_regions(h, page, buf.baseAddress, rects.count, &code)
+            document_editor_erase_regions(h, UInt(page), buf.baseAddress, UInt(rects.count), &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "eraseRegions") }
     }
 
     public func clearEraseRegions(_ page: Int) throws {
         var code: Int32 = 0
-        if document_editor_clear_erase_regions(try ptr(), page, &code) != 0 {
+        if document_editor_clear_erase_regions(try ptr(), UInt(page), &code) != 0 {
             throw PdfOxideError(code: code, op: "clearEraseRegions")
         }
     }
 
     /// 1 == marked, 0 == not. Throws on a -1 error status.
     public func isPageMarkedForRedaction(_ page: Int) throws -> Bool {
-        let r = document_editor_is_page_marked_for_redaction(try ptr(), page)
+        let r = document_editor_is_page_marked_for_redaction(try ptr(), UInt(page))
         if r < 0 { throw PdfOxideError(code: r, op: "isPageMarkedForRedaction") }
         return r == 1
     }
     public func unmarkPageForRedaction(_ page: Int) throws {
         var code: Int32 = 0
-        if document_editor_unmark_page_for_redaction(try ptr(), page, &code) != 0 {
+        if document_editor_unmark_page_for_redaction(try ptr(), UInt(page), &code) != 0 {
             throw PdfOxideError(code: code, op: "unmarkPageForRedaction")
         }
     }
@@ -1867,13 +1870,13 @@ public final class DocumentEditor {
 
     /// 1 == marked for flatten, 0 == not. Throws on a -1 error status.
     public func isPageMarkedForFlatten(_ page: Int) throws -> Bool {
-        let r = document_editor_is_page_marked_for_flatten(try ptr(), page)
+        let r = document_editor_is_page_marked_for_flatten(try ptr(), UInt(page))
         if r < 0 { throw PdfOxideError(code: r, op: "isPageMarkedForFlatten") }
         return r == 1
     }
     public func unmarkPageForFlatten(_ page: Int) throws {
         var code: Int32 = 0
-        if document_editor_unmark_page_for_flatten(try ptr(), page, &code) != 0 {
+        if document_editor_unmark_page_for_flatten(try ptr(), UInt(page), &code) != 0 {
             throw PdfOxideError(code: code, op: "unmarkPageForFlatten")
         }
     }
@@ -1897,7 +1900,7 @@ public final class DocumentEditor {
         let h = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
-            document_editor_merge_from_bytes(h, buf.baseAddress, buf.count, &code)
+            document_editor_merge_from_bytes(h, buf.baseAddress, UInt(buf.count), &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "mergeFromBytes") }
     }
@@ -1914,7 +1917,7 @@ public final class DocumentEditor {
         let h = try ptr()
         var code: Int32 = 0
         let status = data.withUnsafeBufferPointer { buf in
-            document_editor_embed_file(h, name, buf.baseAddress, buf.count, &code)
+            document_editor_embed_file(h, name, buf.baseAddress, UInt(buf.count), &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "embedFile") }
     }
@@ -1924,7 +1927,8 @@ public final class DocumentEditor {
         let h = try ptr()
         var code: Int32 = 0
         let r = data.withUnsafeBufferPointer { buf in
-            pdf_editor_import_fdf_bytes(UnsafeRawPointer(h), buf.baseAddress, buf.count, &code)
+            pdf_editor_import_fdf_bytes(
+                UnsafeRawPointer(h), buf.baseAddress, UInt(buf.count), &code)
         }
         if code != 0 { throw PdfOxideError(code: code, op: "importFdfBytes") }
         return r
@@ -1935,7 +1939,8 @@ public final class DocumentEditor {
         let h = try ptr()
         var code: Int32 = 0
         let r = data.withUnsafeBufferPointer { buf in
-            pdf_editor_import_xfdf_bytes(UnsafeRawPointer(h), buf.baseAddress, buf.count, &code)
+            pdf_editor_import_xfdf_bytes(
+                UnsafeRawPointer(h), buf.baseAddress, UInt(buf.count), &code)
         }
         if code != 0 { throw PdfOxideError(code: code, op: "importXfdfBytes") }
         return r
@@ -1948,7 +1953,8 @@ public final class DocumentEditor {
         var len = 0
         let idx = pages.map { Int32($0) }
         let p = idx.withUnsafeBufferPointer { buf in
-            document_editor_extract_pages_to_bytes(h, buf.baseAddress, pages.count, &len, &code)
+            document_editor_extract_pages_to_bytes(
+                h, buf.baseAddress, UInt(pages.count), &len, &code)
         }
         return try takeBytes(p, len, code, "extractPagesToBytes")
     }
@@ -2025,7 +2031,7 @@ public final class EmbeddedFont {
     public static func fromBytes(_ bytes: [UInt8], name: String? = nil) throws -> EmbeddedFont {
         var code: Int32 = 0
         let h = bytes.withUnsafeBufferPointer { buf in
-            pdf_embedded_font_from_bytes(buf.baseAddress, buf.count, name, &code)
+            pdf_embedded_font_from_bytes(buf.baseAddress, UInt(buf.count), name, &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "EmbeddedFont.fromBytes") }
         return EmbeddedFont(h)
@@ -2134,7 +2140,7 @@ public final class PageBuilder {
         try op("linkUrl") { pdf_page_builder_link_url($0, url, &$1) }
     }
     @discardableResult public func linkPage(_ page: Int) throws -> PageBuilder {
-        try op("linkPage") { pdf_page_builder_link_page($0, page, &$1) }
+        try op("linkPage") { pdf_page_builder_link_page($0, UInt(page), &$1) }
     }
     @discardableResult public func linkNamed(_ destination: String) throws -> PageBuilder {
         try op("linkNamed") { pdf_page_builder_link_named($0, destination, &$1) }
@@ -2247,7 +2253,7 @@ public final class PageBuilder {
         var code: Int32 = 0
         let status = withCStringArray(options) { optsPtr in
             pdf_page_builder_combo_box(
-                h0, name, x, y, w, h, optsPtr, options.count, selected, &code)
+                h0, name, x, y, w, h, optsPtr, UInt(options.count), selected, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "comboBox") }
         return self
@@ -2269,7 +2275,7 @@ public final class PageBuilder {
                             pdf_page_builder_radio_group(
                                 h0, name, valsPtr,
                                 xsP.baseAddress, ysP.baseAddress, wsP.baseAddress, hsP.baseAddress,
-                                count, selected, &code
+                                UInt(count), selected, &code
                             )
                         }
                     }
@@ -2301,7 +2307,7 @@ public final class PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
-            pdf_page_builder_image(h0, buf.baseAddress, buf.count, x, y, w, h, &code)
+            pdf_page_builder_image(h0, buf.baseAddress, UInt(buf.count), x, y, w, h, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "image") }
         return self
@@ -2313,7 +2319,7 @@ public final class PageBuilder {
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
             pdf_page_builder_image_with_alt(
-                h0, buf.baseAddress, buf.count, x, y, w, h, altText, &code)
+                h0, buf.baseAddress, UInt(buf.count), x, y, w, h, altText, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "imageWithAlt") }
         return self
@@ -2324,7 +2330,7 @@ public final class PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
-            pdf_page_builder_image_artifact(h0, buf.baseAddress, buf.count, x, y, w, h, &code)
+            pdf_page_builder_image_artifact(h0, buf.baseAddress, UInt(buf.count), x, y, w, h, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "imageArtifact") }
         return self
@@ -2370,7 +2376,8 @@ public final class PageBuilder {
         var code: Int32 = 0
         let status = dashArray.withUnsafeBufferPointer { buf in
             pdf_page_builder_stroke_rect_dashed(
-                h0, x, y, w, h, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+                h0, x, y, w, h, width, r, g, b, buf.baseAddress, UInt(dashArray.count), phase, &code
+            )
         }
         if status != 0 { throw PdfOxideError(code: code, op: "strokeRectDashed") }
         return self
@@ -2383,7 +2390,8 @@ public final class PageBuilder {
         var code: Int32 = 0
         let status = dashArray.withUnsafeBufferPointer { buf in
             pdf_page_builder_stroke_line_dashed(
-                h0, x1, y1, x2, y2, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+                h0, x1, y1, x2, y2, width, r, g, b, buf.baseAddress, UInt(dashArray.count), phase,
+                &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "strokeLineDashed") }
         return self
@@ -2411,7 +2419,7 @@ public final class PageBuilder {
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(cellStrings) { cellsPtr in
                     pdf_page_builder_table(
-                        h0, nColumns, wP.baseAddress, aP.baseAddress, nRows, cellsPtr,
+                        h0, UInt(nColumns), wP.baseAddress, aP.baseAddress, UInt(nRows), cellsPtr,
                         hasHeader ? 1 : 0, &code)
                 }
             }
@@ -2429,7 +2437,8 @@ public final class PageBuilder {
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(headers) { hdrPtr in
                     pdf_page_builder_streaming_table_begin(
-                        h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0,
+                        h0, UInt(nColumns), hdrPtr, wP.baseAddress, aP.baseAddress,
+                        repeatHeader ? 1 : 0,
                         &code)
                 }
             }
@@ -2448,8 +2457,10 @@ public final class PageBuilder {
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(headers) { hdrPtr in
                     pdf_page_builder_streaming_table_begin_v2(
-                        h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0,
-                        mode, sampleRows, minColWidthPt, maxColWidthPt, maxRowspan, &code)
+                        h0, UInt(nColumns), hdrPtr, wP.baseAddress, aP.baseAddress,
+                        repeatHeader ? 1 : 0,
+                        mode, UInt(sampleRows), minColWidthPt, maxColWidthPt, UInt(maxRowspan),
+                        &code)
                 }
             }
         }
@@ -2461,7 +2472,7 @@ public final class PageBuilder {
         -> PageBuilder
     {
         try op("streamingTableSetBatchSize") {
-            pdf_page_builder_streaming_table_set_batch_size($0, batchSize, &$1)
+            pdf_page_builder_streaming_table_set_batch_size($0, UInt(batchSize), &$1)
         }
     }
     public func streamingTablePendingRowCount() throws -> Int {
@@ -2478,7 +2489,7 @@ public final class PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = withCStringArray(cells) { cellsPtr in
-            pdf_page_builder_streaming_table_push_row(h0, cells.count, cellsPtr, &code)
+            pdf_page_builder_streaming_table_push_row(h0, UInt(cells.count), cellsPtr, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "streamingTablePushRow") }
         return self
@@ -2494,11 +2505,11 @@ public final class PageBuilder {
             if let spans {
                 return spans.withUnsafeBufferPointer { sP in
                     pdf_page_builder_streaming_table_push_row_v2(
-                        h0, cells.count, cellsPtr, sP.baseAddress, &code)
+                        h0, UInt(cells.count), cellsPtr, sP.baseAddress, &code)
                 }
             }
             return pdf_page_builder_streaming_table_push_row_v2(
-                h0, cells.count, cellsPtr, nil, &code)
+                h0, UInt(cells.count), cellsPtr, nil, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "streamingTablePushRowV2") }
         return self
@@ -3261,9 +3272,9 @@ public func signBytesPades(
 ) throws -> [UInt8] {
     let cert = try certificate.rawPtr()
     var outLen: UInt = 0, code: Int32 = 0
-    let p = try withByteArrayArray(certs) { certsPtr, certLens in
-        try withByteArrayArray(crls) { crlsPtr, crlLens in
-            try withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
+    let p = withByteArrayArray(certs) { certsPtr, certLens in
+        withByteArrayArray(crls) { crlsPtr, crlLens in
+            withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
                 pdf.withUnsafeBufferPointer { buf -> UnsafeMutablePointer<UInt8>? in
                     pdf_sign_bytes_pades(
                         buf.baseAddress, UInt(buf.count), cert, level, tsaUrl, reason, location,
@@ -3299,9 +3310,9 @@ public func signBytesPadesOpts(
         if let p = locationC { free(p) }
     }
 
-    let p = try withByteArrayArray(certs) { certsPtr, certLens in
-        try withByteArrayArray(crls) { crlsPtr, crlLens in
-            try withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
+    let p = withByteArrayArray(certs) { certsPtr, certLens in
+        withByteArrayArray(crls) { crlsPtr, crlLens in
+            withByteArrayArray(ocsps) { ocspsPtr, ocspLens in
                 pdf.withUnsafeBufferPointer { buf -> UnsafeMutablePointer<UInt8>? in
                     var opts = PadesSignOptionsC(
                         certificate_handle: cert,
