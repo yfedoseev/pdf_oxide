@@ -379,7 +379,6 @@ typedef struct {
 - (nullable NSString*)xmpMetadataWithError:(NSError**)error;
 - (nullable NSData*)sourceBytesWithError:(NSError**)error;
 - (BOOL)hasXfa;
-- (NSInteger)pageCountAliasError:(NSError**)error;
 - (nullable NSString*)planSplitByBookmarks:(nullable NSString*)optionsJson
                                      error:(NSError**)error;
 

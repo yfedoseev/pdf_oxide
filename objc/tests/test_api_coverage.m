@@ -885,9 +885,6 @@ int main(void) {
             CHECK(sb != nil ? (sb.length >= 0) : (se != nil));
             CHECK([doc hasXfa] == YES || [doc hasXfa] == NO); // hasXfa
             se = nil;
-            CHECK([doc pageCountAliasError:&se] >= 1 ||
-                  se != nil); // pageCountAlias (pdf_get_page_count)
-            se = nil;
             NSString* sp = [doc planSplitByBookmarks:nil
                                                error:&se]; // planSplitByBookmarks
             CHECK(sp != nil ? (sp.length >= 0) : (se != nil));

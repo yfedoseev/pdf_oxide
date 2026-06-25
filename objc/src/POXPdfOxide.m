@@ -1533,16 +1533,6 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
 - (BOOL)hasXfa {
     return pdf_document_has_xfa(_handle) ? YES : NO;
 }
-- (NSInteger)pageCountAliasError:(NSError**)error {
-    int32_t code = 0;
-    int32_t n = pdf_get_page_count((Pdf*)(void*)_handle, &code);
-    if (n < 0) {
-        if (error)
-            *error = POXMakeError(code, @"pageCountAlias");
-        return -1;
-    }
-    return n;
-}
 - (NSString*)planSplitByBookmarks:(NSString*)optionsJson error:(NSError**)error {
     int32_t code = 0;
     return POXTakeString(
