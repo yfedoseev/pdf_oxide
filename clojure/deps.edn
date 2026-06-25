@@ -19,6 +19,17 @@
   :example
   {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
    :main-opts ["-m" "pdf-oxide.example"]}
+  ;; Shared-scenario regression examples (html / words / tables). Each asserts
+  ;; and prints its "<NAME> OK" line; CI greps for it and fails on non-zero exit.
+  :example-html
+  {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
+   :main-opts ["-m" "pdf-oxide.example-html"]}
+  :example-words
+  {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
+   :main-opts ["-m" "pdf-oxide.example-words"]}
+  :example-tables
+  {:jvm-opts ["-Dfyi.oxide.pdf.lib.path=../target/release/libpdf_oxide_jni.so"]
+   :main-opts ["-m" "pdf-oxide.example-tables"]}
   ;; Build + deploy to Clojars: `clojure -T:build jar` / `clojure -T:build deploy`
   ;; (deploy reads CLOJARS_USERNAME / CLOJARS_PASSWORD from the environment).
   :build

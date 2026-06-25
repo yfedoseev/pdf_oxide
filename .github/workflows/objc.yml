@@ -86,3 +86,30 @@ jobs:
           OUT="$(DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./basic_extraction)"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
+
+      - name: Run example (html_extraction, with assertion)
+        working-directory: objc
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./html_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "HTML OK" || { echo "::error::html_extraction missing 'HTML OK'"; exit 1; }
+
+      - name: Run example (words_geometry, with assertion)
+        working-directory: objc
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./words_geometry)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "WORDS OK" || { echo "::error::words_geometry missing 'WORDS OK'"; exit 1; }
+
+      - name: Run example (tables_extraction, with assertion)
+        working-directory: objc
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}" ./tables_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "TABLES OK" || { echo "::error::tables_extraction missing 'TABLES OK'"; exit 1; }

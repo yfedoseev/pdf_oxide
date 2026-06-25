@@ -56,4 +56,24 @@ pub fn build(b: *std.Build) void {
     const example = b.addExecutable(.{ .name = "basic_extraction", .root_module = ex_mod });
     const run_example = b.addRunArtifact(example);
     b.step("example", "Run the smoke example").dependOn(&run_example.step);
+
+    // ── shared-scenario examples (mirrored across language bindings) ───────
+    const Scenario = struct { step: []const u8, src: []const u8, name: []const u8, desc: []const u8 };
+    const scenarios = [_]Scenario{
+        .{ .step = "example-html", .src = "examples/html_extraction.zig", .name = "html_extraction", .desc = "Run the html_extraction example" },
+        .{ .step = "example-words", .src = "examples/words_geometry.zig", .name = "words_geometry", .desc = "Run the words_geometry example" },
+        .{ .step = "example-tables", .src = "examples/tables_extraction.zig", .name = "tables_extraction", .desc = "Run the tables_extraction example" },
+    };
+    for (scenarios) |sc| {
+        const sc_mod = b.createModule(.{
+            .root_source_file = b.path(sc.src),
+            .target = target,
+            .optimize = optimize,
+        });
+        sc_mod.addImport("pdf_oxide", mod);
+        wire(sc_mod, include_dir, lib_dir);
+        const sc_exe = b.addExecutable(.{ .name = sc.name, .root_module = sc_mod });
+        const sc_run = b.addRunArtifact(sc_exe);
+        b.step(sc.step, sc.desc).dependOn(&sc_run.step);
+    }
 }

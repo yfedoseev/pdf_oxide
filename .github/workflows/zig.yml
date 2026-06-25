@@ -87,3 +87,36 @@ jobs:
           OUT="$(zig build example -DPDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}")"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
+
+      - name: Run example (html_extraction, with assertion)
+        working-directory: zig
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(zig build example-html -DPDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}")"
+          echo "$OUT"
+          echo "$OUT" | grep -q "HTML OK" || { echo "::error::html_extraction missing 'HTML OK'"; exit 1; }
+
+      - name: Run example (words_geometry, with assertion)
+        working-directory: zig
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(zig build example-words -DPDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}")"
+          echo "$OUT"
+          echo "$OUT" | grep -q "WORDS OK" || { echo "::error::words_geometry missing 'WORDS OK'"; exit 1; }
+
+      - name: Run example (tables_extraction, with assertion)
+        working-directory: zig
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(zig build example-tables -DPDF_OXIDE_INCLUDE_DIR="${PDF_OXIDE_INCLUDE_DIR}" -DPDF_OXIDE_LIB_DIR="${PDF_OXIDE_LIB_DIR}")"
+          echo "$OUT"
+          echo "$OUT" | grep -q "TABLES OK" || { echo "::error::tables_extraction missing 'TABLES OK'"; exit 1; }

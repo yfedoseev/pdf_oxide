@@ -18,6 +18,9 @@ let package = Package(
     products: [
         .library(name: "PdfOxide", targets: ["PdfOxide"]),
         .executable(name: "basic_extraction", targets: ["Example"]),
+        .executable(name: "html_extraction", targets: ["HtmlExtraction"]),
+        .executable(name: "words_geometry", targets: ["WordsGeometry"]),
+        .executable(name: "tables_extraction", targets: ["TablesExtraction"]),
     ],
     targets: [
         // System-library target: wraps the C header (module.modulemap).
@@ -35,6 +38,21 @@ let package = Package(
             name: "Example",
             dependencies: ["PdfOxide"],
             path: "Sources/Example"
+        ),
+        .executableTarget(
+            name: "HtmlExtraction",
+            dependencies: ["PdfOxide"],
+            path: "Sources/HtmlExtraction"
+        ),
+        .executableTarget(
+            name: "WordsGeometry",
+            dependencies: ["PdfOxide"],
+            path: "Sources/WordsGeometry"
+        ),
+        .executableTarget(
+            name: "TablesExtraction",
+            dependencies: ["PdfOxide"],
+            path: "Sources/TablesExtraction"
         ),
         .testTarget(
             name: "PdfOxideTests",

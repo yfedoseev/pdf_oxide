@@ -96,3 +96,17 @@ tasks.register<JavaExec>("runExample") {
     classpath = sourceSets.main.get().runtimeClasspath
     systemProperty("fyi.oxide.pdf.lib.path", jniLibPath())
 }
+
+// Shared-scenario regression examples (html / words / tables). Each asserts and
+// prints its "<NAME> OK" line; CI greps for that line and fails on non-zero exit.
+fun registerExample(taskName: String, main: String) {
+    tasks.register<JavaExec>(taskName) {
+        group = "application"
+        mainClass.set(main)
+        classpath = sourceSets.main.get().runtimeClasspath
+        systemProperty("fyi.oxide.pdf.lib.path", jniLibPath())
+    }
+}
+registerExample("runHtmlExample", "examples.HtmlExtractionKt")
+registerExample("runWordsExample", "examples.WordsGeometryKt")
+registerExample("runTablesExample", "examples.TablesExtractionKt")

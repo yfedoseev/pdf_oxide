@@ -103,3 +103,33 @@ jobs:
           OUT="$(Rscript r/inst/examples/basic_extraction.R)"
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
+
+      - name: Run example (html_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(Rscript r/inst/examples/html_extraction.R)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "HTML OK" || { echo "::error::html_extraction example did not pass"; exit 1; }
+
+      - name: Run example (words_geometry, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(Rscript r/inst/examples/words_geometry.R)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "WORDS OK" || { echo "::error::words_geometry example did not pass"; exit 1; }
+
+      - name: Run example (tables_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(Rscript r/inst/examples/tables_extraction.R)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "TABLES OK" || { echo "::error::tables_extraction example did not pass"; exit 1; }

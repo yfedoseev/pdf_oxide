@@ -98,6 +98,36 @@ jobs:
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
 
+      - name: Run example (02_html_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(cpp/build/example_02_html_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "HTML OK" || { echo "::error::02_html_extraction missing 'HTML OK'"; exit 1; }
+
+      - name: Run example (03_words_geometry, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(cpp/build/example_03_words_geometry)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "WORDS OK" || { echo "::error::03_words_geometry missing 'WORDS OK'"; exit 1; }
+
+      - name: Run example (04_tables_extraction, with assertion)
+        shell: bash
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PDF_OXIDE_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          OUT="$(cpp/build/example_04_tables_extraction)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "TABLES OK" || { echo "::error::04_tables_extraction missing 'TABLES OK'"; exit 1; }
+
       # Sanitizer lane: compile the api-coverage test with ASan+UBSan and run it.
       # Catches memory/lifetime bugs at the C-ABI boundary that clang-tidy misses
       # (e.g. a heap-buffer-overflow from freeing a byte buffer as a C string).

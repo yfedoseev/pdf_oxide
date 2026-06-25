@@ -91,6 +91,33 @@ jobs:
           echo "$OUT"
           echo "$OUT" | grep -q "Hello pdf_oxide" || { echo "::error::example output missing expected text"; exit 1; }
 
+      - name: Run example (html_extraction, with assertion)
+        working-directory: dart
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(dart run example/html_extraction.dart)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "HTML OK" || { echo "::error::html_extraction missing 'HTML OK'"; exit 1; }
+
+      - name: Run example (words_geometry, with assertion)
+        working-directory: dart
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(dart run example/words_geometry.dart)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "WORDS OK" || { echo "::error::words_geometry missing 'WORDS OK'"; exit 1; }
+
+      - name: Run example (tables_extraction, with assertion)
+        working-directory: dart
+        shell: bash
+        run: |
+          set -uo pipefail
+          OUT="$(dart run example/tables_extraction.dart)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "TABLES OK" || { echo "::error::tables_extraction missing 'TABLES OK'"; exit 1; }
+
       # pub.dev package score (informational) — stable SDK only.
       - name: pana (package score)
         if: matrix.sdk == 'stable' && matrix.os == 'ubuntu-latest'
