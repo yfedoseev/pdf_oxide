@@ -1,8 +1,8 @@
-# PDF Oxide - The Fastest PDF Toolkit for Python, Rust, Go, JS/TS, C#, Java, WASM, CLI & AI
+# PDF Oxide - The Fastest PDF Toolkit for 20 Languages — Python, Rust, Go, JS/TS, C#, Java, Kotlin, Swift, C++ & more, plus CLI & AI
 
-> **New in v0.3.54 — text-extraction fidelity pass** (Hebrew / RTL visual-vs-logical detection, ToUnicode CMap fallback for bullet & ligature decode, multi-column prose reading order, reference-style two-column reading order). **Java is the 8th binding** (`fyi.oxide:pdf-oxide:0.3.54` on Maven Central, JDK 11+, free Kotlin interop via the same JAR). **Ruby, PHP, and Swift are next on the roadmap.** Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
+> **New in v0.3.69 — eleven new language bindings.** PDF Oxide now ships idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each built over the stable C ABI with its own CI workflow, api-coverage tests, and runnable examples. That brings the toolkit to **20 languages** (Rust core + 19 bindings). Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
 
-The fastest PDF library for text extraction, image extraction, and markdown conversion. Rust core with bindings for Python, Go, JavaScript / TypeScript, C# / .NET, **Java (JDK 11+, Kotlin-compatible)**, and WASM, plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
+The fastest PDF library for text extraction, image extraction, and markdown conversion. A Rust core with bindings for **19 languages** — Python, Go, JavaScript / TypeScript, C# / .NET, Java, Kotlin, Scala, Clojure, Ruby, PHP, C++, Objective-C, Swift, Dart, R, Julia, Zig, Elixir, and WASM — plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
 
 [![Crates.io](https://img.shields.io/crates/v/pdf_oxide.svg)](https://crates.io/crates/pdf_oxide)
 [![PyPI](https://img.shields.io/pypi/v/pdf_oxide.svg)](https://pypi.org/project/pdf_oxide/)
@@ -86,7 +86,7 @@ brew install yfedoseev/tap/pdf-oxide   # includes pdf-oxide-mcp
 - **Fast** — 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf, 29× faster than pdfplumber
 - **Reliable** — 100% pass rate on 3,830 test PDFs, zero panics, zero timeouts
 - **Complete** — Text extraction, image extraction, PDF creation, and editing in one library
-- **Multi-platform** — Rust, Python, Go, JavaScript/TypeScript, C#/.NET, Java/Kotlin, WASM, CLI, and MCP server for AI assistants
+- **Multi-platform** — 20 languages (Rust core + 19 bindings: Python, Go, JS/TS, C#/.NET, Java, Kotlin, Scala, Clojure, Ruby, PHP, C++, Objective-C, Swift, Dart, R, Julia, Zig, Elixir, WASM), plus a CLI and MCP server for AI assistants
 - **Permissive license** — MIT / Apache-2.0 — use freely in commercial and open-source projects
 
 ## Performance
@@ -289,25 +289,44 @@ cargo install pdf_oxide_mcp             # Cargo
 
 ### Other languages
 
+Established bindings:
+
 - **Go** — `go get github.com/yfedoseev/pdf_oxide/go` — see [go/README.md](go/README.md)
 - **JavaScript / TypeScript (Node.js)** — `npm install pdf-oxide` — see [js/README.md](js/README.md)
 - **C# / .NET** — `dotnet add package PdfOxide` — see [csharp/README.md](csharp/README.md)
-- **Java / Kotlin (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.60` — see [java/README.md](java/README.md)
+- **Java (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.69` — see [java/README.md](java/README.md)
+- **Ruby** — `gem install pdf_oxide` — see [ruby/README.md](ruby/README.md)
+- **PHP** — `composer require oxide/pdf-oxide` — see [php/README.md](php/README.md)
 
-  ```xml
-  <dependency>
-    <groupId>fyi.oxide</groupId>
-    <artifactId>pdf-oxide</artifactId>
-    <version>0.3.68</version>
-  </dependency>
-  ```
+New in v0.3.69 (all over the stable C ABI):
 
-  ```gradle
-  // Gradle (Kotlin DSL)
-  implementation("fyi.oxide:pdf-oxide:0.3.60")
-  ```
+- **C++** (header-only, CMake / Conan) — see [cpp/README.md](cpp/README.md)
+- **Swift** (SwiftPM) — see [swift/README.md](swift/README.md)
+- **Kotlin** (`fyi.oxide:pdf-oxide-kotlin:0.3.69`) — see [kotlin/README.md](kotlin/README.md)
+- **Scala** (`fyi.oxide %% pdf-oxide-scala`) — see [scala/README.md](scala/README.md)
+- **Clojure** (`fyi.oxide/pdf-oxide-clojure` on Clojars) — see [clojure/README.md](clojure/README.md)
+- **Dart / Flutter** (`dart pub add pdf_oxide`) — see [dart/README.md](dart/README.md)
+- **R** (`install.packages("pdfoxide")`) — see [r/README.md](r/README.md)
+- **Julia** (`Pkg.add("PdfOxide")`) — see [julia/README.md](julia/README.md)
+- **Zig** (`build.zig.zon`) — see [zig/README.md](zig/README.md)
+- **Objective-C** (CocoaPods) — see [objc/README.md](objc/README.md)
+- **Elixir** (`{:pdf_oxide, "~> 0.3.69"}` on Hex) — see [elixir/README.md](elixir/README.md)
 
-All four share the same Rust core as the Python and WASM bindings, so everything you read in this README applies to them as well — just with each language's native naming conventions.
+```xml
+<!-- Java (Maven) -->
+<dependency>
+  <groupId>fyi.oxide</groupId>
+  <artifactId>pdf-oxide</artifactId>
+  <version>0.3.69</version>
+</dependency>
+```
+
+```gradle
+// Kotlin (Gradle, Kotlin DSL)
+implementation("fyi.oxide:pdf-oxide-kotlin:0.3.69")
+```
+
+Every binding shares the same Rust core, so a bug fix in one lands in all of them — everything you read in this README applies, just with each language's native naming conventions. Publishing details for each registry are in [docs/RELEASING-bindings.md](docs/RELEASING-bindings.md).
 
 ## CLI
 
@@ -409,7 +428,7 @@ cargo build && cargo test && cargo fmt && cargo clippy -- -D warnings
 
 ```bibtex
 @software{pdf_oxide,
-  title = {PDF Oxide: Fast PDF Toolkit for Rust, Python, Go, JavaScript, and C#},
+  title = {PDF Oxide: Fast Multi-Language PDF Toolkit (Rust core, 19 language bindings)},
   author = {Yury Fedoseev},
   year = {2025},
   url = {https://github.com/yfedoseev/pdf_oxide}
@@ -418,4 +437,4 @@ cargo build && cargo test && cargo fmt && cargo clippy -- -D warnings
 
 ---
 
-**Rust** + **Python** + **Go** + **JS/TS** + **C#** + **WASM** + **CLI** + **MCP** | MIT/Apache-2.0 | 100% pass rate on 3,830 PDFs | 0.8ms mean | 5× faster than the industry leaders
+**20 languages** (Rust + Python + Go + JS/TS + C# + Java + Kotlin + Scala + Clojure + Ruby + PHP + C++ + Objective-C + Swift + Dart + R + Julia + Zig + Elixir + WASM) + **CLI** + **MCP** | MIT/Apache-2.0 | 100% pass rate on 3,830 PDFs | 0.8ms mean | 5× faster than the industry leaders
