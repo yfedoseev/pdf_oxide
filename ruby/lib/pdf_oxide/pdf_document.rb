@@ -283,7 +283,6 @@ module PdfOxide
 
       # Build a NULL-terminated-string array (char *const *).
       names_ptr = ::FFI::Pointer::NULL
-      str_ptrs = []
       unless names.empty?
         str_ptrs = names.map { |n| ::FFI::MemoryPointer.from_string(n) }
         names_ptr = ::FFI::MemoryPointer.new(:pointer, str_ptrs.length)
