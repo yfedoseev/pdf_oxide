@@ -65,6 +65,10 @@ jobs:
         if: runner.os == 'Linux'
 
       - name: clang-format check (blocking)
+        # clang-format is apt-installed on Linux only (step above); formatting is
+        # platform-independent so the Linux check covers all sources. macOS
+        # runners don't ship clang-format (the unconditional step exited 127).
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           files=$(find cpp/include cpp/examples cpp/tests \( -name '*.hpp' -o -name '*.cpp' \))
