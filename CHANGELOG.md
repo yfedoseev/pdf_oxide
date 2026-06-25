@@ -2,24 +2,26 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.69] - 2026-06-24
+## [0.3.69] - 2026-06-26
 
-> Language-bindings release — idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each over the stable C ABI with 100% public-API coverage tests, CI-checked examples, and a uniform per-language CI workflow. Plus single-source version management across every binding.
+> Language-bindings release — idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each over the stable C ABI, with per-language CI, package-registry publishing, cross-language regression examples, and single-source version management.
 
 ### Added
 
-- **Eleven new language bindings**, each with an idiomatic wrapper, an api-coverage test (one assertion per public method), a runnable example asserted in CI, a README, and a dedicated CI workflow (Linux+macOS) running the same verification set:
-  - **C++** (`cpp/`) — header-only C++17 RAII wrapper, CMake.
+- **Eleven new language bindings**, each with an idiomatic wrapper, an api-coverage test (one assertion per public method), runnable CI-asserted examples, a README with install coordinates, and a dedicated CI workflow (Linux+macOS) running the same verification set:
+  - **C++** (`cpp/`) — header-only C++17 RAII wrapper; CMake with `install`/`export` targets and a Conan recipe.
   - **Swift** (`swift/`) — SwiftPM package + C module map.
-  - **Kotlin** (`kotlin/`) — JVM/Android via JNA, with coroutine helpers.
+  - **Kotlin** (`kotlin/`) — thin facade over the Java JNI binding.
   - **Dart/Flutter** (`dart/`) — `dart:ffi`.
   - **R** (`r/`) — `.Call` C shim, external-pointer handles.
   - **Julia** (`julia/`) — `ccall`.
   - **Zig** (`zig/`) — `@cImport`.
-  - **Scala** (`scala/`) — JVM via JNA (Scala 3).
-  - **Clojure** (`clojure/`) — JVM via JNA.
+  - **Scala** (`scala/`) — thin facade over the Java JNI binding (Scala 3).
+  - **Clojure** (`clojure/`) — direct Java interop over the JNI binding.
   - **Objective-C** (`objc/`) — NSObject wrappers over the C ABI.
   - **Elixir** (`elixir/`) — dirty-scheduler NIF (CPU-bound work never blocks the BEAM).
+- **Package-registry publishing** wired into the release pipeline for the new bindings: Maven Central (Kotlin, Scala), Clojars (Clojure), Hex.pm (Elixir), and pub.dev (Dart, via GitHub OIDC). Objective-C ships as a Trunk-free CocoaPods binary pod — an `xcframework` + podspec uploaded as release assets and installed via a `:podspec` URL — since CocoaPods Trunk goes read-only on 2026-12-02. C++ (vcpkg/Conan), R (CRAN), Julia (General registry), and Swift/Zig (git tag) are documented in `docs/RELEASING-bindings.md`.
+- **Cross-language regression examples** — alongside each binding's basic example, three shared-scenario examples (HTML extraction, word geometry, table extraction) run with output assertions in every binding's CI workflow.
 - **Single-source version management** — `scripts/sync_version.py` propagates the canonical `Cargo.toml` version into every binding manifest and version/parity assert (`--check` verifies, `--set X.Y.Z` bumps everything). A `Version Consistency` CI workflow fails if any binding drifts.
 
 ## [0.3.68] - 2026-06-24
