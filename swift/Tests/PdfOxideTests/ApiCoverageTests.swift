@@ -5,7 +5,8 @@ import XCTest
 
 final class ApiCoverageTests: XCTestCase {
     private func samplePdf() throws -> [UInt8] {
-        try Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n").toBytes()
+        try Pdf.fromMarkdown("# Coverage Doc\n\nAlpha bravo charlie. Some **bold** text.\n")
+            .toBytes()
     }
 
     // ── Pdf builder ──────────────────────────────────────────────────────────
@@ -41,25 +42,25 @@ final class ApiCoverageTests: XCTestCase {
     // ── Document inspection + extraction ─────────────────────────────────────
     func testInspectionAndExtraction() throws {
         let doc = try Document.openFromBytes(try samplePdf())
-        XCTAssertGreaterThanOrEqual(try doc.version().major, 1) // version
-        XCTAssertFalse(try doc.isEncrypted())                  // isEncrypted
-        _ = try doc.hasStructureTree()                        // hasStructureTree (smoke)
-        XCTAssertTrue(try doc.extractText(0).contains("Alpha"))// extractText
-        XCTAssertFalse(try doc.toPlainText(0).isEmpty)         // toPlainText
-        XCTAssertFalse(try doc.toMarkdown(0).isEmpty)          // toMarkdown
-        XCTAssertTrue(try doc.toHtml(0).contains("<"))         // toHtml
-        XCTAssertFalse(try doc.toMarkdownAll().isEmpty)        // toMarkdownAll
-        XCTAssertTrue(try doc.toHtmlAll().contains("<"))       // toHtmlAll
-        XCTAssertFalse(try doc.toPlainTextAll().isEmpty)       // toPlainTextAll
-        XCTAssertFalse(try doc.extractStructuredJson(0).isEmpty) // extractStructuredJson
-        _ = try doc.authenticate("")                          // authenticate (returns a Bool; unencrypted)
+        XCTAssertGreaterThanOrEqual(try doc.version().major, 1)  // version
+        XCTAssertFalse(try doc.isEncrypted())  // isEncrypted
+        _ = try doc.hasStructureTree()  // hasStructureTree (smoke)
+        XCTAssertTrue(try doc.extractText(0).contains("Alpha"))  // extractText
+        XCTAssertFalse(try doc.toPlainText(0).isEmpty)  // toPlainText
+        XCTAssertFalse(try doc.toMarkdown(0).isEmpty)  // toMarkdown
+        XCTAssertTrue(try doc.toHtml(0).contains("<"))  // toHtml
+        XCTAssertFalse(try doc.toMarkdownAll().isEmpty)  // toMarkdownAll
+        XCTAssertTrue(try doc.toHtmlAll().contains("<"))  // toHtmlAll
+        XCTAssertFalse(try doc.toPlainTextAll().isEmpty)  // toPlainTextAll
+        XCTAssertFalse(try doc.extractStructuredJson(0).isEmpty)  // extractStructuredJson
+        _ = try doc.authenticate("")  // authenticate (returns a Bool; unencrypted)
     }
 
     // ── Phase-1 element extraction ───────────────────────────────────────────
     func testElementExtraction() throws {
         let doc = try Document.openFromBytes(try samplePdf())
 
-        let words = try doc.extractWords(0)            // extractWords
+        let words = try doc.extractWords(0)  // extractWords
         XCTAssertFalse(words.isEmpty)
         XCTAssertFalse(words[0].text.isEmpty)
         XCTAssertGreaterThan(words[0].bbox.width, 0)
@@ -67,20 +68,20 @@ final class ApiCoverageTests: XCTestCase {
         _ = words[0].fontSize
         _ = words[0].bold
 
-        let chars = try doc.extractChars(0)            // extractChars
+        let chars = try doc.extractChars(0)  // extractChars
         XCTAssertFalse(chars.isEmpty)
         XCTAssertGreaterThan(chars[0].character, 0)
         _ = chars[0].bbox
         _ = chars[0].fontName
         _ = chars[0].fontSize
 
-        let lines = try doc.extractTextLines(0)        // extractTextLines
+        let lines = try doc.extractTextLines(0)  // extractTextLines
         XCTAssertFalse(lines.isEmpty)
         XCTAssertFalse(lines[0].text.isEmpty)
         _ = lines[0].bbox
         _ = lines[0].wordCount
 
-        let tables = try doc.extractTables(0)          // extractTables (may be empty)
+        let tables = try doc.extractTables(0)  // extractTables (may be empty)
         for table in tables {
             if table.rowCount > 0 && table.colCount > 0 {
                 _ = table.cell(0, 0)
@@ -94,27 +95,27 @@ final class ApiCoverageTests: XCTestCase {
     func testPhase2Extraction() throws {
         let doc = try Document.openFromBytes(try samplePdf())
 
-        let fonts = try doc.embeddedFonts(0)           // embeddedFonts (may be empty)
+        let fonts = try doc.embeddedFonts(0)  // embeddedFonts (may be empty)
         for font in fonts {
             _ = font.name; _ = font.type; _ = font.encoding; _ = font.embedded; _ = font.subset
         }
         XCTAssertGreaterThanOrEqual(fonts.count, 0)
 
-        let images = try doc.embeddedImages(0)         // embeddedImages (may be empty)
+        let images = try doc.embeddedImages(0)  // embeddedImages (may be empty)
         for image in images {
             _ = image.width; _ = image.height; _ = image.bitsPerComponent
             _ = image.format; _ = image.colorspace; _ = image.data
         }
         XCTAssertGreaterThanOrEqual(images.count, 0)
 
-        let annotations = try doc.pageAnnotations(0)   // pageAnnotations (may be empty)
+        let annotations = try doc.pageAnnotations(0)  // pageAnnotations (may be empty)
         for ann in annotations {
             _ = ann.type; _ = ann.subtype; _ = ann.content; _ = ann.author
             _ = ann.rect; _ = ann.borderWidth
         }
         XCTAssertGreaterThanOrEqual(annotations.count, 0)
 
-        let paths = try doc.extractPaths(0)            // extractPaths (may be empty)
+        let paths = try doc.extractPaths(0)  // extractPaths (may be empty)
         for path in paths {
             _ = path.bbox; _ = path.strokeWidth; _ = path.hasStroke
             _ = path.hasFill; _ = path.operationCount
@@ -126,13 +127,13 @@ final class ApiCoverageTests: XCTestCase {
     func testSearch() throws {
         let doc = try Document.openFromBytes(try samplePdf())
 
-        let hits = try doc.search(0, "Alpha", false)   // search
+        let hits = try doc.search(0, "Alpha", false)  // search
         XCTAssertFalse(hits.isEmpty)
         XCTAssertTrue(hits[0].text.contains("Alpha"))
         XCTAssertGreaterThanOrEqual(hits[0].page, 0)
         _ = hits[0].bbox
 
-        let allHits = try doc.searchAll("Alpha", false) // searchAll
+        let allHits = try doc.searchAll("Alpha", false)  // searchAll
         XCTAssertFalse(allHits.isEmpty)
         XCTAssertTrue(allHits[0].text.contains("Alpha"))
         XCTAssertGreaterThanOrEqual(allHits[0].page, 0)
@@ -143,7 +144,7 @@ final class ApiCoverageTests: XCTestCase {
     func testRenderPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())
 
-        let img = try doc.renderPage(0)                // renderPage (PNG)
+        let img = try doc.renderPage(0)  // renderPage (PNG)
         XCTAssertGreaterThan(img.width, 0)
         XCTAssertGreaterThan(img.height, 0)
         XCTAssertFalse(img.data.isEmpty)
@@ -159,7 +160,7 @@ final class ApiCoverageTests: XCTestCase {
         XCTAssertGreaterThan(zoomed.height, 0)
         XCTAssertFalse(zoomed.data.isEmpty)
 
-        let thumb = try doc.renderPageThumbnail(0, size: 64) // renderPageThumbnail
+        let thumb = try doc.renderPageThumbnail(0, size: 64)  // renderPageThumbnail
         XCTAssertGreaterThan(thumb.width, 0)
         XCTAssertGreaterThan(thumb.height, 0)
         XCTAssertFalse(thumb.data.isEmpty)
@@ -169,17 +170,17 @@ final class ApiCoverageTests: XCTestCase {
     func testPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())
         let page = doc.page(0)
-        XCTAssertTrue(try page.text().contains("Alpha")) // text
-        XCTAssertFalse(try page.markdown().isEmpty)      // markdown
-        XCTAssertTrue(try page.html().contains("<"))     // html
-        XCTAssertFalse(try page.plainText().isEmpty)     // plainText
+        XCTAssertTrue(try page.text().contains("Alpha"))  // text
+        XCTAssertFalse(try page.markdown().isEmpty)  // markdown
+        XCTAssertTrue(try page.html().contains("<"))  // html
+        XCTAssertFalse(try page.plainText().isEmpty)  // plainText
     }
 
     // ── close() is idempotent; use-after-close throws ───────────────────────
     func testClose() throws {
         let doc = try Document.openFromBytes(try samplePdf())
         doc.close()
-        doc.close() // idempotent
+        doc.close()  // idempotent
         XCTAssertThrowsError(try doc.pageCount()) { error in
             XCTAssertTrue(error is PdfOxideError)
         }
@@ -188,30 +189,30 @@ final class ApiCoverageTests: XCTestCase {
     // ── DocumentEditor ───────────────────────────────────────────────────────
     func testDocumentEditor() throws {
         let editor = try DocumentEditor.openFromBytes(try samplePdf())
-        XCTAssertGreaterThanOrEqual(try editor.pageCount(), 1)   // pageCount
-        let modified: Bool = try editor.isModified()             // isModified -> Bool
+        XCTAssertGreaterThanOrEqual(try editor.pageCount(), 1)  // pageCount
+        let modified: Bool = try editor.isModified()  // isModified -> Bool
         _ = modified
-        try editor.rotateAllPages(90)                            // rotateAllPages
-        XCTAssertEqual(try editor.getPageRotation(0), 90)        // getPageRotation
-        try editor.setProducer("x")                              // setProducer
-        _ = try editor.getProducer()                             // getProducer
-        XCTAssertFalse(try editor.saveToBytes().isEmpty)         // saveToBytes
-        editor.close()                                           // close
+        try editor.rotateAllPages(90)  // rotateAllPages
+        XCTAssertEqual(try editor.getPageRotation(0), 90)  // getPageRotation
+        try editor.setProducer("x")  // setProducer
+        _ = try editor.getProducer()  // getProducer
+        XCTAssertFalse(try editor.saveToBytes().isEmpty)  // saveToBytes
+        editor.close()  // close
     }
 
     // ── PDF creation: builder API ────────────────────────────────────────────
     func testDocumentBuilder() throws {
-        let builder = try DocumentBuilder.create()           // DocumentBuilder.create
-        try builder.setTitle("Coverage Title")               // setTitle
-        try builder.setAuthor("Tester")                      // setAuthor
+        let builder = try DocumentBuilder.create()  // DocumentBuilder.create
+        try builder.setTitle("Coverage Title")  // setTitle
+        try builder.setAuthor("Tester")  // setAuthor
 
-        let page = try builder.page(595, 842)                // page(width, height)
-        try page.font("Helvetica", 12)                       // font (standard font path)
-        try page.heading(1, "Title")                         // heading
+        let page = try builder.page(595, 842)  // page(width, height)
+        try page.font("Helvetica", 12)  // font (standard font path)
+        try page.heading(1, "Title")  // heading
         try page.paragraph("Hello world from the builder.")  // paragraph
-        try page.done()                                      // done() commits + consumes
+        try page.done()  // done() commits + consumes
 
-        let bytes = try builder.build()                      // build -> bytes
+        let bytes = try builder.build()  // build -> bytes
         XCTAssertGreaterThan(bytes.count, 100)
 
         // Reopen the produced PDF and confirm the content round-trips.
@@ -234,10 +235,10 @@ final class ApiCoverageTests: XCTestCase {
     // Fully testable on the sample document: assert booleans + list shapes.
     func testValidatePdfA() throws {
         let doc = try Document.openFromBytes(try samplePdf())
-        let results = try doc.validatePdfA(2)              // A2b
-        let compliant: Bool = try results.isCompliant()    // isCompliant -> Bool
+        let results = try doc.validatePdfA(2)  // A2b
+        let compliant: Bool = try results.isCompliant()  // isCompliant -> Bool
         _ = compliant
-        let errors: [String] = try results.errors()        // errors() -> [String]
+        let errors: [String] = try results.errors()  // errors() -> [String]
         XCTAssertGreaterThanOrEqual(errors.count, 0)
         XCTAssertGreaterThanOrEqual(try results.warningCount(), 0)
         results.close()
@@ -250,7 +251,7 @@ final class ApiCoverageTests: XCTestCase {
         _ = accessible
         XCTAssertGreaterThanOrEqual(try results.errors().count, 0)
         XCTAssertGreaterThanOrEqual(try results.warnings().count, 0)
-        let stats = try results.stats()                    // uaStats
+        let stats = try results.stats()  // uaStats
         XCTAssertGreaterThanOrEqual(stats.pages, 0)
         XCTAssertGreaterThanOrEqual(stats.structElements, 0)
         _ = stats.images; _ = stats.tables; _ = stats.forms; _ = stats.annotations
@@ -260,7 +261,7 @@ final class ApiCoverageTests: XCTestCase {
     func testValidatePdfX() throws {
         let doc = try Document.openFromBytes(try samplePdf())
         let results = try doc.validatePdfX(0)
-        _ = try results.isCompliant()                      // isCompliant -> Bool
+        _ = try results.isCompliant()  // isCompliant -> Bool
         XCTAssertGreaterThanOrEqual(try results.errors().count, 0)
         results.close()
     }
@@ -325,8 +326,9 @@ final class ApiCoverageTests: XCTestCase {
             let cert = try Certificate.loadFromBytes([], password: "")
             _ = try signBytes(pdf, certificate: cert)
             _ = try signBytesPades(pdf, certificate: cert, level: 0)
-            _ = try signBytesPadesOpts(pdf, certificate: cert, level: 0,
-                                       certs: [[1, 2]], crls: [[3]], ocsps: [])
+            _ = try signBytesPadesOpts(
+                pdf, certificate: cert, level: 0,
+                certs: [[1, 2]], crls: [[3]], ocsps: [])
         }
     }
 
@@ -388,12 +390,13 @@ final class ApiCoverageTests: XCTestCase {
 
     // Barcodes are fully testable: generate, then assert every accessor.
     func testBarcodes() throws {
-        let qr = try BarcodeImage.generateQrCode("https://example.com", errorCorrection: 1, sizePx: 128)
+        let qr = try BarcodeImage.generateQrCode(
+            "https://example.com", errorCorrection: 1, sizePx: 128)
         XCTAssertEqual(try qr.data(), "https://example.com")  // get_data
-        _ = try qr.format()                                   // get_format
-        _ = try qr.confidence()                               // get_confidence
+        _ = try qr.format()  // get_format
+        _ = try qr.confidence()  // get_confidence
         XCTAssertFalse(try qr.imagePng(sizePx: 128).isEmpty)  // get_image_png
-        XCTAssertFalse(try qr.svg(sizePx: 128).isEmpty)       // get_svg
+        XCTAssertFalse(try qr.svg(sizePx: 128).isEmpty)  // get_svg
         qr.close()
 
         // pdf_generate_barcode: format codes are implementation-defined; invoke
@@ -420,49 +423,52 @@ final class ApiCoverageTests: XCTestCase {
     func testRenderVariants() throws {
         let doc = try Document.openFromBytes(try samplePdf())
 
-        let opt = try doc.renderPageWithOptions(0, dpi: 96)              // with_options
+        let opt = try doc.renderPageWithOptions(0, dpi: 96)  // with_options
         XCTAssertGreaterThan(opt.width, 0)
         XCTAssertGreaterThan(opt.height, 0)
         XCTAssertFalse(opt.data.isEmpty)
 
-        let optEx = try doc.renderPageWithOptionsEx(0, dpi: 96, excludedLayers: ["NoSuchLayer"]) // with_options_ex
+        // with_options_ex
+        let optEx = try doc.renderPageWithOptionsEx(0, dpi: 96, excludedLayers: ["NoSuchLayer"])
         XCTAssertGreaterThan(optEx.width, 0)
         XCTAssertFalse(optEx.data.isEmpty)
 
-        let region = try doc.renderPageRegion(0, cropX: 0, cropY: 0, cropWidth: 100, cropHeight: 100) // region
+        let region = try doc.renderPageRegion(
+            0, cropX: 0, cropY: 0, cropWidth: 100, cropHeight: 100)  // region
         XCTAssertGreaterThan(region.width, 0)
         XCTAssertFalse(region.data.isEmpty)
 
-        let fit = try doc.renderPageFit(0, width: 200, height: 200)     // fit
+        let fit = try doc.renderPageFit(0, width: 200, height: 200)  // fit
         XCTAssertGreaterThan(fit.width, 0)
         XCTAssertLessThanOrEqual(fit.width, 200)
         XCTAssertFalse(fit.data.isEmpty)
 
-        let raw = try doc.renderPageRaw(0, dpi: 96)                     // raw
+        let raw = try doc.renderPageRaw(0, dpi: 96)  // raw
         XCTAssertGreaterThan(raw.width, 0)
         XCTAssertGreaterThan(raw.height, 0)
         XCTAssertFalse(raw.image.data.isEmpty)
 
-        _ = try? doc.estimateRenderTime(0)                             // estimate_render_time (smoke)
+        _ = try? doc.estimateRenderTime(0)  // estimate_render_time (smoke)
     }
 
     func testRendererHandle() {
         // create_renderer is a no-op stub in this cdylib (returns null/error):
         // invoke and accept either a live handle or the binding error type.
         expectReturnOrPdfError("Renderer.create") {
-            let r = try Renderer.create(dpi: 150, format: 0, quality: 90, antiAlias: true) // create_renderer + renderer_free
+            // create_renderer + renderer_free
+            let r = try Renderer.create(dpi: 150, format: 0, quality: 90, antiAlias: true)
             r.close()
-            r.close() // idempotent
+            r.close()  // idempotent
         }
     }
 
     func testPageGetters() throws {
         let doc = try Document.openFromBytes(try samplePdf())
-        XCTAssertGreaterThan(try doc.pageWidth(0), 0)    // page_get_width
-        XCTAssertGreaterThan(try doc.pageHeight(0), 0)   // page_get_height
-        _ = try doc.pageRotation(0)                      // page_get_rotation
+        XCTAssertGreaterThan(try doc.pageWidth(0), 0)  // page_get_width
+        XCTAssertGreaterThan(try doc.pageHeight(0), 0)  // page_get_height
+        _ = try doc.pageRotation(0)  // page_get_rotation
 
-        let elements = try doc.pageElements(0)           // page_get_elements + element accessors
+        let elements = try doc.pageElements(0)  // page_get_elements + element accessors
         let n = try elements.count()
         XCTAssertGreaterThanOrEqual(n, 0)
         if n > 0 {
@@ -476,10 +482,11 @@ final class ApiCoverageTests: XCTestCase {
 
     func testRedaction() throws {
         let editor = try DocumentEditor.openFromBytes(try samplePdf())
-        try editor.redactionAdd(0, x1: 10, y1: 10, x2: 100, y2: 30, r: 0, g: 0, b: 0) // redaction_add
-        XCTAssertGreaterThanOrEqual(try editor.redactionCount(0), 1)                  // redaction_count
-        _ = try? editor.redactionApply(scrubMetadata: false, r: 0, g: 0, b: 0)        // redaction_apply
-        _ = try editor.redactionScrubMetadata()                                       // redaction_scrub_metadata
+        // redaction_add
+        try editor.redactionAdd(0, x1: 10, y1: 10, x2: 100, y2: 30, r: 0, g: 0, b: 0)
+        XCTAssertGreaterThanOrEqual(try editor.redactionCount(0), 1)  // redaction_count
+        _ = try? editor.redactionApply(scrubMetadata: false, r: 0, g: 0, b: 0)  // redaction_apply
+        _ = try editor.redactionScrubMetadata()  // redaction_scrub_metadata
         editor.close()
     }
 
@@ -508,14 +515,16 @@ final class ApiCoverageTests: XCTestCase {
         // from_html_css errors when no default font is available in this cdylib:
         // invoke and accept either a built PDF or the binding error type.
         expectReturnOrPdfError("Pdf.fromHtmlCss") {
-            let pdf = try Pdf.fromHtmlCss(html: "<h1>HtmlCss</h1><p>body</p>", css: "h1{color:#333}")
+            let pdf = try Pdf.fromHtmlCss(
+                html: "<h1>HtmlCss</h1><p>body</p>", css: "h1{color:#333}")
             XCTAssertGreaterThan(try pdf.toBytes().count, 100)  // from_html_css
             pdf.close()
         }
 
         // from_html_css_with_fonts: empty font cascade is a valid call.
         expectReturnOrPdfError("Pdf.fromHtmlCssWithFonts") {
-            let p2 = try Pdf.fromHtmlCssWithFonts(html: "<p>x</p>", css: "", families: [], fonts: [])
+            let p2 = try Pdf.fromHtmlCssWithFonts(
+                html: "<p>x</p>", css: "", families: [], fonts: [])
             XCTAssertGreaterThan(try p2.toBytes().count, 100)
             p2.close()
         }
@@ -531,7 +540,7 @@ final class ApiCoverageTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: a)
             try? FileManager.default.removeItem(atPath: b)
         }
-        let merged = try merge([a, b])               // merge
+        let merged = try merge([a, b])  // merge
         XCTAssertGreaterThan(merged.count, 100)
         let doc = try Document.openFromBytes(merged)
         XCTAssertGreaterThanOrEqual(try doc.pageCount(), 2)
@@ -541,8 +550,8 @@ final class ApiCoverageTests: XCTestCase {
     // assert they return or raise the binding error type.
     func testOcrCoverage() throws {
         let doc = try Document.openFromBytes(try samplePdf())
-        _ = try? doc.ocrPageNeedsOcr(0)                          // ocr_page_needs_ocr (smoke)
-        _ = try? doc.ocrExtractText(0, engine: nil)              // ocr_extract_text (engine == nil)
+        _ = try? doc.ocrPageNeedsOcr(0)  // ocr_page_needs_ocr (smoke)
+        _ = try? doc.ocrExtractText(0, engine: nil)  // ocr_extract_text (engine == nil)
 
         expectReturnOrPdfError("OcrEngine.create") {
             let engine = try OcrEngine.create(detModelPath: "", recModelPath: "", dictPath: "")
@@ -588,19 +597,19 @@ final class ApiCoverageTests: XCTestCase {
         let doc = try Document.openFromBytes(try samplePdf())
         let w = try doc.pageWidth(0), h = try doc.pageHeight(0)
         expectReturnOrPdfError("extractTextInRect") {
-            _ = try doc.extractTextInRect(0, x: 0, y: 0, w: w, h: h)          // string
+            _ = try doc.extractTextInRect(0, x: 0, y: 0, w: w, h: h)  // string
         }
         expectReturnOrPdfError("extractWordsInRect") {
-            _ = try doc.extractWordsInRect(0, x: 0, y: 0, w: w, h: h)         // [Word]
+            _ = try doc.extractWordsInRect(0, x: 0, y: 0, w: w, h: h)  // [Word]
         }
         expectReturnOrPdfError("extractLinesInRect") {
-            _ = try doc.extractLinesInRect(0, x: 0, y: 0, w: w, h: h)         // [TextLine]
+            _ = try doc.extractLinesInRect(0, x: 0, y: 0, w: w, h: h)  // [TextLine]
         }
         expectReturnOrPdfError("extractTablesInRect") {
-            _ = try doc.extractTablesInRect(0, x: 0, y: 0, w: w, h: h)        // [Table]
+            _ = try doc.extractTablesInRect(0, x: 0, y: 0, w: w, h: h)  // [Table]
         }
         expectReturnOrPdfError("extractImagesInRect") {
-            _ = try doc.extractImagesInRect(0, x: 0, y: 0, w: w, h: h)        // [Image]
+            _ = try doc.extractImagesInRect(0, x: 0, y: 0, w: w, h: h)  // [Image]
         }
     }
 
@@ -609,7 +618,9 @@ final class ApiCoverageTests: XCTestCase {
         let doc = try Document.openFromBytes(try samplePdf())
         expectReturnOrPdfError("extractTextAuto") { _ = try doc.extractTextAuto(0) }
         expectReturnOrPdfError("extractAllText") { _ = try doc.extractAllText() }
-        expectReturnOrPdfError("extractPageAuto") { _ = try doc.extractPageAuto(0, optionsJson: "{}") }
+        expectReturnOrPdfError("extractPageAuto") {
+            _ = try doc.extractPageAuto(0, optionsJson: "{}")
+        }
         expectReturnOrPdfError("classifyPage") { _ = try doc.classifyPage(0) }
         expectReturnOrPdfError("classifyDocument") { _ = try doc.classifyDocument() }
     }
@@ -635,12 +646,16 @@ final class ApiCoverageTests: XCTestCase {
         }
         expectReturnOrPdfError("exportFormData") { _ = try doc.exportFormData(formatType: 0) }
         expectReturnOrPdfError("importFormData") { _ = try doc.importFormData("/nonexistent.fdf") }
-        expectReturnOrPdfError("importFormFromFile") { _ = try doc.importFormFromFile("/nonexistent.fdf") }
+        expectReturnOrPdfError("importFormFromFile") {
+            _ = try doc.importFormFromFile("/nonexistent.fdf")
+        }
 
         let editor = try DocumentEditor.openFromBytes(try samplePdf())
         let fdf: [UInt8] = Array("%FDF-1.2\n".utf8)
         expectReturnOrPdfError("importFdfBytes") { _ = try editor.importFdfBytes(fdf) }
-        expectReturnOrPdfError("importXfdfBytes") { _ = try editor.importXfdfBytes(Array("<xfdf/>".utf8)) }
+        expectReturnOrPdfError("importXfdfBytes") {
+            _ = try editor.importXfdfBytes(Array("<xfdf/>".utf8))
+        }
     }
 
     // ── Final phase: structure & metadata ────────────────────────────────────
@@ -649,19 +664,25 @@ final class ApiCoverageTests: XCTestCase {
         expectReturnOrPdfError("outline") { _ = try doc.outline() }
         expectReturnOrPdfError("pageLabels") { _ = try doc.pageLabels() }
         expectReturnOrPdfError("xmpMetadata") { _ = try doc.xmpMetadata() }
-        expectReturnOrPdfError("sourceBytes") { XCTAssertGreaterThanOrEqual(try doc.sourceBytes().count, 0) }
-        _ = try doc.hasXfa()                                                  // hasXfa (Bool smoke)
-        expectReturnOrPdfError("planSplitByBookmarks") { _ = try doc.planSplitByBookmarks(optionsJson: "{}") }
+        expectReturnOrPdfError("sourceBytes") {
+            XCTAssertGreaterThanOrEqual(try doc.sourceBytes().count, 0)
+        }
+        _ = try doc.hasXfa()  // hasXfa (Bool smoke)
+        expectReturnOrPdfError("planSplitByBookmarks") {
+            _ = try doc.planSplitByBookmarks(optionsJson: "{}")
+        }
     }
 
     // ── Final phase: signatures ──────────────────────────────────────────────
     func testSignatureCoverage() throws {
         let doc = try Document.openFromBytes(try samplePdf())
         // Unsigned sample: count is 0, accessors return/throw cleanly.
-        expectReturnOrPdfError("signatureCount") { XCTAssertGreaterThanOrEqual(try doc.signatureCount(), 0) }
+        expectReturnOrPdfError("signatureCount") {
+            XCTAssertGreaterThanOrEqual(try doc.signatureCount(), 0)
+        }
         expectReturnOrPdfError("signature") { _ = try doc.signature(0) }
         expectReturnOrPdfError("verifyAllSignatures") { _ = try doc.verifyAllSignatures() }
-        _ = try doc.hasTimestamp()                                            // hasTimestamp (Bool smoke)
+        _ = try doc.hasTimestamp()  // hasTimestamp (Bool smoke)
 
         // sign needs a real certificate; invoke with a loaded-or-error cert.
         expectReturnOrPdfError("sign") {
@@ -718,29 +739,31 @@ final class ApiCoverageTests: XCTestCase {
         // pdf_get_page_count (Pdf-builder alias) errors (code 1) on a freshly
         // built Pdf in this cdylib: invoke and accept a count or the error type.
         expectReturnOrPdfError("Pdf.pageCount") {
-            XCTAssertGreaterThanOrEqual(try pdf.pageCount(), 1)               // pdf_get_page_count
+            XCTAssertGreaterThanOrEqual(try pdf.pageCount(), 1)  // pdf_get_page_count
         }
     }
 
     // ── Final phase: process-global crypto / models / config ─────────────────
     func testCryptoNamespaceCoverage() {
-        _ = PdfOxide.cryptoActiveProvider()                                   // crypto_active_provider
-        _ = PdfOxide.cryptoCbom()                                             // crypto_cbom
-        _ = PdfOxide.cryptoFipsAvailable()                                    // crypto_fips_available
-        _ = PdfOxide.cryptoInventory()                                        // crypto_inventory
-        _ = PdfOxide.cryptoPolicy()                                           // crypto_policy
-        _ = PdfOxide.cryptoSetPolicy("default")                              // crypto_set_policy
-        _ = PdfOxide.cryptoUseFips()                                          // crypto_use_fips
+        _ = PdfOxide.cryptoActiveProvider()  // crypto_active_provider
+        _ = PdfOxide.cryptoCbom()  // crypto_cbom
+        _ = PdfOxide.cryptoFipsAvailable()  // crypto_fips_available
+        _ = PdfOxide.cryptoInventory()  // crypto_inventory
+        _ = PdfOxide.cryptoPolicy()  // crypto_policy
+        _ = PdfOxide.cryptoSetPolicy("default")  // crypto_set_policy
+        _ = PdfOxide.cryptoUseFips()  // crypto_use_fips
     }
 
     func testModelsAndConfigCoverage() {
-        _ = PdfOxide.modelManifest()                                          // model_manifest
-        _ = PdfOxide.prefetchAvailable()                                      // prefetch_available
+        _ = PdfOxide.modelManifest()  // model_manifest
+        _ = PdfOxide.prefetchAvailable()  // prefetch_available
         // prefetch needs network/models — return-or-error.
-        expectReturnOrPdfError("prefetchModels") { _ = try PdfOxide.prefetchModels(languagesCsv: "en") }
-        let prevOps = PdfOxide.setMaxOpsPerStream(1_000_000)                  // set_max_ops_per_stream
+        expectReturnOrPdfError("prefetchModels") {
+            _ = try PdfOxide.prefetchModels(languagesCsv: "en")
+        }
+        let prevOps = PdfOxide.setMaxOpsPerStream(1_000_000)  // set_max_ops_per_stream
         _ = PdfOxide.setMaxOpsPerStream(prevOps)
-        let prevGlyphs = PdfOxide.setPreserveUnmappedGlyphs(1)               // set_preserve_unmapped_glyphs
+        let prevGlyphs = PdfOxide.setPreserveUnmappedGlyphs(1)  // set_preserve_unmapped_glyphs
         _ = PdfOxide.setPreserveUnmappedGlyphs(prevGlyphs)
     }
 

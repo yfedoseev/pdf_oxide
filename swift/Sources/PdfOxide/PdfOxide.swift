@@ -191,14 +191,18 @@ public final class RenderedImage {
 }
 
 // Copy a C string return into a Swift String and free it via free_string.
-private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op: String) throws -> String {
+private func takeString(_ ptr: UnsafeMutablePointer<CChar>?, _ code: Int32, _ op: String) throws
+    -> String
+{
     guard let ptr else { throw PdfOxideError(code: code, op: op) }
     defer { free_string(ptr) }
     return String(cString: ptr)
 }
 
 // Copy an owned C byte buffer into [UInt8] and free it via free_bytes; throws if NULL.
-private func takeOwnedBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+private func takeOwnedBytes(
+    _ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String
+) throws -> [UInt8] {
     guard let p else { throw PdfOxideError(code: code, op: op) }
     defer { free_bytes(p) }
     let n = len < 0 ? 0 : len
@@ -220,7 +224,9 @@ public final class Document {
     /// Open a PDF from a filesystem path.
     public static func open(_ path: String) throws -> Document {
         var code: Int32 = 0
-        guard let h = pdf_document_open(path, &code) else { throw PdfOxideError(code: code, op: "open") }
+        guard let h = pdf_document_open(path, &code) else {
+            throw PdfOxideError(code: code, op: "open")
+        }
         return Document(h)
     }
 
@@ -261,15 +267,18 @@ public final class Document {
 
     public func extractText(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_text(try ptr(), Int32(page), &code), code, "extractText")
+        return try takeString(
+            pdf_document_extract_text(try ptr(), Int32(page), &code), code, "extractText")
     }
     public func toPlainText(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_plain_text(try ptr(), Int32(page), &code), code, "toPlainText")
+        return try takeString(
+            pdf_document_to_plain_text(try ptr(), Int32(page), &code), code, "toPlainText")
     }
     public func toMarkdown(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_markdown(try ptr(), Int32(page), &code), code, "toMarkdown")
+        return try takeString(
+            pdf_document_to_markdown(try ptr(), Int32(page), &code), code, "toMarkdown")
     }
     public func toHtml(_ page: Int) throws -> String {
         var code: Int32 = 0
@@ -285,7 +294,8 @@ public final class Document {
     }
     public func toPlainTextAll() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_to_plain_text_all(try ptr(), &code), code, "toPlainTextAll")
+        return try takeString(
+            pdf_document_to_plain_text_all(try ptr(), &code), code, "toPlainTextAll")
     }
 
     /// Authenticate against an encrypted document. Returns true on success;
@@ -296,7 +306,9 @@ public final class Document {
     }
     public func extractStructuredJson(_ page: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_structured_to_json(try ptr(), Int32(page), &code), code, "extractStructuredJson")
+        return try takeString(
+            pdf_document_extract_structured_to_json(try ptr(), Int32(page), &code), code,
+            "extractStructuredJson")
     }
 
     // ── Phase-1 element extraction ───────────────────────────────────────────
@@ -314,16 +326,18 @@ public final class Document {
         for i in 0..<n {
             let idx = Int32(i)
             let character = pdf_oxide_char_get_char(list, idx, &code)
-            let fontName = try takeString(pdf_oxide_char_get_font_name(list, idx, &code), code, "extractChars.fontName")
+            let fontName = try takeString(
+                pdf_oxide_char_get_font_name(list, idx, &code), code, "extractChars.fontName")
             let fontSize = pdf_oxide_char_get_font_size(list, idx, &code)
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_char_get_bbox(list, idx, &x, &y, &w, &h, &code)
-            result.append(Char(
-                character: character,
-                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
-                fontName: fontName,
-                fontSize: Double(fontSize)
-            ))
+            result.append(
+                Char(
+                    character: character,
+                    bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    fontName: fontName,
+                    fontSize: Double(fontSize)
+                ))
         }
         return result
     }
@@ -340,19 +354,22 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let text = try takeString(pdf_oxide_word_get_text(list, idx, &code), code, "extractWords.text")
-            let fontName = try takeString(pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWords.fontName")
+            let text = try takeString(
+                pdf_oxide_word_get_text(list, idx, &code), code, "extractWords.text")
+            let fontName = try takeString(
+                pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWords.fontName")
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code)
-            result.append(Word(
-                text: text,
-                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
-                fontName: fontName,
-                fontSize: Double(fontSize),
-                bold: bold
-            ))
+            result.append(
+                Word(
+                    text: text,
+                    bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    fontName: fontName,
+                    fontSize: Double(fontSize),
+                    bold: bold
+                ))
         }
         return result
     }
@@ -369,15 +386,17 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let text = try takeString(pdf_oxide_line_get_text(list, idx, &code), code, "extractTextLines.text")
+            let text = try takeString(
+                pdf_oxide_line_get_text(list, idx, &code), code, "extractTextLines.text")
             let wordCount = Int(pdf_oxide_line_get_word_count(list, idx, &code))
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_line_get_bbox(list, idx, &x, &y, &w, &h, &code)
-            result.append(TextLine(
-                text: text,
-                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
-                wordCount: wordCount
-            ))
+            result.append(
+                TextLine(
+                    text: text,
+                    bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    wordCount: wordCount
+                ))
         }
         return result
     }
@@ -411,7 +430,8 @@ public final class Document {
                 }
                 cells.append(row)
             }
-            result.append(Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
+            result.append(
+                Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
         }
         return result
     }
@@ -430,12 +450,17 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let name = try takeString(pdf_oxide_font_get_name(list, idx, &code), code, "embeddedFonts.name")
-            let type = try takeString(pdf_oxide_font_get_type(list, idx, &code), code, "embeddedFonts.type")
-            let encoding = try takeString(pdf_oxide_font_get_encoding(list, idx, &code), code, "embeddedFonts.encoding")
+            let name = try takeString(
+                pdf_oxide_font_get_name(list, idx, &code), code, "embeddedFonts.name")
+            let type = try takeString(
+                pdf_oxide_font_get_type(list, idx, &code), code, "embeddedFonts.type")
+            let encoding = try takeString(
+                pdf_oxide_font_get_encoding(list, idx, &code), code, "embeddedFonts.encoding")
             let embedded = pdf_oxide_font_is_embedded(list, idx, &code) != 0
             let subset = pdf_oxide_font_is_subset(list, idx, &code) != 0
-            result.append(Font(name: name, type: type, encoding: encoding, embedded: embedded, subset: subset))
+            result.append(
+                Font(name: name, type: type, encoding: encoding, embedded: embedded, subset: subset)
+            )
         }
         return result
     }
@@ -455,8 +480,10 @@ public final class Document {
             let width = Int(pdf_oxide_image_get_width(list, idx, &code))
             let height = Int(pdf_oxide_image_get_height(list, idx, &code))
             let bpc = Int(pdf_oxide_image_get_bits_per_component(list, idx, &code))
-            let format = try takeString(pdf_oxide_image_get_format(list, idx, &code), code, "embeddedImages.format")
-            let colorspace = try takeString(pdf_oxide_image_get_colorspace(list, idx, &code), code, "embeddedImages.colorspace")
+            let format = try takeString(
+                pdf_oxide_image_get_format(list, idx, &code), code, "embeddedImages.format")
+            let colorspace = try takeString(
+                pdf_oxide_image_get_colorspace(list, idx, &code), code, "embeddedImages.colorspace")
             var dataLen: Int32 = 0
             let data: [UInt8]
             if let p = pdf_oxide_image_get_data(list, idx, &dataLen, &code) {
@@ -467,10 +494,11 @@ public final class Document {
             } else {
                 data = []
             }
-            result.append(Image(
-                width: width, height: height, bitsPerComponent: bpc,
-                format: format, colorspace: colorspace, data: data
-            ))
+            result.append(
+                Image(
+                    width: width, height: height, bitsPerComponent: bpc,
+                    format: format, colorspace: colorspace, data: data
+                ))
         }
         return result
     }
@@ -478,7 +506,8 @@ public final class Document {
     /// Extract annotations from a (0-based) page.
     public func pageAnnotations(_ pageIndex: Int) throws -> [Annotation] {
         var code: Int32 = 0
-        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code)
+        else {
             throw PdfOxideError(code: code, op: "pageAnnotations")
         }
         defer { pdf_oxide_annotation_list_free(list) }
@@ -487,18 +516,23 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let type = try takeString(pdf_oxide_annotation_get_type(list, idx, &code), code, "pageAnnotations.type")
-            let subtype = try takeString(pdf_oxide_annotation_get_subtype(list, idx, &code), code, "pageAnnotations.subtype")
-            let content = try takeString(pdf_oxide_annotation_get_content(list, idx, &code), code, "pageAnnotations.content")
-            let author = try takeString(pdf_oxide_annotation_get_author(list, idx, &code), code, "pageAnnotations.author")
+            let type = try takeString(
+                pdf_oxide_annotation_get_type(list, idx, &code), code, "pageAnnotations.type")
+            let subtype = try takeString(
+                pdf_oxide_annotation_get_subtype(list, idx, &code), code, "pageAnnotations.subtype")
+            let content = try takeString(
+                pdf_oxide_annotation_get_content(list, idx, &code), code, "pageAnnotations.content")
+            let author = try takeString(
+                pdf_oxide_annotation_get_author(list, idx, &code), code, "pageAnnotations.author")
             let borderWidth = pdf_oxide_annotation_get_border_width(list, idx, &code)
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_annotation_get_rect(list, idx, &x, &y, &w, &h, &code)
-            result.append(Annotation(
-                type: type, subtype: subtype, content: content, author: author,
-                rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
-                borderWidth: Double(borderWidth)
-            ))
+            result.append(
+                Annotation(
+                    type: type, subtype: subtype, content: content, author: author,
+                    rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    borderWidth: Double(borderWidth)
+                ))
         }
         return result
     }
@@ -521,17 +555,19 @@ public final class Document {
             let operationCount = Int(pdf_oxide_path_get_operation_count(list, idx, &code))
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_path_get_bbox(list, idx, &x, &y, &w, &h, &code)
-            result.append(Path(
-                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
-                strokeWidth: Double(strokeWidth),
-                hasStroke: hasStroke, hasFill: hasFill, operationCount: operationCount
-            ))
+            result.append(
+                Path(
+                    bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    strokeWidth: Double(strokeWidth),
+                    hasStroke: hasStroke, hasFill: hasFill, operationCount: operationCount
+                ))
         }
         return result
     }
 
     // Marshal an FfiSearchResults handle into [SearchResult]; frees the handle.
-    private func collectSearchResults(_ list: OpaquePointer, _ op: String) throws -> [SearchResult] {
+    private func collectSearchResults(_ list: OpaquePointer, _ op: String) throws -> [SearchResult]
+    {
         defer { pdf_oxide_search_result_free(list) }
         var code: Int32 = 0
         let n = Int(pdf_oxide_search_result_count(list))
@@ -539,22 +575,29 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let text = try takeString(pdf_oxide_search_result_get_text(list, idx, &code), code, "\(op).text")
+            let text = try takeString(
+                pdf_oxide_search_result_get_text(list, idx, &code), code, "\(op).text")
             let page = Int(pdf_oxide_search_result_get_page(list, idx, &code))
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_search_result_get_bbox(list, idx, &x, &y, &w, &h, &code)
-            result.append(SearchResult(
-                text: text, page: page,
-                bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h))
-            ))
+            result.append(
+                SearchResult(
+                    text: text, page: page,
+                    bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h))
+                ))
         }
         return result
     }
 
     /// Search a single (0-based) page for `term`.
-    public func search(_ pageIndex: Int, _ term: String, _ caseSensitive: Bool) throws -> [SearchResult] {
+    public func search(_ pageIndex: Int, _ term: String, _ caseSensitive: Bool) throws
+        -> [SearchResult]
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_search_page(try ptr(), Int32(pageIndex), term, caseSensitive, &code) else {
+        guard
+            let list = pdf_document_search_page(
+                try ptr(), Int32(pageIndex), term, caseSensitive, &code)
+        else {
             throw PdfOxideError(code: code, op: "search")
         }
         return try collectSearchResults(list, "search")
@@ -581,18 +624,26 @@ public final class Document {
     }
 
     /// Render a (0-based) page at the given `zoom` factor. `format` is 0=PNG, 1=JPEG.
-    public func renderPageZoom(_ pageIndex: Int, zoom: Float, format: Int32 = 0) throws -> RenderedImage {
+    public func renderPageZoom(_ pageIndex: Int, zoom: Float, format: Int32 = 0) throws
+        -> RenderedImage
+    {
         var code: Int32 = 0
-        guard let img = pdf_render_page_zoom(try ptr(), Int32(pageIndex), zoom, format, &code) else {
+        guard let img = pdf_render_page_zoom(try ptr(), Int32(pageIndex), zoom, format, &code)
+        else {
             throw PdfOxideError(code: code, op: "renderPageZoom")
         }
         return try RenderedImage(img, "renderPageZoom")
     }
 
     /// Render a thumbnail of a (0-based) page fitting `size` pixels. `format` is 0=PNG, 1=JPEG.
-    public func renderPageThumbnail(_ pageIndex: Int, size: Int, format: Int32 = 0) throws -> RenderedImage {
+    public func renderPageThumbnail(_ pageIndex: Int, size: Int, format: Int32 = 0) throws
+        -> RenderedImage
+    {
         var code: Int32 = 0
-        guard let img = pdf_render_page_thumbnail(try ptr(), Int32(pageIndex), Int32(size), format, &code) else {
+        guard
+            let img = pdf_render_page_thumbnail(
+                try ptr(), Int32(pageIndex), Int32(size), format, &code)
+        else {
             throw PdfOxideError(code: code, op: "renderPageThumbnail")
         }
         return try RenderedImage(img, "renderPageThumbnail")
@@ -608,10 +659,12 @@ public final class Document {
         transparentBackground: Bool = false, renderAnnotations: Bool = true, jpegQuality: Int32 = 90
     ) throws -> RenderedImage {
         var code: Int32 = 0
-        guard let img = pdf_render_page_with_options(
-            try ptr(), Int32(pageIndex), dpi, format, bgR, bgG, bgB, bgA,
-            transparentBackground ? 1 : 0, renderAnnotations ? 1 : 0, jpegQuality, &code
-        ) else {
+        guard
+            let img = pdf_render_page_with_options(
+                try ptr(), Int32(pageIndex), dpi, format, bgR, bgG, bgB, bgA,
+                transparentBackground ? 1 : 0, renderAnnotations ? 1 : 0, jpegQuality, &code
+            )
+        else {
             throw PdfOxideError(code: code, op: "renderPageWithOptions")
         }
         return try RenderedImage(img, "renderPageWithOptions")
@@ -621,7 +674,8 @@ public final class Document {
     public func renderPageWithOptionsEx(
         _ pageIndex: Int, dpi: Int32 = 150, format: Int32 = 0,
         bgR: Float = 1, bgG: Float = 1, bgB: Float = 1, bgA: Float = 1,
-        transparentBackground: Bool = false, renderAnnotations: Bool = true, jpegQuality: Int32 = 90,
+        transparentBackground: Bool = false, renderAnnotations: Bool = true,
+        jpegQuality: Int32 = 90,
         excludedLayers: [String] = []
     ) throws -> RenderedImage {
         let h = try ptr()
@@ -639,31 +693,41 @@ public final class Document {
 
     /// Render a rectangular region (PDF user-space points, origin bottom-left).
     public func renderPageRegion(
-        _ pageIndex: Int, cropX: Float, cropY: Float, cropWidth: Float, cropHeight: Float, format: Int32 = 0
+        _ pageIndex: Int, cropX: Float, cropY: Float, cropWidth: Float, cropHeight: Float,
+        format: Int32 = 0
     ) throws -> RenderedImage {
         var code: Int32 = 0
-        guard let img = pdf_render_page_region(
-            try ptr(), Int32(pageIndex), cropX, cropY, cropWidth, cropHeight, format, &code
-        ) else {
+        guard
+            let img = pdf_render_page_region(
+                try ptr(), Int32(pageIndex), cropX, cropY, cropWidth, cropHeight, format, &code
+            )
+        else {
             throw PdfOxideError(code: code, op: "renderPageRegion")
         }
         return try RenderedImage(img, "renderPageRegion")
     }
 
     /// Render the page to fit inside `width`×`height` pixels, preserving aspect ratio.
-    public func renderPageFit(_ pageIndex: Int, width: Int32, height: Int32, format: Int32 = 0) throws -> RenderedImage {
+    public func renderPageFit(_ pageIndex: Int, width: Int32, height: Int32, format: Int32 = 0)
+        throws -> RenderedImage
+    {
         var code: Int32 = 0
-        guard let img = pdf_render_page_fit(try ptr(), Int32(pageIndex), width, height, format, &code) else {
+        guard
+            let img = pdf_render_page_fit(try ptr(), Int32(pageIndex), width, height, format, &code)
+        else {
             throw PdfOxideError(code: code, op: "renderPageFit")
         }
         return try RenderedImage(img, "renderPageFit")
     }
 
     /// Render to a raw premultiplied RGBA8888 buffer; also returns the pixel dimensions.
-    public func renderPageRaw(_ pageIndex: Int, dpi: Int32 = 150) throws -> (image: RenderedImage, width: Int, height: Int) {
+    public func renderPageRaw(_ pageIndex: Int, dpi: Int32 = 150) throws -> (
+        image: RenderedImage, width: Int, height: Int
+    ) {
         var code: Int32 = 0
         var outW: Int32 = 0, outH: Int32 = 0
-        guard let img = pdf_render_page_raw(try ptr(), Int32(pageIndex), dpi, &outW, &outH, &code) else {
+        guard let img = pdf_render_page_raw(try ptr(), Int32(pageIndex), dpi, &outW, &outH, &code)
+        else {
             throw PdfOxideError(code: code, op: "renderPageRaw")
         }
         return (try RenderedImage(img, "renderPageRaw"), Int(outW), Int(outH))
@@ -723,7 +787,8 @@ public final class Document {
         var code: Int32 = 0
         let enginePtr = engine.flatMap { $0.handle }
         return try takeString(
-            pdf_ocr_extract_text(h, Int32(pageIndex), enginePtr.map { UnsafeRawPointer($0) }, &code),
+            pdf_ocr_extract_text(
+                h, Int32(pageIndex), enginePtr.map { UnsafeRawPointer($0) }, &code),
             code, "ocrExtractText"
         )
     }
@@ -780,21 +845,27 @@ public final class Document {
     /// Open a DOCX document from in-memory bytes (converted to a PDF Document).
     public static func openFromDocxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
-        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_docx_bytes($0.baseAddress, $0.count, &code) }
+        let h = bytes.withUnsafeBufferPointer {
+            pdf_document_open_from_docx_bytes($0.baseAddress, $0.count, &code)
+        }
         guard let h else { throw PdfOxideError(code: code, op: "openFromDocxBytes") }
         return Document(h)
     }
     /// Open a PPTX document from in-memory bytes (converted to a PDF Document).
     public static func openFromPptxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
-        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_pptx_bytes($0.baseAddress, $0.count, &code) }
+        let h = bytes.withUnsafeBufferPointer {
+            pdf_document_open_from_pptx_bytes($0.baseAddress, $0.count, &code)
+        }
         guard let h else { throw PdfOxideError(code: code, op: "openFromPptxBytes") }
         return Document(h)
     }
     /// Open an XLSX document from in-memory bytes (converted to a PDF Document).
     public static func openFromXlsxBytes(_ bytes: [UInt8]) throws -> Document {
         var code: Int32 = 0
-        let h = bytes.withUnsafeBufferPointer { pdf_document_open_from_xlsx_bytes($0.baseAddress, $0.count, &code) }
+        let h = bytes.withUnsafeBufferPointer {
+            pdf_document_open_from_xlsx_bytes($0.baseAddress, $0.count, &code)
+        }
         guard let h else { throw PdfOxideError(code: code, op: "openFromXlsxBytes") }
         return Document(h)
     }
@@ -821,7 +892,9 @@ public final class Document {
     // ── Final phase: in-rect extraction ──────────────────────────────────────
 
     /// Extract plain text inside a (x, y, w, h) rectangle on a (0-based) page.
-    public func extractTextInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> String {
+    public func extractTextInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws
+        -> String
+    {
         var code: Int32 = 0
         return try takeString(
             pdf_document_extract_text_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code),
@@ -830,9 +903,14 @@ public final class Document {
     }
 
     /// Extract words inside a (x, y, w, h) rectangle on a (0-based) page.
-    public func extractWordsInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Word] {
+    public func extractWordsInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws
+        -> [Word]
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_extract_words_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+        guard
+            let list = pdf_document_extract_words_in_rect(
+                try ptr(), Int32(pageIndex), x, y, w, h, &code)
+        else {
             throw PdfOxideError(code: code, op: "extractWordsInRect")
         }
         defer { pdf_oxide_word_list_free(list) }
@@ -841,24 +919,33 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let text = try takeString(pdf_oxide_word_get_text(list, idx, &code), code, "extractWordsInRect.text")
-            let fontName = try takeString(pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWordsInRect.fontName")
+            let text = try takeString(
+                pdf_oxide_word_get_text(list, idx, &code), code, "extractWordsInRect.text")
+            let fontName = try takeString(
+                pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWordsInRect.fontName")
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
             var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
-            result.append(Word(
-                text: text, bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
-                fontName: fontName, fontSize: Double(fontSize), bold: bold
-            ))
+            result.append(
+                Word(
+                    text: text,
+                    bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
+                    fontName: fontName, fontSize: Double(fontSize), bold: bold
+                ))
         }
         return result
     }
 
     /// Extract text lines inside a (x, y, w, h) rectangle on a (0-based) page.
-    public func extractLinesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [TextLine] {
+    public func extractLinesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws
+        -> [TextLine]
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_extract_lines_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+        guard
+            let list = pdf_document_extract_lines_in_rect(
+                try ptr(), Int32(pageIndex), x, y, w, h, &code)
+        else {
             throw PdfOxideError(code: code, op: "extractLinesInRect")
         }
         defer { pdf_oxide_line_list_free(list) }
@@ -867,22 +954,30 @@ public final class Document {
         result.reserveCapacity(n)
         for i in 0..<n {
             let idx = Int32(i)
-            let text = try takeString(pdf_oxide_line_get_text(list, idx, &code), code, "extractLinesInRect.text")
+            let text = try takeString(
+                pdf_oxide_line_get_text(list, idx, &code), code, "extractLinesInRect.text")
             let wordCount = Int(pdf_oxide_line_get_word_count(list, idx, &code))
             var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
             pdf_oxide_line_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
-            result.append(TextLine(
-                text: text, bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
-                wordCount: wordCount
-            ))
+            result.append(
+                TextLine(
+                    text: text,
+                    bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
+                    wordCount: wordCount
+                ))
         }
         return result
     }
 
     /// Extract tables inside a (x, y, w, h) rectangle on a (0-based) page.
-    public func extractTablesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Table] {
+    public func extractTablesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws
+        -> [Table]
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_extract_tables_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+        guard
+            let list = pdf_document_extract_tables_in_rect(
+                try ptr(), Int32(pageIndex), x, y, w, h, &code)
+        else {
             throw PdfOxideError(code: code, op: "extractTablesInRect")
         }
         defer { pdf_oxide_table_list_free(list) }
@@ -900,22 +995,29 @@ public final class Document {
                 var row: [String] = []
                 row.reserveCapacity(max(0, colCount))
                 for c in 0..<max(0, colCount) {
-                    row.append(try takeString(
-                        pdf_oxide_table_get_cell_text(list, idx, Int32(r), Int32(c), &code),
-                        code, "extractTablesInRect.cell"
-                    ))
+                    row.append(
+                        try takeString(
+                            pdf_oxide_table_get_cell_text(list, idx, Int32(r), Int32(c), &code),
+                            code, "extractTablesInRect.cell"
+                        ))
                 }
                 cells.append(row)
             }
-            result.append(Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
+            result.append(
+                Table(rowCount: rowCount, colCount: colCount, hasHeader: hasHeader, cells: cells))
         }
         return result
     }
 
     /// Extract images inside a (x, y, w, h) rectangle on a (0-based) page.
-    public func extractImagesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws -> [Image] {
+    public func extractImagesInRect(_ pageIndex: Int, x: Float, y: Float, w: Float, h: Float) throws
+        -> [Image]
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_extract_images_in_rect(try ptr(), Int32(pageIndex), x, y, w, h, &code) else {
+        guard
+            let list = pdf_document_extract_images_in_rect(
+                try ptr(), Int32(pageIndex), x, y, w, h, &code)
+        else {
             throw PdfOxideError(code: code, op: "extractImagesInRect")
         }
         defer { pdf_oxide_image_list_free(list) }
@@ -927,8 +1029,11 @@ public final class Document {
             let width = Int(pdf_oxide_image_get_width(list, idx, &code))
             let height = Int(pdf_oxide_image_get_height(list, idx, &code))
             let bpc = Int(pdf_oxide_image_get_bits_per_component(list, idx, &code))
-            let format = try takeString(pdf_oxide_image_get_format(list, idx, &code), code, "extractImagesInRect.format")
-            let colorspace = try takeString(pdf_oxide_image_get_colorspace(list, idx, &code), code, "extractImagesInRect.colorspace")
+            let format = try takeString(
+                pdf_oxide_image_get_format(list, idx, &code), code, "extractImagesInRect.format")
+            let colorspace = try takeString(
+                pdf_oxide_image_get_colorspace(list, idx, &code), code,
+                "extractImagesInRect.colorspace")
             var dataLen: Int32 = 0
             let data: [UInt8]
             if let p = pdf_oxide_image_get_data(list, idx, &dataLen, &code) {
@@ -938,10 +1043,11 @@ public final class Document {
             } else {
                 data = []
             }
-            result.append(Image(
-                width: width, height: height, bitsPerComponent: bpc,
-                format: format, colorspace: colorspace, data: data
-            ))
+            result.append(
+                Image(
+                    width: width, height: height, bitsPerComponent: bpc,
+                    format: format, colorspace: colorspace, data: data
+                ))
         }
         return result
     }
@@ -951,12 +1057,15 @@ public final class Document {
     /// Auto-detect the best extraction path and return text for a (0-based) page.
     public func extractTextAuto(_ pageIndex: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_text_auto(try ptr(), Int32(pageIndex), &code), code, "extractTextAuto")
+        return try takeString(
+            pdf_document_extract_text_auto(try ptr(), Int32(pageIndex), &code), code,
+            "extractTextAuto")
     }
     /// Extract text for every page concatenated.
     public func extractAllText() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_extract_all_text(try ptr(), &code), code, "extractAllText")
+        return try takeString(
+            pdf_document_extract_all_text(try ptr(), &code), code, "extractAllText")
     }
     /// Auto-extract a single (0-based) page with an options-JSON string.
     public func extractPageAuto(_ pageIndex: Int, optionsJson: String = "{}") throws -> String {
@@ -969,12 +1078,14 @@ public final class Document {
     /// Classify a single (0-based) page; returns a JSON classification.
     public func classifyPage(_ pageIndex: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_classify_page(try ptr(), Int32(pageIndex), &code), code, "classifyPage")
+        return try takeString(
+            pdf_document_classify_page(try ptr(), Int32(pageIndex), &code), code, "classifyPage")
     }
     /// Classify the whole document; returns a JSON classification.
     public func classifyDocument() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_document_classify_document(try ptr(), &code), code, "classifyDocument")
+        return try takeString(
+            pdf_document_classify_document(try ptr(), &code), code, "classifyDocument")
     }
 
     // ── Final phase: header / footer / artifact removal ──────────────────────
@@ -1036,12 +1147,17 @@ public final class Document {
         result.reserveCapacity(max(0, n))
         for i in 0..<max(0, n) {
             let idx = Int32(i)
-            let name = try takeString(pdf_oxide_form_field_get_name(list, idx, &code), code, "formFields.name")
-            let value = try takeString(pdf_oxide_form_field_get_value(list, idx, &code), code, "formFields.value")
-            let type = try takeString(pdf_oxide_form_field_get_type(list, idx, &code), code, "formFields.type")
+            let name = try takeString(
+                pdf_oxide_form_field_get_name(list, idx, &code), code, "formFields.name")
+            let value = try takeString(
+                pdf_oxide_form_field_get_value(list, idx, &code), code, "formFields.value")
+            let type = try takeString(
+                pdf_oxide_form_field_get_type(list, idx, &code), code, "formFields.type")
             let readonly = pdf_oxide_form_field_is_readonly(list, idx, &code)
             let required = pdf_oxide_form_field_is_required(list, idx, &code)
-            result.append(FormField(name: name, value: value, type: type, readonly: readonly, required: required))
+            result.append(
+                FormField(
+                    name: name, value: value, type: type, readonly: readonly, required: required))
         }
         return result
     }
@@ -1128,7 +1244,8 @@ public final class Document {
     /// The signature at `index`, or `nil` when none is present at that slot.
     public func signature(_ index: Int) throws -> SignatureInfo? {
         var code: Int32 = 0
-        guard let s = pdf_document_get_signature(UnsafeRawPointer(try ptr()), Int32(index), &code) else {
+        guard let s = pdf_document_get_signature(UnsafeRawPointer(try ptr()), Int32(index), &code)
+        else {
             if code != 0 { throw PdfOxideError(code: code, op: "signature") }
             return nil
         }
@@ -1162,7 +1279,8 @@ public final class Document {
     /// Serialise a (0-based) page's annotations to JSON.
     public func annotationsToJson(_ pageIndex: Int) throws -> String {
         var code: Int32 = 0
-        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code)
+        else {
             throw PdfOxideError(code: code, op: "annotationsToJson")
         }
         defer { pdf_oxide_annotation_list_free(list) }
@@ -1192,13 +1310,19 @@ public final class Document {
     }
 
     /// Serialise a page's search results for `term` to JSON.
-    public func searchResultsToJson(_ pageIndex: Int, _ term: String, caseSensitive: Bool) throws -> String {
+    public func searchResultsToJson(_ pageIndex: Int, _ term: String, caseSensitive: Bool) throws
+        -> String
+    {
         var code: Int32 = 0
-        guard let list = pdf_document_search_page(try ptr(), Int32(pageIndex), term, caseSensitive, &code) else {
+        guard
+            let list = pdf_document_search_page(
+                try ptr(), Int32(pageIndex), term, caseSensitive, &code)
+        else {
             throw PdfOxideError(code: code, op: "searchResultsToJson")
         }
         defer { pdf_oxide_search_result_free(list) }
-        return try takeString(pdf_oxide_search_results_to_json(list, &code), code, "searchResultsToJson")
+        return try takeString(
+            pdf_oxide_search_results_to_json(list, &code), code, "searchResultsToJson")
     }
 
     // ── Final phase: annotation extras (per-page annotation list) ────────────
@@ -1206,7 +1330,8 @@ public final class Document {
     /// Read extended attributes for the annotation at `index` on a (0-based) page.
     public func annotationExtras(_ pageIndex: Int, index: Int) throws -> AnnotationExtras {
         var code: Int32 = 0
-        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code) else {
+        guard let list = pdf_document_get_page_annotations(try ptr(), Int32(pageIndex), &code)
+        else {
             throw PdfOxideError(code: code, op: "annotationExtras")
         }
         defer { pdf_oxide_annotation_list_free(list) }
@@ -1218,8 +1343,12 @@ public final class Document {
         let markedDeleted = pdf_oxide_annotation_is_marked_deleted(list, idx, &code)
         let printable = pdf_oxide_annotation_is_printable(list, idx, &code)
         let readOnly = pdf_oxide_annotation_is_read_only(list, idx, &code)
-        let uri = (try? takeString(pdf_oxide_link_annotation_get_uri(list, idx, &code), code, "uri")) ?? ""
-        let iconName = (try? takeString(pdf_oxide_text_annotation_get_icon_name(list, idx, &code), code, "icon")) ?? ""
+        let uri =
+            (try? takeString(pdf_oxide_link_annotation_get_uri(list, idx, &code), code, "uri"))
+            ?? ""
+        let iconName =
+            (try? takeString(
+                pdf_oxide_text_annotation_get_icon_name(list, idx, &code), code, "icon")) ?? ""
         // Highlight quad points.
         var quads: [QuadPoint] = []
         let qn = pdf_oxide_highlight_annotation_get_quad_points_count(list, idx, &code)
@@ -1230,10 +1359,11 @@ public final class Document {
                 pdf_oxide_highlight_annotation_get_quad_point(
                     list, idx, q, &x1, &y1, &x2, &y2, &x3, &y3, &x4, &y4, &code
                 )
-                quads.append(QuadPoint(
-                    x1: Double(x1), y1: Double(y1), x2: Double(x2), y2: Double(y2),
-                    x3: Double(x3), y3: Double(y3), x4: Double(x4), y4: Double(y4)
-                ))
+                quads.append(
+                    QuadPoint(
+                        x1: Double(x1), y1: Double(y1), x2: Double(x2), y2: Double(y2),
+                        x3: Double(x3), y3: Double(y3), x4: Double(x4), y4: Double(y4)
+                    ))
             }
         }
         return AnnotationExtras(
@@ -1294,17 +1424,23 @@ public final class Pdf {
 
     public static func fromMarkdown(_ md: String) throws -> Pdf {
         var code: Int32 = 0
-        guard let h = pdf_from_markdown(md, &code) else { throw PdfOxideError(code: code, op: "fromMarkdown") }
+        guard let h = pdf_from_markdown(md, &code) else {
+            throw PdfOxideError(code: code, op: "fromMarkdown")
+        }
         return Pdf(h)
     }
     public static func fromHtml(_ html: String) throws -> Pdf {
         var code: Int32 = 0
-        guard let h = pdf_from_html(html, &code) else { throw PdfOxideError(code: code, op: "fromHtml") }
+        guard let h = pdf_from_html(html, &code) else {
+            throw PdfOxideError(code: code, op: "fromHtml")
+        }
         return Pdf(h)
     }
     public static func fromText(_ text: String) throws -> Pdf {
         var code: Int32 = 0
-        guard let h = pdf_from_text(text, &code) else { throw PdfOxideError(code: code, op: "fromText") }
+        guard let h = pdf_from_text(text, &code) else {
+            throw PdfOxideError(code: code, op: "fromText")
+        }
         return Pdf(h)
     }
 
@@ -1313,7 +1449,9 @@ public final class Pdf {
     /// Build a single-page PDF wrapping the image at `path`.
     public static func fromImage(_ path: String) throws -> Pdf {
         var code: Int32 = 0
-        guard let h = pdf_from_image(path, &code) else { throw PdfOxideError(code: code, op: "fromImage") }
+        guard let h = pdf_from_image(path, &code) else {
+            throw PdfOxideError(code: code, op: "fromImage")
+        }
         return Pdf(h)
     }
 
@@ -1328,10 +1466,12 @@ public final class Pdf {
     }
 
     /// Build a PDF from HTML + CSS with a single optional embedded font.
-    public static func fromHtmlCss(html: String, css: String, fontBytes: [UInt8] = []) throws -> Pdf {
+    public static func fromHtmlCss(html: String, css: String, fontBytes: [UInt8] = []) throws -> Pdf
+    {
         var code: Int32 = 0
         let h = fontBytes.withUnsafeBufferPointer { buf in
-            pdf_from_html_css(html, css, fontBytes.isEmpty ? nil : buf.baseAddress, buf.count, &code)
+            pdf_from_html_css(
+                html, css, fontBytes.isEmpty ? nil : buf.baseAddress, buf.count, &code)
         }
         guard let h else { throw PdfOxideError(code: code, op: "fromHtmlCss") }
         return Pdf(h)
@@ -1339,11 +1479,14 @@ public final class Pdf {
 
     /// Build a PDF from HTML + CSS with a multi-font cascade. `families` and
     /// `fonts` are parallel arrays.
-    public static func fromHtmlCssWithFonts(html: String, css: String, families: [String], fonts: [[UInt8]]) throws -> Pdf {
+    public static func fromHtmlCssWithFonts(
+        html: String, css: String, families: [String], fonts: [[UInt8]]
+    ) throws -> Pdf {
         var code: Int32 = 0
         let h = withCStringArray(families) { famPtr -> OpaquePointer? in
             withByteArrayArray(fonts) { fontPtrs, fontLens in
-                pdf_from_html_css_with_fonts(html, css, famPtr, fontPtrs, fontLens, UInt(families.count), &code)
+                pdf_from_html_css_with_fonts(
+                    html, css, famPtr, fontPtrs, fontLens, UInt(families.count), &code)
             }
         }
         guard let h else { throw PdfOxideError(code: code, op: "fromHtmlCssWithFonts") }
@@ -1357,7 +1500,9 @@ public final class Pdf {
 
     public func toBytes() throws -> [UInt8] {
         var len: Int32 = 0, code: Int32 = 0
-        guard let p = pdf_save_to_bytes(try ptr(), &len, &code) else { throw PdfOxideError(code: code, op: "toBytes") }
+        guard let p = pdf_save_to_bytes(try ptr(), &len, &code) else {
+            throw PdfOxideError(code: code, op: "toBytes")
+        }
         // Raw byte buffers free via free_bytes, not free_string.
         defer { free_bytes(p) }
         let n = len < 0 ? 0 : Int(len)
@@ -1395,7 +1540,9 @@ public final class DocumentEditor {
     }
 
     // Copy a C byte buffer return into [UInt8] and free it via free_bytes.
-    private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+    private func takeBytes(
+        _ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String
+    ) throws -> [UInt8] {
         guard let p else { throw PdfOxideError(code: code, op: op) }
         defer { free_bytes(p) }
         let n = len < 0 ? 0 : len
@@ -1453,7 +1600,8 @@ public final class DocumentEditor {
 
     public func getSourcePath() throws -> String {
         var code: Int32 = 0
-        return try takeString(document_editor_get_source_path(try ptr(), &code), code, "getSourcePath")
+        return try takeString(
+            document_editor_get_source_path(try ptr(), &code), code, "getSourcePath")
     }
 
     public func getProducer() throws -> String {
@@ -1469,7 +1617,8 @@ public final class DocumentEditor {
 
     public func getCreationDate() throws -> String {
         var code: Int32 = 0
-        return try takeString(document_editor_get_creation_date(try ptr(), &code), code, "getCreationDate")
+        return try takeString(
+            document_editor_get_creation_date(try ptr(), &code), code, "getCreationDate")
     }
     public func setCreationDate(_ date: String) throws {
         var code: Int32 = 0
@@ -1539,7 +1688,9 @@ public final class DocumentEditor {
         }
         return Bbox(x: x, y: y, width: w, height: h)
     }
-    public func setPageCropBox(_ page: Int, x: Double, y: Double, width: Double, height: Double) throws {
+    public func setPageCropBox(_ page: Int, x: Double, y: Double, width: Double, height: Double)
+        throws
+    {
         var code: Int32 = 0
         if document_editor_set_page_crop_box(try ptr(), page, x, y, width, height, &code) != 0 {
             throw PdfOxideError(code: code, op: "setPageCropBox")
@@ -1554,7 +1705,9 @@ public final class DocumentEditor {
         }
         return Bbox(x: x, y: y, width: w, height: h)
     }
-    public func setPageMediaBox(_ page: Int, x: Double, y: Double, width: Double, height: Double) throws {
+    public func setPageMediaBox(_ page: Int, x: Double, y: Double, width: Double, height: Double)
+        throws
+    {
         var code: Int32 = 0
         if document_editor_set_page_media_box(try ptr(), page, x, y, width, height, &code) != 0 {
             throw PdfOxideError(code: code, op: "setPageMediaBox")
@@ -1620,7 +1773,9 @@ public final class DocumentEditor {
 
     /// Queue a redaction rectangle (`x1,y1`–`x2,y2`) with an overlay colour
     /// (`r,g,b`, DeviceRGB 0..1) on a (0-based) page.
-    public func redactionAdd(_ page: Int, x1: Double, y1: Double, x2: Double, y2: Double, r: Double, g: Double, b: Double) throws {
+    public func redactionAdd(
+        _ page: Int, x1: Double, y1: Double, x2: Double, y2: Double, r: Double, g: Double, b: Double
+    ) throws {
         var code: Int32 = 0
         if pdf_redaction_add(try ptr(), UInt(page), x1, y1, x2, y2, r, g, b, &code) != 0 {
             throw PdfOxideError(code: code, op: "redactionAdd")
@@ -1659,7 +1814,9 @@ public final class DocumentEditor {
 
     /// Draw `barcode` onto a (0-based) page at `(x, y)` sized `width`×`height`
     /// (PDF user-space points).
-    public func addBarcodeToPage(_ page: Int, _ barcode: BarcodeImage, x: Float, y: Float, width: Float, height: Float) throws {
+    public func addBarcodeToPage(
+        _ page: Int, _ barcode: BarcodeImage, x: Float, y: Float, width: Float, height: Float
+    ) throws {
         let h = try ptr()
         guard let bc = barcode.handle else {
             throw PdfOxideError(code: 0, op: "addBarcodeToPage: barcode is closed")
@@ -1704,7 +1861,8 @@ public final class DocumentEditor {
     }
     public func flattenWarning(_ index: Int) throws -> String {
         var code: Int32 = 0
-        return try takeString(document_editor_flatten_warning(try ptr(), Int32(index), &code), code, "flattenWarning")
+        return try takeString(
+            document_editor_flatten_warning(try ptr(), Int32(index), &code), code, "flattenWarning")
     }
 
     /// 1 == marked for flatten, 0 == not. Throws on a -1 error status.
@@ -1811,24 +1969,30 @@ public final class DocumentEditor {
         return try takeBytes(p, len, code, "saveToBytes")
     }
 
-    public func saveToBytesWithOptions(compress: Bool, garbageCollect: Bool, linearize: Bool) throws -> [UInt8] {
+    public func saveToBytesWithOptions(compress: Bool, garbageCollect: Bool, linearize: Bool) throws
+        -> [UInt8]
+    {
         var code: Int32 = 0
         var len = 0
-        let p = document_editor_save_to_bytes_with_options(try ptr(), compress, garbageCollect, linearize, &len, &code)
+        let p = document_editor_save_to_bytes_with_options(
+            try ptr(), compress, garbageCollect, linearize, &len, &code)
         return try takeBytes(p, len, code, "saveToBytesWithOptions")
     }
 
     public func saveEncrypted(_ path: String, userPassword: String, ownerPassword: String) throws {
         var code: Int32 = 0
-        if document_editor_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code) != 0 {
+        if document_editor_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code) != 0
+        {
             throw PdfOxideError(code: code, op: "saveEncrypted")
         }
     }
 
-    public func saveEncryptedToBytes(userPassword: String, ownerPassword: String) throws -> [UInt8] {
+    public func saveEncryptedToBytes(userPassword: String, ownerPassword: String) throws -> [UInt8]
+    {
         var code: Int32 = 0
         var len = 0
-        let p = document_editor_save_encrypted_to_bytes(try ptr(), userPassword, ownerPassword, &len, &code)
+        let p = document_editor_save_encrypted_to_bytes(
+            try ptr(), userPassword, ownerPassword, &len, &code)
         return try takeBytes(p, len, code, "saveEncryptedToBytes")
     }
 }
@@ -1901,7 +2065,9 @@ public final class PageBuilder {
 
     // Run a status-returning op and return self for chaining.
     @discardableResult
-    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws -> PageBuilder {
+    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws
+        -> PageBuilder
+    {
         let h = try ptr()
         var code: Int32 = 0
         if body(h, &code) != 0 { throw PdfOxideError(code: code, op: name) }
@@ -1931,10 +2097,14 @@ public final class PageBuilder {
     @discardableResult public func horizontalRule() throws -> PageBuilder {
         try op("horizontalRule") { pdf_page_builder_horizontal_rule($0, &$1) }
     }
-    @discardableResult public func columns(_ columnCount: UInt32, _ gapPt: Float, _ text: String) throws -> PageBuilder {
+    @discardableResult public func columns(_ columnCount: UInt32, _ gapPt: Float, _ text: String)
+        throws -> PageBuilder
+    {
         try op("columns") { pdf_page_builder_columns($0, columnCount, gapPt, text, &$1) }
     }
-    @discardableResult public func footnote(_ refMark: String, _ noteText: String) throws -> PageBuilder {
+    @discardableResult public func footnote(_ refMark: String, _ noteText: String) throws
+        -> PageBuilder
+    {
         try op("footnote") { pdf_page_builder_footnote($0, refMark, noteText, &$1) }
     }
 
@@ -1949,7 +2119,9 @@ public final class PageBuilder {
     @discardableResult public func inlineItalic(_ text: String) throws -> PageBuilder {
         try op("inlineItalic") { pdf_page_builder_inline_italic($0, text, &$1) }
     }
-    @discardableResult public func inlineColor(_ r: Float, _ g: Float, _ b: Float, _ text: String) throws -> PageBuilder {
+    @discardableResult public func inlineColor(_ r: Float, _ g: Float, _ b: Float, _ text: String)
+        throws -> PageBuilder
+    {
         try op("inlineColor") { pdf_page_builder_inline_color($0, r, g, b, text, &$1) }
     }
     @discardableResult public func newline() throws -> PageBuilder {
@@ -1994,16 +2166,24 @@ public final class PageBuilder {
 
     // ── text-markup annotations ──────────────────────────────────────────────────
 
-    @discardableResult public func highlight(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func highlight(_ r: Float, _ g: Float, _ b: Float) throws
+        -> PageBuilder
+    {
         try op("highlight") { pdf_page_builder_highlight($0, r, g, b, &$1) }
     }
-    @discardableResult public func underline(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func underline(_ r: Float, _ g: Float, _ b: Float) throws
+        -> PageBuilder
+    {
         try op("underline") { pdf_page_builder_underline($0, r, g, b, &$1) }
     }
-    @discardableResult public func strikeout(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func strikeout(_ r: Float, _ g: Float, _ b: Float) throws
+        -> PageBuilder
+    {
         try op("strikeout") { pdf_page_builder_strikeout($0, r, g, b, &$1) }
     }
-    @discardableResult public func squiggly(_ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func squiggly(_ r: Float, _ g: Float, _ b: Float) throws
+        -> PageBuilder
+    {
         try op("squiggly") { pdf_page_builder_squiggly($0, r, g, b, &$1) }
     }
 
@@ -2012,7 +2192,9 @@ public final class PageBuilder {
     @discardableResult public func stickyNote(_ text: String) throws -> PageBuilder {
         try op("stickyNote") { pdf_page_builder_sticky_note($0, text, &$1) }
     }
-    @discardableResult public func stickyNoteAt(_ x: Float, _ y: Float, _ text: String) throws -> PageBuilder {
+    @discardableResult public func stickyNoteAt(_ x: Float, _ y: Float, _ text: String) throws
+        -> PageBuilder
+    {
         try op("stickyNoteAt") { pdf_page_builder_sticky_note_at($0, x, y, text, &$1) }
     }
     @discardableResult public func watermark(_ text: String) throws -> PageBuilder {
@@ -2027,38 +2209,55 @@ public final class PageBuilder {
     @discardableResult public func stamp(_ typeName: String) throws -> PageBuilder {
         try op("stamp") { pdf_page_builder_stamp($0, typeName, &$1) }
     }
-    @discardableResult public func freetext(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String) throws -> PageBuilder {
+    @discardableResult public func freetext(
+        _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String
+    ) throws -> PageBuilder {
         try op("freetext") { pdf_page_builder_freetext($0, x, y, w, h, text, &$1) }
     }
 
     // ── form fields ──────────────────────────────────────────────────────────────
 
-    @discardableResult public func textField(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, defaultValue: String? = nil) throws -> PageBuilder {
+    @discardableResult public func textField(
+        _ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, defaultValue: String? = nil
+    ) throws -> PageBuilder {
         try op("textField") { pdf_page_builder_text_field($0, name, x, y, w, h, defaultValue, &$1) }
     }
-    @discardableResult public func checkbox(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, checked: Bool) throws -> PageBuilder {
+    @discardableResult public func checkbox(
+        _ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, checked: Bool
+    ) throws -> PageBuilder {
         try op("checkbox") { pdf_page_builder_checkbox($0, name, x, y, w, h, checked ? 1 : 0, &$1) }
     }
-    @discardableResult public func pushButton(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ caption: String) throws -> PageBuilder {
+    @discardableResult public func pushButton(
+        _ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ caption: String
+    ) throws -> PageBuilder {
         try op("pushButton") { pdf_page_builder_push_button($0, name, x, y, w, h, caption, &$1) }
     }
-    @discardableResult public func signatureField(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+    @discardableResult public func signatureField(
+        _ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float
+    ) throws -> PageBuilder {
         try op("signatureField") { pdf_page_builder_signature_field($0, name, x, y, w, h, &$1) }
     }
 
     /// Add a dropdown combo-box. `selected` may be nil for no initial selection.
-    @discardableResult public func comboBox(_ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, options: [String], selected: String? = nil) throws -> PageBuilder {
+    @discardableResult public func comboBox(
+        _ name: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float, options: [String],
+        selected: String? = nil
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = withCStringArray(options) { optsPtr in
-            pdf_page_builder_combo_box(h0, name, x, y, w, h, optsPtr, options.count, selected, &code)
+            pdf_page_builder_combo_box(
+                h0, name, x, y, w, h, optsPtr, options.count, selected, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "comboBox") }
         return self
     }
 
     /// Add a radio-button group. `values`/`xs`/`ys`/`ws`/`hs` are parallel arrays.
-    @discardableResult public func radioGroup(_ name: String, values: [String], xs: [Float], ys: [Float], ws: [Float], hs: [Float], selected: String? = nil) throws -> PageBuilder {
+    @discardableResult public func radioGroup(
+        _ name: String, values: [String], xs: [Float], ys: [Float], ws: [Float], hs: [Float],
+        selected: String? = nil
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let count = values.count
@@ -2083,16 +2282,22 @@ public final class PageBuilder {
 
     // ── barcodes ─────────────────────────────────────────────────────────────────
 
-    @discardableResult public func barcode1d(_ barcodeType: Int32, _ data: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+    @discardableResult public func barcode1d(
+        _ barcodeType: Int32, _ data: String, _ x: Float, _ y: Float, _ w: Float, _ h: Float
+    ) throws -> PageBuilder {
         try op("barcode1d") { pdf_page_builder_barcode_1d($0, barcodeType, data, x, y, w, h, &$1) }
     }
-    @discardableResult public func barcodeQr(_ data: String, _ x: Float, _ y: Float, _ size: Float) throws -> PageBuilder {
+    @discardableResult public func barcodeQr(_ data: String, _ x: Float, _ y: Float, _ size: Float)
+        throws -> PageBuilder
+    {
         try op("barcodeQr") { pdf_page_builder_barcode_qr($0, data, x, y, size, &$1) }
     }
 
     // ── images ───────────────────────────────────────────────────────────────────
 
-    @discardableResult public func image(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+    @discardableResult public func image(
+        _ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
@@ -2101,16 +2306,21 @@ public final class PageBuilder {
         if status != 0 { throw PdfOxideError(code: code, op: "image") }
         return self
     }
-    @discardableResult public func imageWithAlt(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float, altText: String) throws -> PageBuilder {
+    @discardableResult public func imageWithAlt(
+        _ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float, altText: String
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
-            pdf_page_builder_image_with_alt(h0, buf.baseAddress, buf.count, x, y, w, h, altText, &code)
+            pdf_page_builder_image_with_alt(
+                h0, buf.baseAddress, buf.count, x, y, w, h, altText, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "imageWithAlt") }
         return self
     }
-    @discardableResult public func imageArtifact(_ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+    @discardableResult public func imageArtifact(
+        _ bytes: [UInt8], _ x: Float, _ y: Float, _ w: Float, _ h: Float
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = bytes.withUnsafeBufferPointer { buf in
@@ -2122,42 +2332,66 @@ public final class PageBuilder {
 
     // ── vector graphics ──────────────────────────────────────────────────────────
 
-    @discardableResult public func rect(_ x: Float, _ y: Float, _ w: Float, _ h: Float) throws -> PageBuilder {
+    @discardableResult public func rect(_ x: Float, _ y: Float, _ w: Float, _ h: Float) throws
+        -> PageBuilder
+    {
         try op("rect") { pdf_page_builder_rect($0, x, y, w, h, &$1) }
     }
-    @discardableResult public func filledRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func filledRect(
+        _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ r: Float, _ g: Float, _ b: Float
+    ) throws -> PageBuilder {
         try op("filledRect") { pdf_page_builder_filled_rect($0, x, y, w, h, r, g, b, &$1) }
     }
-    @discardableResult public func line(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float) throws -> PageBuilder {
+    @discardableResult public func line(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float) throws
+        -> PageBuilder
+    {
         try op("line") { pdf_page_builder_line($0, x1, y1, x2, y2, &$1) }
     }
-    @discardableResult public func strokeRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
+    @discardableResult public func strokeRect(
+        _ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float,
+        _ b: Float
+    ) throws -> PageBuilder {
         try op("strokeRect") { pdf_page_builder_stroke_rect($0, x, y, w, h, width, r, g, b, &$1) }
     }
-    @discardableResult public func strokeLine(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float, _ b: Float) throws -> PageBuilder {
-        try op("strokeLine") { pdf_page_builder_stroke_line($0, x1, y1, x2, y2, width, r, g, b, &$1) }
+    @discardableResult public func strokeLine(
+        _ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float,
+        _ b: Float
+    ) throws -> PageBuilder {
+        try op("strokeLine") {
+            pdf_page_builder_stroke_line($0, x1, y1, x2, y2, width, r, g, b, &$1)
+        }
     }
 
-    @discardableResult public func strokeRectDashed(_ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float, _ b: Float, dashArray: [Float], phase: Float) throws -> PageBuilder {
+    @discardableResult public func strokeRectDashed(
+        _ x: Float, _ y: Float, _ w: Float, _ h: Float, width: Float, _ r: Float, _ g: Float,
+        _ b: Float, dashArray: [Float], phase: Float
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = dashArray.withUnsafeBufferPointer { buf in
-            pdf_page_builder_stroke_rect_dashed(h0, x, y, w, h, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+            pdf_page_builder_stroke_rect_dashed(
+                h0, x, y, w, h, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "strokeRectDashed") }
         return self
     }
-    @discardableResult public func strokeLineDashed(_ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float, _ b: Float, dashArray: [Float], phase: Float) throws -> PageBuilder {
+    @discardableResult public func strokeLineDashed(
+        _ x1: Float, _ y1: Float, _ x2: Float, _ y2: Float, width: Float, _ r: Float, _ g: Float,
+        _ b: Float, dashArray: [Float], phase: Float
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = dashArray.withUnsafeBufferPointer { buf in
-            pdf_page_builder_stroke_line_dashed(h0, x1, y1, x2, y2, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
+            pdf_page_builder_stroke_line_dashed(
+                h0, x1, y1, x2, y2, width, r, g, b, buf.baseAddress, dashArray.count, phase, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "strokeLineDashed") }
         return self
     }
 
-    @discardableResult public func textInRect(_ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String, align: Int32) throws -> PageBuilder {
+    @discardableResult public func textInRect(
+        _ x: Float, _ y: Float, _ w: Float, _ h: Float, _ text: String, align: Int32
+    ) throws -> PageBuilder {
         try op("textInRect") { pdf_page_builder_text_in_rect($0, x, y, w, h, text, align, &$1) }
     }
     @discardableResult public func newPageSameSize() throws -> PageBuilder {
@@ -2167,13 +2401,18 @@ public final class PageBuilder {
     // ── tables ───────────────────────────────────────────────────────────────────
 
     /// Buffer a static table. `cellStrings` is row-major (`row * nColumns + col`).
-    @discardableResult public func table(nColumns: Int, widths: [Float], aligns: [Int32], nRows: Int, cellStrings: [String], hasHeader: Bool) throws -> PageBuilder {
+    @discardableResult public func table(
+        nColumns: Int, widths: [Float], aligns: [Int32], nRows: Int, cellStrings: [String],
+        hasHeader: Bool
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = widths.withUnsafeBufferPointer { wP in
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(cellStrings) { cellsPtr in
-                    pdf_page_builder_table(h0, nColumns, wP.baseAddress, aP.baseAddress, nRows, cellsPtr, hasHeader ? 1 : 0, &code)
+                    pdf_page_builder_table(
+                        h0, nColumns, wP.baseAddress, aP.baseAddress, nRows, cellsPtr,
+                        hasHeader ? 1 : 0, &code)
                 }
             }
         }
@@ -2181,13 +2420,17 @@ public final class PageBuilder {
         return self
     }
 
-    @discardableResult public func streamingTableBegin(nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool) throws -> PageBuilder {
+    @discardableResult public func streamingTableBegin(
+        nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = widths.withUnsafeBufferPointer { wP in
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(headers) { hdrPtr in
-                    pdf_page_builder_streaming_table_begin(h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0, &code)
+                    pdf_page_builder_streaming_table_begin(
+                        h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0,
+                        &code)
                 }
             }
         }
@@ -2195,13 +2438,18 @@ public final class PageBuilder {
         return self
     }
 
-    @discardableResult public func streamingTableBeginV2(nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool, mode: Int32, sampleRows: Int, minColWidthPt: Float, maxColWidthPt: Float, maxRowspan: Int) throws -> PageBuilder {
+    @discardableResult public func streamingTableBeginV2(
+        nColumns: Int, headers: [String], widths: [Float], aligns: [Int32], repeatHeader: Bool,
+        mode: Int32, sampleRows: Int, minColWidthPt: Float, maxColWidthPt: Float, maxRowspan: Int
+    ) throws -> PageBuilder {
         let h0 = try ptr()
         var code: Int32 = 0
         let status = widths.withUnsafeBufferPointer { wP in
             aligns.withUnsafeBufferPointer { aP in
                 withCStringArray(headers) { hdrPtr in
-                    pdf_page_builder_streaming_table_begin_v2(h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0, mode, sampleRows, minColWidthPt, maxColWidthPt, maxRowspan, &code)
+                    pdf_page_builder_streaming_table_begin_v2(
+                        h0, nColumns, hdrPtr, wP.baseAddress, aP.baseAddress, repeatHeader ? 1 : 0,
+                        mode, sampleRows, minColWidthPt, maxColWidthPt, maxRowspan, &code)
                 }
             }
         }
@@ -2209,8 +2457,12 @@ public final class PageBuilder {
         return self
     }
 
-    @discardableResult public func streamingTableSetBatchSize(_ batchSize: Int) throws -> PageBuilder {
-        try op("streamingTableSetBatchSize") { pdf_page_builder_streaming_table_set_batch_size($0, batchSize, &$1) }
+    @discardableResult public func streamingTableSetBatchSize(_ batchSize: Int) throws
+        -> PageBuilder
+    {
+        try op("streamingTableSetBatchSize") {
+            pdf_page_builder_streaming_table_set_batch_size($0, batchSize, &$1)
+        }
     }
     public func streamingTablePendingRowCount() throws -> Int {
         Int(pdf_page_builder_streaming_table_pending_row_count(try ptr()))
@@ -2232,17 +2484,21 @@ public final class PageBuilder {
         return self
     }
 
-    @discardableResult public func streamingTablePushRowV2(_ cells: [String], rowspans: [Int]?) throws -> PageBuilder {
+    @discardableResult public func streamingTablePushRowV2(_ cells: [String], rowspans: [Int]?)
+        throws -> PageBuilder
+    {
         let h0 = try ptr()
         var code: Int32 = 0
         let spans = rowspans
         let status = withCStringArray(cells) { cellsPtr -> Int32 in
             if let spans {
                 return spans.withUnsafeBufferPointer { sP in
-                    pdf_page_builder_streaming_table_push_row_v2(h0, cells.count, cellsPtr, sP.baseAddress, &code)
+                    pdf_page_builder_streaming_table_push_row_v2(
+                        h0, cells.count, cellsPtr, sP.baseAddress, &code)
                 }
             }
-            return pdf_page_builder_streaming_table_push_row_v2(h0, cells.count, cellsPtr, nil, &code)
+            return pdf_page_builder_streaming_table_push_row_v2(
+                h0, cells.count, cellsPtr, nil, &code)
         }
         if status != 0 { throw PdfOxideError(code: code, op: "streamingTablePushRowV2") }
         return self
@@ -2289,7 +2545,9 @@ public final class DocumentBuilder {
     }
 
     // Copy a C byte buffer return into [UInt8] and free it via free_bytes.
-    private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+    private func takeBytes(
+        _ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String
+    ) throws -> [UInt8] {
         guard let p else { throw PdfOxideError(code: code, op: op) }
         defer { free_bytes(p) }
         let n = len < 0 ? 0 : len
@@ -2297,7 +2555,9 @@ public final class DocumentBuilder {
     }
 
     @discardableResult
-    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws -> DocumentBuilder {
+    private func op(_ name: String, _ body: (OpaquePointer, inout Int32) -> Int32) throws
+        -> DocumentBuilder
+    {
         let h = try ptr()
         var code: Int32 = 0
         if body(h, &code) != 0 { throw PdfOxideError(code: code, op: name) }
@@ -2339,13 +2599,17 @@ public final class DocumentBuilder {
     @discardableResult public func language(_ lang: String) throws -> DocumentBuilder {
         try op("language") { pdf_document_builder_language($0, lang, &$1) }
     }
-    @discardableResult public func roleMap(custom: String, standard: String) throws -> DocumentBuilder {
+    @discardableResult public func roleMap(custom: String, standard: String) throws
+        -> DocumentBuilder
+    {
         try op("roleMap") { pdf_document_builder_role_map($0, custom, standard, &$1) }
     }
 
     /// Register a TTF/OTF font under `name`. On success the builder **consumes**
     /// `font` (its handle is released so it won't be double-freed).
-    @discardableResult public func registerEmbeddedFont(_ name: String, _ font: EmbeddedFont) throws -> DocumentBuilder {
+    @discardableResult public func registerEmbeddedFont(_ name: String, _ font: EmbeddedFont) throws
+        -> DocumentBuilder
+    {
         let h = try ptr()
         guard let fontHandle = font.handle else {
             throw PdfOxideError(code: 0, op: "registerEmbeddedFont: font already consumed")
@@ -2408,7 +2672,9 @@ public final class DocumentBuilder {
     /// Build and save with AES-256 encryption.
     public func saveEncrypted(_ path: String, userPassword: String, ownerPassword: String) throws {
         var code: Int32 = 0
-        if pdf_document_builder_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code) != 0 {
+        if pdf_document_builder_save_encrypted(try ptr(), path, userPassword, ownerPassword, &code)
+            != 0
+        {
             throw PdfOxideError(code: code, op: "saveEncrypted")
         }
     }
@@ -2416,7 +2682,8 @@ public final class DocumentBuilder {
     /// Build encrypted bytes (AES-256).
     public func toBytesEncrypted(userPassword: String, ownerPassword: String) throws -> [UInt8] {
         var len = 0, code: Int32 = 0
-        let p = pdf_document_builder_to_bytes_encrypted(try ptr(), userPassword, ownerPassword, &len, &code)
+        let p = pdf_document_builder_to_bytes_encrypted(
+            try ptr(), userPassword, ownerPassword, &len, &code)
         return try takeBytes(p, len, code, "toBytesEncrypted")
     }
 
@@ -2429,7 +2696,9 @@ public final class DocumentBuilder {
 // ── Phase-6: digital signatures / PKI / timestamps / TSA / validation ─────────
 
 // Copy an owned C byte buffer return into [UInt8] and free it via free_bytes.
-private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+private func takeBytes(_ p: UnsafeMutablePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String)
+    throws -> [UInt8]
+{
     guard let p else { throw PdfOxideError(code: code, op: op) }
     defer { free_bytes(p) }
     let n = len < 0 ? 0 : len
@@ -2493,15 +2762,21 @@ public final class Certificate {
 
     public func subject() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_certificate_get_subject(UnsafeRawPointer(try ptr()), &code), code, "Certificate.subject")
+        return try takeString(
+            pdf_certificate_get_subject(UnsafeRawPointer(try ptr()), &code), code,
+            "Certificate.subject")
     }
     public func issuer() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_certificate_get_issuer(UnsafeRawPointer(try ptr()), &code), code, "Certificate.issuer")
+        return try takeString(
+            pdf_certificate_get_issuer(UnsafeRawPointer(try ptr()), &code), code,
+            "Certificate.issuer")
     }
     public func serial() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_certificate_get_serial(UnsafeRawPointer(try ptr()), &code), code, "Certificate.serial")
+        return try takeString(
+            pdf_certificate_get_serial(UnsafeRawPointer(try ptr()), &code), code,
+            "Certificate.serial")
     }
 
     /// The certificate's validity window (epoch seconds).
@@ -2540,15 +2815,19 @@ public final class SignatureInfo {
 
     public func signerName() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_signature_get_signer_name(try ptr(), &code), code, "SignatureInfo.signerName")
+        return try takeString(
+            pdf_signature_get_signer_name(try ptr(), &code), code, "SignatureInfo.signerName")
     }
     public func signingReason() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_signature_get_signing_reason(try ptr(), &code), code, "SignatureInfo.signingReason")
+        return try takeString(
+            pdf_signature_get_signing_reason(try ptr(), &code), code, "SignatureInfo.signingReason")
     }
     public func signingLocation() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_signature_get_signing_location(try ptr(), &code), code, "SignatureInfo.signingLocation")
+        return try takeString(
+            pdf_signature_get_signing_location(try ptr(), &code), code,
+            "SignatureInfo.signingLocation")
     }
 
     /// Signing time as Unix epoch seconds.
@@ -2562,7 +2841,9 @@ public final class SignatureInfo {
     /// The signer's certificate, if available.
     public func certificate() throws -> Certificate? {
         var code: Int32 = 0
-        guard let c = pdf_signature_get_certificate(UnsafeRawPointer(try ptr()), &code) else { return nil }
+        guard let c = pdf_signature_get_certificate(UnsafeRawPointer(try ptr()), &code) else {
+            return nil
+        }
         return Certificate(OpaquePointer(c))
     }
 
@@ -2581,7 +2862,9 @@ public final class SignatureInfo {
     /// The signature's embedded timestamp, if any.
     public func timestamp() throws -> Timestamp? {
         var code: Int32 = 0
-        guard let t = pdf_signature_get_timestamp(UnsafeRawPointer(try ptr()), &code) else { return nil }
+        guard let t = pdf_signature_get_timestamp(UnsafeRawPointer(try ptr()), &code) else {
+            return nil
+        }
         return Timestamp(OpaquePointer(t))
     }
 
@@ -2641,7 +2924,9 @@ public final class Timestamp {
 
     // The token / message-imprint accessors return a BORROWED const pointer that
     // must be copied (NOT freed) — the bytes are owned by the handle.
-    private func copyConstBytes(_ p: UnsafePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String) throws -> [UInt8] {
+    private func copyConstBytes(_ p: UnsafePointer<UInt8>?, _ len: Int, _ code: Int32, _ op: String)
+        throws -> [UInt8]
+    {
         guard let p else { throw PdfOxideError(code: code, op: op) }
         let n = len < 0 ? 0 : len
         return Array(UnsafeBufferPointer(start: p, count: n))
@@ -2672,15 +2957,20 @@ public final class Timestamp {
     }
     public func serial() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_timestamp_get_serial(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.serial")
+        return try takeString(
+            pdf_timestamp_get_serial(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.serial")
     }
     public func tsaName() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_timestamp_get_tsa_name(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.tsaName")
+        return try takeString(
+            pdf_timestamp_get_tsa_name(UnsafeRawPointer(try ptr()), &code), code,
+            "Timestamp.tsaName")
     }
     public func policyOid() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_timestamp_get_policy_oid(UnsafeRawPointer(try ptr()), &code), code, "Timestamp.policyOid")
+        return try takeString(
+            pdf_timestamp_get_policy_oid(UnsafeRawPointer(try ptr()), &code), code,
+            "Timestamp.policyOid")
     }
     public func hashAlgorithm() throws -> Int32 {
         var code: Int32 = 0
@@ -2718,7 +3008,10 @@ public final class TsaClient {
         timeout: Int32 = 30, hashAlgo: Int32 = 0, useNonce: Bool = true, certReq: Bool = true
     ) throws -> TsaClient {
         var code: Int32 = 0
-        guard let h = pdf_tsa_client_create(url, username, password, timeout, hashAlgo, useNonce, certReq, &code) else {
+        guard
+            let h = pdf_tsa_client_create(
+                url, username, password, timeout, hashAlgo, useNonce, certReq, &code)
+        else {
             throw PdfOxideError(code: code, op: "TsaClient.create")
         }
         return TsaClient(OpaquePointer(h))
@@ -2824,7 +3117,8 @@ public final class PdfAResults {
         var out: [String] = []
         out.reserveCapacity(max(0, n))
         for i in 0..<max(0, n) {
-            out.append(try takeString(pdf_pdf_a_get_error(h, Int32(i), &code), code, "PdfAResults.error"))
+            out.append(
+                try takeString(pdf_pdf_a_get_error(h, Int32(i), &code), code, "PdfAResults.error"))
         }
         return out
     }
@@ -2864,7 +3158,8 @@ public final class UaResults {
         var out: [String] = []
         out.reserveCapacity(max(0, n))
         for i in 0..<max(0, n) {
-            out.append(try takeString(pdf_pdf_ua_get_error(h, Int32(i), &code), code, "UaResults.error"))
+            out.append(
+                try takeString(pdf_pdf_ua_get_error(h, Int32(i), &code), code, "UaResults.error"))
         }
         return out
     }
@@ -2877,7 +3172,9 @@ public final class UaResults {
         var out: [String] = []
         out.reserveCapacity(max(0, n))
         for i in 0..<max(0, n) {
-            out.append(try takeString(pdf_pdf_ua_get_warning(h, Int32(i), &code), code, "UaResults.warning"))
+            out.append(
+                try takeString(
+                    pdf_pdf_ua_get_warning(h, Int32(i), &code), code, "UaResults.warning"))
         }
         return out
     }
@@ -2885,7 +3182,8 @@ public final class UaResults {
     /// Structural statistics for the document.
     public func stats() throws -> UaStats {
         let h = try ptr()
-        var s: Int32 = 0, im: Int32 = 0, t: Int32 = 0, f: Int32 = 0, a: Int32 = 0, p: Int32 = 0, code: Int32 = 0
+        var s: Int32 = 0, im: Int32 = 0, t: Int32 = 0, f: Int32 = 0, a: Int32 = 0, p: Int32 = 0,
+            code: Int32 = 0
         if !pdf_pdf_ua_get_stats(h, &s, &im, &t, &f, &a, &p, &code) {
             throw PdfOxideError(code: code, op: "UaResults.stats")
         }
@@ -2927,7 +3225,8 @@ public final class PdfXResults {
         var out: [String] = []
         out.reserveCapacity(max(0, n))
         for i in 0..<max(0, n) {
-            out.append(try takeString(pdf_pdf_x_get_error(h, Int32(i), &code), code, "PdfXResults.error"))
+            out.append(
+                try takeString(pdf_pdf_x_get_error(h, Int32(i), &code), code, "PdfXResults.error"))
         }
         return out
     }
@@ -2941,7 +3240,9 @@ public final class PdfXResults {
 // ── Phase-6 top-level: signing + log level ───────────────────────────────────
 
 /// Sign raw PDF `pdf` bytes with `certificate`, returning the signed PDF bytes.
-public func signBytes(_ pdf: [UInt8], certificate: Certificate, reason: String? = nil, location: String? = nil) throws -> [UInt8] {
+public func signBytes(
+    _ pdf: [UInt8], certificate: Certificate, reason: String? = nil, location: String? = nil
+) throws -> [UInt8] {
     let cert = try certificate.rawPtr()
     var outLen: UInt = 0, code: Int32 = 0
     let p = pdf.withUnsafeBufferPointer { buf in
@@ -3007,10 +3308,12 @@ public func signBytesPadesOpts(
                         certs: certsPtr, cert_lens: certLens, n_certs: UInt(certs.count),
                         crls: crlsPtr, crl_lens: crlLens, n_crls: UInt(crls.count),
                         ocsps: ocspsPtr, ocsp_lens: ocspLens, n_ocsps: UInt(ocsps.count),
-                        tsa_url: tsaC.map { UnsafePointer($0) }, reason: reasonC.map { UnsafePointer($0) },
+                        tsa_url: tsaC.map { UnsafePointer($0) },
+                        reason: reasonC.map { UnsafePointer($0) },
                         location: locationC.map { UnsafePointer($0) }, level: level
                     )
-                    return pdf_sign_bytes_pades_opts(buf.baseAddress, UInt(buf.count), &opts, &outLen, &code)
+                    return pdf_sign_bytes_pades_opts(
+                        buf.baseAddress, UInt(buf.count), &opts, &outLen, &code)
                 }
             }
         }
@@ -3049,7 +3352,8 @@ public func addTimestamp(_ pdfData: [UInt8], sigIndex: Int32, tsaUrl: String) th
     var outLen: UInt = 0
     var code: Int32 = 0
     let ok = pdfData.withUnsafeBufferPointer { buf in
-        pdf_add_timestamp(buf.baseAddress, UInt(buf.count), sigIndex, tsaUrl, &outData, &outLen, &code)
+        pdf_add_timestamp(
+            buf.baseAddress, UInt(buf.count), sigIndex, tsaUrl, &outData, &outLen, &code)
     }
     if !ok { throw PdfOxideError(code: code, op: "addTimestamp") }
     return try takeBytes(outData, Int(outLen), code, "addTimestamp")
@@ -3087,8 +3391,10 @@ public final class ElementList {
         let h = try ptr()
         var code: Int32 = 0
         let idx = Int32(index)
-        let type = try takeString(pdf_oxide_element_get_type(h, idx, &code), code, "ElementList.type")
-        let text = try takeString(pdf_oxide_element_get_text(h, idx, &code), code, "ElementList.text")
+        let type = try takeString(
+            pdf_oxide_element_get_type(h, idx, &code), code, "ElementList.type")
+        let text = try takeString(
+            pdf_oxide_element_get_text(h, idx, &code), code, "ElementList.text")
         var x: Float = 0, y: Float = 0, w: Float = 0, hgt: Float = 0
         pdf_oxide_element_get_rect(h, idx, &x, &y, &w, &hgt, &code)
         return Element(
@@ -3109,7 +3415,8 @@ public final class ElementList {
     /// Serialise the whole list to JSON.
     public func toJson() throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_oxide_elements_to_json(try ptr(), &code), code, "ElementList.toJson")
+        return try takeString(
+            pdf_oxide_elements_to_json(try ptr(), &code), code, "ElementList.toJson")
     }
 
     /// Free the native handle now (idempotent).
@@ -3134,7 +3441,9 @@ public final class BarcodeImage {
 
     /// Generate a QR code. `errorCorrection`: 0=L 1=M 2=Q 3=H. `sizePx` is the
     /// requested module-grid pixel size.
-    public static func generateQrCode(_ data: String, errorCorrection: Int32 = 1, sizePx: Int32 = 256) throws -> BarcodeImage {
+    public static func generateQrCode(
+        _ data: String, errorCorrection: Int32 = 1, sizePx: Int32 = 256
+    ) throws -> BarcodeImage {
         var code: Int32 = 0
         guard let h = pdf_generate_qr_code(data, errorCorrection, sizePx, &code) else {
             throw PdfOxideError(code: code, op: "BarcodeImage.generateQrCode")
@@ -3143,7 +3452,9 @@ public final class BarcodeImage {
     }
 
     /// Generate a 1-D / 2-D barcode of the given `format` code.
-    public static func generateBarcode(_ data: String, format: Int32, sizePx: Int32 = 256) throws -> BarcodeImage {
+    public static func generateBarcode(_ data: String, format: Int32, sizePx: Int32 = 256) throws
+        -> BarcodeImage
+    {
         var code: Int32 = 0
         guard let h = pdf_generate_barcode(data, format, sizePx, &code) else {
             throw PdfOxideError(code: code, op: "BarcodeImage.generateBarcode")
@@ -3184,7 +3495,8 @@ public final class BarcodeImage {
     /// Render the barcode to an SVG string at `sizePx` pixels.
     public func svg(sizePx: Int32 = 256) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_barcode_get_svg(try ptr(), sizePx, &code), code, "BarcodeImage.svg")
+        return try takeString(
+            pdf_barcode_get_svg(try ptr(), sizePx, &code), code, "BarcodeImage.svg")
     }
 
     /// Free the native handle now (idempotent).
@@ -3208,7 +3520,9 @@ public final class OcrEngine {
     }
 
     /// Create an OCR engine from detection / recognition model + dictionary paths.
-    public static func create(detModelPath: String, recModelPath: String, dictPath: String) throws -> OcrEngine {
+    public static func create(detModelPath: String, recModelPath: String, dictPath: String) throws
+        -> OcrEngine
+    {
         var code: Int32 = 0
         guard let h = pdf_ocr_engine_create(detModelPath, recModelPath, dictPath, &code) else {
             throw PdfOxideError(code: code, op: "OcrEngine.create")
@@ -3231,7 +3545,9 @@ public final class Renderer {
     deinit { if let h = handle { pdf_renderer_free(h) } }
 
     /// Create a renderer. `format`: 0=PNG 1=JPEG.
-    public static func create(dpi: Int32 = 150, format: Int32 = 0, quality: Int32 = 90, antiAlias: Bool = true) throws -> Renderer {
+    public static func create(
+        dpi: Int32 = 150, format: Int32 = 0, quality: Int32 = 90, antiAlias: Bool = true
+    ) throws -> Renderer {
         var code: Int32 = 0
         guard let h = pdf_create_renderer(dpi, format, quality, antiAlias, &code) else {
             throw PdfOxideError(code: code, op: "Renderer.create")
@@ -3276,12 +3592,15 @@ private func withByteArrayArray<R>(
 
 // Marshal a [String] into a C `const char* const*` for the duration of `body`.
 // The C strings (and their backing buffer) are valid only inside `body`.
-private func withCStringArray<R>(_ strings: [String], _ body: (UnsafePointer<UnsafePointer<CChar>?>?) -> R) -> R {
+private func withCStringArray<R>(
+    _ strings: [String], _ body: (UnsafePointer<UnsafePointer<CChar>?>?) -> R
+) -> R {
     var cstrs: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
     defer { for p in cstrs where p != nil { free(p) } }
     return cstrs.withUnsafeMutableBufferPointer { buf in
         // Reinterpret [char*] as `const char* const*`.
-        buf.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buf.count) { rebased in
+        buf.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: buf.count) {
+            rebased in
             body(rebased)
         }
     }
@@ -3341,7 +3660,8 @@ public enum PdfOxide {
     /// Prefetch models for the comma-separated language codes; returns a JSON result.
     public static func prefetchModels(languagesCsv: String) throws -> String {
         var code: Int32 = 0
-        return try takeString(pdf_oxide_prefetch_models(languagesCsv, &code), code, "prefetchModels")
+        return try takeString(
+            pdf_oxide_prefetch_models(languagesCsv, &code), code, "prefetchModels")
     }
 
     // Engine config ───────────────────────────────────────────────────────────
