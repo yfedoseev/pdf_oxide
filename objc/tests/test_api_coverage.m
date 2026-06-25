@@ -330,6 +330,14 @@ int main(void) {
             }
 
             // Top-level signing — fail gracefully without a real cert.
+            // The bogus loaders above always yield nil certs, so these calls
+            // deliberately pass a nil `certificate:` (a `nonnull` param) to
+            // verify the wrapper fails gracefully rather than crashing
+            // (`[nil POX_handle]` → 0 → the core returns an error). That is an
+            // intentional nonnull-contract violation, so exclude the block from
+            // the static analyzer (`scan-build --status-bugs`) while keeping it
+            // in the real build + test run.
+#ifndef __clang_analyzer__
             NSError* se1 = nil;
             NSData* signed1 = [POXSigning signBytes:samplePdf()
                                         certificate:(cert ?: certPem)reason:@"test"
@@ -363,6 +371,7 @@ int main(void) {
                                        options:opts
                                          error:&se3]; // signBytesPadesOpts
             CHECK(signed3 == nil ? (se3 != nil) : signed3.length > 0);
+#endif // __clang_analyzer__
 
             // Timestamp parse (bogus DER → error).
             NSError* tse = nil;

@@ -3192,7 +3192,11 @@ static float* POXFloatArray(NSArray<NSNumber*>* nums, NSUInteger* outCount) {
         fwidths[c] = widths[c].floatValue;
         ialigns[c] = c < aligns.count ? (int32_t)aligns[c].integerValue : 0;
     }
-    const char** cells = nCells ? (const char**)malloc(sizeof(char*) * nCells) : NULL;
+    // Guard on (nRows && nCols), the exact conditions under which the fill
+    // loops below run, so the analyzer can prove `cells` is non-NULL on that
+    // path (matching fwidths/ialigns above). nCells == nCols * nRows.
+    const char** cells =
+        (nRows && nCols) ? (const char**)malloc(sizeof(char*) * nCells) : NULL;
     for (NSUInteger rIdx = 0; rIdx < nRows; ++rIdx) {
         NSArray<NSString*>* row = rows[rIdx];
         for (NSUInteger c = 0; c < nCols; ++c)

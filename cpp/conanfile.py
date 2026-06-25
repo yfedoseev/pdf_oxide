@@ -27,9 +27,7 @@ class PdfOxideCppConan(ConanFile):
     license = "MIT"
     url = "https://github.com/yfedoseev/pdf_oxide"
     homepage = "https://github.com/yfedoseev/pdf_oxide"
-    description = (
-        "Idiomatic, header-only C++17 RAII bindings over the pdf_oxide C ABI."
-    )
+    description = "Idiomatic, header-only C++17 RAII bindings over the pdf_oxide C ABI."
     topics = ("pdf", "text-extraction", "markdown", "header-only", "ffi")
 
     # Header-only: no settings affect the package contents, no build step.
