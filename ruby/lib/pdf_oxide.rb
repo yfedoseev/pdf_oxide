@@ -75,7 +75,9 @@ module PdfOxide
     #   falsey / 0 = filter (the v0.3.54 default).
     # @return [Integer] the previous value (`0` or `1`).
     def set_preserve_unmapped_glyphs(preserve)
-      flag = preserve == false || preserve.nil? || preserve.zero? ? 0 : 1
+      # preserve may be Boolean or Integer; avoid numeric predicates that
+      # would raise on a Boolean (e.g. true.zero?). falsey / 0 = filter.
+      flag = [false, nil, 0].include?(preserve) ? 0 : 1
       Bindings.pdf_oxide_set_preserve_unmapped_glyphs(flag)
     end
   end

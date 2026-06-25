@@ -2,5 +2,9 @@ linters: linters_with_defaults(
     line_length_linter(100),
     object_name_linter = NULL,
     object_length_linter = NULL,
-    commented_code_linter = NULL
+    commented_code_linter = NULL,
+    # The native routines (C_r_*) are bound via useDynLib(.registration);
+    # object_usage_linter can't see them and false-positives "no visible
+    # binding for global variable 'C_r_*'".
+    object_usage_linter = NULL
   )

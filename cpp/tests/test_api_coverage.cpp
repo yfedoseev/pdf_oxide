@@ -439,11 +439,13 @@ int main() {
                                                        0, true, true); // create
             try {
                 (void)client.request_timestamp({0x01, 0x02, 0x03}); // request_timestamp
+                // NOLINTNEXTLINE(bugprone-empty-catch) -- invalid TSA tolerated
             } catch (const Error&) {
             }
             try {
                 (void)client.request_timestamp_hash({0x01, 0x02, 0x03},
                                                     0); // request_timestamp_hash
+                // NOLINTNEXTLINE(bugprone-empty-catch) -- invalid TSA tolerated
             } catch (const Error&) {
             }
             client.close();
@@ -618,13 +620,14 @@ int main() {
                 pdf_oxide::Pdf::from_html_css("<h1>HtmlCss</h1><p>body</p>",
                                               "h1{color:#000}"); // from_html_css
             CHECK(htmlPdf.to_bytes().size() > 100);
-        } catch (const pdf_oxide::Error&) { /* html-render unavailable: tolerated */
+        } catch (const pdf_oxide::Error&) { // NOLINT(bugprone-empty-catch) html-render
+                                            // unavailable: tolerated
         }
         try {
             auto htmlPdf2 = pdf_oxide::Pdf::from_html_css_with_fonts(
                 "<p>cascade</p>", "", {}, {}); // from_html_css_with_fonts
             CHECK(htmlPdf2.to_bytes().size() > 100);
-        } catch (const pdf_oxide::Error&) { /* tolerated */
+        } catch (const pdf_oxide::Error&) { // NOLINT(bugprone-empty-catch) tolerated
         }
 
         // from_image_bytes: bogus bytes must raise Error.
