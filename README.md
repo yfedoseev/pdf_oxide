@@ -1,6 +1,6 @@
-# PDF Oxide - The Fastest PDF Toolkit for 20 Languages — Python, Rust, Go, JS/TS, C#, Java, Kotlin, Swift, C++ & more, plus CLI & AI
+# PDFOxide - The Fastest PDF Toolkit for 20 Languages — Python, Rust, Go, JS/TS, C#, Java, Kotlin, Swift, C++ & more, plus CLI & AI
 
-> **New in v0.3.69 — eleven new language bindings.** PDF Oxide now ships idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each built over the stable C ABI with its own CI workflow, api-coverage tests, and runnable examples. That brings the toolkit to **20 languages** (Rust core + 19 bindings). Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
+> **New in v0.3.69 — eleven new language bindings.** PDFOxide now ships idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each built over the stable C ABI with its own CI workflow, api-coverage tests, and runnable examples. That brings the toolkit to **20 languages** (Rust core + 19 bindings). Want another language? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) and tell us.
 
 The fastest PDF library for text extraction, image extraction, and markdown conversion. A Rust core with bindings for **19 languages** — Python, Go, JavaScript / TypeScript, C# / .NET, Java, Kotlin, Scala, Clojure, Ruby, PHP, C++, Objective-C, Swift, Dart, R, Julia, Zig, Elixir, and WASM — plus a CLI tool and MCP server for AI assistants. 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf. 100% pass rate on 3,830 real-world PDFs. MIT licensed.
 
@@ -93,7 +93,7 @@ Benchmarked on 3,830 PDFs from three independent public test suites (veraPDF, Mo
 
 | Library | Mean | p99 | Pass Rate | License |
 |---------|------|-----|-----------|---------|
-| **PDF Oxide** | **0.8ms** | **9ms** | **100%** | **MIT** |
+| **PDFOxide** | **0.8ms** | **9ms** | **100%** | **MIT** |
 | PyMuPDF | 4.6ms | 28ms | 99.3% | AGPL-3.0 |
 | pypdfium2 | 4.1ms | 42ms | 99.2% | Apache-2.0 |
 | pymupdf4llm | 55.5ms | 280ms | 99.1% | AGPL-3.0 |
@@ -107,7 +107,7 @@ Benchmarked on 3,830 PDFs from three independent public test suites (veraPDF, Mo
 
 | Library | Mean | p99 | Pass Rate | Text Extraction |
 |---------|------|-----|-----------|-----------------|
-| **PDF Oxide** | **0.8ms** | **9ms** | **100%** | **Built-in** |
+| **PDFOxide** | **0.8ms** | **9ms** | **100%** | **Built-in** |
 | oxidize_pdf | 13.5ms | 11ms | 99.1% | Basic |
 | unpdf | 2.8ms | 10ms | 95.1% | Basic |
 | pdf_extract | 4.08ms | 37ms | 91.5% | Basic |
@@ -115,7 +115,7 @@ Benchmarked on 3,830 PDFs from three independent public test suites (veraPDF, Mo
 
 ### Text Quality
 
-99.5% text parity vs PyMuPDF and pypdfium2 across the full corpus. PDF Oxide extracts text from 7–10× more "hard" files than it misses vs any competitor.
+99.5% text parity vs PyMuPDF and pypdfium2 across the full corpus. PDFOxide extracts text from 7–10× more "hard" files than it misses vs any competitor.
 
 ### Corpus
 
@@ -410,7 +410,7 @@ If it's useful to you, a star on GitHub genuinely helps. If something's broken o
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Unlike AGPL-licensed alternatives, pdf_oxide can be used freely in any project — commercial or open-source — with no copyleft restrictions.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Unlike AGPL-licensed alternatives, PDFOxide can be used freely in any project — commercial or open-source — with no copyleft restrictions.
 
 ## Contributing
 
@@ -424,7 +424,7 @@ cargo build && cargo test && cargo fmt && cargo clippy -- -D warnings
 
 ```bibtex
 @software{pdf_oxide,
-  title = {PDF Oxide: Fast Multi-Language PDF Toolkit (Rust core, 19 language bindings)},
+  title = {PDFOxide: Fast Multi-Language PDF Toolkit (Rust core, 19 language bindings)},
   author = {Yury Fedoseev},
   year = {2025},
   url = {https://github.com/yfedoseev/pdf_oxide}
