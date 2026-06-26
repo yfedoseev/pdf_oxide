@@ -77,7 +77,7 @@ brew install yfedoseev/tap/pdf-oxide   # includes pdf-oxide-mcp
 }
 ```
 
-## Why pdf_oxide?
+## Why PDFOxide?
 
 - **Fast** — 0.8ms mean per document, 5× faster than PyMuPDF, 15× faster than pypdf, 29× faster than pdfplumber
 - **Reliable** — 100% pass rate on 3,830 test PDFs, zero panics, zero timeouts
