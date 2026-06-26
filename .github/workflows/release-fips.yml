@@ -273,17 +273,16 @@ jobs:
         shell: bash
         # maturin builds via `uv tool install maturin`, which runs in uv's own
         # isolated interpreter rather than the setup-python 3.11 above. On the
-        # macOS-26-SDK (Tahoe) runner image that interpreter makes maturin tag
-        # wheels `macosx_26_0`, which then can't install on the macOS 15 host
-        # (smoke-test below) and would be unusable for any user on macOS < 26.
-        # Pin the deployment target so the tag is the portable arm64 floor
-        # (11.0), matching the non-FIPS wheels in release.yml.
+        # macOS-26-SDK (Tahoe) runner image that interpreter would otherwise tag
+        # wheels `macosx_26_0`, unusable for anyone on an older macOS. Pin the
+        # deployment target to the real floor of the bundled aws-lc-fips dylib:
+        # its arm64 build has a hard macOS 15.0 minimum — aws-lc-fips ignores
+        # MACOSX_/CMAKE_OSX_DEPLOYMENT_TARGET and links against the runner SDK,
+        # so the arm64 wheel must be tagged macosx_15_0 to match the bundled
+        # dylib (delocate rejects any lower tag). x86_64 builds fine at the
+        # portable 11.0 floor.
         env:
-          MACOSX_DEPLOYMENT_TARGET: '11.0'
-          # Force aws-lc-fips's CMake build to back-deploy the dylib to 11.0 too;
-          # otherwise it inherits the runner's SDK floor (15.0) and delocate
-          # rejects it in the 11.0-tagged wheel.
-          CMAKE_OSX_DEPLOYMENT_TARGET: '11.0'
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.target == 'aarch64-apple-darwin' && '15.0' || '11.0' }}
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the
