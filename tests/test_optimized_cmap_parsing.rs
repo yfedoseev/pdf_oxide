@@ -355,10 +355,9 @@ fn test_optimized_parser_mixed_large_cmap_identity_ordered() {
     //! Identity-ordered sibling of `test_optimized_parser_mixed_large_cmap`.
     //!
     //! Same setup — Identity-H encoding, a /ToUnicode covering only some codes —
-    //! but with `CIDSystemInfo` `Ordering = Identity` (Adobe-Identity-0). For an
-    //! Identity-ordered font the CID-as-Unicode mapping is conventional, so a code
-    //! uncovered by /ToUnicode keeps that mapping instead of decoding to U+FFFD
-    //! (the other branch of the ordering guard from the non-Identity test above).
+    //! but with `CIDSystemInfo` `Ordering = Identity` (Adobe-Identity-0). A code
+    //! uncovered by /ToUnicode has no trustworthy codepoint, so it decodes to U+FFFD;
+    //! only whitespace (CID 0x20) retains the CID-as-Unicode mapping.
 
     let cmap = String::from(
         r#"
@@ -427,11 +426,11 @@ end
 
     // Covered code resolves via /ToUnicode.
     assert_eq!(font.char_to_unicode(0x0041), Some("\u{0041}".to_string()), "bfchar entry");
-    // Uncovered code: Identity ordering keeps the CID-as-Unicode mapping (not U+FFFD).
+    // Uncovered non-whitespace code: no trustworthy codepoint → U+FFFD, not a guess.
     assert_eq!(
         font.char_to_unicode(0x5000),
-        Some("\u{5000}".to_string()),
-        "Identity-ordered uncovered code must keep the CID-as-Unicode mapping"
+        Some("\u{FFFD}".to_string()),
+        "Identity-ordered uncovered code must decode to U+FFFD, not a CID-as-Unicode guess"
     );
 }
 
