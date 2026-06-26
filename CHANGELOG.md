@@ -4,6 +4,10 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Non-Identity-ordered Type0 fonts no longer emit a wrong character for CIDs missing from `/ToUnicode` (#773)** — for an embedded Type0 font whose `/ToUnicode` CMap omits some drawn CIDs (e.g. a ligature glyph with no single Unicode codepoint), the decode path fell back to a numeric guess — the GID via the standard glyph-name table → AGL, or the CID itself as a code point (`char::from_u32`) — emitting a plausible-but-wrong, content-like character that varied per subset (e.g. a `ti` ligature → `:` / `D`, so `notificacao` → `no:ficacao`). The glyph has no Unicode anywhere in the file (no `/ToUnicode` entry, no `post` name, no GSUB), so the letters are unrecoverable, but substituting a wrong character is silent corruption. When a usable `/ToUnicode` is present, the GID→AGL guess is now suppressed for all Type0 fonts, and the CID-as-Unicode guess is suppressed for fonts whose `CIDSystemInfo` ordering is **not** `Identity`, so an uncovered CID there decodes to `U+FFFD` instead. Identity-ordered (Adobe-Identity-0) fonts retain the CID-as-Unicode mapping that Identity ordering conventionally implies; the residual wrong-character case for ligature/private-use slots in Identity-ordered fonts remains a known limitation. Subtractive for the no-`/ToUnicode` path — a font with no `/ToUnicode` still uses the CID-as-Unicode heuristic exactly as before, and the authoritative embedded-`cmap`/`post` lookups are unchanged.
+
 ## [0.3.68] - 2026-06-24
 
 > Extraction fidelity release — symbolic TrueType character mis-decoding corrected via the `(3,0)`/`(1,0)` cmap, same-row span ordering preserved in plain-text output, JPEG 2000 (`JPXDecode`) image XObjects decoded via OpenJPEG, and RTL Farsi body text recovered from tagged Type0/CID PDFs.

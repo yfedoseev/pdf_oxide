@@ -4482,48 +4482,69 @@ impl FontInfo {
                     // "If a ToUnicode CMap is not available, conforming readers may fall back
                     // to predefined encodings and glyph name lookup."
 
-                    if let Some(ref cid_to_gid) = self.cid_to_gid_map {
-                        // CIDToGIDMap only works with u16 CIDs (2-byte codes)
-                        if char_code > 0xFFFF {
-                            log::debug!(
-                                "CID 0x{:X} in font '{}' is too large (> 0xFFFF) for CIDToGIDMap AGL fallback - skipping",
-                                char_code,
-                                self.base_font
-                            );
-                            // Fall through to continue fallback attempts
-                        } else {
-                            let gid = cid_to_gid.get_gid(char_code as u16);
+                    // The GID→AGL fallback below is a numeric *guess*: it treats the GID
+                    // (via the standard glyph-name table → AGL) as a Unicode value. It is
+                    // only sound when the font has no authoritative /ToUnicode; with one
+                    // present, a code reaching here is genuinely unmapped (e.g. a ligature
+                    // glyph with no codepoint), so guessing would emit a plausible-but-wrong
+                    // char — prefer U+FFFD so the gap is detectable.
+                    let has_usable_tounicode =
+                        self.to_unicode.as_ref().and_then(|c| c.get()).is_some();
 
-                            if let Some(glyph_name) = Self::gid_to_standard_glyph_name(gid) {
-                                if let Some(&unicode_char) = ADOBE_GLYPH_LIST.get(glyph_name) {
-                                    log::debug!(
-                                        "Adobe Glyph List fallback SUCCESS: font='{}' CID=0x{:04X} (GID={}) → glyph '{}' → '{}' (U+{:04X})",
-                                        self.base_font,
-                                        char_code,
-                                        gid,
-                                        glyph_name,
-                                        unicode_char,
-                                        unicode_char as u32
-                                    );
-                                    return Some(unicode_char.to_string());
+                    if !has_usable_tounicode {
+                        if let Some(ref cid_to_gid) = self.cid_to_gid_map {
+                            // CIDToGIDMap only works with u16 CIDs (2-byte codes)
+                            if char_code > 0xFFFF {
+                                log::debug!(
+                                    "CID 0x{:X} in font '{}' is too large (> 0xFFFF) for CIDToGIDMap AGL fallback - skipping",
+                                    char_code,
+                                    self.base_font
+                                );
+                                // Fall through to continue fallback attempts
+                            } else {
+                                let gid = cid_to_gid.get_gid(char_code as u16);
+
+                                if let Some(glyph_name) = Self::gid_to_standard_glyph_name(gid) {
+                                    if let Some(&unicode_char) = ADOBE_GLYPH_LIST.get(glyph_name) {
+                                        log::debug!(
+                                            "Adobe Glyph List fallback SUCCESS: font='{}' CID=0x{:04X} (GID={}) → glyph '{}' → '{}' (U+{:04X})",
+                                            self.base_font,
+                                            char_code,
+                                            gid,
+                                            glyph_name,
+                                            unicode_char,
+                                            unicode_char as u32
+                                        );
+                                        return Some(unicode_char.to_string());
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // All standard fallbacks exhausted (no TrueType cmap, no Adobe Glyph List match).
-                    // Use CID-as-Unicode fallback: many PDF generators assign CID values equal
-                    // to Unicode code points. This matches MuPDF behavior.
-                    if let Some(unicode_char) = char::from_u32(char_code) {
-                        if !unicode_char.is_control() || unicode_char == ' ' {
-                            log::debug!(
-                                "Type0 font '{}' Identity encoding CID-as-Unicode fallback: CID 0x{:04X} → '{}' (U+{:04X})",
-                                self.base_font,
-                                char_code,
-                                unicode_char,
-                                unicode_char as u32
-                            );
-                            return Some(unicode_char.to_string());
+                    // CID-as-Unicode fallback: many PDF generators assign CID == Unicode
+                    // codepoint. Used when there is no /ToUnicode at all, and — for
+                    // Identity-ordered fonts — also when a CID is absent from /ToUnicode, since
+                    // Identity ordering conventionally maps CID→Unicode and this stays the best
+                    // available mapping. Non-Identity fonts fall through to U+FFFD rather than
+                    // guess a plausible-but-wrong character.
+                    let is_identity_ordered = self
+                        .cid_system_info
+                        .as_ref()
+                        .map(|info| info.ordering == "Identity")
+                        .unwrap_or(false);
+                    if !has_usable_tounicode || is_identity_ordered {
+                        if let Some(unicode_char) = char::from_u32(char_code) {
+                            if !unicode_char.is_control() || unicode_char == ' ' {
+                                log::debug!(
+                                    "Type0 font '{}' Identity encoding CID-as-Unicode fallback: CID 0x{:04X} → '{}' (U+{:04X})",
+                                    self.base_font,
+                                    char_code,
+                                    unicode_char,
+                                    unicode_char as u32
+                                );
+                                return Some(unicode_char.to_string());
+                            }
                         }
                     }
                     log::warn!(
@@ -10635,6 +10656,57 @@ mod tests {
             Some("\u{FFFD}".to_string()),
             "Code mapping to U+0007 (BEL) must be filtered to U+FFFD by Fix B"
         );
+    }
+
+    /// A ToUnicode CMap that maps only code 0x0041 → U+005A ('Z'); every other
+    /// code is absent.
+    fn make_tounicode_single_z() -> Vec<u8> {
+        concat!(
+            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n",
+            "/CIDSystemInfo 3 dict dup begin\n",
+            "  /Registry (Adobe) def\n  /Ordering (UCS) def\n  /Supplement 0 def\nend def\n",
+            "/CMapName /Test-Z def\n/CMapType 2 def\n",
+            "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+            "1 beginbfchar\n<0041> <005A>\nendbfchar\n",
+            "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n",
+        )
+        .as_bytes()
+        .to_vec()
+    }
+
+    /// With a present-but-incomplete `/ToUnicode` on an Identity-H Type0 font, a
+    /// drawn CID absent from it has no Unicode anywhere in the file, so it must
+    /// decode to U+FFFD rather than a numeric *guess* — the CID read as a code
+    /// point, or the GID via the standard glyph-name table → AGL. Both guess
+    /// paths are exercised: 0x0100 (CID-as-char) and 0x003A (gid 0x3A = "colon");
+    /// `cid_to_gid_map` is set so the gid→glyph-name path is actually reachable.
+    #[test]
+    fn test_type0_tounicode_gap_returns_fffd_not_guess() {
+        let mut font = make_type0_font(Some(make_tounicode_single_z()), "Identity-H", None);
+        font.cid_to_gid_map = Some(CIDToGIDMap::Identity);
+
+        // Mapped code decodes via ToUnicode (proves the CMap is authoritative).
+        assert_eq!(font.char_to_unicode(0x0041), Some("Z".to_string()));
+        // Uncovered CIDs are unmapped, not guessed.
+        assert_eq!(
+            font.char_to_unicode(0x0100),
+            Some("\u{FFFD}".to_string()),
+            "uncovered CID must not be guessed as CID-as-Unicode"
+        );
+        assert_eq!(
+            font.char_to_unicode(0x003A),
+            Some("\u{FFFD}".to_string()),
+            "uncovered CID must not be guessed via gid→glyph-name→AGL"
+        );
+    }
+
+    /// Without a `/ToUnicode`, the CID-as-Unicode heuristic still applies — many
+    /// generators assign CID == Unicode — so this path must not regress to U+FFFD.
+    #[test]
+    fn test_type0_no_tounicode_keeps_cid_as_unicode() {
+        let mut font = make_type0_font(None, "Identity-H", None);
+        font.cid_to_gid_map = Some(CIDToGIDMap::Identity);
+        assert_eq!(font.char_to_unicode(0x0100), Some("\u{0100}".to_string()));
     }
 
     /// #504: `make_type0_font` must mirror the real `parse_encoding`
