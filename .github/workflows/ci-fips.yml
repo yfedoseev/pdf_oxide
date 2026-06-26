@@ -334,6 +334,14 @@ jobs:
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
+        # Mirror release-fips.yml: pin the macOS floor to the portable arm64
+        # target (11.0) so this CI gate builds and delocates the SAME wheel the
+        # release ships, instead of letting maturin tag whatever the runner SDK
+        # defaults to. CMAKE_OSX_DEPLOYMENT_TARGET forces aws-lc-fips's CMake
+        # build to back-deploy its dylib to 11.0 to match the wheel tag.
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+          CMAKE_OSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the

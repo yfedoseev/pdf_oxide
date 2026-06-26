@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.69] - 2026-06-26
+## [0.3.69] - 2026-06-27
 
 > Language-bindings release — idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each over the stable C ABI, with per-language CI, package-registry publishing, cross-language regression examples, and single-source version management.
 

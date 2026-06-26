@@ -208,10 +208,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # v2: drop pre-pin caches whose aws-lc-fips dylib was built on the
-          # macOS-26 SDK; cargo won't rebuild it for MACOSX_DEPLOYMENT_TARGET=11.0.
-          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-
+          # v3: drop poisoned caches whose aws-lc-fips dylib was built against
+          # the macOS-26 SDK (min target 15.0). cargo/cmake don't rebuild that
+          # dylib just because MACOSX_DEPLOYMENT_TARGET changed, so a restored
+          # 15.0 dylib lands in an 11.0-tagged wheel and delocate rejects it.
+          # Busting the key forces a clean build that honors the 11.0 target.
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-
 
       - name: Patch package name to pdf_oxide_fips (Linux/macOS)
         if: runner.os != 'Windows'
@@ -277,6 +280,10 @@ jobs:
         # (11.0), matching the non-FIPS wheels in release.yml.
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
+          # Force aws-lc-fips's CMake build to back-deploy the dylib to 11.0 too;
+          # otherwise it inherits the runner's SDK floor (15.0) and delocate
+          # rejects it in the 11.0-tagged wheel.
+          CMAKE_OSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the
@@ -418,10 +425,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # v2: drop pre-pin caches whose aws-lc-fips dylib was built on the
-          # macOS-26 SDK; cargo won't rebuild it for MACOSX_DEPLOYMENT_TARGET=11.0.
-          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-
+          # v3: drop poisoned caches whose aws-lc-fips dylib was built against
+          # the macOS-26 SDK (min target 15.0). cargo/cmake don't rebuild that
+          # dylib just because MACOSX_DEPLOYMENT_TARGET changed, so a restored
+          # 15.0 dylib lands in an 11.0-tagged wheel and delocate rejects it.
+          # Busting the key forces a clean build that honors the 11.0 target.
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -682,10 +692,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # v2: drop pre-pin caches whose aws-lc-fips dylib was built on the
-          # macOS-26 SDK; cargo won't rebuild it for MACOSX_DEPLOYMENT_TARGET=11.0.
-          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-
+          # v3: drop poisoned caches whose aws-lc-fips dylib was built against
+          # the macOS-26 SDK (min target 15.0). cargo/cmake don't rebuild that
+          # dylib just because MACOSX_DEPLOYMENT_TARGET changed, so a restored
+          # 15.0 dylib lands in an 11.0-tagged wheel and delocate rejects it.
+          # Busting the key forces a clean build that honors the 11.0 target.
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-
 
       - name: Build cdylib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
@@ -863,10 +876,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # v2: drop pre-pin caches whose aws-lc-fips dylib was built on the
-          # macOS-26 SDK; cargo won't rebuild it for MACOSX_DEPLOYMENT_TARGET=11.0.
-          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v2-
+          # v3: drop poisoned caches whose aws-lc-fips dylib was built against
+          # the macOS-26 SDK (min target 15.0). cargo/cmake don't rebuild that
+          # dylib just because MACOSX_DEPLOYMENT_TARGET changed, so a restored
+          # 15.0 dylib lands in an 11.0-tagged wheel and delocate rejects it.
+          # Busting the key forces a clean build that honors the 11.0 target.
+          key: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-fips-cargo-v3-
 
       - name: Build static lib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
