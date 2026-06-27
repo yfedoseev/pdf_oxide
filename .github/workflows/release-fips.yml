@@ -150,10 +150,11 @@ jobs:
             runs-on: macos-latest
             target: x86_64-apple-darwin
             artifact: pdf_oxide_fips-python-macos-x86_64
-          - label: macOS arm64
-            runs-on: macos-latest
-            target: aarch64-apple-darwin
-            artifact: pdf_oxide_fips-python-macos-arm64
+          # macOS arm64 FIPS wheel deferred: aws-lc-fips links its dylib against
+          # the runner's build SDK (now macOS 26) and ignores the deployment
+          # target, so the bundled dylib's minimum keeps rising with the runner
+          # image and delocate rejects any portable wheel tag. FIPS deployments
+          # are predominantly Linux/x86_64, so this is tracked as a follow-up.
           - label: windows x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
@@ -271,18 +272,14 @@ jobs:
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
-        # maturin builds via `uv tool install maturin`, which runs in uv's own
-        # isolated interpreter rather than the setup-python 3.11 above. On the
-        # macOS-26-SDK (Tahoe) runner image that interpreter would otherwise tag
-        # wheels `macosx_26_0`, unusable for anyone on an older macOS. Pin the
-        # deployment target to the real floor of the bundled aws-lc-fips dylib:
-        # its arm64 build has a hard macOS 15.0 minimum — aws-lc-fips ignores
-        # MACOSX_/CMAKE_OSX_DEPLOYMENT_TARGET and links against the runner SDK,
-        # so the arm64 wheel must be tagged macosx_15_0 to match the bundled
-        # dylib (delocate rejects any lower tag). x86_64 builds fine at the
-        # portable 11.0 floor.
+        # maturin builds via `uv tool install maturin` in uv's own isolated
+        # interpreter. On the macOS-26-SDK (Tahoe) runner it would otherwise tag
+        # the wheel `macosx_26_0`; pin to the portable 11.0 floor, matching the
+        # non-FIPS wheels in release.yml. Only x86_64 macOS reaches here — the
+        # arm64 FIPS wheel is deferred (see the matrix note) because aws-lc-fips
+        # floors its arm64 dylib at the build SDK and delocate rejects any tag.
         env:
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.target == 'aarch64-apple-darwin' && '15.0' || '11.0' }}
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the
@@ -312,7 +309,6 @@ jobs:
           (matrix.target == 'x86_64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'X64') ||
           (matrix.target == 'aarch64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'ARM64') ||
           (matrix.target == 'x86_64-apple-darwin' && runner.os == 'macOS' && runner.arch == 'X64') ||
-          (matrix.target == 'aarch64-apple-darwin' && runner.os == 'macOS' && runner.arch == 'ARM64') ||
           (matrix.target == 'x86_64-pc-windows-msvc' && runner.os == 'Windows')
         shell: bash
         run: |

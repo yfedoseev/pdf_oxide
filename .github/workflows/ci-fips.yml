@@ -250,7 +250,7 @@ jobs:
             "-Dfyi.oxide.pdf.lib.path=$GITHUB_WORKSPACE/target/release/libpdf_oxide_jni.$LIB_EXT"
 
   # ─── Python wheel: build + smoke-test on all four release platforms
-  # (linux x86_64, linux aarch64, macOS arm64, Windows x86_64) using the
+  # (linux x86_64, linux aarch64, macOS x86_64, Windows x86_64) using the
   # same manylinux_2_28 + clang setup as release-fips.yml.
   fips-python:
     name: Python wheel FIPS (${{ matrix.label }})
@@ -269,9 +269,10 @@ jobs:
           - label: macOS x86_64
             runs-on: macos-latest
             target: x86_64-apple-darwin
-          - label: macOS arm64
-            runs-on: macos-latest
-            target: aarch64-apple-darwin
+          # macOS arm64 FIPS wheel deferred (mirrors release-fips.yml): aws-lc-fips
+          # links its arm64 dylib against the runner's build SDK (macOS 26) and
+          # ignores the deployment target, so delocate rejects any portable wheel
+          # tag. FIPS is predominantly Linux/x86_64; tracked as a follow-up.
           - label: windows x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
@@ -334,13 +335,10 @@ jobs:
       - name: Build FIPS wheel (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
-        # Mirror release-fips.yml: tag each macOS FIPS wheel at the real floor of
-        # its bundled aws-lc-fips dylib. The arm64 dylib has a hard macOS 15.0
-        # minimum (aws-lc-fips ignores MACOSX_/CMAKE_OSX_DEPLOYMENT_TARGET and
-        # links against the runner SDK), so the arm64 wheel must be macosx_15_0
-        # or delocate rejects it; x86_64 builds fine at the portable 11.0 floor.
+        # Mirror release-fips.yml: pin the x86_64 macOS wheel to the portable
+        # 11.0 floor. (macOS arm64 is deferred — see the matrix note.)
         env:
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.target == 'aarch64-apple-darwin' && '15.0' || '11.0' }}
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           uv tool install maturin
           # delocate/delvewheel bundle the aws-lc-fips shared library into the
@@ -367,7 +365,6 @@ jobs:
         if: |
           (matrix.target == 'x86_64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'X64') ||
           (matrix.target == 'aarch64-unknown-linux-gnu' && runner.os == 'Linux' && runner.arch == 'ARM64') ||
-          (matrix.target == 'aarch64-apple-darwin' && runner.os == 'macOS' && runner.arch == 'ARM64') ||
           (matrix.target == 'x86_64-pc-windows-msvc' && runner.os == 'Windows')
         shell: bash
         run: |
