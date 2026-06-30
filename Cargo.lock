@@ -2818,7 +2818,7 @@ dependencies = [
  "fast-float2",
  "libc",
  "log",
- "quick-xml",
+ "quick-xml 0.40.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3070,7 +3070,7 @@ dependencies = [
  "pyo3-log",
  "qcms",
  "qrcode",
- "quick-xml",
+ "quick-xml 0.41.0",
  "rayon",
  "regex",
  "rsa",
@@ -3651,6 +3651,15 @@ checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
