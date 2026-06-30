@@ -2134,7 +2134,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Clojure
-        uses: DeLaGuardo/setup-clojure@52716660ff0e592e21f16f47743ee9e996cb96be # 13.4
+        uses: DeLaGuardo/setup-clojure@3fe9b3ae632c6758d0b7757b0838606ef4287b08 # 13.4
         with:
           cli: latest
 
