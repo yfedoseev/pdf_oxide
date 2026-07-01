@@ -139,6 +139,12 @@ const FORWARD_GAP_K: f32 = 1.25;
 /// mixed-baseline repair.
 const SAME_LINE_REORDER_MAX_GAP_FACTOR: f32 = 3.0;
 
+/// Fraction of page height counted as the top/bottom margin band for
+/// running-header/footer/pagination artifact detection — all parts of
+/// the implementation must agree on what area is evaluated for potential
+/// artifacts.
+const RUNNING_ARTIFACT_BAND_FRACTION: f32 = 0.12;
+
 // Re-export BoundedEntryCache from cache module for local use and backward compatibility
 pub(crate) use crate::cache::BoundedEntryCache;
 
@@ -6584,54 +6590,106 @@ impl PdfDocument {
             return Ok(0);
         }
 
-        let mut removed_count = 0;
+        // Spans matched via a genuine Tagged-PDF /Artifact Header/Footer tag
+        // are complete and authoritative for the whole document, so finding
+        // any is grounds to skip the heuristic pass below. Matches inferred
+        // from Other/PageNumber (untagged-PDF geometry heuristic) are only
+        // ever a partial catch (e.g. just the digit token out of a
+        // multi-span footer), so they must NOT suppress the heuristic pass —
+        // it is what removes the surrounding constant chrome those spans
+        // don't cover.
+        let mut tagged_removed = 0;
+
+        // Snapshot every page's spans ONCE, before either pass erases
+        // anything. Both passes below decide what to erase by reading this
+        // shared, pre-erasure snapshot — `erase_region` drops the document's
+        // span cache, so if pass 2 re-fetched spans after pass 1 had already
+        // erased some, it would see an already-thinned page and undercount
+        // occurrences of text pass 1 left untouched.
+        let mut page_spans: HashMap<usize, Vec<crate::layout::TextSpan>> = HashMap::new();
+        for page_idx in 0..page_count {
+            page_spans.insert(page_idx, self.extract_spans(page_idx)?);
+        }
+
+        // The single source of truth for returned count: erased_spans.len()
+        // Each (page_idx, span index in `page_spans[page_idx]`) pair is added
+        // to the set as it is erased.
+        let mut erased_spans: HashSet<(usize, usize)> = HashSet::new();
 
         // 1. Spec-Compliant Removal (Priority)
         // If the PDF uses /Artifact tags (Tagged PDF), we use those directly as they are 100% accurate.
+        // Untagged PDFs never carry Header/Footer subtypes, but running-header
+        // detection (`mark_running_artifact_spans`) flags the same spans as
+        // `Other`/`PageNumber` — geometry (top/bottom 12% band) tells us which
+        // side of the page they belong to.
         for page_idx in 0..page_count {
-            let spans = self.extract_spans(page_idx)?;
-            for span in spans {
-                if let Some(ArtifactType::Pagination(subtype)) = span.artifact_type {
+            let page_height = self.get_page_media_box(page_idx)?.3;
+            let band = if page_height > 0.0 {
+                page_height * RUNNING_ARTIFACT_BAND_FRACTION
+            } else {
+                0.0
+            };
+            for (span_idx, span) in page_spans[&page_idx].iter().enumerate() {
+                if let Some(ArtifactType::Pagination(ref subtype)) = span.artifact_type {
                     let is_match = match (area, subtype) {
                         (PageArea::Header, PaginationSubtype::Header) => true,
                         (PageArea::Footer, PaginationSubtype::Footer) => true,
+                        (_, PaginationSubtype::Other | PaginationSubtype::PageNumber) => {
+                            if band <= 0.0 {
+                                false
+                            } else {
+                                match area {
+                                    PageArea::Header => {
+                                        span.bbox.y + span.bbox.height > page_height - band
+                                    },
+                                    PageArea::Footer => span.bbox.y < band,
+                                }
+                            }
+                        },
                         _ => false,
                     };
 
                     if is_match {
                         self.erase_region(page_idx, span.bbox)?;
-                        removed_count += 1;
+                        erased_spans.insert((page_idx, span_idx));
+                        if matches!(subtype, PaginationSubtype::Header | PaginationSubtype::Footer)
+                        {
+                            tagged_removed += 1;
+                        }
                     }
                 }
             }
         }
 
-        // If we found and removed spec-compliant artifacts, we return early
-        if removed_count > 0 {
+        // If we found and removed genuine spec-compliant artifacts, we return early.
+        if tagged_removed > 0 {
             log::info!(
                 "Removed {} spec-compliant artifacts from {}",
-                removed_count,
+                erased_spans.len(),
                 if area == PageArea::Header {
                     "headers"
                 } else {
                     "footers"
                 }
             );
-            return Ok(removed_count);
+            return Ok(erased_spans.len());
         }
 
         // 2. Heuristic Removal (Fallback for Untagged PDFs)
         // Only run if no spec-compliant tags were found.
         if page_count < 2 {
-            return Ok(0);
+            return Ok(erased_spans.len());
         }
 
         // Each entry records the IN-ZONE occurrences of a repeated string as
-        // (page, bbox). Keeping the bbox (not just the page set) lets us both
+        // (page, span index, bbox). Keeping the bbox lets us:
         // (a) erase only the header/footer occurrence and never an identically
-        // worded span elsewhere on the page, and (b) require the occurrences to
-        // share a position before treating the string as chrome.
-        let mut occurrences: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
+        //     worded span elsewhere on the page, and
+        // (b) require the occurrences to share a position before treating
+        //     the string as chrome.
+        // The span index is required for `erased_spans` tracking.
+        let mut occurrences: HashMap<String, Vec<(usize, usize, crate::geometry::Rect)>> =
+            HashMap::new();
 
         // Sanitize threshold to avoid min_occurrences becoming 0 for invalid inputs.
         let clamped_threshold = if threshold.is_finite() {
@@ -6644,13 +6702,21 @@ impl PdfDocument {
 
         for page_idx in 0..page_count {
             let height = self.get_page_media_box(page_idx)?.3;
+            // Same margin band as pass 1 (and running-artifact detector).
+            // The two passes must agree on what counts as
+            // "in the margin," or they classify different regions of the
+            // same page under a single threshold parameter.
+            let band = if height > 0.0 {
+                height * RUNNING_ARTIFACT_BAND_FRACTION
+            } else {
+                0.0
+            };
             let zone = match area {
-                PageArea::Header => height * 0.85,
-                PageArea::Footer => height * 0.15,
+                PageArea::Header => height - band,
+                PageArea::Footer => band,
             };
 
-            let spans = self.extract_spans(page_idx)?;
-            for span in spans.iter() {
+            for (span_idx, span) in page_spans[&page_idx].iter().enumerate() {
                 let is_in_zone = match area {
                     PageArea::Header => span.bbox.y > zone,
                     PageArea::Footer => (span.bbox.y + span.bbox.height) < zone,
@@ -6662,7 +6728,7 @@ impl PdfDocument {
                         occurrences
                             .entry(text)
                             .or_default()
-                            .push((page_idx, span.bbox));
+                            .push((page_idx, span_idx, span.bbox));
                     }
                 }
             }
@@ -6672,14 +6738,13 @@ impl PdfDocument {
         // lands at the same x/y on every page. A form label or instruction that
         // merely happens to recur — e.g. "Check if:", "(see instructions)",
         // "Name(s) shown on return" on a multi-page tax form — drifts in x or y
-        // between pages. Requiring positional consistency separates "recurs
-        // because it is chrome" from "recurs because it is the same real label"
-        // without deleting content.
+        // between pages. Requiring positional consistency distinguishes
+        // chrome from genuine content that happens to repeat.
         const POS_TOL_X: f32 = 40.0;
         const POS_TOL_Y: f32 = 24.0;
 
         for (_text, occs) in occurrences {
-            let distinct_pages: HashSet<usize> = occs.iter().map(|(p, _)| *p).collect();
+            let distinct_pages: HashSet<usize> = occs.iter().map(|(p, _, _)| *p).collect();
             if distinct_pages.len() < min_occurrences {
                 continue;
             }
@@ -6687,7 +6752,7 @@ impl PdfDocument {
             // Positional spread across every in-zone occurrence.
             let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
             let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-            for (_, bbox) in &occs {
+            for (_, _, bbox) in &occs {
                 min_x = min_x.min(bbox.x);
                 max_x = max_x.max(bbox.x);
                 min_y = min_y.min(bbox.y);
@@ -6698,14 +6763,16 @@ impl PdfDocument {
             }
 
             // Erase only the header/footer occurrences that qualified — never a
-            // same-text span outside the band.
-            for (page_idx, bbox) in occs {
-                self.erase_region(page_idx, bbox)?;
-                removed_count += 1;
+            // same-text span outside the band. `erased_spans` dedupes against
+            // pass 1, so a span both passes catch is counted once.
+            for (page_idx, span_idx, bbox) in occs {
+                if erased_spans.insert((page_idx, span_idx)) {
+                    self.erase_region(page_idx, bbox)?;
+                }
             }
         }
 
-        Ok(removed_count)
+        Ok(erased_spans.len())
     }
 
     /// Erase existing header content.
@@ -15133,17 +15200,98 @@ impl PdfDocument {
         page_height: f32,
         vertical: bool,
     ) -> bool {
-        let vband = page_height * 0.12;
+        let vband = page_height * RUNNING_ARTIFACT_BAND_FRACTION;
         if bbox.y < vband || bbox.y + bbox.height > page_height - vband {
             return true;
         }
         if vertical {
-            let hband = page_width * 0.12;
+            let hband = page_width * RUNNING_ARTIFACT_BAND_FRACTION;
             if bbox.x < hband || bbox.x + bbox.width > page_width - hband {
                 return true;
             }
         }
         false
+    }
+
+    /// Group spans that fall within the header/footer chrome band and
+    /// return each group as a list of indices into `spans`.
+    ///
+    /// Grouping is baseline proximity AND column-gap aware: two spans on the
+    /// same baseline but far apart horizontally (e.g. a form footnote on the
+    /// left and a running footer stamp on the right) land in separate groups.
+    /// Spans within a group are ordered left-to-right.
+    ///
+    /// Running artifacts (page numbers, citation footers) repeat as a
+    /// whole LINE across pages, but an individual span within an
+    /// otherwise-unique line can coincidentally recur at the same position
+    /// across pages. Comparing signatures span-by-span conflates the two;
+    /// grouping into lines first and comparing the whole line fixes it
+    /// without weakening real running-artifact detection.
+    fn group_band_lines(
+        spans: &[crate::layout::TextSpan],
+        page_width: f32,
+        page_height: f32,
+        vertical: bool,
+    ) -> Vec<Vec<usize>> {
+        let band_indices: Vec<usize> = (0..spans.len())
+            .filter(|&i| {
+                let s = &spans[i];
+                !s.text.trim().is_empty()
+                    && Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
+            })
+            .collect();
+        if band_indices.is_empty() {
+            return Vec::new();
+        }
+        if vertical {
+            return band_indices.into_iter().map(|i| vec![i]).collect();
+        }
+        let band_spans: Vec<&crate::layout::TextSpan> =
+            band_indices.iter().map(|&i| &spans[i]).collect();
+        let epsilon_y = band_spans
+            .iter()
+            .map(|s| s.font_size)
+            .fold(0.0_f32, f32::max)
+            .max(6.0);
+        // Delegates to the same column-gap-aware clustering used for
+        // word-to-line assembly elsewhere in the pipeline, so two spans
+        // sharing a baseline but far apart horizontally (e.g. a form
+        // footnote on the left and a running footer stamp on the right)
+        // are correctly split into separate lines instead of fused into
+        // one signature.
+        crate::layout::clustering::simplified_cluster_words_into_lines(
+            &band_spans,
+            epsilon_y,
+            |s| s.bbox.y,
+            |s| s.bbox.x,
+            |s| s.bbox.right(),
+            |s| s.font_size,
+        )
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .map(|local_i| band_indices[local_i])
+                .collect()
+        })
+        .collect()
+    }
+
+    /// Concatenate the spans at `line`'s indices (in the order given) and
+    /// compute the normalized cross-page signature of the result.
+    /// `spans` may include spans outside this line;
+    /// `line` is the subset of indices, in caller-determined order,
+    /// that compose one line.
+    fn line_literal_and_signature(
+        spans: &[crate::layout::TextSpan],
+        line: &[usize],
+    ) -> (String, String) {
+        let literal = line
+            .iter()
+            .map(|&i| spans[i].text.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sig = Self::normalize_artifact_signature(&literal);
+        (literal, sig)
     }
 
     /// Ensure running-artifact signatures are computed (once) and return a
@@ -15193,6 +15341,17 @@ impl PdfDocument {
             std::collections::HashMap::new();
         let mut first_seen_any: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
+        // Recto/verso running heads often alternate wording by page parity
+        // (e.g. "84 - ACM" on odd pages, "- 85" on even pages), so neither
+        // form alone clears the >=50%-of-all-pages bar even though each is a
+        // running artifact on its own half of the document. Track occurrence
+        // counts (and body-content page totals) split by page-index parity so
+        // that case can be recognised separately from the whole-document one.
+        let mut occurrences_by_parity: [std::collections::HashMap<String, usize>; 2] = [
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        ];
+        let mut body_pages_by_parity: [usize; 2] = [0, 0];
         // Track distinct literal texts per signature. A signature whose digits
         // are stable across every page (i.e. the literal text never changes) is
         // NOT a page-number-containing header — it is substantive content that
@@ -15221,26 +15380,23 @@ impl PdfDocument {
                 !s.text.trim().is_empty()
                     && !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
             });
-            // Collect per-page unique signatures from the chrome bands.
-            // Runs even when there's no body content so `first_seen_any`
-            // registers the cover page even if it's all-chrome.
+            // Collect per-page unique signatures from the chrome bands, one
+            // per LINE rather than per span (see `group_band_lines`) — a
+            // whole repeated line is chrome, a lone recurring word within
+            // an otherwise-unique line is not.
             let mut seen_this_page: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            for s in spans.iter() {
-                let trimmed = s.text.trim();
-                if trimmed.is_empty() {
+            for line in Self::group_band_lines(&spans, page_width, page_height, vertical) {
+                let (literal, sig) = Self::line_literal_and_signature(&spans, &line);
+                // A bare page number (e.g. "84") normalizes to the single
+                // placeholder char "#" — do not drop length-1 signatures, or
+                // running page-number tokens that share a baseline with other
+                // footer chrome (so `is_bare_page_number_text`'s isolation
+                // check below doesn't apply) are never registered at all.
+                if sig.is_empty() {
                     continue;
                 }
-                if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
-                    continue;
-                }
-                let sig = Self::normalize_artifact_signature(trimmed);
-                if sig.is_empty() || sig.chars().count() < 2 {
-                    continue;
-                }
-                seen_this_page
-                    .entry(sig)
-                    .or_insert_with(|| trimmed.to_string());
+                seen_this_page.entry(sig).or_insert(literal);
             }
             // Track first-seen across ALL pages (even body-content-skipped)
             for sig in seen_this_page.keys() {
@@ -15257,16 +15413,24 @@ impl PdfDocument {
             if !has_body_content {
                 continue;
             }
+            // track pages per parity (left-facing vs right-facing pages)
+            body_pages_by_parity[pi % 2] += 1;
+
             // Count only pages with body content for the recurrence threshold
             for sig in seen_this_page.into_keys() {
-                let entry = occurrences.entry(sig).or_insert((0, pi));
+                let entry = occurrences.entry(sig.clone()).or_insert((0, pi));
                 entry.0 += 1;
                 if pi < entry.1 {
                     entry.1 = pi;
                 }
+                *occurrences_by_parity[pi % 2].entry(sig).or_insert(0) += 1;
             }
         }
         let threshold = (page_count as f32 * 0.5).ceil() as usize;
+        let parity_threshold = [
+            (body_pages_by_parity[0] as f32 * 0.5).ceil() as usize,
+            (body_pages_by_parity[1] as f32 * 0.5).ceil() as usize,
+        ];
         let signatures: std::collections::HashMap<String, usize> = occurrences
             .into_iter()
             .filter(|(sig, (count, _))| {
@@ -15275,6 +15439,19 @@ impl PdfDocument {
                 // page. Recurs on >=50% of body pages.
                 if *count >= threshold.max(2) && variants >= 2 {
                     return true;
+                }
+                // Recto/verso alternation: a form that recurs on >=50% of ONE
+                // parity's body pages is a running artifact even though it
+                // never reaches 50% of the whole document (its counterpart
+                // form covers the other parity).
+                if variants >= 2 {
+                    for parity in 0..2 {
+                        let parity_count =
+                            occurrences_by_parity[parity].get(sig).copied().unwrap_or(0);
+                        if parity_count >= parity_threshold[parity].max(2) {
+                            return true;
+                        }
+                    }
                 }
                 // Item 6B (M5): CONSTANT-literal pagination/citation (DOI, volume/
                 // article, journal URL + digit). The literal never changes, so the
@@ -15290,6 +15467,46 @@ impl PdfDocument {
                         .is_some_and(|lit| Self::looks_like_stable_pagination(lit))
                 {
                     return true;
+                }
+                // Recto/verso constant chrome with NO digit:
+                // when there is no page-number to corroborate it the way the varying-
+                // literal branch has, then require a much higher bar than the
+                // 50% used there: >=80% of ONE parity's body pages, at least
+                // 2 letters including one alphabetic character (excludes
+                // bullets/hyphens/punctuation, the main false-positive
+                // class for single-glyph decorations).
+                if variants < 2
+                    && sig.chars().count() >= 2
+                    && sig.chars().any(|c| c.is_alphabetic())
+                {
+                    for parity in 0..2 {
+                        let body_pages = body_pages_by_parity[parity];
+                        if body_pages < 3 {
+                            continue;
+                        }
+                        let parity_count =
+                            occurrences_by_parity[parity].get(sig).copied().unwrap_or(0);
+                        let strict_parity_threshold = (body_pages as f32 * 0.8).ceil() as usize;
+
+                        // Require the other parity to be
+                        // empty before treating this as parity chrome.
+                        //
+                        // Genuine recto/verso alternation is confined to ONE
+                        // side — the motivating real-world case is [0, N].
+                        // A signature with real (non-zero) presence on BOTH
+                        // parities isn't alternating chrome; it's ordinary
+                        // content that happens to repeat across various pages
+                        // (e.g. an instructional note tied to a form section,
+                        // which happens to sit in the footer band we scan)
+                        let other_parity_count = occurrences_by_parity[1 - parity]
+                            .get(sig)
+                            .copied()
+                            .unwrap_or(0);
+                        if parity_count >= strict_parity_threshold.max(3) && other_parity_count == 0
+                        {
+                            return true;
+                        }
+                    }
                 }
                 false
             })
@@ -15358,7 +15575,25 @@ impl PdfDocument {
         // Signature set may be empty (no repeated headers/footers); the
         // bare-page-number rule below still runs.
         let signatures = self.ensure_running_artifact_signatures()?;
-        for s in spans.iter_mut() {
+        // Precompute each band span's whole-line signature up front —
+        // matching must compare a span's whole line against the cached
+        // signatures, not the span's own text alone. This keeps a lone
+        // recurring word in an otherwise-unique line from being flagged just
+        // because it happens to repeat at the same position on other pages.
+        let span_line_sig: std::collections::HashMap<usize, String> = {
+            let mut map = std::collections::HashMap::new();
+            for line in Self::group_band_lines(spans, page_width, page_height, vertical) {
+                let (_, sig) = Self::line_literal_and_signature(spans, &line);
+                if sig.is_empty() {
+                    continue;
+                }
+                for &i in &line {
+                    map.insert(i, sig.clone());
+                }
+            }
+            map
+        };
+        for (idx, s) in spans.iter_mut().enumerate() {
             if s.artifact_type.is_some() {
                 continue;
             }
@@ -15383,14 +15618,20 @@ impl PdfDocument {
                     s.artifact_type = Some(crate::extractors::text::ArtifactType::Pagination(
                         crate::extractors::text::PaginationSubtype::PageNumber,
                     ));
+                    continue;
                 }
-                continue;
+                // Not isolated — e.g. "84" sharing a baseline with "•  ACM"
+                // brand chrome. Fall through to the general signature check
+                // below, which matches on the digit-collapsed "#" signature
+                // regardless of what else shares the line.
             }
             if signatures.is_empty() {
                 continue;
             }
-            let sig = Self::normalize_artifact_signature(trimmed);
-            if let Some(&first_seen_on) = signatures.get(&sig) {
+            let Some(sig) = span_line_sig.get(&idx) else {
+                continue;
+            };
+            if let Some(&first_seen_on) = signatures.get(sig) {
                 // Keep the first appearance — it's usually the document
                 // cover-page title that got classified as chrome only
                 // because later pages repeat it as a running header (B3).

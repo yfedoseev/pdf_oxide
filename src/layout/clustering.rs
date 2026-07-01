@@ -342,43 +342,55 @@ pub fn cluster_chars_into_words(chars: &[TextChar], epsilon: f32) -> Vec<Vec<usi
     clusters
 }
 
-/// Cluster words into lines using column-aware Y-coordinate grouping (fallback).
+/// Column-aware line clustering, generic over any item type via accessor
+/// closures. Groups items into Y-bands (within `epsilon_y` of the band's
+/// first member), then splits each band into clusters wherever the
+/// horizontal gap between adjacent items exceeds a font-size-relative
+/// threshold — the shared implementation behind `cluster_words_into_lines`'s
+/// non-`ml` fallback and `PdfDocument::group_band_lines`'s header/footer-band
+/// clustering, so both get column-gap awareness from one tested algorithm
+/// instead of two hand-rolled copies (or one being feature-gated away).
 ///
-/// This is a simplified implementation used when the `ml` feature is not enabled.
-/// It groups words that have similar Y coordinates AND are horizontally connected,
-/// avoiding mixing words from different columns.
-#[cfg(not(feature = "ml"))]
-pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<usize>> {
-    if words.is_empty() {
+/// Always compiled (no `ml` cfg gate) so callers get identical behavior
+/// regardless of build features.
+pub(crate) fn simplified_cluster_words_into_lines<T>(
+    items: &[T],
+    epsilon_y: f32,
+    y_of: impl Fn(&T) -> f32,
+    x_of: impl Fn(&T) -> f32,
+    right_of: impl Fn(&T) -> f32,
+    font_size_of: impl Fn(&T) -> f32,
+) -> Vec<Vec<usize>> {
+    if items.is_empty() {
         return vec![];
     }
 
     // Optimized clustering using sort-based approach: O(n log n)
-    // Sort words by Y coordinate, then group consecutive words within epsilon_y.
+    // Sort items by Y coordinate, then group consecutive items within epsilon_y.
     // Within each Y-group, split by column gaps, font-size-relative.
 
     // Sort indices by Y coordinate
-    let mut indices: Vec<usize> = (0..words.len()).collect();
+    let mut indices: Vec<usize> = (0..items.len()).collect();
     indices.sort_by(|&a, &b| {
-        let y_cmp = crate::utils::safe_float_cmp(words[b].bbox.y, words[a].bbox.y);
+        let y_cmp = crate::utils::safe_float_cmp(y_of(&items[b]), y_of(&items[a]));
         if y_cmp != std::cmp::Ordering::Equal {
             return y_cmp;
         }
-        crate::utils::safe_float_cmp(words[a].bbox.x, words[b].bbox.x)
+        crate::utils::safe_float_cmp(x_of(&items[a]), x_of(&items[b]))
     });
 
-    // Group into Y-bands (words within epsilon_y vertically)
+    // Group into Y-bands (items within epsilon_y vertically)
     let mut y_bands: Vec<Vec<usize>> = vec![];
     let mut current_band: Vec<usize> = vec![indices[0]];
-    let mut band_y = words[indices[0]].bbox.y;
+    let mut band_y = y_of(&items[indices[0]]);
 
     for &idx in &indices[1..] {
-        if (words[idx].bbox.y - band_y).abs() <= epsilon_y {
+        if (y_of(&items[idx]) - band_y).abs() <= epsilon_y {
             current_band.push(idx);
         } else {
             y_bands.push(std::mem::take(&mut current_band));
             current_band.push(idx);
-            band_y = words[idx].bbox.y;
+            band_y = y_of(&items[idx]);
         }
     }
     if !current_band.is_empty() {
@@ -390,15 +402,15 @@ pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<
 
     for band in &mut y_bands {
         // Sort by X within band
-        band.sort_by(|&a, &b| crate::utils::safe_float_cmp(words[a].bbox.x, words[b].bbox.x));
+        band.sort_by(|&a, &b| crate::utils::safe_float_cmp(x_of(&items[a]), x_of(&items[b])));
 
         let mut cluster = vec![band[0]];
 
         for &idx in &band[1..] {
             let prev_idx = *cluster.last().unwrap();
-            let x_dist = (words[idx].bbox.left() - words[prev_idx].bbox.right())
+            let x_dist = (x_of(&items[idx]) - right_of(&items[prev_idx]))
                 .abs()
-                .min((words[prev_idx].bbox.left() - words[idx].bbox.right()).abs());
+                .min((x_of(&items[prev_idx]) - right_of(&items[idx])).abs());
 
             // Font-size-relative column-gap threshold (mirrors
             // `is_column_gap` in the markdown converter): a flat 50pt
@@ -409,7 +421,7 @@ pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<
             // it ("73751-452"/"PLANALTINA"/"GO") ate into the same column
             // width and stayed under 50pt, merging into one line — even
             // though both rows share the same column gutters.
-            let font_size_ref = words[idx].avg_font_size.max(words[prev_idx].avg_font_size);
+            let font_size_ref = font_size_of(&items[idx]).max(font_size_of(&items[prev_idx]));
             let column_gap_threshold = (font_size_ref * 3.0).max(30.0);
 
             if x_dist < column_gap_threshold {
@@ -424,6 +436,23 @@ pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<
     }
 
     clusters
+}
+
+/// Cluster words into lines using column-aware Y-coordinate grouping (fallback).
+///
+/// This is a simplified implementation used when the `ml` feature is not enabled.
+/// It groups words that have similar Y coordinates AND are horizontally connected,
+/// avoiding mixing words from different columns.
+#[cfg(not(feature = "ml"))]
+pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<usize>> {
+    simplified_cluster_words_into_lines(
+        words,
+        epsilon_y,
+        |w| w.bbox.y,
+        |w| w.bbox.x,
+        |w| w.bbox.right(),
+        |w| w.avg_font_size,
+    )
 }
 
 #[cfg(test)]

@@ -19,3 +19,7 @@ documentation surface, which these are not.
 - `probe_text_coverage.rs` — content-preservation sanity check
 - `analyze_office_conversion.rs` — broader corpus-wide conversion stats
 - `time_one.rs` — page-count summary helper
+- `probe_remove_artifacts_chrome_only.rs` — issue #794 corpus check: prints a
+  per-page span diff of what `remove_artifacts` erased, for manual review —
+  every listed entry should read as a page number or running header/footer
+  fragment; anything that looks like ordinary prose/headings is a real bug
