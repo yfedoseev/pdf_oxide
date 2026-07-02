@@ -2122,7 +2122,12 @@ jobs:
           # so base64-encode the armored key here (only if not already encoded).
         run: |
           case "$PGP_SECRET" in
-            *"BEGIN PGP"*) PGP_SECRET="$(printf '%s' "$PGP_SECRET" | base64 -w0)" ;;
+            *"BEGIN PGP"*)
+              PGP_SECRET="$(printf '%s' "$PGP_SECRET" | base64 -w0)"
+              # The re-encoded value is a new string the runner hasn't been told
+              # to redact; register it so it can never surface in logs.
+              echo "::add-mask::$PGP_SECRET"
+              ;;
           esac
           export PGP_SECRET
           sbt ci-release
