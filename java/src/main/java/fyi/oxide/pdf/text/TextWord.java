@@ -69,7 +69,7 @@ public final class TextWord {
 
     @Override
     public String toString() {
-        return "TextWord[text=" + text + ", bbox=" + bbox + ", confidence=" + confidence
-                + ", sequence=" + sequence + "]";
+        return "TextWord[text=" + text + ", bbox=" + bbox + ", confidence=" + confidence + ", sequence=" + sequence
+                + "]";
     }
 }
