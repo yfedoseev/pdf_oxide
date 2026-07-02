@@ -266,13 +266,13 @@ jobs:
           - label: linux aarch64
             runs-on: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - label: macOS x86_64
-            runs-on: macos-latest
-            target: x86_64-apple-darwin
-          # macOS arm64 FIPS wheel deferred (mirrors release-fips.yml): aws-lc-fips
-          # links its arm64 dylib against the runner's build SDK (macOS 26) and
-          # ignores the deployment target, so delocate rejects any portable wheel
-          # tag. FIPS is predominantly Linux/x86_64; tracked as a follow-up.
+          # macOS FIPS wheels (x86_64 and arm64) deferred (mirrors release-fips.yml):
+          # aws-lc-fips links its dylib against the runner's build SDK and ignores
+          # MACOSX_DEPLOYMENT_TARGET. macos-latest is now arm64 macOS 26; the
+          # x86_64 wheel is cross-compiled there and hits the same 26.0 dylib
+          # floor, which delocate rejects against a portable tag (it only built
+          # before because macos-latest used to be Intel). FIPS is predominantly
+          # Linux/x86_64; tracked as a follow-up.
           - label: windows x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc

@@ -146,15 +146,15 @@ jobs:
             runs-on: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: pdf_oxide_fips-python-linux-aarch64
-          - label: macOS x86_64
-            runs-on: macos-latest
-            target: x86_64-apple-darwin
-            artifact: pdf_oxide_fips-python-macos-x86_64
-          # macOS arm64 FIPS wheel deferred: aws-lc-fips links its dylib against
-          # the runner's build SDK (now macOS 26) and ignores the deployment
-          # target, so the bundled dylib's minimum keeps rising with the runner
-          # image and delocate rejects any portable wheel tag. FIPS deployments
-          # are predominantly Linux/x86_64, so this is tracked as a follow-up.
+          # macOS FIPS wheels (both x86_64 and arm64) are deferred: aws-lc-fips
+          # links its dylib against the runner's build SDK and ignores
+          # MACOSX_DEPLOYMENT_TARGET, so the bundled dylib's minimum OS keeps
+          # rising with the runner image and delocate rejects any portable wheel
+          # tag. macos-latest is now arm64 macOS 26, and the x86_64 wheel is
+          # cross-compiled on that same runner, so it hits the identical 26.0
+          # floor (it only built before because macos-latest used to be Intel).
+          # FIPS deployments are predominantly Linux/x86_64; macOS is tracked as
+          # a follow-up (needs a native Intel runner or an aws-lc-fips fix).
           - label: windows x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
