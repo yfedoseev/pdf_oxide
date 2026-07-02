@@ -13,6 +13,75 @@ use crate::layout::Color;
 use std::collections::HashMap;
 use std::io::Write;
 
+/// Map an arbitrary requested font name (+ bold flag) to the Standard-14
+/// PostScript base-font name actually emitted by the `Tf` operator.
+///
+/// This is the single source of truth for the name that ends up in a
+/// content stream, so any code that must *register* that font in a page's
+/// `/Resources/Font` (see `DocumentEditor`'s overlay-additions path) keys
+/// off this same function — otherwise the registered name and the emitted
+/// `Tf` name diverge for styled / generic / Symbol requests, leaving a
+/// dangling font tag.
+///
+/// Symbol and ZapfDingbats are deliberately NOT routed to their own faces:
+/// they use built-in encodings (not WinAnsi) and are not pre-registered in
+/// the page `/Font` dict, so emitting their names would produce a dangling
+/// `Tf` and the wrong encoding. They fall through to the Helvetica
+/// fallback — the markdown / text / HTML renderers never request them, and
+/// any caller who genuinely needs them should use the embedded-font path.
+pub(crate) fn map_base14_font_name(name: &str, bold: bool) -> String {
+    let lower = name.to_lowercase();
+
+    // Resolve the family. `sans` must be tested before `serif`
+    // because "sans-serif" contains "serif". Unknown names keep the
+    // historical Helvetica fallback — embedded fonts never reach this
+    // path (they are emitted as ShowEmbeddedText), so this only
+    // governs Base-14 substitution for generic family names.
+    enum Family {
+        Helvetica,
+        Times,
+        Courier,
+    }
+    let family = if lower.contains("courier") || lower.contains("mono") {
+        Family::Courier
+    } else if lower.contains("sans") || lower.contains("helvetica") || lower.contains("arial") {
+        Family::Helvetica
+    } else if lower.contains("times") || lower.contains("serif") {
+        Family::Times
+    } else {
+        Family::Helvetica
+    };
+
+    // Weight/slant come from the caller's flag *or* an explicit
+    // Standard-14 PostScript name (e.g. "Helvetica-Bold",
+    // "Times-Italic"), so callers can request a styled face by name
+    // without also threading a style struct through every layer.
+    let want_bold = bold || lower.contains("bold");
+    let want_italic = lower.contains("italic") || lower.contains("oblique");
+
+    match family {
+        Family::Helvetica => match (want_bold, want_italic) {
+            (false, false) => "Helvetica",
+            (true, false) => "Helvetica-Bold",
+            (false, true) => "Helvetica-Oblique",
+            (true, true) => "Helvetica-BoldOblique",
+        },
+        Family::Times => match (want_bold, want_italic) {
+            (false, false) => "Times-Roman",
+            (true, false) => "Times-Bold",
+            (false, true) => "Times-Italic",
+            (true, true) => "Times-BoldItalic",
+        },
+        Family::Courier => match (want_bold, want_italic) {
+            (false, false) => "Courier",
+            (true, false) => "Courier-Bold",
+            (false, true) => "Courier-Oblique",
+            (true, true) => "Courier-BoldOblique",
+        },
+    }
+    .to_string()
+}
+
 /// Operations that can be added to a content stream.
 #[derive(Debug, Clone)]
 pub enum ContentStreamOp {
@@ -875,65 +944,7 @@ impl ContentStreamBuilder {
 
     /// Map a font name to a PDF base font name.
     fn map_font_name(&self, name: &str, bold: bool) -> String {
-        let lower = name.to_lowercase();
-
-        // Note: Symbol and ZapfDingbats are deliberately NOT routed
-        // here. They use built-in encodings (not WinAnsi) and are not
-        // pre-registered in the page `/Font` dict, so emitting their
-        // names would produce a dangling `Tf` and the wrong encoding
-        // even if the font dict were added later. Fall through to the
-        // Helvetica fallback for those names — the markdown / text /
-        // HTML renderers never request them anyway, and any caller who
-        // does should use the embedded-font path explicitly.
-
-        // Resolve the family. `sans` must be tested before `serif`
-        // because "sans-serif" contains "serif". Unknown names keep the
-        // historical Helvetica fallback — embedded fonts never reach this
-        // path (they are emitted as ShowEmbeddedText), so this only
-        // governs Base-14 substitution for generic family names.
-        enum Family {
-            Helvetica,
-            Times,
-            Courier,
-        }
-        let family = if lower.contains("courier") || lower.contains("mono") {
-            Family::Courier
-        } else if lower.contains("sans") || lower.contains("helvetica") || lower.contains("arial") {
-            Family::Helvetica
-        } else if lower.contains("times") || lower.contains("serif") {
-            Family::Times
-        } else {
-            Family::Helvetica
-        };
-
-        // Weight/slant come from the caller's flag *or* an explicit
-        // Standard-14 PostScript name (e.g. "Helvetica-Bold",
-        // "Times-Italic"), so callers can request a styled face by name
-        // without also threading a style struct through every layer.
-        let want_bold = bold || lower.contains("bold");
-        let want_italic = lower.contains("italic") || lower.contains("oblique");
-
-        match family {
-            Family::Helvetica => match (want_bold, want_italic) {
-                (false, false) => "Helvetica",
-                (true, false) => "Helvetica-Bold",
-                (false, true) => "Helvetica-Oblique",
-                (true, true) => "Helvetica-BoldOblique",
-            },
-            Family::Times => match (want_bold, want_italic) {
-                (false, false) => "Times-Roman",
-                (true, false) => "Times-Bold",
-                (false, true) => "Times-Italic",
-                (true, true) => "Times-BoldItalic",
-            },
-            Family::Courier => match (want_bold, want_italic) {
-                (false, false) => "Courier",
-                (true, false) => "Courier-Bold",
-                (false, true) => "Courier-Oblique",
-                (true, true) => "Courier-BoldOblique",
-            },
-        }
-        .to_string()
+        map_base14_font_name(name, bold)
     }
 
     /// Add path content element.

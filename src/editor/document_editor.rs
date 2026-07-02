@@ -2459,6 +2459,45 @@ impl DocumentEditor {
                                         None
                                     };
 
+                                // Every Standard-14 base-font name that the overlay content
+                                // stream will actually emit via `Tf` needs a matching Font
+                                // object registered in this page's `/Resources/Font`, else the
+                                // resource name is dangling.
+                                //
+                                // The name to register is NOT the raw `font.name` the caller
+                                // passed — it's the transformed name the writer emits, i.e.
+                                // `map_base14_font_name(&font.name, is_bold)` (the same source
+                                // of truth used by `ContentStreamBuilder::map_font_name`). Keying
+                                // off the raw name diverges from the emitted `Tf` name for:
+                                //   - bold/italic overlays (raw "Helvetica" + bold → emits
+                                //     "/Helvetica-Bold");
+                                //   - generic families ("Arial", "sans-serif" → "/Helvetica");
+                                //   - Symbol/ZapfDingbats (routed to "/Helvetica").
+                                // Registering the emitted name closes all three; only Standard-14
+                                // names are ever emitted here (embedded fonts take the
+                                // ShowEmbeddedText path and never reach this registration).
+                                let mut overlay_font_ids: HashMap<String, u32> = HashMap::new();
+                                if let Some(added) = self.overlay_additions.get(&source_page_index)
+                                {
+                                    let mut needed: Vec<String> = added
+                                        .iter()
+                                        .filter_map(|el| match el {
+                                            ContentElement::Text(t) => {
+                                                Some(crate::writer::map_base14_font_name(
+                                                    &t.font.name,
+                                                    t.is_bold(),
+                                                ))
+                                            },
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    needed.sort();
+                                    needed.dedup();
+                                    for name in needed {
+                                        overlay_font_ids.insert(name, self.allocate_object_id());
+                                    }
+                                }
+
                                 // Apply page property modifications if any
                                 let mut final_page_obj = if let Some(props) =
                                     self.modified_page_props.get(&source_page_index)
@@ -2515,6 +2554,124 @@ impl DocumentEditor {
                                         new_dict.insert("Contents".to_string(), contents_array);
                                     }
                                     final_page_obj = Object::Dictionary(new_dict);
+                                }
+
+                                // Register any Base-14 fonts used by overlay_additions text
+                                // into this page's /Resources/Font, so the `Tf` operator in the
+                                // overlay stream resolves to a real font object instead of an
+                                // undeclared resource name. /Resources (and /Resources/Font)
+                                // are very commonly *indirect references* on a page loaded from
+                                // an existing document, not inline dictionaries — both levels
+                                // must be resolved via `self.source.load_object()` or the
+                                // existing Font entries (e.g. /F1, /F3 used by the page's
+                                // original content) are lost when /Resources is rebuilt below.
+                                if !overlay_font_ids.is_empty() {
+                                    if let Some(page_dict) = final_page_obj.as_dict() {
+                                        let mut new_dict = page_dict.clone();
+
+                                        let resolve_dict = |obj: &Object,
+                                                             src: &PdfDocument|
+                                         -> HashMap<String, Object> {
+                                            match obj {
+                                                Object::Dictionary(d) => d.clone(),
+                                                Object::Reference(r) => src
+                                                    .load_object(*r)
+                                                    .ok()
+                                                    .and_then(|o| o.as_dict().cloned())
+                                                    .unwrap_or_default(),
+                                                _ => HashMap::new(),
+                                            }
+                                        };
+
+                                        // /Resources is an inheritable attribute (ISO 32000-1
+                                        // §7.7.3.4): a page may legally omit its own /Resources
+                                        // and inherit it from an ancestor in the /Pages chain.
+                                        // Writing a fresh font-only /Resources here would shadow
+                                        // that inherited dict and drop the page's real fonts, so
+                                        // when the page has no own /Resources we seed from the
+                                        // inherited one.
+                                        //
+                                        // SECURITY (destructive redaction): we seed the page's
+                                        // materialised /Resources with ONLY the inherited /Font
+                                        // sub-dictionary, never the whole inherited dict. An
+                                        // ancestor /Resources can carry /XObject, /Pattern, etc.
+                                        // that reference content-bearing streams unrelated to
+                                        // this page; copying them wholesale onto the page would
+                                        // make them freshly reachable and thus survive the
+                                        // orphan-drop backstop — re-introducing exactly the kind
+                                        // of stray reference destructive redaction must not
+                                        // resurrect. /Font is the only sub-dict the overlay `Tf`
+                                        // resolution needs, and font programs are not a redaction
+                                        // leak surface here (the secret lives in content streams,
+                                        // which are rewritten). A page that genuinely renders an
+                                        // inherited XObject still inherits it at render time via
+                                        // the /Pages chain — we are not removing that path, only
+                                        // declining to inline-copy it onto the page.
+                                        let mut resources_dict: HashMap<String, Object> =
+                                            match new_dict.get("Resources") {
+                                                Some(obj) => resolve_dict(obj, &self.source),
+                                                None => {
+                                                    let mut node = new_dict
+                                                        .get("Parent")
+                                                        .and_then(|p| p.as_reference())
+                                                        .and_then(|r| {
+                                                            self.source.load_object(r).ok()
+                                                        });
+                                                    let mut inherited_font: Option<Object> = None;
+                                                    let mut guard = 0;
+                                                    while let Some(obj) = node {
+                                                        guard += 1;
+                                                        if guard > 64 {
+                                                            break; // cyclic /Parent — bail
+                                                        }
+                                                        let Some(dict) = obj.as_dict() else {
+                                                            break;
+                                                        };
+                                                        if let Some(res) = dict.get("Resources") {
+                                                            // Found the inherited /Resources:
+                                                            // take ONLY its /Font sub-dict.
+                                                            let res_dict =
+                                                                resolve_dict(res, &self.source);
+                                                            inherited_font =
+                                                                res_dict.get("Font").cloned();
+                                                            break;
+                                                        }
+                                                        node = dict
+                                                            .get("Parent")
+                                                            .and_then(|p| p.as_reference())
+                                                            .and_then(|r| {
+                                                                self.source.load_object(r).ok()
+                                                            });
+                                                    }
+                                                    let mut seeded: HashMap<String, Object> =
+                                                        HashMap::new();
+                                                    if let Some(font) = inherited_font {
+                                                        seeded.insert("Font".to_string(), font);
+                                                    }
+                                                    seeded
+                                                },
+                                            };
+                                        let mut font_dict: HashMap<String, Object> =
+                                            match resources_dict.get("Font") {
+                                                Some(obj) => resolve_dict(obj, &self.source),
+                                                None => HashMap::new(),
+                                            };
+                                        for (name, id) in &overlay_font_ids {
+                                            font_dict.insert(
+                                                name.clone(),
+                                                Object::Reference(ObjectRef::new(*id, 0)),
+                                            );
+                                        }
+                                        resources_dict.insert(
+                                            "Font".to_string(),
+                                            Object::Dictionary(font_dict),
+                                        );
+                                        new_dict.insert(
+                                            "Resources".to_string(),
+                                            Object::Dictionary(resources_dict),
+                                        );
+                                        final_page_obj = Object::Dictionary(new_dict);
+                                    }
                                 }
 
                                 // If we're flattening annotations, update page dictionary
@@ -3391,6 +3548,38 @@ impl DocumentEditor {
                                     }
                                 }
 
+                                // Write a minimal Type1 Font object for each Base-14 font
+                                // referenced by overlay_additions text that wasn't already
+                                // declared on this page.
+                                for (name, font_id) in &overlay_font_ids {
+                                    let mut font_obj_dict: HashMap<String, Object> = HashMap::new();
+                                    font_obj_dict.insert(
+                                        "Type".to_string(),
+                                        Object::Name("Font".to_string()),
+                                    );
+                                    font_obj_dict.insert(
+                                        "Subtype".to_string(),
+                                        Object::Name("Type1".to_string()),
+                                    );
+                                    font_obj_dict
+                                        .insert("BaseFont".to_string(), Object::Name(name.clone()));
+                                    font_obj_dict.insert(
+                                        "Encoding".to_string(),
+                                        Object::Name("WinAnsiEncoding".to_string()),
+                                    );
+                                    let font_obj = Object::Dictionary(font_obj_dict);
+                                    let offset = writer.stream_position()?;
+                                    let bytes = serialize_obj(
+                                        &serializer,
+                                        *font_id,
+                                        0,
+                                        &font_obj,
+                                        &encryption_handler,
+                                    );
+                                    writer.write_all(&bytes)?;
+                                    xref_entries.push((*font_id, offset, 0, true));
+                                }
+
                                 // Write new annotation objects
                                 if !new_annotation_ids.is_empty() {
                                     // Get page refs for building annotations (needed for link destinations)
@@ -4160,8 +4349,16 @@ impl DocumentEditor {
             // `save_page()` continue to see the expected true value.
             self.is_modified = true;
             let added: Vec<ContentElement> = page.added_children().to_vec();
+            // `save_page()` can legitimately be called more than once for the same
+            // page (e.g. one add_text() + save_page_from_editor() per inserted
+            // element). `.insert()` here replaced any elements staged by a prior
+            // call instead of accumulating them, silently dropping all but the
+            // last call's additions. Extend the existing Vec instead.
             if !added.is_empty() {
-                self.overlay_additions.insert(page_index, added);
+                self.overlay_additions
+                    .entry(page_index)
+                    .or_default()
+                    .extend(added);
             }
 
             // Pre-existing content that was edited/removed via the DOM can't be
@@ -10863,5 +11060,628 @@ mod tests {
         // Verify no cross-contamination
         assert!(!text_page0.contains("Hello from B"), "Page 0 should NOT contain text from B");
         assert!(!text_page1.contains("Hello from A"), "Page 1 should NOT contain text from A");
+    }
+
+    // =========================================================================
+    // Regression: destructive redaction + add_text() interaction on the same
+    // page (three related bugs found together — see PR description).
+    // =========================================================================
+
+    /// A minimal single-page PDF with two separate text-showing (`Tj`) runs
+    /// on one Type1/Helvetica font — unlike `minimal_pdf_bytes()` above,
+    /// this page has real extractable text, split into two runs so that
+    /// redacting one leaves the other's extraction untouched.
+    fn minimal_pdf_with_text_bytes() -> Vec<u8> {
+        let content_stream: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 100 700 Tm\n(SECRETVALUE) Tj\n\
+             1 0 0 1 100 680 Tm\n(public text) Tj\nET\n";
+        let mut objs: Vec<Vec<u8>> = Vec::new();
+        objs.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec());
+        objs.push(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec());
+        objs.push(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+                .to_vec(),
+        );
+        objs.push(
+            [
+                format!("4 0 obj\n<< /Length {} >>\nstream\n", content_stream.len()).into_bytes(),
+                content_stream.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+        objs.push(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_vec(),
+        );
+
+        let header = b"%PDF-1.4\n".to_vec();
+        let mut body = header.clone();
+        let mut offsets = vec![0u64];
+        let mut pos = header.len() as u64;
+        for o in &objs {
+            offsets.push(pos);
+            body.extend_from_slice(o);
+            pos += o.len() as u64;
+        }
+        let xref_offset = pos;
+        let mut xref = format!("xref\n0 {}\n", objs.len() + 1).into_bytes();
+        xref.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets[1..] {
+            xref.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        let trailer = format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objs.len() + 1,
+            xref_offset
+        )
+        .into_bytes();
+
+        [body, xref, trailer].concat()
+    }
+
+    /// Writes `minimal_pdf_with_text_bytes()` to a uniquely-named temp file
+    /// and opens it as a `DocumentEditor`, mirroring `create_test_editor()`
+    /// above but with real extractable text on the page.
+    fn create_test_editor_with_text() -> DocumentEditor {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let pdf_bytes = minimal_pdf_with_text_bytes();
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir()
+            .join(format!("pdf_oxide_redact_addtext_test_{}_{id}.pdf", std::process::id()));
+        std::fs::write(&tmp, &pdf_bytes).unwrap();
+        let editor = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        editor
+    }
+
+    /// Bug 1 + bug 2 regression: destructive redaction on a page that also
+    /// has `add_text()` overlay additions must not silently drop the added
+    /// text (bug 1: `/Contents` was overwritten wholesale instead of
+    /// preserving the overlay-additions array entry), and the replacement
+    /// text's Base-14 font must be usable without breaking extraction of
+    /// unrelated text on the same page (bug 2: the font resource was never
+    /// registered in `/Resources/Font`).
+    #[test]
+    fn destructive_redaction_preserves_add_text_overlay() {
+        let mut editor = create_test_editor_with_text();
+
+        // Locate "SECRETVALUE" and redact it destructively.
+        let bbox = {
+            let pe = editor.page_editor(0).unwrap();
+            let matches = pe.page.find_text_containing("SECRETVALUE");
+            assert_eq!(matches.len(), 1, "expected exactly one match for SECRETVALUE");
+            matches[0].bbox()
+        };
+        let rect = [bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height];
+        editor
+            .add_redaction(0, rect, Some([0.0, 0.0, 0.0]))
+            .unwrap();
+        let report = editor
+            .apply_redactions_destructive(crate::redaction::RedactionOptions::default())
+            .unwrap();
+        assert!(report.glyphs_removed > 0, "expected some glyphs to be removed");
+
+        // Add replacement text at the same position (Base-14 font, no
+        // dependency on the original page's font encoding).
+        let mut pe = editor.page_editor(0).unwrap();
+        let font = crate::elements::FontSpec {
+            name: "Helvetica".to_string(),
+            size: 12.0,
+        };
+        pe.page.add_text(crate::elements::TextContent::new(
+            "{{REDACTED}}",
+            bbox,
+            font,
+            crate::elements::TextStyle::default(),
+        ));
+        let page = pe.done().unwrap();
+        editor.save_page_from_editor(page).unwrap();
+
+        let bytes = editor.save_to_bytes().unwrap();
+
+        // Re-open the saved bytes independently.
+        let tmp = std::env::temp_dir()
+            .join(format!("pdf_oxide_redact_addtext_verify_{}.pdf", std::process::id()));
+        std::fs::write(&tmp, &bytes).unwrap();
+        let mut verify = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            pe.page.find_text_containing("SECRETVALUE").is_empty(),
+            "redacted text must not survive"
+        );
+        assert!(
+            !pe.page.find_text_containing("{{REDACTED}}").is_empty(),
+            "added replacement text must be present after save (was silently dropped \
+             before the /Contents-array-preservation fix)"
+        );
+        assert!(
+            !pe.page.find_text_containing("public text").is_empty(),
+            "unrelated text on the same page must survive untouched — if the added \
+             text's Base-14 font resource were left undeclared in /Resources/Font, a \
+             strict content-stream parser would choke on the added text's `Tf` \
+             operator and fail to extract this text too"
+        );
+    }
+
+    /// Bug 3 regression: two separate `add_text()` + `save_page_from_editor()`
+    /// round-trips on the same page must both survive to the saved output.
+    /// Before the fix, `save_page()` used `HashMap::insert` on
+    /// `overlay_additions`, so the second call silently discarded the first
+    /// call's added element instead of accumulating both.
+    #[test]
+    fn multiple_add_text_calls_on_same_page_all_survive() {
+        let mut editor = create_test_editor_with_text();
+        let font = || crate::elements::FontSpec {
+            name: "Helvetica".to_string(),
+            size: 10.0,
+        };
+        let bbox_a = crate::geometry::Rect {
+            x: 50.0,
+            y: 50.0,
+            width: 100.0,
+            height: 12.0,
+        };
+        let bbox_b = crate::geometry::Rect {
+            x: 50.0,
+            y: 80.0,
+            width: 100.0,
+            height: 12.0,
+        };
+
+        for (bbox, label) in [(bbox_a, "TOKEN_ONE"), (bbox_b, "TOKEN_TWO")] {
+            let mut pe = editor.page_editor(0).unwrap();
+            pe.page.add_text(crate::elements::TextContent::new(
+                label,
+                bbox,
+                font(),
+                crate::elements::TextStyle::default(),
+            ));
+            let page = pe.done().unwrap();
+            editor.save_page_from_editor(page).unwrap();
+        }
+
+        let bytes = editor.save_to_bytes().unwrap();
+        let tmp = std::env::temp_dir()
+            .join(format!("pdf_oxide_multi_addtext_verify_{}.pdf", std::process::id()));
+        std::fs::write(&tmp, &bytes).unwrap();
+        let mut verify = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            !pe.page.find_text_containing("TOKEN_ONE").is_empty(),
+            "first add_text() call must survive a second, separate save_page() call"
+        );
+        assert!(
+            !pe.page.find_text_containing("TOKEN_TWO").is_empty(),
+            "second add_text() call must also be present"
+        );
+    }
+
+    /// A single-page PDF whose *original* `/Contents` is already a
+    /// two-element array `[c1 c2]` (ISO 32000-1 §7.7.3.3), with the
+    /// page's `/Resources` **and** `/Resources/Font` reached through
+    /// *indirect* references (the common shape for a page loaded from a
+    /// real document). `c1` holds the secret, `c2` holds unrelated text.
+    fn multi_stream_indirect_resources_pdf_bytes() -> Vec<u8> {
+        let c1: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 100 700 Tm\n(SECRETVALUE) Tj\nET\n";
+        let c2: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 100 680 Tm\n(public text) Tj\nET\n";
+        let mut objs: Vec<Vec<u8>> = Vec::new();
+        objs.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec());
+        objs.push(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec());
+        // Page: /Contents is an array [4 0 R 5 0 R]; /Resources is an
+        // indirect reference to obj 6; obj 6's /Font is an indirect
+        // reference to obj 7.
+        objs.push(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Contents [4 0 R 5 0 R] /Resources 6 0 R >>\nendobj\n"
+                .to_vec(),
+        );
+        objs.push(
+            [
+                format!("4 0 obj\n<< /Length {} >>\nstream\n", c1.len()).into_bytes(),
+                c1.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+        objs.push(
+            [
+                format!("5 0 obj\n<< /Length {} >>\nstream\n", c2.len()).into_bytes(),
+                c2.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+        objs.push(b"6 0 obj\n<< /Font 7 0 R >>\nendobj\n".to_vec());
+        objs.push(b"7 0 obj\n<< /F1 8 0 R >>\nendobj\n".to_vec());
+        objs.push(
+            b"8 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_vec(),
+        );
+
+        let header = b"%PDF-1.4\n".to_vec();
+        let mut body = header.clone();
+        let mut offsets = vec![0u64];
+        let mut pos = header.len() as u64;
+        for o in &objs {
+            offsets.push(pos);
+            body.extend_from_slice(o);
+            pos += o.len() as u64;
+        }
+        let xref_offset = pos;
+        let mut xref = format!("xref\n0 {}\n", objs.len() + 1).into_bytes();
+        xref.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets[1..] {
+            xref.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        let trailer = format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objs.len() + 1,
+            xref_offset
+        )
+        .into_bytes();
+
+        [body, xref, trailer].concat()
+    }
+
+    fn open_editor_from_bytes(bytes: &[u8], tag: &str) -> DocumentEditor {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp =
+            std::env::temp_dir().join(format!("pdf_oxide_{tag}_{}_{id}.pdf", std::process::id()));
+        std::fs::write(&tmp, bytes).unwrap();
+        let editor = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        editor
+    }
+
+    /// Assert that every reference in the page's `/Contents` array points
+    /// to an object that is **physically defined** in the saved bytes —
+    /// i.e. no *dangling* reference. This is the property strict validators
+    /// (veraPDF / Poppler strict mode) reject and the one the multi-stream
+    /// `/Contents` must-fix is about.
+    ///
+    /// This deliberately works on the raw saved bytes rather than through
+    /// `DocumentEditor::load_object`: a missing object is silently
+    /// recovered by `load_object` (file-scan fallback, or `Object::Null`
+    /// per §7.3.10), which would *mask* a dangling reference. A strict
+    /// validator has no such tolerance, so the test must not either.
+    fn assert_no_dangling_contents_in_bytes(bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        // Find the page object's /Contents array. Our fixtures have a
+        // single /Type /Page; locate its dict and the [...] after
+        // /Contents.
+        let page_pos = text
+            .find("/Type /Page")
+            .or_else(|| text.find("/Type/Page"))
+            .expect("no /Type /Page object found in saved bytes");
+        let contents_pos = text[page_pos..]
+            .find("/Contents")
+            .map(|p| page_pos + p)
+            .expect("page has no /Contents");
+        let after = &text[contents_pos + "/Contents".len()..];
+        let after = after.trim_start();
+        assert!(
+            after.starts_with('['),
+            "expected an array /Contents in this multi-stream fixture, got: {}",
+            &after[..after.len().min(40)]
+        );
+        let close = after.find(']').expect("unterminated /Contents array");
+        let inner = &after[1..close];
+
+        // Parse "N G R" triples out of the array.
+        let toks: Vec<&str> = inner.split_whitespace().collect();
+        let mut ids: Vec<u32> = Vec::new();
+        let mut i = 0;
+        while i + 2 < toks.len() + 1 && i + 2 <= toks.len() {
+            if toks.get(i + 2) == Some(&"R") {
+                if let Ok(id) = toks[i].parse::<u32>() {
+                    ids.push(id);
+                }
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        assert!(!ids.is_empty(), "no object references parsed from /Contents array");
+
+        for id in ids {
+            // A defined object appears as "\n<id> <gen> obj". Accept any
+            // generation number.
+            let defined =
+                text.contains(&format!("\n{id} 0 obj")) || text.starts_with(&format!("{id} 0 obj"));
+            assert!(
+                defined,
+                "dangling /Contents reference to object {id}: it appears in the \
+                 array but no `{id} 0 obj` is defined in the saved file — strict \
+                 validators (veraPDF / Poppler strict mode) reject this"
+            );
+        }
+    }
+
+    /// Must-fix 1 regression: a page whose *original* `/Contents` is
+    /// already a `[c1 c2]` array, redacted destructively and then given an
+    /// `add_text()` overlay, must (a) drop the secret, (b) keep the
+    /// unrelated stream's text, (c) keep the overlay, and (d) leave **no
+    /// dangling `/Contents` reference** — the entry-0-only replacement in
+    /// the original PR left `c2` dangling. Also exercises indirect
+    /// `/Resources` and `/Resources/Font` (the headline complexity), which
+    /// the earlier tests did not cover.
+    #[test]
+    fn destructive_redaction_multi_stream_contents_no_dangling_ref() {
+        let mut editor =
+            open_editor_from_bytes(&multi_stream_indirect_resources_pdf_bytes(), "multistream");
+
+        let bbox = {
+            let pe = editor.page_editor(0).unwrap();
+            let matches = pe.page.find_text_containing("SECRETVALUE");
+            assert_eq!(matches.len(), 1, "expected exactly one match for SECRETVALUE");
+            matches[0].bbox()
+        };
+        let rect = [bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height];
+        editor
+            .add_redaction(0, rect, Some([0.0, 0.0, 0.0]))
+            .unwrap();
+        let report = editor
+            .apply_redactions_destructive(crate::redaction::RedactionOptions::default())
+            .unwrap();
+        assert!(report.glyphs_removed > 0, "expected some glyphs to be removed");
+
+        let mut pe = editor.page_editor(0).unwrap();
+        let font = crate::elements::FontSpec {
+            name: "Helvetica".to_string(),
+            size: 12.0,
+        };
+        pe.page.add_text(crate::elements::TextContent::new(
+            "{{REDACTED}}",
+            bbox,
+            font,
+            crate::elements::TextStyle::default(),
+        ));
+        let page = pe.done().unwrap();
+        editor.save_page_from_editor(page).unwrap();
+
+        let bytes = editor.save_to_bytes().unwrap();
+
+        // (d) No dangling /Contents reference after the multi-stream
+        // rewrite — this is the core of must-fix 1. Checked on the raw
+        // bytes, since load_object() would silently mask a missing object.
+        assert_no_dangling_contents_in_bytes(&bytes);
+
+        let mut verify = open_editor_from_bytes(&bytes, "multistream_verify");
+
+        let pe = verify.page_editor(0).unwrap();
+        // (a) secret gone.
+        assert!(
+            pe.page.find_text_containing("SECRETVALUE").is_empty(),
+            "redacted text must not survive"
+        );
+        // (b) unrelated original stream (c2) text survives.
+        assert!(
+            !pe.page.find_text_containing("public text").is_empty(),
+            "text from the *second* original content stream must survive the redaction"
+        );
+        // (c) overlay survives.
+        assert!(
+            !pe.page.find_text_containing("{{REDACTED}}").is_empty(),
+            "add_text() overlay must survive destructive redaction of a multi-stream page"
+        );
+    }
+
+    /// Must-fix 2 regression: a **bold** overlay makes the writer emit
+    /// `/Helvetica-Bold` via `map_font_name`, so the registration must key
+    /// off that transformed name — not the raw `"Helvetica"` — or the
+    /// `Tf` operator references an undeclared font and a strict parser
+    /// chokes on the overlay (and, via the shared stream, unrelated text).
+    #[test]
+    fn styled_overlay_font_registered_under_emitted_name() {
+        let mut editor = create_test_editor_with_text();
+
+        let bbox = crate::geometry::Rect {
+            x: 100.0,
+            y: 600.0,
+            width: 120.0,
+            height: 14.0,
+        };
+        let mut pe = editor.page_editor(0).unwrap();
+        let font = crate::elements::FontSpec {
+            name: "Helvetica".to_string(),
+            size: 12.0,
+        };
+        let style = crate::elements::TextStyle {
+            weight: crate::layout::FontWeight::Bold,
+            ..crate::elements::TextStyle::default()
+        };
+        pe.page
+            .add_text(crate::elements::TextContent::new("BOLDTOKEN", bbox, font, style));
+        let page = pe.done().unwrap();
+        editor.save_page_from_editor(page).unwrap();
+
+        let bytes = editor.save_to_bytes().unwrap();
+        let mut verify = open_editor_from_bytes(&bytes, "boldfont_verify");
+
+        // The bold overlay text and the original page text must both
+        // extract cleanly: if `/Helvetica-Bold` were unregistered while
+        // the stream emits `/Helvetica-Bold Tf`, a strict parser would
+        // fail on the overlay's `Tf`.
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            !pe.page.find_text_containing("BOLDTOKEN").is_empty(),
+            "bold overlay text must survive — the emitted /Helvetica-Bold must be registered"
+        );
+        assert!(
+            !pe.page.find_text_containing("public text").is_empty(),
+            "unrelated original text must still extract"
+        );
+
+        // The emitted font name (/Helvetica-Bold) must be present in the
+        // saved bytes as a registered **/BaseFont** — not merely as the
+        // `/Helvetica-Bold Tf` operand inside the content stream (which is
+        // there regardless of registration). Checking for the `/BaseFont`
+        // key proves registration keyed off the transformed name rather
+        // than the raw "Helvetica".
+        let haystack = String::from_utf8_lossy(&bytes);
+        assert!(
+            haystack.contains("/BaseFont /Helvetica-Bold")
+                || haystack.contains("/BaseFont/Helvetica-Bold"),
+            "a Font object with /BaseFont /Helvetica-Bold must be written — the \
+             overlay stream emits `/Helvetica-Bold Tf`, so registering the raw \
+             \"Helvetica\" leaves that Tf dangling"
+        );
+    }
+
+    /// A single-page PDF where the page has NO own `/Resources` and inherits
+    /// it from the `/Pages` node. The inherited `/Resources` carries both a
+    /// `/Font` sub-dict (needed by the page's text) and an `/XObject`
+    /// sub-dict referencing a Form XObject (`/SecretForm`) whose stream
+    /// contains sensitive text. This models the shape behind the
+    /// inherited-/Resources leak concern.
+    fn inherited_resources_with_xobject_pdf_bytes() -> Vec<u8> {
+        let content: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 100 700 Tm\n(visible text) Tj\nET\n";
+        let secret: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 10 10 Tm\n(XOBJECTSECRET) Tj\nET\n";
+        let mut objs: Vec<Vec<u8>> = Vec::new();
+        objs.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec());
+        // /Pages node holds the inheritable /Resources (Font + XObject).
+        objs.push(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 \
+              /Resources << /Font << /F1 5 0 R >> /XObject << /SecretForm 6 0 R >> >> >>\nendobj\n"
+                .to_vec(),
+        );
+        // Page: NO own /Resources — must inherit from /Pages (§7.7.3.4).
+        objs.push(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Contents 4 0 R >>\nendobj\n"
+                .to_vec(),
+        );
+        objs.push(
+            [
+                format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).into_bytes(),
+                content.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+        objs.push(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_vec(),
+        );
+        objs.push(
+            [
+                format!(
+                    "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Length {} >>\nstream\n",
+                    secret.len()
+                )
+                .into_bytes(),
+                secret.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+
+        let header = b"%PDF-1.4\n".to_vec();
+        let mut body = header.clone();
+        let mut offsets = vec![0u64];
+        let mut pos = header.len() as u64;
+        for o in &objs {
+            offsets.push(pos);
+            body.extend_from_slice(o);
+            pos += o.len() as u64;
+        }
+        let xref_offset = pos;
+        let mut xref = format!("xref\n0 {}\n", objs.len() + 1).into_bytes();
+        xref.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets[1..] {
+            xref.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        let trailer = format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objs.len() + 1,
+            xref_offset
+        )
+        .into_bytes();
+
+        [body, xref, trailer].concat()
+    }
+
+    /// Adversarial-review regression: when overlay text forces the page's
+    /// `/Resources` to be materialised and the page inherits `/Resources`
+    /// from an ancestor, the materialised dict must seed ONLY the inherited
+    /// `/Font` — never the inherited `/XObject` (or other content-bearing
+    /// resources). Inlining an inherited Form XObject reference onto the
+    /// page would make that stream freshly reachable and let it survive a
+    /// later destructive-redaction orphan-drop, re-introducing a stray
+    /// reference. The overlay font must still be registered so the added
+    /// text's `Tf` does not dangle.
+    #[test]
+    fn overlay_does_not_inline_inherited_xobject_into_page_resources() {
+        let mut editor =
+            open_editor_from_bytes(&inherited_resources_with_xobject_pdf_bytes(), "inherit_xobj");
+
+        let bbox = crate::geometry::Rect {
+            x: 100.0,
+            y: 500.0,
+            width: 120.0,
+            height: 14.0,
+        };
+        let mut pe = editor.page_editor(0).unwrap();
+        let font = crate::elements::FontSpec {
+            name: "Helvetica".to_string(),
+            size: 12.0,
+        };
+        pe.page.add_text(crate::elements::TextContent::new(
+            "OVERLAYTOKEN",
+            bbox,
+            font,
+            crate::elements::TextStyle::default(),
+        ));
+        let page = pe.done().unwrap();
+        editor.save_page_from_editor(page).unwrap();
+
+        let bytes = editor.save_to_bytes().unwrap();
+        let mut verify = open_editor_from_bytes(&bytes, "inherit_xobj_verify");
+
+        // Inspect the saved page's OWN /Resources (now materialised).
+        let page_ref = verify.source.get_page_ref(0).unwrap();
+        let page_obj = verify.source.load_object(page_ref).unwrap();
+        let page_dict = page_obj.as_dict().unwrap();
+        let res_obj = page_dict
+            .get("Resources")
+            .cloned()
+            .expect("page should have a materialised /Resources after overlay");
+        let res_dict = match res_obj {
+            Object::Dictionary(d) => d,
+            Object::Reference(r) => verify
+                .source
+                .load_object(r)
+                .unwrap()
+                .as_dict()
+                .cloned()
+                .unwrap(),
+            other => panic!("unexpected /Resources object: {other:?}"),
+        };
+
+        // The overlay font must be registered (Tf must resolve)...
+        assert!(
+            res_dict.contains_key("Font"),
+            "materialised /Resources must carry a /Font sub-dict for the overlay"
+        );
+        // ...but the inherited /XObject must NOT have been inlined onto the page.
+        assert!(
+            !res_dict.contains_key("XObject"),
+            "inherited /XObject must not be copied into the page's /Resources — \
+             doing so re-references the Form XObject and would defeat a later \
+             destructive-redaction orphan-drop"
+        );
+
+        // The overlay text still extracts.
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            !pe.page.find_text_containing("OVERLAYTOKEN").is_empty(),
+            "overlay text must survive with its font registered"
+        );
     }
 }

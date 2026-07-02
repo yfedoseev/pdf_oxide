@@ -98,6 +98,9 @@ pub use content_stream::{
     BlendMode, ContentStreamBuilder, ContentStreamOp, LineCap, LineJoin, PendingImage,
     TextArrayItem,
 };
+// Crate-internal: shared Standard-14 name mapping so the editor's overlay-font
+// registration keys off the exact name the content-stream writer emits.
+pub(crate) use content_stream::map_base14_font_name;
 pub use document_builder::{
     DocumentBuilder, DocumentMetadata, FluentPageBuilder, LineStyle, ListStyle, PageSize,
     TextAlign, TextConfig, TextRun, TextRunStyle,
