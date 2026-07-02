@@ -5678,6 +5678,10 @@ namespace PdfOxide.Internal
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial long pdf_oxide_word_get_sequence(IntPtr words, int index, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial void pdf_oxide_word_list_free(IntPtr handle);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]

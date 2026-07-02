@@ -53,6 +53,8 @@ expect_true(nchar(words[[1]]$text) > 0)
 bb <- words[[1]]$bbox
 expect_true(all(c("x", "y", "width", "height") %in% names(bb)))
 expect_true(is.numeric(bb$width))
+expect_true("sequence" %in% names(words[[1]]))
+expect_true(is.numeric(words[[1]]$sequence))
 chars <- pdf_extract_chars(doc, 0)                      # pdf_extract_chars
 expect_true(length(chars) > 0)
 expect_true(is.integer(chars[[1]]$character) && chars[[1]]$character > 0)

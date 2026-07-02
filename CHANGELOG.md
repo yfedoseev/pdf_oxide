@@ -8,7 +8,7 @@ All notable changes to PDFOxide are documented here.
 
 ### Added
 
-- **Content-stream order exposed on extracted spans and words (#779)** — `extract_words` and `extract_text_lines` now carry the originating span's `sequence` (the content-stream emission order), also exposed on Python's `PyTextSpan`/`PyWord`. This lets consumers tell genuinely-consecutive draw calls apart from spatially-close-but-stream-distant ones (e.g. table cells vs. overlays), independent of the final reading order. Thanks @ankursri494 for the request.
+- **Content-stream order exposed on extracted spans and words (#779)** — `extract_words` and `extract_text_lines` now carry the originating span's `sequence` (the content-stream emission order). It is surfaced idiomatically on the word/span types of every language binding — Python, Node.js and WASM, Go, the JVM (Java/Kotlin/Scala/Clojure), C#, Ruby, PHP, C and C++, Objective-C, Swift, Dart, R, Julia, Zig, and Elixir — via the new C-ABI accessor `pdf_oxide_word_get_sequence`. This lets consumers tell genuinely-consecutive draw calls apart from spatially-close-but-stream-distant ones (e.g. table cells vs. overlays), independent of the final reading order. Thanks @ankursri494 for the request.
 
 ### Fixed
 

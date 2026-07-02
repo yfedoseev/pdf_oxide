@@ -868,7 +868,7 @@ namespace PdfOxide.Core
         }
 
         /// <summary>Extracts words from a page. Returns handle-based results (use NativeMethods directly for now).</summary>
-        public (string Text, float X, float Y, float W, float H)[] ExtractWords(int pageIndex)
+        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWords(int pageIndex)
         {
             _lock.EnterReadLock();
             try
@@ -876,17 +876,18 @@ namespace PdfOxide.Core
                 ThrowIfDisposed();
                 var handle = NativeMethods.pdf_document_extract_words(_handle.Ptr, pageIndex, out var errorCode);
                 ExceptionMapper.ThrowIfError(errorCode);
-                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long)>();
                 try
                 {
                     var count = NativeMethods.pdf_oxide_word_count(handle);
-                    var results = new (string, float, float, float, float)[count];
+                    var results = new (string, float, float, float, float, long)[count];
                     for (int i = 0; i < count; i++)
                     {
                         var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
                         var text = StringMarshaler.PtrToStringAndFree(textPtr);
                         NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
-                        results[i] = (text, x, y, w, h);
+                        var sequence = NativeMethods.pdf_oxide_word_get_sequence(handle, i, out _);
+                        results[i] = (text, x, y, w, h, sequence);
                     }
                     return results;
                 }
@@ -1176,7 +1177,7 @@ namespace PdfOxide.Core
         }
 
         /// <summary>Extracts words from a rectangular region.</summary>
-        public (string Text, float X, float Y, float W, float H)[] ExtractWordsInRect(int pageIndex, float x, float y, float width, float height)
+        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWordsInRect(int pageIndex, float x, float y, float width, float height)
         {
             _lock.EnterReadLock();
             try
@@ -1184,17 +1185,18 @@ namespace PdfOxide.Core
                 ThrowIfDisposed();
                 var handle = NativeMethods.pdf_document_extract_words_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
                 ExceptionMapper.ThrowIfError(errorCode);
-                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float)>();
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long)>();
                 try
                 {
                     var count = NativeMethods.pdf_oxide_word_count(handle);
-                    var results = new (string, float, float, float, float)[count];
+                    var results = new (string, float, float, float, float, long)[count];
                     for (int i = 0; i < count; i++)
                     {
                         var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
                         var text = StringMarshaler.PtrToStringAndFree(textPtr);
                         NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var wx, out var wy, out var ww, out var wh, out _);
-                        results[i] = (text, wx, wy, ww, wh);
+                        var sequence = NativeMethods.pdf_oxide_word_get_sequence(handle, i, out _);
+                        results[i] = (text, wx, wy, ww, wh, sequence);
                     }
                     return results;
                 }
@@ -1925,7 +1927,7 @@ namespace PdfOxide.Core
             Task.Run(() => _doc.ToPlainText(Index), ct);
 
         /// <summary>Extracts words with bounding boxes.</summary>
-        public (string Text, float X, float Y, float W, float H)[] ExtractWords() =>
+        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWords() =>
             _doc.ExtractWords(Index);
 
         /// <summary>Extracts text lines with bounding boxes.</summary>

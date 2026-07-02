@@ -85,6 +85,8 @@ class PdfPageTest {
             assertThat(words).isNotNull().isNotEmpty();
             assertThat(words.get(0).text()).isNotEmpty();
             assertThat(words.get(0).bbox()).isNotNull();
+            // Content-stream emission order is exposed and non-negative.
+            assertThat(words.get(0).sequence()).isGreaterThanOrEqualTo(0L);
         }
     }
 

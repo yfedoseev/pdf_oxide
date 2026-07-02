@@ -168,7 +168,9 @@ pdf_extract_chars <- function(doc, page) {
 #' @param doc A `pdfoxide_document`.
 #' @param page 0-based page index (required).
 #' @return A list of `Word` records, each `list(text=, bbox=, font_name=,
-#'   font_size=, bold=)`.
+#'   font_size=, bold=, sequence=)`. `sequence` is the content-stream draw
+#'   order of the word's originating span (adjacent values were drawn
+#'   consecutively), independent of reading order.
 #' @export
 pdf_extract_words <- function(doc, page) {
   .Call(C_r_doc_extract_words, doc, as.integer(page))
@@ -2704,7 +2706,9 @@ pdf_extract_text_in_rect <- function(doc, page, x, y, width, height) {
 }
 #' Extract words within a rectangle on a (0-based) page.
 #' @inheritParams pdf_extract_text_in_rect
-#' @return A list of `Word` records (`list(text=, bbox=)`).
+#' @return A list of `Word` records (`list(text=, bbox=, sequence=)`, where
+#'   `sequence` is the content-stream draw order of the word's originating
+#'   span, independent of reading order).
 #' @export
 pdf_extract_words_in_rect <- function(doc, page, x, y, width, height) {
   .Call(C_r_doc_extract_words_in_rect, doc, as.integer(page),

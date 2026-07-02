@@ -2271,6 +2271,17 @@ bool pdf_oxide_word_is_bold(const FfiWordList *words, int32_t index, int32_t *er
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Content-stream emission order of the word's originating span: the order in
+ * which spans were drawn during the Tj/TJ walk. Words with adjacent values
+ * were drawn consecutively, distinguishing genuinely-consecutive draw calls
+ * from spatially-close-but-stream-distant ones, independent of reading order.
+ * Returns -1 (with an error code) on a null handle or out-of-range index.
+ */
+int64_t pdf_oxide_word_get_sequence(const FfiWordList *words, int32_t index, int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
 void pdf_oxide_word_list_free(FfiWordList *handle);
 #endif
 

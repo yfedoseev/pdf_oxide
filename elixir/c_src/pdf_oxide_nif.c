@@ -469,11 +469,13 @@ static ERL_NIF_TERM doc_extract_words(ErlNifEnv *env, int argc, const ERL_NIF_TE
         ERL_NIF_TERM font = take_string(env, pdf_oxide_word_get_font_name(list, i, &c));
         float size = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
-        ERL_NIF_TERM item = enif_make_tuple(env, 8, text,
+        int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 9, text,
                                             enif_make_double(env, x), enif_make_double(env, y),
                                             enif_make_double(env, w), enif_make_double(env, h),
                                             font, enif_make_double(env, size),
-                                            enif_make_atom(env, bold ? "true" : "false"));
+                                            enif_make_atom(env, bold ? "true" : "false"),
+                                            enif_make_int64(env, sequence));
         items = enif_make_list_cell(env, item, items);
     }
     pdf_oxide_word_list_free(list);
@@ -3794,11 +3796,13 @@ static ERL_NIF_TERM doc_extract_words_in_rect(ErlNifEnv *env, int argc, const ER
         ERL_NIF_TERM font = take_string(env, pdf_oxide_word_get_font_name(list, i, &c));
         float size = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
-        ERL_NIF_TERM item = enif_make_tuple(env, 8, text,
+        int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 9, text,
                                             enif_make_double(env, bx), enif_make_double(env, by),
                                             enif_make_double(env, bw), enif_make_double(env, bh),
                                             font, enif_make_double(env, size),
-                                            enif_make_atom(env, bold ? "true" : "false"));
+                                            enif_make_atom(env, bold ? "true" : "false"),
+                                            enif_make_int64(env, sequence));
         items = enif_make_list_cell(env, item, items);
     }
     pdf_oxide_word_list_free(list);

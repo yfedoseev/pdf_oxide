@@ -70,6 +70,8 @@ typedef _ListF32C = Float Function(Pointer<Void>, Int32, Pointer<Int32>);
 typedef _ListF32D = double Function(Pointer<Void>, int, Pointer<Int32>);
 typedef _ListI32C = Int32 Function(Pointer<Void>, Int32, Pointer<Int32>);
 typedef _ListI32D = int Function(Pointer<Void>, int, Pointer<Int32>);
+typedef _ListI64C = Int64 Function(Pointer<Void>, Int32, Pointer<Int32>);
+typedef _ListI64D = int Function(Pointer<Void>, int, Pointer<Int32>);
 typedef _ListU32C = Uint32 Function(Pointer<Void>, Int32, Pointer<Int32>);
 typedef _ListU32D = int Function(Pointer<Void>, int, Pointer<Int32>);
 typedef _ListBoolC = Bool Function(Pointer<Void>, Int32, Pointer<Int32>);
@@ -552,6 +554,8 @@ class _Native {
             'pdf_oxide_word_get_font_size'),
         wordIsBold = lib
             .lookupFunction<_ListBoolC, _ListBoolD>('pdf_oxide_word_is_bold'),
+        wordGetSequence = lib.lookupFunction<_ListI64C, _ListI64D>(
+            'pdf_oxide_word_get_sequence'),
         wordListFree = lib
             .lookupFunction<_ListFreeC, _ListFreeD>('pdf_oxide_word_list_free'),
         // text lines
@@ -1387,6 +1391,7 @@ class _Native {
   final _ListStrD wordGetFontName;
   final _ListF32D wordGetFontSize;
   final _ListBoolD wordIsBold;
+  final _ListI64D wordGetSequence;
   final _ListFreeD wordListFree;
   // text lines
   final _ExtractD extractLines;
@@ -2189,12 +2194,21 @@ class Char {
 
 /// A single extracted word.
 class Word {
-  const Word(this.text, this.bbox, this.fontName, this.fontSize, this.bold);
+  const Word(this.text, this.bbox, this.fontName, this.fontSize, this.bold,
+      this.sequence);
   final String text;
   final Bbox bbox;
   final String fontName;
   final double fontSize;
   final bool bold;
+
+  /// Content-stream emission order of this word's originating span.
+  ///
+  /// Words drawn consecutively in the page's content stream have adjacent
+  /// sequence values, which distinguishes genuinely consecutive draws from
+  /// words that merely happen to be spatially close. Independent of reading
+  /// order.
+  final int sequence;
 }
 
 /// A single extracted line of text.
@@ -2653,7 +2667,9 @@ class PdfDocument implements Finalizable {
         if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
         final bold = _n.wordIsBold(list, i, code);
         if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
-        out.add(Word(text, bbox, fontName, fontSize, bold));
+        final sequence = _n.wordGetSequence(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
+        out.add(Word(text, bbox, fontName, fontSize, bold, sequence));
       }
       return out;
     } finally {
@@ -3536,7 +3552,11 @@ class PdfDocument implements Finalizable {
         if (code.value != 0) {
           throw PdfOxideError(code.value, 'extractWordsInRect');
         }
-        out.add(Word(text, bbox, fontName, fontSize, bold));
+        final sequence = _n.wordGetSequence(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractWordsInRect');
+        }
+        out.add(Word(text, bbox, fontName, fontSize, bold, sequence));
       }
       return out;
     } finally {

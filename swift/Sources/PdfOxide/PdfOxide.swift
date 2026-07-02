@@ -47,6 +47,11 @@ public struct Word {
     public let fontName: String
     public let fontSize: Double
     public let bold: Bool
+    /// Content-stream emission order of the word's originating span. Words whose
+    /// sequence values are adjacent were drawn consecutively, which distinguishes
+    /// consecutively-drawn words from merely spatially-close ones, independent of
+    /// reading order.
+    public let sequence: Int
 }
 
 /// A single extracted line of text.
@@ -360,6 +365,7 @@ public final class Document {
                 pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWords.fontName")
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
+            let sequence = pdf_oxide_word_get_sequence(list, idx, &code)
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code)
             result.append(
@@ -368,7 +374,8 @@ public final class Document {
                     bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
                     fontName: fontName,
                     fontSize: Double(fontSize),
-                    bold: bold
+                    bold: bold,
+                    sequence: Int(sequence)
                 ))
         }
         return result
@@ -925,13 +932,15 @@ public final class Document {
                 pdf_oxide_word_get_font_name(list, idx, &code), code, "extractWordsInRect.fontName")
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
+            let sequence = pdf_oxide_word_get_sequence(list, idx, &code)
             var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
             result.append(
                 Word(
                     text: text,
                     bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
-                    fontName: fontName, fontSize: Double(fontSize), bold: bold
+                    fontName: fontName, fontSize: Double(fontSize), bold: bold,
+                    sequence: Int(sequence)
                 ))
         }
         return result

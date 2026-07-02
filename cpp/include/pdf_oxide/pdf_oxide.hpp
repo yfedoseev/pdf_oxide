@@ -91,6 +91,10 @@ struct Word {
     std::string font_name;
     float font_size;
     bool bold;
+    /// Content-stream emission order of the word's originating span. Words drawn
+    /// consecutively share adjacent sequence values, distinguishing consecutive
+    /// draws from merely-spatially-close ones, independent of reading order.
+    std::int64_t sequence;
 };
 
 /// A single extracted text line.
@@ -449,6 +453,7 @@ class Document {
                                         code, "Document::extract_words");
                 w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
                 w.bold = pdf_oxide_word_is_bold(list, i, &code);
+                w.sequence = pdf_oxide_word_get_sequence(list, i, &code);
                 out.push_back(std::move(w));
             }
         } catch (...) {
@@ -1566,6 +1571,7 @@ class Document {
                     pdf_oxide_word_get_font_name(list, i, &code), code, op);
                 w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
                 w.bold = pdf_oxide_word_is_bold(list, i, &code);
+                w.sequence = pdf_oxide_word_get_sequence(list, i, &code);
                 out.push_back(std::move(w));
             }
         } catch (...) {

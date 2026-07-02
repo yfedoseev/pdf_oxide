@@ -79,6 +79,7 @@ void main() {
       expect(words, isNotEmpty);
       expect(words[0].text, isNotEmpty);
       expect(words[0].bbox, isA<Bbox>());
+      expect(words[0].sequence, isA<int>());
     });
     test('extractChars', () => expect(doc.extractChars(0), isNotEmpty));
     test('extractTextLines', () => expect(doc.extractTextLines(0), isNotEmpty));

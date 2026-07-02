@@ -60,7 +60,7 @@ defmodule PdfOxide do
 
   defmodule Word do
     @moduledoc "An extracted word with its layout/style metadata."
-    defstruct [:text, :bbox, :font_name, :font_size, :bold]
+    defstruct [:text, :bbox, :font_name, :font_size, :bold, :sequence]
   end
 
   defmodule TextLine do
@@ -344,13 +344,14 @@ defmodule PdfOxide do
   def extract_words(%Document{ref: ref}, page) do
     with {:ok, list} <- Native.doc_extract_words(ref, page) do
       {:ok,
-       Enum.map(list, fn {text, x, y, w, h, font, size, bold} ->
+       Enum.map(list, fn {text, x, y, w, h, font, size, bold, sequence} ->
          %Word{
            text: text,
            bbox: %Bbox{x: x, y: y, width: w, height: h},
            font_name: font,
            font_size: size,
-           bold: bold
+           bold: bold,
+           sequence: sequence
          }
        end)}
     end
@@ -1753,13 +1754,14 @@ defmodule PdfOxide do
   def extract_words_in_rect(%Document{ref: ref}, page, x, y, w, h) do
     with {:ok, list} <- Native.doc_extract_words_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
       {:ok,
-       Enum.map(list, fn {text, bx, by, bw, bh, font, size, bold} ->
+       Enum.map(list, fn {text, bx, by, bw, bh, font, size, bold, sequence} ->
          %Word{
            text: text,
            bbox: %Bbox{x: bx, y: by, width: bw, height: bh},
            font_name: font,
            font_size: size,
-           bold: bold
+           bold: bold,
+           sequence: sequence
          }
        end)}
     end

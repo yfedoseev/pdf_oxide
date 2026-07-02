@@ -6376,6 +6376,30 @@ pub extern "C" fn pdf_oxide_word_is_bold(
     list.words[index as usize].is_bold
 }
 
+/// Content-stream emission order of the word's originating span: the order in
+/// which spans were drawn during the Tj/TJ walk. Words with adjacent values
+/// were drawn consecutively, distinguishing genuinely-consecutive draw calls
+/// from spatially-close-but-stream-distant ones, independent of reading order.
+/// Returns -1 (with an error code) on a null handle or out-of-range index.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_word_get_sequence(
+    words: *const FfiWordList,
+    index: i32,
+    error_code: *mut i32,
+) -> i64 {
+    if words.is_null() || index < 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let list = handle_ref(words);
+    if (index as usize) >= list.words.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return -1;
+    }
+    set_error(error_code, ERR_SUCCESS);
+    list.words[index as usize].sequence as i64
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_word_list_free(handle: *mut FfiWordList) {
     if !handle.is_null() {

@@ -57,6 +57,7 @@ end
         @test words[1].bbox.width >= 0
         @test words[1].font_size >= 0
         @test words[1].bold isa Bool
+        @test words[1].sequence isa Int64
     end
     let chars = extract_chars(doc, 0)             # extract_chars
         @test !isempty(chars)

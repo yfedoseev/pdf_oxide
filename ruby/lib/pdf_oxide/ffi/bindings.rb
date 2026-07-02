@@ -1465,6 +1465,9 @@ module PdfOxide
       attach_function :pdf_oxide_word_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_get_font_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_get_font_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # int64_t pdf_oxide_word_get_sequence(const void *words, int32_t index, int *error_code)
+      # Content-stream emission order of the word's originating span; -1 on null/out-of-range.
+      attach_function :pdf_oxide_word_get_sequence, %i[pointer int32 pointer], :int64, blocking: false
       attach_function :pdf_oxide_word_get_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_is_bold, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false

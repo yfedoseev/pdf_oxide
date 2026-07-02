@@ -88,7 +88,8 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                         bbox:(POXBbox)bbox
                     fontName:(NSString*)fontName
                     fontSize:(float)fontSize
-                        bold:(BOOL)bold;
+                        bold:(BOOL)bold
+                    sequence:(int64_t)sequence;
 @end
 
 @interface POXTextLine ()
@@ -189,13 +190,15 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                         bbox:(POXBbox)bbox
                     fontName:(NSString*)fontName
                     fontSize:(float)fontSize
-                        bold:(BOOL)bold {
+                        bold:(BOOL)bold
+                    sequence:(int64_t)sequence {
     if ((self = [super init])) {
         _text = [text copy];
         _bbox = bbox;
         _fontName = [fontName copy];
         _fontSize = fontSize;
         _bold = bold;
+        _sequence = sequence;
     }
     return self;
 }
@@ -563,11 +566,13 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                                            @"wordFontName", NULL);
         float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
         POXBbox bbox = {x, y, w, h};
         [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
                                                 bbox:bbox
                                             fontName:(fontName ?: @"")fontSize:fontSize
-                                                bold:(bold ? YES : NO)]];
+                                                bold:(bold ? YES : NO)
+                                            sequence:sequence]];
     }
     pdf_oxide_word_list_free(list);
     return out;
@@ -1240,11 +1245,13 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
                                            @"wordFontName", NULL);
         float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
+        int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
         POXBbox bbox = {bx, by, bw, bh};
         [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
                                                 bbox:bbox
                                             fontName:(fontName ?: @"")fontSize:fontSize
-                                                bold:(bold ? YES : NO)]];
+                                                bold:(bold ? YES : NO)
+                                            sequence:sequence]];
     }
     pdf_oxide_word_list_free(list);
     return out;

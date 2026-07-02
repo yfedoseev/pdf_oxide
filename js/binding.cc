@@ -325,6 +325,7 @@ extern "C" {
   extern char* pdf_oxide_word_get_font_name(const void* words, int32_t index, int* error_code);
   extern float pdf_oxide_word_get_font_size(const void* words, int32_t index, int* error_code);
   extern bool pdf_oxide_word_is_bold(const void* words, int32_t index, int* error_code);
+  extern int64_t pdf_oxide_word_get_sequence(const void* words, int32_t index, int* error_code);
   extern void pdf_oxide_word_list_free(void* handle);
 
   extern void* pdf_document_extract_text_lines(void* handle, int32_t page_index, int* error_code);
@@ -1811,6 +1812,7 @@ Napi::Value ExtractWords(const Napi::CallbackInfo& info) {
     word.Set("fontName", fontName ? Napi::String::New(env, fontName) : env.Null());
     word.Set("fontSize", Napi::Number::New(env, pdf_oxide_word_get_font_size(words, i, &errorCode)));
     word.Set("isBold", Napi::Boolean::New(env, pdf_oxide_word_is_bold(words, i, &errorCode)));
+    word.Set("sequence", Napi::Number::New(env, static_cast<double>(pdf_oxide_word_get_sequence(words, i, &errorCode))));
     if (text) free_string(text);
     if (fontName) free_string(fontName);
     result.Set(i, word);
@@ -3323,6 +3325,7 @@ Napi::Value ExtractWordsInRect(const Napi::CallbackInfo& info) {
     word.Set("y", Napi::Number::New(env, wy));
     word.Set("width", Napi::Number::New(env, ww));
     word.Set("height", Napi::Number::New(env, wh));
+    word.Set("sequence", Napi::Number::New(env, static_cast<double>(pdf_oxide_word_get_sequence(words, i, &errorCode))));
     if (text) free_string(text);
     result.Set(i, word);
   }

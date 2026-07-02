@@ -59,6 +59,11 @@ typedef struct {
 @property(nonatomic, readonly, copy) NSString* fontName;
 @property(nonatomic, readonly) float fontSize;
 @property(nonatomic, readonly) BOOL bold;
+/// Content-stream emission order of the word's originating span. Words drawn
+/// consecutively have adjacent sequence values, which distinguishes genuinely
+/// consecutive draws from ones that merely happen to be spatially close. This
+/// is independent of reading order.
+@property(nonatomic, readonly) int64_t sequence;
 @end
 
 /// A single extracted text line (Phase-1 element extraction).

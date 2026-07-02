@@ -368,13 +368,21 @@ struct Char
     font_size::Float64
 end
 
-"""An extracted word with `text`, `bbox`, `font_name`, `font_size`, `bold`."""
+"""
+An extracted word with `text`, `bbox`, `font_name`, `font_size`, `bold`, `sequence`.
+
+`sequence` is the content-stream emission (draw) order of the word's originating
+span: words with adjacent `sequence` values were drawn consecutively, which
+distinguishes genuinely consecutive draws from merely spatially-close ones,
+independent of reading order.
+"""
 struct Word
     text::String
     bbox::Bbox
     font_name::String
     font_size::Float64
     bold::Bool
+    sequence::Int64
 end
 
 """An extracted text line with `text`, `bbox`, `word_count`."""
@@ -550,7 +558,17 @@ function extract_words(d::PdfDocument, page::Integer)
                 bcode,
             )
             bcode[] != 0 && throw(PdfOxideError(bcode[], "extract_words"))
-            out[i+1] = Word(txt, bb, font, Float64(fs), bold)
+            qcode = Ref{Int32}(0)
+            seq = ccall(
+                (:pdf_oxide_word_get_sequence, LIB),
+                Int64,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                qcode,
+            )
+            qcode[] != 0 && throw(PdfOxideError(qcode[], "extract_words"))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq)
         end
         return out
     finally
@@ -5512,7 +5530,17 @@ function _words_from_list(list::Ptr{Cvoid}, op::String)
                 bcode,
             )
             bcode[] != 0 && throw(PdfOxideError(bcode[], op))
-            out[i+1] = Word(txt, bb, font, Float64(fs), bold)
+            qcode = Ref{Int32}(0)
+            seq = ccall(
+                (:pdf_oxide_word_get_sequence, LIB),
+                Int64,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                qcode,
+            )
+            qcode[] != 0 && throw(PdfOxideError(qcode[], op))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq)
         end
         return out
     finally

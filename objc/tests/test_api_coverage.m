@@ -102,6 +102,7 @@ int main(void) {
                 CHECK(w0.text.length > 0);
                 CHECK(w0.bbox.width >= 0 && w0.bbox.height >= 0);
                 CHECK(w0.bold == YES || w0.bold == NO);
+                CHECK(w0.sequence >= 0); // content-stream emission order
             }
             NSArray<POXChar*>* chars = [doc extractChars:0 error:&err]; // extractChars
             CHECK(chars != nil && chars.count > 0);

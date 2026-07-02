@@ -279,6 +279,7 @@ extern void pdf_oxide_word_get_bbox(const void* words, int32_t index, float* x, 
 extern char* pdf_oxide_word_get_font_name(const void* words, int32_t index, int* error_code);
 extern float pdf_oxide_word_get_font_size(const void* words, int32_t index, int* error_code);
 extern bool pdf_oxide_word_is_bold(const void* words, int32_t index, int* error_code);
+extern int64_t pdf_oxide_word_get_sequence(const void* words, int32_t index, int* error_code);
 extern void pdf_oxide_word_list_free(void* handle);
 
 extern void* pdf_document_extract_text_lines(void* handle, int32_t page_index, int* error_code);
@@ -2130,6 +2131,10 @@ type Word struct {
 	FontName            string
 	FontSize            float32
 	IsBold              bool
+	// Sequence is the word's content-stream emission order (the order its
+	// originating span was drawn during the Tj/TJ walk). Adjacent values mean
+	// the words were drawn consecutively, independent of reading order.
+	Sequence int64
 }
 
 // ExtractWords extracts words with bounding boxes from a page
@@ -2160,6 +2165,7 @@ func (doc *PdfDocument) ExtractWords(pageIndex int) ([]Word, error) {
 			FontName: font,
 			FontSize: float32(C.pdf_oxide_word_get_font_size(handle, C.int32_t(i), &errorCode)),
 			IsBold:   bool(C.pdf_oxide_word_is_bold(handle, C.int32_t(i), &errorCode)),
+			Sequence: int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
 		})
 	}
 	return words, nil
@@ -3435,7 +3441,10 @@ func (doc *PdfDocument) ExtractWordsInRect(pageIndex int, x, y, w, h float32) ([
 		cText := C.pdf_oxide_word_get_text(handle, C.int32_t(i), &errorCode)
 		text := C.GoString(cText)
 		C.free_string(cText)
-		words = append(words, Word{Text: text, X: float32(bx), Y: float32(by), Width: float32(bw), Height: float32(bh)})
+		words = append(words, Word{
+			Text: text, X: float32(bx), Y: float32(by), Width: float32(bw), Height: float32(bh),
+			Sequence: int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
+		})
 	}
 	return words, nil
 }

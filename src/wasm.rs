@@ -884,7 +884,7 @@ impl WasmPdfDocument {
     /// Extract span-level data from a page.
     ///
     /// Returns an array of objects with: text, bbox, font_name, font_size,
-    /// font_weight, is_italic, color, etc.
+    /// font_weight, is_italic, color, sequence, etc.
     ///
     /// Optional `reading_order`: `"column_aware"` for XY-Cut column detection,
     /// or `"top_to_bottom"` (default).
@@ -969,7 +969,11 @@ impl WasmPdfDocument {
     /// Extract word-level data from a page.
     ///
     /// Returns an array of objects with: text, bbox, font_name, font_size,
-    /// font_weight, is_italic, is_bold.
+    /// font_weight, is_italic, is_bold, sequence.
+    ///
+    /// `sequence` is the content-stream emission order of the originating
+    /// span, letting callers tell words drawn consecutively in the content
+    /// stream apart from ones that are merely spatially close.
     #[wasm_bindgen(js_name = "extractWords")]
     pub fn extract_words(
         &mut self,

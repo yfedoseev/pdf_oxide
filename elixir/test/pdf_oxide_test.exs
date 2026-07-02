@@ -98,6 +98,7 @@ defmodule PdfOxideTest do
       assert %PdfOxide.Bbox{} = w.bbox
       assert is_number(w.bbox.x) and is_number(w.bbox.width)
       assert is_boolean(w.bold)
+      assert is_integer(w.sequence)
 
       assert {:ok, chars} = PdfOxide.extract_chars(doc, 0)
       assert is_list(chars)

@@ -919,6 +919,8 @@ float pdf_oxide_word_get_font_size(const FfiWordList *words, int32_t index, int3
 
 bool pdf_oxide_word_is_bold(const FfiWordList *words, int32_t index, int32_t *error_code);
 
+int64_t pdf_oxide_word_get_sequence(const FfiWordList *words, int32_t index, int32_t *error_code);
+
 void pdf_oxide_word_list_free(FfiWordList *handle);
 
 FfiTextLineList *pdf_document_extract_text_lines(PdfDocument *handle,

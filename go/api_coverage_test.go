@@ -92,6 +92,11 @@ func TestExtractWords(t *testing.T) {
 	if !found {
 		t.Errorf("WORDTOKEN not found in extracted words: %v", words)
 	}
+	for _, w := range words {
+		if w.Sequence < 0 {
+			t.Errorf("expected non-negative word Sequence, got %d for %q", w.Sequence, w.Text)
+		}
+	}
 }
 
 func TestExtractChars(t *testing.T) {

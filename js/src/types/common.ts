@@ -16,6 +16,31 @@ export interface Table {
   cells: (string | null)[][];
 }
 
+/** A single word extracted from a PDF page. */
+export interface Word {
+  /** The word's text, or `null` when the native binding has no text for it. */
+  text: string | null;
+  /** X coordinate of the word's bounding box. */
+  x: number;
+  /** Y coordinate of the word's bounding box. */
+  y: number;
+  /** Width of the word's bounding box. */
+  width: number;
+  /** Height of the word's bounding box. */
+  height: number;
+  /** Font name, or `null` when unavailable. Only set by `extractWords`. */
+  fontName?: string | null;
+  /** Font size in points. Only set by `extractWords`. */
+  fontSize?: number;
+  /** True if the word is rendered bold. Only set by `extractWords`. */
+  isBold?: boolean;
+  /** Content-stream emission order of the word's originating span. Words drawn
+   *  consecutively have adjacent sequence values, which distinguishes truly
+   *  consecutive draws from words that merely happen to be spatially close,
+   *  independent of reading order. */
+  sequence: number;
+}
+
 // Re-export commonly used native types
 export type {
   Annotation,

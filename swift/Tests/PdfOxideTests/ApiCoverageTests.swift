@@ -67,6 +67,7 @@ final class ApiCoverageTests: XCTestCase {
         _ = words[0].fontName
         _ = words[0].fontSize
         _ = words[0].bold
+        _ = words[0].sequence
 
         let chars = try doc.extractChars(0)  // extractChars
         XCTAssertFalse(chars.isEmpty)

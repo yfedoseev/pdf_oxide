@@ -53,6 +53,11 @@ pub const Word = struct {
     fontName: []u8,
     fontSize: f32,
     bold: bool,
+    /// Content-stream emission order of the word's originating span. Words drawn
+    /// consecutively have adjacent values, which distinguishes genuinely
+    /// consecutive draws from merely-spatially-close ones (independent of
+    /// reading order).
+    sequence: i64,
 };
 
 /// A single extracted text line. `text` is allocator-owned (free it).
@@ -301,12 +306,14 @@ pub const Document = struct {
             const font_name = try takeString(alloc, c.pdf_oxide_word_get_font_name(list, idx, &code), code);
             const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
             const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
+            const sequence = c.pdf_oxide_word_get_sequence(list, idx, &code);
             out[i] = .{
                 .text = word_text,
                 .bbox = .{ .x = x, .y = y, .width = w, .height = h },
                 .fontName = font_name,
                 .fontSize = font_size,
                 .bold = bold,
+                .sequence = sequence,
             };
         }
         return out;
@@ -1264,12 +1271,14 @@ fn collectWordList(alloc: std.mem.Allocator, list: *c.FfiWordList) Error![]Word 
         const font_name = try takeString(alloc, c.pdf_oxide_word_get_font_name(list, idx, &code), code);
         const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
         const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
+        const sequence = c.pdf_oxide_word_get_sequence(list, idx, &code);
         out[i] = .{
             .text = word_text,
             .bbox = .{ .x = x, .y = y, .width = w, .height = h },
             .fontName = font_name,
             .fontSize = font_size,
             .bold = bold,
+            .sequence = sequence,
         };
     }
     return out;
@@ -4332,6 +4341,7 @@ test "Document: element extraction (chars/words/lines/tables)" {
     try testing.expect(words.len > 0);
     try testing.expect(words[0].text.len > 0);
     try testing.expect(words[0].bbox.width >= 0);
+    try testing.expect(words[0].sequence >= 0);
 
     // extractChars: non-empty
     const chars = try doc.extractChars(a, 0);

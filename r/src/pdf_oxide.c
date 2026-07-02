@@ -295,8 +295,10 @@ SEXP r_doc_extract_words(SEXP ext, SEXP page) {
         float fs = pdf_oxide_word_get_font_size(list, i, &code);
         code = 0;
         bool bold = pdf_oxide_word_is_bold(list, i, &code);
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        code = 0;
+        int64_t seq = pdf_oxide_word_get_sequence(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
         SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
         SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));        SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
         SET_VECTOR_ELT(rec, 1, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
@@ -304,6 +306,7 @@ SEXP r_doc_extract_words(SEXP ext, SEXP page) {
         SET_VECTOR_ELT(rec, 2, Rf_ScalarString(fnstr));         SET_STRING_ELT(nms, 2, Rf_mkChar("font_name"));
         SET_VECTOR_ELT(rec, 3, Rf_ScalarReal(fs));              SET_STRING_ELT(nms, 3, Rf_mkChar("font_size"));
         SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(bold));         SET_STRING_ELT(nms, 4, Rf_mkChar("bold"));
+        SET_VECTOR_ELT(rec, 5, Rf_ScalarReal((double)seq));     SET_STRING_ELT(nms, 5, Rf_mkChar("sequence"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
         UNPROTECT(4);
@@ -2979,11 +2982,14 @@ SEXP r_doc_extract_words_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SE
         code = 0;
         pdf_oxide_word_get_bbox(list, i, &bx, &by, &bw, &bh, &code);
         if (code != 0) { free_string(txt); pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words_in_rect"); }
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 2));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 2));
+        code = 0;
+        int64_t seq = pdf_oxide_word_get_sequence(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
         SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
         SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));  SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
         SET_VECTOR_ELT(rec, 1, make_bbox(bx, by, bw, bh)); SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
+        SET_VECTOR_ELT(rec, 2, Rf_ScalarReal((double)seq)); SET_STRING_ELT(nms, 2, Rf_mkChar("sequence"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
         UNPROTECT(3);

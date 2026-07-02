@@ -157,7 +157,7 @@ fn build_text_word_list<'local>(
     let textword_ctor = env.get_method_id(
         &textword_class,
         &JNIString::from("<init>"),
-        jni_sig!("(Ljava/lang/String;Lfyi/oxide/pdf/geometry/BBox;F)V"),
+        jni_sig!("(Ljava/lang/String;Lfyi/oxide/pdf/geometry/BBox;FJ)V"),
     )?;
     let bbox_class = env.find_class(&JNIString::from("fyi/oxide/pdf/geometry/BBox"))?;
     let bbox_ctor =
@@ -200,6 +200,9 @@ fn build_text_word_list<'local>(
                     jni::sys::jvalue { l: text.as_raw() },
                     jni::sys::jvalue { l: bbox.as_raw() },
                     jni::sys::jvalue { f: 1.0_f32 },
+                    jni::sys::jvalue {
+                        j: w.sequence as i64,
+                    },
                 ],
             )?
         };

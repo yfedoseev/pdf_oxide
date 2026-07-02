@@ -88,6 +88,8 @@ int main() {
             (void)words[0].font_name;
             (void)words[0].font_size;
             (void)words[0].bold;
+            // content-stream emission order of the originating span
+            CHECK(words[0].sequence >= 0);
         }
 
         auto chars = doc.extract_chars(0); // extract_chars

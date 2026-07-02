@@ -73,6 +73,7 @@ import type {
   Table,
   TableMode,
   TableSpec,
+  Word,
 } from './types/common.js';
 import type { WorkerResult, WorkerTask } from './workers/index';
 import { WorkerPool, workerPool } from './workers/index';
@@ -598,7 +599,7 @@ class PdfDocumentImpl {
     this.ensureOpen();
     return native.getEmbeddedImages(this._handle, pageIndex);
   }
-  extractWords(pageIndex: number): any {
+  extractWords(pageIndex: number): Word[] {
     this.ensureOpen();
     return native.extractWords(this._handle, pageIndex);
   }
@@ -913,7 +914,7 @@ class Page {
   plainText(): string {
     return this._doc.toPlainText(this._index);
   }
-  words(): any {
+  words(): Word[] {
     return this._doc.extractWords(this._index);
   }
   lines(): any {
@@ -1148,6 +1149,7 @@ export type {
   Table,
   TableMode,
   TableSpec,
+  Word,
   WorkerResult,
   WorkerTask,
 };
