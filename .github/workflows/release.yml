@@ -2116,7 +2116,16 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           PGP_SECRET: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           PGP_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-        run: sbt ci-release
+          # The Java job feeds this same secret to setup-java's gpg-private-key,
+          # which wants ASCII-armored text, so the secret is stored armored.
+          # sbt-ci-release instead base64-decodes PGP_SECRET before importing,
+          # so base64-encode the armored key here (only if not already encoded).
+        run: |
+          case "$PGP_SECRET" in
+            *"BEGIN PGP"*) PGP_SECRET="$(printf '%s' "$PGP_SECRET" | base64 -w0)" ;;
+          esac
+          export PGP_SECRET
+          sbt ci-release
 
   # Clojure facade → Clojars via clojure/build.clj (tools.build + deps-deploy).
   publish-clojure:
