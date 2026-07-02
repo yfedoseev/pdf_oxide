@@ -2459,6 +2459,38 @@ impl DocumentEditor {
                                         None
                                     };
 
+                                // Any Base-14 standard font name referenced by a `TextContent`
+                                // in `overlay_additions` that isn't already a resource on this
+                                // page needs its own Font object allocated, so the `/BaseFont`
+                                // name used by the `Tf` operator resolves to a real
+                                // `/Resources/Font` entry rather than a dangling resource name.
+                                const BASE14_NAMES: &[&str] = &[
+                                    "Helvetica", "Helvetica-Bold", "Helvetica-Oblique",
+                                    "Helvetica-BoldOblique", "Times-Roman", "Times-Bold",
+                                    "Times-Italic", "Times-BoldItalic", "Courier",
+                                    "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+                                    "Symbol", "ZapfDingbats",
+                                ];
+                                let mut overlay_font_ids: HashMap<String, u32> = HashMap::new();
+                                if let Some(added) = self.overlay_additions.get(&source_page_index) {
+                                    let mut needed: Vec<String> = added
+                                        .iter()
+                                        .filter_map(|el| match el {
+                                            ContentElement::Text(t)
+                                                if BASE14_NAMES.contains(&t.font.name.as_str()) =>
+                                            {
+                                                Some(t.font.name.clone())
+                                            },
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    needed.sort();
+                                    needed.dedup();
+                                    for name in needed {
+                                        overlay_font_ids.insert(name, self.allocate_object_id());
+                                    }
+                                }
+
                                 // Apply page property modifications if any
                                 let mut final_page_obj = if let Some(props) =
                                     self.modified_page_props.get(&source_page_index)
@@ -2515,6 +2547,59 @@ impl DocumentEditor {
                                         new_dict.insert("Contents".to_string(), contents_array);
                                     }
                                     final_page_obj = Object::Dictionary(new_dict);
+                                }
+
+                                // Register any Base-14 fonts used by overlay_additions text
+                                // into this page's /Resources/Font, so the `Tf` operator in the
+                                // overlay stream resolves to a real font object instead of an
+                                // undeclared resource name. /Resources (and /Resources/Font)
+                                // are very commonly *indirect references* on a page loaded from
+                                // an existing document, not inline dictionaries — both levels
+                                // must be resolved via `self.source.load_object()` or the
+                                // existing Font entries (e.g. /F1, /F3 used by the page's
+                                // original content) are lost when /Resources is rebuilt below.
+                                if !overlay_font_ids.is_empty() {
+                                    if let Some(page_dict) = final_page_obj.as_dict() {
+                                        let mut new_dict = page_dict.clone();
+
+                                        let resolve_dict = |obj: &Object,
+                                                             src: &PdfDocument|
+                                         -> HashMap<String, Object> {
+                                            match obj {
+                                                Object::Dictionary(d) => d.clone(),
+                                                Object::Reference(r) => src
+                                                    .load_object(*r)
+                                                    .ok()
+                                                    .and_then(|o| o.as_dict().cloned())
+                                                    .unwrap_or_default(),
+                                                _ => HashMap::new(),
+                                            }
+                                        };
+
+                                        let mut resources_dict: HashMap<String, Object> =
+                                            match new_dict.get("Resources") {
+                                                Some(obj) => resolve_dict(obj, &self.source),
+                                                None => HashMap::new(),
+                                            };
+                                        let mut font_dict: HashMap<String, Object> =
+                                            match resources_dict.get("Font") {
+                                                Some(obj) => resolve_dict(obj, &self.source),
+                                                None => HashMap::new(),
+                                            };
+                                        for (name, id) in &overlay_font_ids {
+                                            font_dict.insert(
+                                                name.clone(),
+                                                Object::Reference(ObjectRef::new(*id, 0)),
+                                            );
+                                        }
+                                        resources_dict
+                                            .insert("Font".to_string(), Object::Dictionary(font_dict));
+                                        new_dict.insert(
+                                            "Resources".to_string(),
+                                            Object::Dictionary(resources_dict),
+                                        );
+                                        final_page_obj = Object::Dictionary(new_dict);
+                                    }
                                 }
 
                                 // If we're flattening annotations, update page dictionary
@@ -2639,10 +2724,22 @@ impl DocumentEditor {
                                     (&destructive_redaction, final_page_obj.as_dict())
                                 {
                                     let mut new_dict = page_dict.clone();
-                                    new_dict.insert(
-                                        "Contents".to_string(),
-                                        Object::Reference(ObjectRef::new(*redacted_id, 0)),
-                                    );
+                                    let redacted_ref = Object::Reference(ObjectRef::new(*redacted_id, 0));
+                                    // Preserve any additional content streams (e.g. add_text()
+                                    // overlays) already merged into /Contents by an earlier
+                                    // step; the redacted stream replaces only the *original*
+                                    // content reference (array index 0), not any
+                                    // subsequently-appended overlay entries. Without this,
+                                    // destructive redaction silently discarded overlay text
+                                    // added via add_text() on the same page.
+                                    let new_contents = match new_dict.get("Contents").cloned() {
+                                        Some(Object::Array(mut arr)) if !arr.is_empty() => {
+                                            arr[0] = redacted_ref;
+                                            Object::Array(arr)
+                                        }
+                                        _ => redacted_ref,
+                                    };
+                                    new_dict.insert("Contents".to_string(), new_contents);
                                     new_dict.remove("Annots");
                                     final_page_obj = Object::Dictionary(new_dict);
                                 }
@@ -3368,6 +3465,40 @@ impl DocumentEditor {
                                             xref_entries.push((additions_id, offset, 0, true));
                                         }
                                     }
+                                }
+
+                                // Write a minimal Type1 Font object for each Base-14 font
+                                // referenced by overlay_additions text that wasn't already
+                                // declared on this page.
+                                for (name, font_id) in &overlay_font_ids {
+                                    let mut font_obj_dict: HashMap<String, Object> = HashMap::new();
+                                    font_obj_dict.insert(
+                                        "Type".to_string(),
+                                        Object::Name("Font".to_string()),
+                                    );
+                                    font_obj_dict.insert(
+                                        "Subtype".to_string(),
+                                        Object::Name("Type1".to_string()),
+                                    );
+                                    font_obj_dict.insert(
+                                        "BaseFont".to_string(),
+                                        Object::Name(name.clone()),
+                                    );
+                                    font_obj_dict.insert(
+                                        "Encoding".to_string(),
+                                        Object::Name("WinAnsiEncoding".to_string()),
+                                    );
+                                    let font_obj = Object::Dictionary(font_obj_dict);
+                                    let offset = writer.stream_position()?;
+                                    let bytes = serialize_obj(
+                                        &serializer,
+                                        *font_id,
+                                        0,
+                                        &font_obj,
+                                        &encryption_handler,
+                                    );
+                                    writer.write_all(&bytes)?;
+                                    xref_entries.push((*font_id, offset, 0, true));
                                 }
 
                                 // Write new annotation objects
@@ -4139,8 +4270,16 @@ impl DocumentEditor {
             // `save_page()` continue to see the expected true value.
             self.is_modified = true;
             let added: Vec<ContentElement> = page.added_children().to_vec();
+            // `save_page()` can legitimately be called more than once for the same
+            // page (e.g. one add_text() + save_page_from_editor() per inserted
+            // element). `.insert()` here replaced any elements staged by a prior
+            // call instead of accumulating them, silently dropping all but the
+            // last call's additions. Extend the existing Vec instead.
             if !added.is_empty() {
-                self.overlay_additions.insert(page_index, added);
+                self.overlay_additions
+                    .entry(page_index)
+                    .or_default()
+                    .extend(added);
             }
         } else {
             // Freshly created page — replace the entire content stream.
@@ -10804,5 +10943,189 @@ mod tests {
         // Verify no cross-contamination
         assert!(!text_page0.contains("Hello from B"), "Page 0 should NOT contain text from B");
         assert!(!text_page1.contains("Hello from A"), "Page 1 should NOT contain text from A");
+    }
+
+    // =========================================================================
+    // Regression: destructive redaction + add_text() interaction on the same
+    // page (three related bugs found together — see PR description).
+    // =========================================================================
+
+    /// A minimal single-page PDF with two separate text-showing (`Tj`) runs
+    /// on one Type1/Helvetica font — unlike `minimal_pdf_bytes()` above,
+    /// this page has real extractable text, split into two runs so that
+    /// redacting one leaves the other's extraction untouched.
+    fn minimal_pdf_with_text_bytes() -> Vec<u8> {
+        let content_stream: &[u8] = b"BT\n/F1 12 Tf\n1 0 0 1 100 700 Tm\n(SECRETVALUE) Tj\n\
+             1 0 0 1 100 680 Tm\n(public text) Tj\nET\n";
+        let mut objs: Vec<Vec<u8>> = Vec::new();
+        objs.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec());
+        objs.push(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_vec());
+        objs.push(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+                .to_vec(),
+        );
+        objs.push(
+            [
+                format!("4 0 obj\n<< /Length {} >>\nstream\n", content_stream.len()).into_bytes(),
+                content_stream.to_vec(),
+                b"\nendstream\nendobj\n".to_vec(),
+            ]
+            .concat(),
+        );
+        objs.push(b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_vec());
+
+        let header = b"%PDF-1.4\n".to_vec();
+        let mut body = header.clone();
+        let mut offsets = vec![0u64];
+        let mut pos = header.len() as u64;
+        for o in &objs {
+            offsets.push(pos);
+            body.extend_from_slice(o);
+            pos += o.len() as u64;
+        }
+        let xref_offset = pos;
+        let mut xref = format!("xref\n0 {}\n", objs.len() + 1).into_bytes();
+        xref.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets[1..] {
+            xref.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        let trailer = format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objs.len() + 1,
+            xref_offset
+        )
+        .into_bytes();
+
+        [body, xref, trailer].concat()
+    }
+
+    /// Writes `minimal_pdf_with_text_bytes()` to a uniquely-named temp file
+    /// and opens it as a `DocumentEditor`, mirroring `create_test_editor()`
+    /// above but with real extractable text on the page.
+    fn create_test_editor_with_text() -> DocumentEditor {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let pdf_bytes = minimal_pdf_with_text_bytes();
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir()
+            .join(format!("pdf_oxide_redact_addtext_test_{}_{id}.pdf", std::process::id()));
+        std::fs::write(&tmp, &pdf_bytes).unwrap();
+        let editor = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        editor
+    }
+
+    /// Bug 1 + bug 2 regression: destructive redaction on a page that also
+    /// has `add_text()` overlay additions must not silently drop the added
+    /// text (bug 1: `/Contents` was overwritten wholesale instead of
+    /// preserving the overlay-additions array entry), and the replacement
+    /// text's Base-14 font must be usable without breaking extraction of
+    /// unrelated text on the same page (bug 2: the font resource was never
+    /// registered in `/Resources/Font`).
+    #[test]
+    fn destructive_redaction_preserves_add_text_overlay() {
+        let mut editor = create_test_editor_with_text();
+
+        // Locate "SECRETVALUE" and redact it destructively.
+        let bbox = {
+            let pe = editor.page_editor(0).unwrap();
+            let matches = pe.page.find_text_containing("SECRETVALUE");
+            assert_eq!(matches.len(), 1, "expected exactly one match for SECRETVALUE");
+            matches[0].bbox()
+        };
+        let rect = [bbox.x, bbox.y, bbox.x + bbox.width, bbox.y + bbox.height];
+        editor.add_redaction(0, rect, Some([0.0, 0.0, 0.0])).unwrap();
+        let report = editor
+            .apply_redactions_destructive(crate::redaction::RedactionOptions::default())
+            .unwrap();
+        assert!(report.glyphs_removed > 0, "expected some glyphs to be removed");
+
+        // Add replacement text at the same position (Base-14 font, no
+        // dependency on the original page's font encoding).
+        let mut pe = editor.page_editor(0).unwrap();
+        let font = crate::elements::FontSpec { name: "Helvetica".to_string(), size: 12.0 };
+        pe.page.add_text(crate::elements::TextContent::new(
+            "{{REDACTED}}",
+            bbox,
+            font,
+            crate::elements::TextStyle::default(),
+        ));
+        let page = pe.done().unwrap();
+        editor.save_page_from_editor(page).unwrap();
+
+        let bytes = editor.save_to_bytes().unwrap();
+
+        // Re-open the saved bytes independently.
+        let tmp = std::env::temp_dir().join(format!(
+            "pdf_oxide_redact_addtext_verify_{}.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, &bytes).unwrap();
+        let mut verify = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            pe.page.find_text_containing("SECRETVALUE").is_empty(),
+            "redacted text must not survive"
+        );
+        assert!(
+            !pe.page.find_text_containing("{{REDACTED}}").is_empty(),
+            "added replacement text must be present after save (was silently dropped \
+             before the /Contents-array-preservation fix)"
+        );
+        assert!(
+            !pe.page.find_text_containing("public text").is_empty(),
+            "unrelated text on the same page must survive untouched — if the added \
+             text's Base-14 font resource were left undeclared in /Resources/Font, a \
+             strict content-stream parser would choke on the added text's `Tf` \
+             operator and fail to extract this text too"
+        );
+    }
+
+    /// Bug 3 regression: two separate `add_text()` + `save_page_from_editor()`
+    /// round-trips on the same page must both survive to the saved output.
+    /// Before the fix, `save_page()` used `HashMap::insert` on
+    /// `overlay_additions`, so the second call silently discarded the first
+    /// call's added element instead of accumulating both.
+    #[test]
+    fn multiple_add_text_calls_on_same_page_all_survive() {
+        let mut editor = create_test_editor_with_text();
+        let font = || crate::elements::FontSpec { name: "Helvetica".to_string(), size: 10.0 };
+        let bbox_a = crate::geometry::Rect { x: 50.0, y: 50.0, width: 100.0, height: 12.0 };
+        let bbox_b = crate::geometry::Rect { x: 50.0, y: 80.0, width: 100.0, height: 12.0 };
+
+        for (bbox, label) in [(bbox_a, "TOKEN_ONE"), (bbox_b, "TOKEN_TWO")] {
+            let mut pe = editor.page_editor(0).unwrap();
+            pe.page.add_text(crate::elements::TextContent::new(
+                label,
+                bbox,
+                font(),
+                crate::elements::TextStyle::default(),
+            ));
+            let page = pe.done().unwrap();
+            editor.save_page_from_editor(page).unwrap();
+        }
+
+        let bytes = editor.save_to_bytes().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "pdf_oxide_multi_addtext_verify_{}.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, &bytes).unwrap();
+        let mut verify = DocumentEditor::open(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let pe = verify.page_editor(0).unwrap();
+        assert!(
+            !pe.page.find_text_containing("TOKEN_ONE").is_empty(),
+            "first add_text() call must survive a second, separate save_page() call"
+        );
+        assert!(
+            !pe.page.find_text_containing("TOKEN_TWO").is_empty(),
+            "second add_text() call must also be present"
+        );
     }
 }
