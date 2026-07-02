@@ -501,6 +501,7 @@ pub fn extract_table_from_spans(
                 is_bold: s.font_weight.is_bold(),
                 is_italic: s.is_italic,
                 mcid: s.mcid,
+                sequence: s.sequence,
             }
         })
         .collect();

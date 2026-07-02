@@ -2,6 +2,23 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.70] - 2026-07-02
+
+> Extraction-fidelity release — kerning-split words rejoined in plain text, table/form line cells split consistently regardless of word width, resolved `/BaseFont` names on the span/word APIs, and content-stream order exposed on extracted spans and words.
+
+### Added
+
+- **Content-stream order exposed on extracted spans and words (#779)** — `extract_words` and `extract_text_lines` now carry the originating span's `sequence` (the content-stream emission order), also exposed on Python's `PyTextSpan`/`PyWord`. This lets consumers tell genuinely-consecutive draw calls apart from spatially-close-but-stream-distant ones (e.g. table cells vs. overlays), independent of the final reading order. Thanks @ankursri494 for the request.
+
+### Fixed
+
+- **A word split by a spurious space when its glyph runs overlap slightly (#791)** — a single word drawn as two adjacent same-font runs whose glyphs overlap by a fraction of a point (ordinary tight kerning, e.g. `(PLANAL)` then `(TINA)` positioned just inside `PLANAL`'s right edge) was extracted as `PLANAL TINA`. The plain-text assembler now recognises this case — a negative inter-run gap, same font/weight/style, word characters on both sides, real (varying) per-glyph metrics, and *not* a lowercase→uppercase word boundary — and joins the runs with no inserted space, reconstructing `PLANALTINA`, matching pdftotext / PyMuPDF / lopdf on the same file. The spans are left unmerged, so page layout, reading order, and table detection are unaffected. Thanks @schelip for the report and minimal repro.
+- **`extract_text --format lines` merged table/form cells across column gaps inconsistently (#792)** — a flat 50 pt column-gap threshold made cell splitting depend on how wide each row's words happened to be, so a header row of short values (`CEP`/`Cidade`/`UF`) split into one line per cell while the value row directly below it (`73751-452`/`PLANALTINA`/`GO`, wider words, same gutters) merged into a single line. The threshold in line clustering is now font-relative (`(font_size × 3).max(30 pt)`), so rows sharing the same columns split the same way. Thanks @schelip for the report.
+- **Span-derived APIs reported unresolved (alias) font names (#780, part 1)** — `extract_spans`, `extract_words`, and `extract_text_lines` reported the page's `/Resources/Font` alias (e.g. `F1`) rather than the resolved `/BaseFont` (e.g. `Helvetica`, `CIDFont+F1`). They now resolve to the base font, matching `extract_chars` and pdfminer.six / pdfplumber. (The second part of #780 — per-glyph coordinate drift on CID/Type0 fonts in `extract_words` — is tracked for a follow-up release.) Thanks @ankursri494 for the report.
+- **Cased and caseless non-Latin prose no longer mis-detected as spatial tables** — the no-rulings table detector's prose-paragraph guard now recognises sentence boundaries in cased non-Latin scripts and treats the Bengali/Devanagari danda (`।`, `॥`) as a sentence terminator, so complex-script running prose that happens to align into columns is not extracted as a table grid.
+
+_Thanks to @schelip (#791, #792) and @ankursri494 (#779, #780) for reporting the issues that drove this release._
+
 ## [0.3.69] - 2026-06-27
 
 > Language-bindings release — idiomatic bindings for **C++, Swift, Kotlin, Dart, R, Julia, Zig, Scala, Clojure, Objective-C, and Elixir**, each over the stable C ABI, with per-language CI, package-registry publishing, cross-language regression examples, and single-source version management.

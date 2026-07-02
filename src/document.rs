@@ -6064,6 +6064,7 @@ impl PdfDocument {
                         } else if delta_x > fs * 1.5
                             && !text.ends_with(' ')
                             && !text.ends_with('\n')
+                            && !Self::is_reliable_kerning_overlap(prev, span, gap)
                         {
                             // Inflated-width overlap recovery.
                             // A negative raw gap here usually comes from a
@@ -7276,6 +7277,63 @@ impl PdfDocument {
 
             i = j;
         }
+    }
+
+    /// Distinguish a genuine tight-kerning overlap of a single word drawn as
+    /// two same-font runs ("PLANAL"+"TINA") from an inflated-width artifact.
+    ///
+    /// A font with no `/Widths` array falls back to a uniform 550/1000-em
+    /// advance for every glyph, which over-reports each glyph's width and drags
+    /// the previous span's right edge past where the next span really starts —
+    /// a fake overlap that the assembler must break with a space (the NASA
+    /// "STATION"+"FREEDOM" header case). A genuine kerning overlap, by
+    /// contrast, has real per-glyph metrics that VARY across the run, a modest
+    /// overlap (well under one em), the same font on both sides, and word
+    /// characters at the join. When those hold the two runs are one word and no
+    /// space must be synthesized. This works purely on the assembled text — the
+    /// spans are left unmerged, so page layout and table detection are
+    /// unaffected (a span merge here would shift XY-cut/table statistics).
+    fn is_reliable_kerning_overlap(prev: &TextSpan, span: &TextSpan, gap: f32) -> bool {
+        let fs = prev.font_size.max(span.font_size).max(1.0);
+        let prev_last = prev.text.chars().next_back();
+        let next_first = span.text.chars().next();
+        gap < 0.0
+            && gap > -fs
+            && prev.font_name == span.font_name
+            && prev.font_weight == span.font_weight
+            && prev.is_italic == span.is_italic
+            && prev_last.is_some_and(|c| c.is_alphanumeric())
+            && next_first.is_some_and(|c| c.is_alphanumeric())
+            // A lowercase→uppercase transition at the join is a word/sentence
+            // boundary ("...with"+"Gp53", "Alg"+"The"), never the middle of a
+            // single word split by kerning — real intra-word splits continue in
+            // the same case tier ("PLANAL"+"TINA", "eigenv"+"alue"). Excluding
+            // it keeps the two overlapping runs as separate words with a space.
+            && !(prev_last.is_some_and(|c| c.is_lowercase())
+                && next_first.is_some_and(|c| c.is_uppercase()))
+            && {
+                // Real proportional font metrics take many distinct per-glyph
+                // advances; a missing-/Widths fallback emits ONE uniform
+                // advance, and coarse/artifact width tables only a couple.
+                // Require at least THREE distinct advances so a genuine
+                // proportional run ("PLANAL": 6.67/5.56/7.22) is accepted while
+                // a 1- or 2-value fallback table (which manufactures fake
+                // overlaps between separate words) is not.
+                let mut distinct: [i32; 3] = [i32::MIN, i32::MIN, i32::MIN];
+                let mut n = 0usize;
+                for w in prev.char_widths.iter().map(|w| (w * 100.0).round() as i32) {
+                    if !distinct[..n].contains(&w) {
+                        if n < 3 {
+                            distinct[n] = w;
+                        }
+                        n += 1;
+                        if n >= 3 {
+                            break;
+                        }
+                    }
+                }
+                n >= 3
+            }
     }
 
     /// # Returns
@@ -15789,7 +15847,9 @@ impl PdfDocument {
                 for c in cluster_chars {
                     if c.char.is_whitespace() || c.char == '\n' || c.char == '\r' {
                         if !current_word_chars.is_empty() {
-                            words.push(Word::from_chars(current_word_chars));
+                            let mut word = Word::from_chars(current_word_chars);
+                            word.sequence = span.sequence;
+                            words.push(word);
                             current_word_chars = Vec::new();
                         }
                     } else {
@@ -15797,7 +15857,9 @@ impl PdfDocument {
                     }
                 }
                 if !current_word_chars.is_empty() {
-                    words.push(Word::from_chars(current_word_chars));
+                    let mut word = Word::from_chars(current_word_chars);
+                    word.sequence = span.sequence;
+                    words.push(word);
                 }
             }
 
@@ -16012,7 +16074,7 @@ impl PdfDocument {
         // Walk spans in canonical reading order, clustering chars → words.
         // No block partition; spans are already pre-ordered.
         let mut words: Vec<Word> = Vec::new();
-        for span_chars in &chars_per_span {
+        for (span, span_chars) in spans.iter().zip(chars_per_span.iter()) {
             if span_chars.is_empty() {
                 continue;
             }
@@ -16028,7 +16090,9 @@ impl PdfDocument {
                 for c in cluster_chars {
                     if c.char.is_whitespace() || c.char == '\n' || c.char == '\r' {
                         if !current_word_chars.is_empty() {
-                            words.push(Word::from_chars(current_word_chars));
+                            let mut word = Word::from_chars(current_word_chars);
+                            word.sequence = span.sequence;
+                            words.push(word);
                             current_word_chars = Vec::new();
                         }
                     } else {
@@ -16036,7 +16100,9 @@ impl PdfDocument {
                     }
                 }
                 if !current_word_chars.is_empty() {
-                    words.push(Word::from_chars(current_word_chars));
+                    let mut word = Word::from_chars(current_word_chars);
+                    word.sequence = span.sequence;
+                    words.push(word);
                 }
             }
         }
@@ -23300,6 +23366,75 @@ mod tests {
         assert!(PdfDocument::should_insert_space(&prev, &current));
     }
 
+    /// A single word drawn as two same-font runs with real (varying) per-glyph
+    /// metrics that overlap by a fraction of a point ("PLANAL"+"TINA", the
+    /// planaltina kerning-split repro) is a reliable kerning overlap: the
+    /// assembler must NOT insert a space, reconstructing "PLANALTINA".
+    #[test]
+    fn test_reliable_kerning_overlap_recognizes_split_word() {
+        let mut prev = make_test_span("PLANAL", 100.0, 700.0, 38.35, 10.0);
+        prev.char_widths = vec![6.67, 5.56, 6.67, 7.22, 6.67, 5.56]; // real Helvetica
+        let span = make_test_span("TINA", 136.64, 700.0, 22.78, 10.0);
+        let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width); // ≈ -1.71pt overlap
+        assert!(
+            PdfDocument::is_reliable_kerning_overlap(&prev, &span, gap),
+            "varying-width same-font runs overlapping by <1em must read as one word"
+        );
+    }
+
+    /// A font with no /Widths array falls back to a uniform advance per glyph,
+    /// over-reporting each width and manufacturing a fake overlap between two
+    /// SEPARATE words ("STATION"+"FREEDOM"). Uniform char_widths must NOT be
+    /// treated as a kerning overlap — the assembler keeps the word-boundary
+    /// space.
+    #[test]
+    fn test_reliable_kerning_overlap_rejects_uniform_fallback_widths() {
+        let mut prev = make_test_span("STATION", 100.0, 700.0, 42.0, 10.0);
+        prev.char_widths = vec![6.0; 7]; // uniform missing-/Widths fallback
+        let span = make_test_span("FREEDOM", 141.0, 700.0, 42.0, 10.0);
+        let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width); // -1.0pt fake overlap
+        assert!(
+            !PdfDocument::is_reliable_kerning_overlap(&prev, &span, gap),
+            "uniform fallback widths are an inflated-width artifact, not kerning"
+        );
+    }
+
+    /// A coarse width table with only two distinct advances (e.g. a font that
+    /// reports one width for wide glyphs and one for narrow) is not genuine
+    /// proportional metrics — it manufactures fake overlaps between SEPARATE
+    /// words ("território"+"e"). Two distinct advances must NOT qualify.
+    #[test]
+    fn test_reliable_kerning_overlap_rejects_coarse_two_value_widths() {
+        let mut prev = make_test_span("território", 32.0, 700.0, 68.0, 13.6);
+        prev.char_widths = vec![6.8, 6.8, 6.8, 6.8, 6.8, 6.8, 3.4, 3.4, 6.8, 6.8];
+        let span = make_test_span("e", 66.0, 700.0, 6.8, 13.6);
+        let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width);
+        assert!(!PdfDocument::is_reliable_kerning_overlap(&prev, &span, gap));
+    }
+
+    /// A lowercase→uppercase transition at an overlapping join is a
+    /// word/sentence boundary ("...with"+"Gp53"), not one word split by
+    /// kerning — it must NOT be treated as a reliable kerning overlap even with
+    /// real varying widths.
+    #[test]
+    fn test_reliable_kerning_overlap_rejects_lowercase_to_uppercase_boundary() {
+        let mut prev = make_test_span("with", 100.0, 700.0, 20.0, 12.0);
+        prev.char_widths = vec![6.7, 3.3, 4.8, 6.7];
+        let span = make_test_span("Gp53", 118.0, 700.0, 24.0, 12.0);
+        let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width); // -2pt overlap
+        assert!(!PdfDocument::is_reliable_kerning_overlap(&prev, &span, gap));
+    }
+
+    /// A positive gap is a genuine word boundary, never a kerning overlap.
+    #[test]
+    fn test_reliable_kerning_overlap_requires_negative_gap() {
+        let mut prev = make_test_span("Hello", 0.0, 100.0, 28.0, 10.0);
+        prev.char_widths = vec![6.0, 3.0, 3.0, 3.0, 6.0];
+        let span = make_test_span("World", 32.0, 100.0, 28.0, 10.0);
+        let gap = span.bbox.x - (prev.bbox.x + prev.bbox.width); // +4pt gap
+        assert!(!PdfDocument::is_reliable_kerning_overlap(&prev, &span, gap));
+    }
+
     // --- topological_block_order (multi-region reading order) -----------------
     // Larger Y = higher on the page (read first). Two columns separated by a
     // gutter (a > ~1 em horizontal gap) must be read column-major (left column
@@ -28045,6 +28180,126 @@ mod tests {
             text.contains("Second"),
             "Second line must NOT be dropped by containment filter, got: {:?}",
             text
+        );
+    }
+
+    /// `extract_spans`/`extract_words`/`extract_text_lines` must report the
+    /// resolved `/BaseFont` name ("Helvetica"), not the page's
+    /// `/Resources/Font` dictionary alias ("F1") — matching what
+    /// `extract_chars` already did.
+    #[test]
+    fn test_span_word_line_font_name_is_resolved_not_alias() {
+        let content = b"BT /F1 12 Tf 50 700 Td (Hello) Tj ET";
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+        );
+        let off4 = pdf.len();
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        );
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off1).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off2).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off3).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off4).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off5).as_bytes());
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+
+        let chars = doc.extract_chars(0).unwrap();
+        assert_eq!(chars[0].font_name, "Helvetica");
+
+        let spans = doc.extract_spans(0).unwrap();
+        assert_eq!(spans[0].font_name, "Helvetica");
+
+        let words = doc.extract_words(0).unwrap();
+        assert_eq!(words[0].dominant_font, "Helvetica");
+
+        let lines = doc.extract_text_lines(0).unwrap();
+        assert_eq!(lines[0].words[0].dominant_font, "Helvetica");
+    }
+
+    /// `Word.sequence` must reflect content-stream emission order (the
+    /// originating span's `sequence`), not just reading order, so
+    /// consumers can tell genuinely-consecutive draw calls apart from
+    /// spatially-close-but-stream-distant ones (e.g. table cells vs.
+    /// overlays).
+    #[test]
+    fn test_extract_words_sequence_reflects_stream_order() {
+        let content = b"BT /F1 12 Tf 50 700 Td (First) Tj 0 -20 Td (Second) Tj ET";
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+        );
+        let off4 = pdf.len();
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        );
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off1).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off2).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off3).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off4).as_bytes());
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", off5).as_bytes());
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+
+        let words = doc.extract_words(0).unwrap();
+        let first = words.iter().find(|w| w.text == "First").unwrap();
+        let second = words.iter().find(|w| w.text == "Second").unwrap();
+        assert!(
+            first.sequence < second.sequence,
+            "word drawn first in the content stream must have the smaller sequence: \
+             First={}, Second={}",
+            first.sequence,
+            second.sequence
+        );
+
+        let lines = doc.extract_text_lines(0).unwrap();
+        let line_words: Vec<&crate::layout::Word> =
+            lines.iter().flat_map(|l| l.words.iter()).collect();
+        let first_line_word = line_words.iter().find(|w| w.text == "First").unwrap();
+        let second_line_word = line_words.iter().find(|w| w.text == "Second").unwrap();
+        assert!(
+            first_line_word.sequence < second_line_word.sequence,
+            "extract_text_lines words must also carry stream-order sequence"
         );
     }
 

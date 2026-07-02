@@ -3676,6 +3676,29 @@ impl<'doc> TextExtractor<'doc> {
         // Merge adjacent spans on the same line to reconstruct complete words
         self.merge_adjacent_spans();
 
+        // Resolve each span's font resource alias (e.g. "F1") to the resolved
+        // /BaseFont name (e.g. "Helvetica", "CIDFont+F1") so extract_spans /
+        // extract_words / extract_text_lines report the same font name that
+        // extract_chars already does (which reads `font.base_font`). Run AFTER
+        // merging so span reconstruction still keys off the raw resource alias
+        // exactly as before, and it has no effect on the assembled text/md/html
+        // output (font names are not emitted there) — only the API surface.
+        let resolved_fonts: Vec<Option<String>> = self
+            .spans
+            .iter()
+            .map(|s| {
+                self.fonts
+                    .get(&s.font_name)
+                    .map(|f| f.base_font.clone())
+                    .filter(|b| !b.is_empty())
+            })
+            .collect();
+        for (span, resolved) in self.spans.iter_mut().zip(resolved_fonts) {
+            if let Some(base_font) = resolved {
+                span.font_name = base_font;
+            }
+        }
+
         Ok(std::mem::take(&mut self.spans))
     }
 

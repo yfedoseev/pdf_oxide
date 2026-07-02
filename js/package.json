@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide",
-  "version": "0.3.69",
+  "version": "0.3.70",
   "type": "module",
   "description": "High-performance PDF parsing and text extraction library — prebuilt native bindings, no build toolchain required",
   "main": "lib/index.js",
@@ -70,7 +70,7 @@
     "async-mutex": "^0.5.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.0.1",
     "node-addon-api": "^8.7.0",
     "rimraf": "^6.1.3",
     "typescript": "^6.0.3"

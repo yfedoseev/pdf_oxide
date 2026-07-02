@@ -60,7 +60,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.69"
+version = "0.3.70"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -251,7 +251,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # XML parsing (for XMP metadata)
-quick-xml = "0.40"
+quick-xml = "0.41"
 
 # Python bindings (optional)
 # Using latest version to support Python 3.14+

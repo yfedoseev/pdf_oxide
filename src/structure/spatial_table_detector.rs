@@ -289,14 +289,26 @@ fn is_data_value(t: &str) -> bool {
 /// inter-word gaps coincidentally aligned into columns.
 ///
 /// Signature: at least one row, when its non-empty cells are concatenated
-/// left-to-right, crosses a SENTENCE boundary mid-row — a lowercase letter
-/// or digit, a sentence terminator (`.`/`!`/`?`), a space, then a capital
-/// letter starting a new word (e.g. "...to 23,500. Stockout rate..."). Real
-/// data-table rows hold values/labels, not running sentences that span a
-/// period into the next clause, so this almost never fires on genuine
-/// tables. Only applied to spatial tables (the caller is the no-rulings
-/// path); ruled tables are author-marked and trusted.
+/// left-to-right, crosses a SENTENCE boundary mid-row — an alphanumeric
+/// character, a sentence terminator, a space, then a new word (e.g. "...to
+/// 23,500. Stockout rate..."). Real data-table rows hold values/labels, not
+/// running sentences that span a terminator into the next clause, so this
+/// almost never fires on genuine tables. Only applied to spatial tables (the
+/// caller is the no-rulings path); ruled tables are author-marked and
+/// trusted.
+///
+/// Case is checked via the Unicode general category (`char::is_uppercase` /
+/// `is_lowercase`), not ASCII-only, so cased non-Latin scripts (Greek,
+/// Cyrillic, Armenian, …) get the same "new sentence starts with a capital"
+/// signal Latin does. Scripts with no case distinction at all (Bengali,
+/// Devanagari, …) can't use that signal, so their sentence-final danda
+/// (`।`, `॥`) is instead treated as a terminator in its own right: a danda
+/// followed by a space and another letter mid-row is itself the
+/// discriminator, since a genuine data cell doesn't embed a sentence stop
+/// followed by more prose in the same row.
 fn looks_like_prose_paragraph(table: &Table) -> bool {
+    const CASELESS_TERMINATORS: [char; 2] = ['।', '॥'];
+
     for row in &table.rows {
         let joined = row
             .cells
@@ -307,8 +319,13 @@ fn looks_like_prose_paragraph(table: &Table) -> bool {
             .join(" ");
         let chars: Vec<char> = joined.chars().collect();
         for i in 0..chars.len() {
-            // terminator at i, preceded by lowercase/digit, followed by
-            // " " + uppercase + lowercase (a real new sentence/word).
+            // Cased terminator: the exact prior-release strict signature — a
+            // lowercase/digit, then `.`/`!`/`?`, then space + capital +
+            // lowercase (a genuine new sentence). Kept ASCII with immediate
+            // neighbours on purpose: broadening it (any alphanumeric before,
+            // skip-spaces, Unicode case) over-rejected genuine data tables
+            // whose cells contain abbreviations or capitalised codes ("Fig.
+            // 3", "Dr. Smith", "A. Test") as prose.
             if matches!(chars[i], '.' | '!' | '?')
                 && i >= 1
                 && (chars[i - 1].is_ascii_lowercase() || chars[i - 1].is_ascii_digit())
@@ -319,8 +336,26 @@ fn looks_like_prose_paragraph(table: &Table) -> bool {
             {
                 return true;
             }
+            // Caseless terminator (Bengali/Devanagari danda ।/॥): scripts with
+            // no case distinction can't use the capital-start signal, so a
+            // danda followed (allowing a stray positioning gap) by another
+            // letter mid-row is itself the tell — a genuine data cell doesn't
+            // embed a sentence stop followed by more prose in the same row.
+            if CASELESS_TERMINATORS.contains(&chars[i]) {
+                let Some(&prev) = chars[..i].iter().rev().find(|c| **c != ' ') else {
+                    continue;
+                };
+                if !prev.is_alphanumeric() {
+                    continue;
+                }
+                let mut after = chars[i + 1..].iter().copied().skip_while(|c| *c == ' ');
+                if after.next().is_some_and(|c| c.is_alphabetic()) {
+                    return true;
+                }
+            }
         }
     }
+
     false
 }
 
@@ -4063,6 +4098,26 @@ mod tests {
                 prose_cell("quarter-over-quarter to"),
                 prose_cell("23,500."),
                 prose_cell("Stockout rate improved by 200 basis"),
+            ],
+            is_header: false,
+        });
+        assert!(looks_like_prose_paragraph(&t));
+    }
+
+    /// Caseless scripts (Bengali here) have no capital-letter signal at all,
+    /// so their sentence-final danda ('।') must be treated as a terminator
+    /// in its own right. Real-world PDFs sometimes render the danda with a
+    /// stray gap before it ("প্রাণী ।"), so the check must tolerate that.
+    #[test]
+    fn test_looks_like_prose_paragraph_detects_bengali_danda_crossing_row() {
+        let mut t = Table::new();
+        t.col_count = 4;
+        t.rows.push(TableRow {
+            cells: vec![
+                prose_cell("বিড়াল একটি গার্হস্থ্য প্রজাতি"),
+                prose_cell("স্তন্যপায়ী প্রাণী"),
+                prose_cell("। এটি"),
+                prose_cell("ফেলিডা পরিবারের একমাত্র গৃহপালিত প্রজাতি"),
             ],
             is_header: false,
         });

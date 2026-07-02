@@ -288,6 +288,7 @@ impl MarkdownConverter {
                     is_bold: span.font_weight.is_bold(),
                     is_italic: span.is_italic,
                     mcid: span.mcid,
+                    sequence: span.sequence,
                 })
             })
             .collect();
@@ -1990,6 +1991,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 mcid: None,
+                sequence: 0,
             },
             TextBlock {
                 chars: vec![],
@@ -2000,6 +2002,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 mcid: None,
+                sequence: 0,
             },
             TextBlock {
                 chars: vec![],
@@ -2010,6 +2013,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 mcid: None,
+                sequence: 0,
             },
         ];
 

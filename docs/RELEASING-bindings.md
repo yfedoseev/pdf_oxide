@@ -6,7 +6,7 @@ Julia, and Zig — to their respective package registries. All eleven are thin
 layers over the same **pdf_oxide C ABI** (the JVM trio — Kotlin/Scala/Clojure —
 go through the Java JNI binding).
 
-The canonical workspace version is **0.3.69** (kept in lock-step across every
+The canonical workspace version is **0.3.70** (kept in lock-step across every
 manifest by `scripts/sync_version.py`).
 
 For the **established** bindings (Python→PyPI, Node→npm, Java→Maven Central,
@@ -217,12 +217,12 @@ Swift's idiomatic channel is SwiftPM by git tag — no upload. Pushing the
 ## Release order checklist
 
 1. **Version sync** — run `scripts/sync_version.py`; confirm every binding
-   manifest reads `0.3.69` (Cargo.toml, `build.gradle.kts`, `build.sbt`,
+   manifest reads `0.3.70` (Cargo.toml, `build.gradle.kts`, `build.sbt`,
    `build.clj`, `pubspec.yaml`, `mix.exs`, `DESCRIPTION`, `Project.toml`,
    `build.zig.zon`, `PdfOxide.podspec`, `CMakeLists.txt`).
 2. **Green CI** — the established `release.yml` pipeline plus the per-binding
    workflows (`kotlin.yml`, `scala.yml`, … `zig.yml`) all pass.
-3. **Tag** — merge the release branch and push `v0.3.69` (this alone releases
+3. **Tag** — merge the release branch and push `v0.3.70` (this alone releases
    Swift and Zig).
 4. **JVM trio** — publish the Java binding first (Kotlin/Scala/Clojure depend on
    `fyi.oxide:pdf-oxide`), then Maven Central for Kotlin + Scala, then Clojars
@@ -236,4 +236,4 @@ Swift's idiomatic channel is SwiftPM by git tag — no upload. Pushing the
    (<https://cran.r-project.org/submit.html>, confirm the email) and comment
    `@JuliaRegistrator register subdir=julia` on the Julia release commit.
 8. **Verify** — once indexes propagate, smoke-test each install snippet from the
-   binding READMEs against `0.3.69`.
+   binding READMEs against `0.3.70`.

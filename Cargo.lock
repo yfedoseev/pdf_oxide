@@ -1369,9 +1369,9 @@ dependencies = [
 
 [[package]]
 name = "env_filter"
-version = "1.0.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
+checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
 dependencies = [
  "log",
  "regex",
@@ -1379,9 +1379,9 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
-version = "0.11.10"
+version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
+checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2818,7 +2818,7 @@ dependencies = [
  "fast-float2",
  "libc",
  "log",
- "quick-xml",
+ "quick-xml 0.40.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "aes",
  "aws-lc-rs",
@@ -3070,7 +3070,7 @@ dependencies = [
  "pyo3-log",
  "qcms",
  "qrcode",
- "quick-xml",
+ "quick-xml 0.41.0",
  "rayon",
  "regex",
  "rsa",
@@ -3108,7 +3108,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_cli"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "clap",
  "is-terminal",
@@ -3118,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_jni"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "jni",
  "pdf_oxide",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide_mcp"
-version = "0.3.69"
+version = "0.3.70"
 dependencies = [
  "pdf_oxide",
  "serde_json",
@@ -3651,6 +3651,15 @@ checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -5086,9 +5095,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.23.3"
+version = "1.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
+checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

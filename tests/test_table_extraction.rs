@@ -19,6 +19,7 @@ fn mock_text_block(text: &str, mcid: u32) -> TextBlock {
         is_italic: false,
         is_bold: false,
         mcid: Some(mcid),
+        sequence: 0,
     }
 }
 

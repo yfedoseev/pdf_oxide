@@ -62,7 +62,7 @@ jobs:
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
       - name: Set up Dart
-        uses: dart-lang/setup-dart@e51d8e571e22473a2ddebf0ef8a2123f0ab2c02c # v1.7.0
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.0
         with:
           sdk: ${{ matrix.sdk }}
 

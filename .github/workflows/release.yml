@@ -2134,7 +2134,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Clojure
-        uses: DeLaGuardo/setup-clojure@52716660ff0e592e21f16f47743ee9e996cb96be # 13.4
+        uses: DeLaGuardo/setup-clojure@3fe9b3ae632c6758d0b7757b0838606ef4287b08 # 13.4
         with:
           cli: latest
 
@@ -2201,7 +2201,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Dart
-        uses: dart-lang/setup-dart@e51d8e571e22473a2ddebf0ef8a2123f0ab2c02c # v1.7.0
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.0
 
       - name: pub get
         working-directory: dart

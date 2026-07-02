@@ -290,7 +290,7 @@ Established bindings:
 - **Go** — `go get github.com/yfedoseev/pdf_oxide/go` — see [go/README.md](go/README.md)
 - **JavaScript / TypeScript (Node.js)** — `npm install pdf-oxide` — see [js/README.md](js/README.md)
 - **C# / .NET** — `dotnet add package PdfOxide` — see [csharp/README.md](csharp/README.md)
-- **Java (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.69` — see [java/README.md](java/README.md)
+- **Java (JDK 11+)** — Maven coords `fyi.oxide:pdf-oxide:0.3.70` — see [java/README.md](java/README.md)
 - **Ruby** — `gem install pdf_oxide` — see [ruby/README.md](ruby/README.md)
 - **PHP** — `composer require oxide/pdf-oxide` — see [php/README.md](php/README.md)
 
@@ -298,7 +298,7 @@ New in v0.3.69 (all over the stable C ABI):
 
 - **C++** (header-only, CMake / Conan) — see [cpp/README.md](cpp/README.md)
 - **Swift** (SwiftPM) — see [swift/README.md](swift/README.md)
-- **Kotlin** (`fyi.oxide:pdf-oxide-kotlin:0.3.69`) — see [kotlin/README.md](kotlin/README.md)
+- **Kotlin** (`fyi.oxide:pdf-oxide-kotlin:0.3.70`) — see [kotlin/README.md](kotlin/README.md)
 - **Scala** (`fyi.oxide %% pdf-oxide-scala`) — see [scala/README.md](scala/README.md)
 - **Clojure** (`fyi.oxide/pdf-oxide-clojure` on Clojars) — see [clojure/README.md](clojure/README.md)
 - **Dart / Flutter** (`dart pub add pdf_oxide`) — see [dart/README.md](dart/README.md)
@@ -306,20 +306,20 @@ New in v0.3.69 (all over the stable C ABI):
 - **Julia** (`Pkg.add("PdfOxide")`) — see [julia/README.md](julia/README.md)
 - **Zig** (`build.zig.zon`) — see [zig/README.md](zig/README.md)
 - **Objective-C** (CocoaPods) — see [objc/README.md](objc/README.md)
-- **Elixir** (`{:pdf_oxide, "~> 0.3.69"}` on Hex) — see [elixir/README.md](elixir/README.md)
+- **Elixir** (`{:pdf_oxide, "~> 0.3.70"}` on Hex) — see [elixir/README.md](elixir/README.md)
 
 ```xml
 <!-- Java (Maven) -->
 <dependency>
   <groupId>fyi.oxide</groupId>
   <artifactId>pdf-oxide</artifactId>
-  <version>0.3.69</version>
+  <version>0.3.70</version>
 </dependency>
 ```
 
 ```gradle
 // Kotlin (Gradle, Kotlin DSL)
-implementation("fyi.oxide:pdf-oxide-kotlin:0.3.69")
+implementation("fyi.oxide:pdf-oxide-kotlin:0.3.70")
 ```
 
 Every binding shares the same Rust core, so a bug fix in one lands in all of them — everything you read in this README applies, just with each language's native naming conventions. Publishing details for each registry are in [docs/RELEASING-bindings.md](docs/RELEASING-bindings.md).

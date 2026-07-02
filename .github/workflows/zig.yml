@@ -64,7 +64,7 @@ jobs:
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
       - name: Set up Zig (pinned — pre-1.0 API drift)
-        uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.1
 

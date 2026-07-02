@@ -4197,6 +4197,14 @@ impl PyTextSpan {
     fn color(&self) -> (f32, f32, f32) {
         (self.inner.color.r, self.inner.color.g, self.inner.color.b)
     }
+    /// Content-stream emission order: incremented as spans are emitted
+    /// during the Tj/TJ walk, so two spans with adjacent `sequence`
+    /// values were drawn consecutively, distinguishing that from spans
+    /// that are merely spatially close.
+    #[getter]
+    fn sequence(&self) -> usize {
+        self.inner.sequence
+    }
 }
 
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "TextWord", skip_from_py_object)]
@@ -4242,6 +4250,12 @@ impl PyWord {
             .iter()
             .map(|c| PyTextChar { inner: c.clone() })
             .collect()
+    }
+    /// Content-stream emission order of the originating span — see
+    /// `TextSpan.sequence`.
+    #[getter]
+    fn sequence(&self) -> usize {
+        self.inner.sequence
     }
 }
 

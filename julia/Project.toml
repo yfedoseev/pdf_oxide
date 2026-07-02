@@ -1,7 +1,7 @@
 name = "PdfOxide"
 uuid = "b0c1d2e3-4f56-47a8-9b0c-1d2e3f4a5b6c"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
-version = "0.3.69"
+version = "0.3.70"
 
 [compat]
 Aqua = "0.8"

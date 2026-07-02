@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pdf_oxide_cpp VERSION 0.3.69 LANGUAGES CXX)
+project(pdf_oxide_cpp VERSION 0.3.70 LANGUAGES CXX)
 
 # Idiomatic C++17 RAII bindings over the pdf_oxide C ABI (header-only wrapper).
 #

@@ -144,6 +144,7 @@ impl HtmlConverter {
                 is_bold: matches!(span.font_weight, crate::layout::FontWeight::Bold),
                 is_italic: span.is_italic,
                 mcid: span.mcid,
+                sequence: span.sequence,
             })
             .collect();
 

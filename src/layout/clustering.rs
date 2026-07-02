@@ -355,9 +355,7 @@ pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<
 
     // Optimized clustering using sort-based approach: O(n log n)
     // Sort words by Y coordinate, then group consecutive words within epsilon_y.
-    // Within each Y-group, split by column gaps (>50pt horizontal separation).
-
-    let column_gap_threshold = 50.0;
+    // Within each Y-group, split by column gaps, font-size-relative.
 
     // Sort indices by Y coordinate
     let mut indices: Vec<usize> = (0..words.len()).collect();
@@ -401,6 +399,18 @@ pub fn cluster_words_into_lines(words: &[TextBlock], epsilon_y: f32) -> Vec<Vec<
             let x_dist = (words[idx].bbox.left() - words[prev_idx].bbox.right())
                 .abs()
                 .min((words[prev_idx].bbox.left() - words[idx].bbox.right()).abs());
+
+            // Font-size-relative column-gap threshold (mirrors
+            // `is_column_gap` in the markdown converter): a flat 50pt
+            // split made the gap-between-cells decision depend only on
+            // how wide a row's words happened to be — a header row of
+            // short words ("CEP"/"Cidade"/"UF") cleared 50pt and split
+            // into one line per cell, while the value row directly below
+            // it ("73751-452"/"PLANALTINA"/"GO") ate into the same column
+            // width and stayed under 50pt, merging into one line — even
+            // though both rows share the same column gutters.
+            let font_size_ref = words[idx].avg_font_size.max(words[prev_idx].avg_font_size);
+            let column_gap_threshold = (font_size_ref * 3.0).max(30.0);
 
             if x_dist < column_gap_threshold {
                 cluster.push(idx);
@@ -558,11 +568,14 @@ mod tests {
 
     #[test]
     fn test_cluster_words_into_lines() {
-        // Two lines: "Hello World" on line 1, "Foo Bar" on line 2
+        // Two lines: "Hello World" on line 1, "Foo Bar" on line 2.
+        // Gap kept under the font-relative column threshold
+        // ((12pt * 3.0).max(30.0) = 36pt) so these read as ordinary
+        // same-line word spacing rather than a column boundary.
         let word1 = TextBlock::from_chars(vec![mock_char('H', 0.0, 0.0)]);
-        let word2 = TextBlock::from_chars(vec![mock_char('W', 50.0, 1.0)]); // Same line
+        let word2 = TextBlock::from_chars(vec![mock_char('W', 20.0, 1.0)]); // Same line
         let word3 = TextBlock::from_chars(vec![mock_char('F', 0.0, 30.0)]); // Different line
-        let word4 = TextBlock::from_chars(vec![mock_char('B', 50.0, 31.0)]); // Same as word3
+        let word4 = TextBlock::from_chars(vec![mock_char('B', 20.0, 31.0)]); // Same as word3
 
         let words = vec![word1, word2, word3, word4];
         let lines = cluster_words_into_lines(&words, 5.0);
@@ -583,7 +596,7 @@ mod tests {
     #[test]
     fn test_words_sorted_by_x_in_line() {
         // Create words in reverse order (right to left) on same line
-        // Using realistic word spacing (< 50pt column gap threshold)
+        // Using realistic word spacing (< 36pt font-relative column gap threshold)
         let word1 = TextBlock::from_chars(vec![mock_char('W', 40.0, 0.0)]); // "World" at x=40
         let word2 = TextBlock::from_chars(vec![mock_char('H', 0.0, 1.0)]); // "Hello" at x=0
 
@@ -593,5 +606,48 @@ mod tests {
         assert_eq!(lines.len(), 1);
         // Should be sorted: index 1 (x=0) before index 0 (x=40)
         assert_eq!(lines[0], vec![1, 0]);
+    }
+
+    /// A 3-column row whose words are wide enough that the inter-column
+    /// gap shrinks to 40pt (under the old flat 50pt split threshold, so it
+    /// wrongly merged into one line-cluster) must still split into 3
+    /// separate clusters — same as a header row above it with shorter
+    /// words and a 70pt gap, which always split correctly. Mirrors the
+    /// `form_row_line_split.pdf` repro: a label row splits per-cell while
+    /// the value row directly below it (same columns, narrower gap) was
+    /// wrongly merged into a single line.
+    #[test]
+    fn test_column_gap_threshold_is_font_relative_not_flat() {
+        fn word_spanning(start_x: f32, width: f32, y: f32) -> TextBlock {
+            let count = (width / 10.0).round() as i32;
+            let chars = (0..count)
+                .map(|i| mock_char('X', start_x + i as f32 * 10.0, y))
+                .collect();
+            TextBlock::from_chars(chars)
+        }
+
+        // Header row: narrow words, 90pt column step -> 70pt gap.
+        let header = vec![
+            word_spanning(0.0, 20.0, 700.0),
+            word_spanning(90.0, 20.0, 700.0),
+            word_spanning(180.0, 20.0, 700.0),
+        ];
+        let header_lines = cluster_words_into_lines(&header, 5.0);
+        assert_eq!(header_lines.len(), 3, "narrow-word header row should split into 3 cells");
+
+        // Value row: wide words, same 90pt column step -> 40pt gap (under
+        // the old flat 50pt threshold but over the new font-relative one).
+        let value = vec![
+            word_spanning(0.0, 50.0, 600.0),
+            word_spanning(90.0, 50.0, 600.0),
+            word_spanning(180.0, 50.0, 600.0),
+        ];
+        let value_lines = cluster_words_into_lines(&value, 5.0);
+        assert_eq!(
+            value_lines.len(),
+            3,
+            "wide-word value row with the same column gutters must also split into 3 cells, \
+             not merge into 1 just because its words are wider"
+        );
     }
 }

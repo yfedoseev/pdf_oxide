@@ -614,6 +614,13 @@ pub struct TextBlock {
     pub is_italic: bool,
     /// Marked Content ID (for Tagged PDFs)
     pub mcid: Option<u32>,
+    /// Content-stream emission order of the originating span(s) — lets
+    /// callers tell "drawn consecutively in the content stream" apart
+    /// from "merely spatially close" (e.g. table cells vs. overlays).
+    /// `from_chars` has no span to draw this from, so it defaults to 0;
+    /// word-assembly call sites that build a block from a single span
+    /// set it explicitly from that span's `sequence`.
+    pub sequence: usize,
 }
 
 impl TextBlock {
@@ -668,6 +675,7 @@ impl TextBlock {
             is_bold,
             is_italic,
             mcid,
+            sequence: 0,
         }
     }
 

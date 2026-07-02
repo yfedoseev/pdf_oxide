@@ -1,7 +1,7 @@
 Package: pdfoxide
 Type: Package
 Title: Fast PDF Text, Markdown and HTML Extraction (pdf_oxide)
-Version: 0.3.69
+Version: 0.3.70
 Authors@R: person("Yury", "Fedoseev", email = "yfedoseev@gmail.com", role = c("aut", "cre"))
 Author: Yury Fedoseev [aut, cre]
 Maintainer: Yury Fedoseev <yfedoseev@gmail.com>
