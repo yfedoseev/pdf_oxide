@@ -17734,7 +17734,6 @@ impl PdfDocument {
     ///
     /// This is useful when working with indirect object references
     /// in content streams or resource dictionaries.
-    #[cfg(feature = "rendering")]
     pub fn resolve_object(&self, obj: &Object) -> Result<Object> {
         if let Some(ref_val) = obj.as_reference() {
             self.load_object(ref_val)
