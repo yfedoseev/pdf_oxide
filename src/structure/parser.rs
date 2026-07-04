@@ -8,50 +8,54 @@ use crate::error::Error;
 use crate::object::Object;
 use std::collections::{HashMap, HashSet};
 
-/// Maximum time allowed for structure tree parsing (native only).
-/// Documents with huge trees (50K+ elements) would take 5-10s;
-/// a 200ms budget lets small/medium trees parse fully while
-/// large trees fall back to content-stream order gracefully.
-#[cfg(not(target_arch = "wasm32"))]
-const STRUCT_TREE_PARSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(200);
+use std::time::Duration;
 
-/// A deadline guard that works on both native and WASM targets.
+/// An optional bound on structure-tree parsing.
 ///
-/// On native, uses `std::time::Instant` for real time-based deadlines.
-/// On `wasm32-unknown-unknown`, `std::time::Instant` panics at runtime,
-/// so this becomes a no-op and the parser relies solely on `MAX_STRUCT_ELEMENTS`.
-#[derive(Clone, Copy)]
-struct Deadline {
+/// A parsing library returns the *complete* tree by default, so the unbounded
+/// guard (`ParseBudget::unbounded`) applies no time limit and no element cap.
+/// Callers that deliberately want to bound the work — e.g. the extraction
+/// reading-order strategy, which can fall back to content-stream order — build a
+/// bounded guard from a wall-clock `Duration`, which also caps the element count
+/// at [`MAX_STRUCT_ELEMENTS`]. On `wasm32-unknown-unknown` `std::time::Instant`
+/// panics, so the time limit is a no-op there and only the element cap applies.
+#[derive(Clone, Copy, Default)]
+struct ParseBudget {
     #[cfg(not(target_arch = "wasm32"))]
-    instant: std::time::Instant,
+    deadline: Option<std::time::Instant>,
+    max_elements: Option<usize>,
 }
 
-impl Deadline {
-    /// Create a deadline that expires after the configured budget.
-    fn new() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            Self {
-                instant: std::time::Instant::now() + STRUCT_TREE_PARSE_BUDGET,
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self {}
+impl ParseBudget {
+    /// No limit — parse the entire tree (the default for a general-purpose API).
+    fn unbounded() -> Self {
+        Self::default()
+    }
+
+    /// Bound parsing by `budget` wall-clock time, and cap the element count at
+    /// [`MAX_STRUCT_ELEMENTS`] as a companion guard against pathological trees.
+    fn from_option(budget: Option<Duration>) -> Self {
+        match budget {
+            None => Self::unbounded(),
+            Some(_budget) => Self {
+                #[cfg(not(target_arch = "wasm32"))]
+                deadline: Some(std::time::Instant::now() + _budget),
+                max_elements: Some(MAX_STRUCT_ELEMENTS),
+            },
         }
     }
 
-    /// Returns `true` if the deadline has been exceeded.
+    /// Whether either bound has been exceeded at the current element count.
+    /// Always `false` for an unbounded guard.
     #[inline]
-    fn is_expired(&self) -> bool {
+    fn exceeded(&self, element_count: usize) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            std::time::Instant::now() > self.instant
+        if let Some(deadline) = self.deadline {
+            if std::time::Instant::now() > deadline {
+                return true;
+            }
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
+        self.max_elements.is_some_and(|max| element_count > max)
     }
 }
 
@@ -186,22 +190,42 @@ fn build_page_map_recursive(
     }
 }
 
-/// Parse the structure tree from a PDF document.
+/// Parse the complete structure tree from a PDF document.
 ///
-/// Reads the StructTreeRoot from the document catalog and recursively parses
-/// all structure elements. Uses a time budget to avoid spending seconds on
-/// documents with very large structure trees (50K+ elements). When the budget
-/// is exceeded, returns `Ok(None)` so the caller falls back to content-stream
-/// order (extract_spans).
-///
-/// # Arguments
-/// * `document` - The PDF document
+/// Reads the `/StructTreeRoot` from the catalog and recursively parses every
+/// structure element. This is the general-purpose entry point: it applies **no**
+/// time budget and **no** element cap, so it returns the whole tree however large
+/// it is. Callers that need to bound the work (e.g. to keep an interactive
+/// pipeline responsive and fall back to another strategy) should use
+/// [`parse_structure_tree_with_budget`].
 ///
 /// # Returns
-/// * `Ok(Some(StructTreeRoot))` - If the document has a structure tree and it parsed in time
-/// * `Ok(None)` - If the document is not tagged or the tree is too large to parse in budget
-/// * `Err(Error)` - If parsing fails
+/// * `Ok(Some(StructTreeRoot))` - the document's structure tree
+/// * `Ok(None)` - the document is not tagged (no `/StructTreeRoot`)
+/// * `Err(Error)` - parsing failed
 pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeRoot>, Error> {
+    parse_structure_tree_inner(document, ParseBudget::unbounded())
+}
+
+/// Parse the structure tree with an optional bound on the work done.
+///
+/// `budget` is a wall-clock limit: `None` parses the complete tree (identical to
+/// [`parse_structure_tree`]); `Some(duration)` stops once the deadline is
+/// exceeded (or a companion element cap is hit) and returns `Ok(None)` so the
+/// caller can fall back to another strategy. Prefer `None` unless you have a
+/// concrete responsiveness requirement — a bound can drop the tree on a slow
+/// machine even when the document is perfectly valid.
+pub fn parse_structure_tree_with_budget(
+    document: &PdfDocument,
+    budget: Option<Duration>,
+) -> Result<Option<StructTreeRoot>, Error> {
+    parse_structure_tree_inner(document, ParseBudget::from_option(budget))
+}
+
+fn parse_structure_tree_inner(
+    document: &PdfDocument,
+    deadline: ParseBudget,
+) -> Result<Option<StructTreeRoot>, Error> {
     let parse_start = Timer::now();
 
     // Get catalog
@@ -219,9 +243,6 @@ pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeR
 
     // Build page map for resolving /Pg references
     let page_map = build_page_map(document);
-
-    // Start the deadline AFTER page map building (which is fixed cost)
-    let deadline = Deadline::new();
 
     // Resolve the StructTreeRoot object
     let struct_tree_root_obj = resolve_object(document, struct_tree_root_ref)?;
@@ -269,16 +290,9 @@ pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeR
             Object::Array(arr) => {
                 // Multiple root elements
                 for elem_obj in arr {
-                    if deadline.is_expired() {
+                    if deadline.exceeded(element_count) {
                         log::debug!(
                             "Structure tree parse budget exceeded, falling back to content order"
-                        );
-                        return Ok(None);
-                    }
-                    if element_count > MAX_STRUCT_ELEMENTS {
-                        log::debug!(
-                            "Structure tree too large (>{} elements), falling back to content order",
-                            MAX_STRUCT_ELEMENTS
                         );
                         return Ok(None);
                     }
@@ -330,15 +344,6 @@ pub fn parse_structure_tree(document: &PdfDocument) -> Result<Option<StructTreeR
         parse_start.elapsed_debug()
     );
 
-    if element_count > MAX_STRUCT_ELEMENTS {
-        log::debug!(
-            "Structure tree too large ({} elements > {}), falling back to content order",
-            element_count,
-            MAX_STRUCT_ELEMENTS
-        );
-        return Ok(None);
-    }
-
     Ok(Some(struct_tree))
 }
 
@@ -351,12 +356,12 @@ fn parse_struct_elem(
     obj: &Object,
     role_map: &HashMap<String, String>,
     page_map: &HashMap<u32, u32>,
-    deadline: Deadline,
+    deadline: ParseBudget,
     element_count: &mut usize,
     visited: &mut HashSet<u32>,
 ) -> Result<Option<StructElem>, Error> {
-    // Check budgets before doing work
-    if deadline.is_expired() || *element_count > MAX_STRUCT_ELEMENTS {
+    // Check the (optional) budget before doing work.
+    if deadline.exceeded(*element_count) {
         return Ok(None);
     }
     *element_count += 1;
@@ -519,7 +524,7 @@ fn parse_k_children(
     parent: &mut StructElem,
     role_map: &HashMap<String, String>,
     page_map: &HashMap<u32, u32>,
-    deadline: Deadline,
+    deadline: ParseBudget,
     element_count: &mut usize,
     visited: &mut HashSet<u32>,
 ) -> Result<(), Error> {
@@ -539,8 +544,8 @@ fn parse_k_children(
         Object::Array(arr) => {
             // Array of children
             for child_obj in arr {
-                // Check both time and element count budgets
-                if deadline.is_expired() || *element_count > MAX_STRUCT_ELEMENTS {
+                // Check the (optional) budget before descending.
+                if deadline.exceeded(*element_count) {
                     return Ok(());
                 }
 
@@ -854,6 +859,27 @@ fn resolve_mcr_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_budget_unbounded_never_exceeds() {
+        // The default (general-purpose) guard imposes no cap: a huge element
+        // count must not trip it, so `parse_structure_tree` returns the whole tree.
+        let guard = ParseBudget::unbounded();
+        assert!(!guard.exceeded(0));
+        assert!(!guard.exceeded(MAX_STRUCT_ELEMENTS + 1));
+        assert!(!guard.exceeded(usize::MAX));
+        // `None` budget is the unbounded guard.
+        assert!(!ParseBudget::from_option(None).exceeded(usize::MAX));
+    }
+
+    #[test]
+    fn parse_budget_bounded_caps_element_count() {
+        // A bounded guard (Some(duration)) still applies the companion element
+        // cap, deterministically, independent of wall-clock timing.
+        let guard = ParseBudget::from_option(Some(Duration::from_secs(3600)));
+        assert!(!guard.exceeded(MAX_STRUCT_ELEMENTS));
+        assert!(guard.exceeded(MAX_STRUCT_ELEMENTS + 1));
+    }
 
     #[test]
     fn test_struct_type_mapping() {

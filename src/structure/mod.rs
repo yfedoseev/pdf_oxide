@@ -49,7 +49,7 @@ pub mod types;
 
 pub use article_threads::{parse_article_threads, ArticleThread, Bead};
 pub use converter::StructureConverter;
-pub use parser::parse_structure_tree;
+pub use parser::{parse_structure_tree, parse_structure_tree_with_budget};
 pub use spatial_table_detector::{
     detect_tables_from_spans, DetectedTable, SpatialTableDetector, TableDetectionConfig,
 };

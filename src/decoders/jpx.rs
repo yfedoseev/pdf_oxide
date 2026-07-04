@@ -72,28 +72,107 @@ pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
     }
     let num_components = comps.len();
 
-    for (ci, comp) in comps.iter().enumerate() {
-        if comp.samples().len() != npix {
-            return Err(Error::UnsupportedFilter(format!(
-                "JPXDecode: subsampled JPEG 2000 component {ci} ({} samples vs \
-                 {width}x{height}={npix}) not supported",
-                comp.samples().len()
-            )));
-        }
+    // Fast path: every component is full-resolution (the common case) → use the
+    // decoder's own interleave.
+    if comps.iter().all(|c| c.samples().len() == npix) {
+        return Ok(JpxImage {
+            samples: decoded.data_u8(),
+            num_components: num_components as u8,
+        });
     }
 
+    // Chroma-subsampled path (WS1.7). hayro-jpeg2000 0.4 does not expose
+    // per-component dimensions, so only the unambiguous 2×2 (4:2:0) case is
+    // recovered: a component with ⌈w/2⌉·⌈h/2⌉ samples is nearest-upsampled to
+    // full resolution; any other ratio (or non-8-bit depth, where the f32→u8
+    // scaling would differ) stays unsupported rather than guessing. Components
+    // are then interleaved manually since `data_u8` assumes equal plane sizes.
+    let (w, h) = (width as usize, height as usize);
+    let (sw, sh) = (width.div_ceil(2) as usize, height.div_ceil(2) as usize);
+    let mut planes: Vec<Vec<u8>> = Vec::with_capacity(num_components);
+    for (ci, comp) in comps.iter().enumerate() {
+        if comp.bit_depth() != 8 {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: subsampled component {ci} with {}-bit depth not supported",
+                comp.bit_depth()
+            )));
+        }
+        let s = comp.samples();
+        let plane = if s.len() == npix {
+            s.iter()
+                .map(|&v| v.round().clamp(0.0, 255.0) as u8)
+                .collect()
+        } else if s.len() == sw * sh {
+            upsample_nearest_u8(s, sw, sh, w, h)
+        } else {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: subsampled component {ci} ({} samples) — only 2×2 (4:2:0) \
+                 subsampling of a {width}×{height} image is supported",
+                s.len()
+            )));
+        };
+        planes.push(plane);
+    }
+
+    let mut samples = vec![0u8; npix * num_components];
+    for (ci, plane) in planes.iter().enumerate() {
+        for (i, &px) in plane.iter().enumerate() {
+            samples[i * num_components + ci] = px;
+        }
+    }
     Ok(JpxImage {
-        samples: decoded.data_u8(),
+        samples,
         num_components: num_components as u8,
     })
 }
 
+/// Nearest-neighbour upsample of an `sw×sh` f32 sample plane to `fw×fh` u8.
+fn upsample_nearest_u8(sub: &[f32], sw: usize, sh: usize, fw: usize, fh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; fw * fh];
+    for y in 0..fh {
+        let sy = (y * sh / fh).min(sh.saturating_sub(1));
+        for x in 0..fw {
+            let sx = (x * sw / fw).min(sw.saturating_sub(1));
+            out[y * fw + x] = sub[sy * sw + sx].round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 #[cfg(all(test, feature = "jpeg2000"))]
 mod tests {
-    use super::decode_jpx;
+    use super::{decode_jpx, upsample_nearest_u8};
 
     /// Grayscale JP2 codestream from the minimal repro (816x1056 DeviceGray).
     const SAMPLE_JP2: &[u8] = include_bytes!("../../tests/fixtures/jpx/sample_gray.jp2");
+
+    /// WS1.7: nearest-neighbour upsample of a 2×2 subsampled plane to 4×4 —
+    /// each source sample fills its 2×2 output block.
+    #[test]
+    fn upsample_nearest_2x2_to_4x4() {
+        // 2×2 plane: [10 20 / 30 40]
+        let sub = [10.0f32, 20.0, 30.0, 40.0];
+        let out = upsample_nearest_u8(&sub, 2, 2, 4, 4);
+        assert_eq!(
+            out,
+            vec![
+                10, 10, 20, 20, //
+                10, 10, 20, 20, //
+                30, 30, 40, 40, //
+                30, 30, 40, 40,
+            ]
+        );
+    }
+
+    /// Odd full dimensions (⌈w/2⌉ source): upsample 2×2 → 3×3 clamps at edges.
+    #[test]
+    fn upsample_nearest_2x2_to_3x3() {
+        let sub = [1.0f32, 2.0, 3.0, 4.0];
+        let out = upsample_nearest_u8(&sub, 2, 2, 3, 3);
+        assert_eq!(out.len(), 9);
+        assert_eq!(out[0], 1); // (0,0)
+        assert_eq!(out[8], 4); // (2,2) → source (1,1)
+    }
 
     #[test]
     fn decode_jpx_grayscale() {

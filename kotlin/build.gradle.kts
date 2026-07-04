@@ -16,7 +16,7 @@ plugins {
 }
 
 group = "fyi.oxide"
-version = "0.3.70"
+version = "0.3.71"
 
 repositories {
     mavenCentral()
@@ -37,7 +37,7 @@ detekt {
 dependencies {
     // The Java binding owns the JNI bridge; we re-export its types (api scope)
     // so Kotlin callers `import fyi.oxide.pdf.*` and get them transitively.
-    api("fyi.oxide:pdf-oxide:0.3.70")
+    api("fyi.oxide:pdf-oxide:0.3.71")
     testImplementation(kotlin("test"))
 }
 

@@ -455,10 +455,20 @@ fn parse_xref_iterative<R: Read + Seek>(
             return Err(Error::InvalidXref);
         };
 
-        // Extract /Prev pointer before merging
+        // Extract /Prev and /XRefStm pointers before `xref` is moved by the merge.
         let prev_offset = xref
             .trailer()
             .and_then(|t| t.get("Prev"))
+            .and_then(|o| o.as_integer())
+            .map(|v| v as u64);
+        // Hybrid-reference files (§7.5.8.4): a classic trailer may carry
+        // /XRefStm pointing to an xref stream that indexes the compressed
+        // (object-stream) objects invisible to the classic table. Without this
+        // the compressed objects are unreachable and the reader falls back to
+        // full-file reconstruction.
+        let xrefstm_offset = xref
+            .trailer()
+            .and_then(|t| t.get("XRefStm"))
             .and_then(|o| o.as_integer())
             .map(|v| v as u64);
 
@@ -466,6 +476,30 @@ fn parse_xref_iterative<R: Read + Seek>(
         match &mut result_xref {
             Some(result) => result.merge_from(xref),
             None => result_xref = Some(xref),
+        }
+
+        // Merge the /XRefStm supplement AFTER the classic table, so the classic
+        // entries win for any object listed in both (per §7.5.8.4). Parsed
+        // standalone (its own /Prev, if any, duplicates the classic chain we
+        // already follow) and best-effort: a malformed supplement is skipped,
+        // not fatal.
+        if let Some(stm_off) = xrefstm_offset {
+            if visited.insert(stm_off) {
+                match find_actual_xref_offset(reader, stm_off)
+                    .and_then(|actual| parse_xref_stream(reader, actual))
+                {
+                    Ok(stm_xref) => {
+                        log::debug!("Merged /XRefStm supplement at offset {}", stm_off);
+                        match &mut result_xref {
+                            Some(result) => result.merge_from(stm_xref),
+                            None => result_xref = Some(stm_xref),
+                        }
+                    },
+                    Err(e) => {
+                        log::debug!("Skipping unparseable /XRefStm at offset {}: {}", stm_off, e)
+                    },
+                }
+            }
         }
 
         // Follow /Prev chain or stop
@@ -1207,6 +1241,53 @@ mod tests {
         let mut cursor = Cursor::new(pdf);
         let offset = find_xref_offset(&mut cursor).unwrap();
         assert_eq!(offset, 12345);
+    }
+
+    /// Hybrid-reference file (§7.5.8.4): a classic trailer carrying
+    /// `/XRefStm` must merge the referenced xref stream so objects listed
+    /// only there (e.g. compressed objects) become reachable. Object 2 is
+    /// declared ONLY by the /XRefStm here, so a table that resolves it proves
+    /// the supplement was parsed and merged. Offsets are tracked at build time
+    /// so the fixture stays correct without hand-computed byte positions.
+    #[test]
+    fn test_hybrid_xrefstm_supplement_is_merged() {
+        let mut pdf: Vec<u8> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.5\n");
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog >>\nendobj\n");
+
+        // Standalone (uncompressed) xref stream declaring object 2 at a
+        // sentinel offset via /Index [2 1], /W [1 2 1]: type=1, offset=0x270F,
+        // gen=0 → bytes 01 27 0F 00.
+        let off_stm = pdf.len();
+        pdf.extend_from_slice(
+            b"6 0 obj\n<< /Type /XRef /Size 3 /W [1 2 1] /Index [2 1] \
+              /Root 1 0 R /Length 4 >>\nstream\n",
+        );
+        pdf.extend_from_slice(&[0x01, 0x27, 0x0F, 0x00]);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        // Classic table: object 0 free, object 1 in-use at off1.
+        let off_classic = pdf.len();
+        let entry1 = format!("{:010} 00000 n \n", off1);
+        pdf.extend_from_slice(b"xref\n0 2\n0000000000 65535 f \n");
+        pdf.extend_from_slice(entry1.as_bytes());
+        let trailer = format!(
+            "trailer\n<< /Size 3 /Root 1 0 R /XRefStm {} >>\nstartxref\n{}\n%%EOF",
+            off_stm, off_classic
+        );
+        pdf.extend_from_slice(trailer.as_bytes());
+
+        let mut cursor = Cursor::new(pdf);
+        let table = parse_xref_iterative(&mut cursor, off_classic as u64).unwrap();
+
+        // Object 1 from the classic table, object 2 ONLY from the /XRefStm.
+        assert!(table.get(1).is_some(), "classic-table object 1 must resolve");
+        let obj2 = table
+            .get(2)
+            .expect("object 2 must resolve via the merged /XRefStm supplement");
+        assert_eq!(obj2.offset, 0x270F, "object 2 offset comes from the xref stream");
     }
 
     #[test]

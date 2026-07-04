@@ -1712,6 +1712,96 @@ fn group_lines_into_clusters(
     result
 }
 
+/// (C) WS0.3b — detect a header text row sitting just ABOVE the grid's top
+/// ruling (a header boxed only by the page-top, or unruled above the grid).
+///
+/// `row_ys` is sorted descending (`row_ys[0]` = the grid's top edge) and
+/// `col_xs` sorted ascending (the detected column boundaries). If a tight band
+/// immediately above the top ruling — up to ~1.5x the median grid row height —
+/// holds text whose cells align to the EXISTING columns and that both spans
+/// at least 2 distinct columns and reaches across at least half the extent, this
+/// returns the y of a new top boundary that brackets exactly that header row.
+/// Otherwise `None` (table unchanged).
+///
+/// The distinct-columns + horizontal-span gates keep a centred title or a
+/// left-aligned caption above an already-correct table from being mistaken for
+/// a header row (their words cluster together instead of spanning the columns),
+/// so this never alters a table that already detects correctly.
+fn detect_header_row_above(spans: &[TextSpan], row_ys: &[f32], col_xs: &[f32]) -> Option<f32> {
+    /// Header band reaches at most this multiple of the median row height above
+    /// the grid's top ruling.
+    const WINDOW_ROWS: f32 = 1.5;
+    /// Header cells must reach across at least this fraction of the column
+    /// extent (rejects titles/captions whose words cluster together).
+    const MIN_SPAN_FRAC: f32 = 0.5;
+
+    if row_ys.len() < 2 || col_xs.len() < 2 {
+        return None;
+    }
+    let grid_top = row_ys[0];
+    let col_lo = *col_xs.first().unwrap();
+    let col_hi = *col_xs.last().unwrap();
+    let col_extent = col_hi - col_lo;
+    if col_extent <= 0.0 {
+        return None;
+    }
+
+    // Median grid row height from consecutive H-ruling gaps.
+    let mut gaps: Vec<f32> = row_ys.windows(2).map(|w| (w[0] - w[1]).abs()).collect();
+    gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    let median_row_h = gaps[gaps.len() / 2];
+    if median_row_h <= 0.0 {
+        return None;
+    }
+    let window_top = grid_top + WINDOW_ROWS * median_row_h;
+
+    // Gather aligned candidate spans in the band immediately above the top ruling.
+    let mut cols_hit: Vec<usize> = Vec::new();
+    let mut header_max_top = f32::NEG_INFINITY;
+    let mut cx_min = f32::INFINITY;
+    let mut cx_max = f32::NEG_INFINITY;
+    let mut cy_min = f32::INFINITY;
+    let mut cy_max = f32::NEG_INFINITY;
+    for span in spans {
+        let cy = span.bbox.center().y;
+        if cy <= grid_top || cy > window_top {
+            continue;
+        }
+        let cx = span.bbox.center().x;
+        if cx < col_lo || cx > col_hi {
+            continue; // outside the column extent → not aligned to a column
+        }
+        let Some(ci) = (0..col_xs.len() - 1).find(|&c| cx >= col_xs[c] && cx <= col_xs[c + 1])
+        else {
+            continue;
+        };
+        if !cols_hit.contains(&ci) {
+            cols_hit.push(ci);
+        }
+        header_max_top = header_max_top.max(span.bbox.y + span.bbox.height);
+        cx_min = cx_min.min(cx);
+        cx_max = cx_max.max(cx);
+        cy_min = cy_min.min(cy);
+        cy_max = cy_max.max(cy);
+    }
+
+    // Gate: >= 2 distinct aligned columns, spanning >= half the column extent,
+    // and forming a single tight row.
+    if cols_hit.len() < 2 {
+        return None;
+    }
+    if (cx_max - cx_min) < MIN_SPAN_FRAC * col_extent {
+        return None;
+    }
+    if (cy_max - cy_min) > median_row_h {
+        return None;
+    }
+
+    // New top boundary sits just above the header text so its row band brackets
+    // exactly the header spans.
+    Some(header_max_top + 1.0)
+}
+
 fn detect_tables_in_cluster(
     spans: &[TextSpan],
     all_lines: &[crate::elements::PathContent],
@@ -1739,6 +1829,20 @@ fn detect_tables_in_cluster(
     }
     row_ys.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a));
     col_xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    // (C) WS0.3b — include a header text row sitting just ABOVE the grid's top
+    // ruling (boxed by page-top / unruled above the grid) when its cells align
+    // to the already-detected columns. Adds ONE row boundary above the top and
+    // widens the span-assignment region to reach it; never adds columns. Returns
+    // `None` (unchanged) unless the tight gate in `detect_header_row_above` holds.
+    let mut assign_bbox = cluster.bbox;
+    let mut inserted_header_row = false;
+    if let Some(header_top) = detect_header_row_above(spans, &row_ys, &col_xs) {
+        row_ys.insert(0, header_top);
+        inserted_header_row = true;
+        let new_height = (header_top - assign_bbox.y).max(assign_bbox.height);
+        assign_bbox =
+            crate::geometry::Rect::new(assign_bbox.x, assign_bbox.y, assign_bbox.width, new_height);
+    }
     let num_rows = row_ys.len() - 1;
     let num_cols = col_xs.len() - 1;
     if num_cols < config.min_table_columns || num_cols > config.max_table_columns {
@@ -1747,7 +1851,7 @@ fn detect_tables_in_cluster(
     let mut cells: Vec<Vec<Vec<usize>>> = vec![vec![Vec::new(); num_cols]; num_rows];
     let mut assigned_any = false;
     for (orig_idx, span) in spans.iter().enumerate() {
-        if !cluster.bbox.intersects(&span.bbox) {
+        if !assign_bbox.intersects(&span.bbox) {
             continue;
         }
         let cx = span.bbox.center().x;
@@ -1807,10 +1911,21 @@ fn detect_tables_in_cluster(
             };
             grid = grid.trim_empty_columns();
             if validate_table_structure_internal(&grid, config) {
+                // (C) WS0.3b — the inserted header row (global row 0) lives in the
+                // first non-empty run, so it is local row 0 of this sub-table when
+                // `current_start_row == 0`. Protect it from colspan merging.
+                let protected_header_rows =
+                    usize::from(inserted_header_row && current_start_row == 0);
                 let mut table = grid_to_table(
                     &grid,
                     spans,
-                    Some(detect_merged_cells_visually(&grid, spans, cluster, all_lines)),
+                    Some(detect_merged_cells_visually(
+                        &grid,
+                        spans,
+                        cluster,
+                        all_lines,
+                        protected_header_rows,
+                    )),
                 );
                 let mut min_y = f32::INFINITY;
                 let mut max_y = f32::NEG_INFINITY;
@@ -1866,6 +1981,7 @@ fn detect_merged_cells_visually(
     spans: &[TextSpan],
     cluster: &LineCluster,
     all_lines: &[crate::elements::PathContent],
+    protected_header_rows: usize,
 ) -> Vec<Vec<CellMergeInfo>> {
     let num_rows = grid.cells.len();
     let num_cols = grid.columns.len();
@@ -1882,6 +1998,14 @@ fn detect_merged_cells_visually(
         })
         .collect();
     for r in 0..num_rows {
+        // (C) WS0.3b — a header row reconstructed from the unruled strip ABOVE
+        // the grid has no vertical rulings in its band, which would otherwise
+        // colspan-merge its distinct column cells into one (dropping every cell
+        // but the first). Its cells were already verified to align to separate
+        // columns, so skip colspan merging for these leading rows.
+        if r < protected_header_rows {
+            continue;
+        }
         let mut c = 0;
         while c < num_cols {
             if merge_info[r][c].covered {
@@ -3396,6 +3520,21 @@ pub fn detect_tables_with_lines(
         if !h_edges.is_empty() && v_edges.is_empty() {
             snap_and_merge(&mut h_edges);
             final_tables = detect_tables_from_horizontal_rules(spans, &h_edges, config);
+            // A logical table ruled between row *bands* (a rule under the
+            // header, or between groups of rows) is emitted here as one
+            // fragment per band. Merge vertically-adjacent same-column
+            // fragments BEFORE the min-row filter so a table cut into e.g. a
+            // [3, 2] pair rejoins into [5] instead of losing its short band to
+            // the guard below. Bands sit ~one inter-row pitch apart (the rule
+            // stroke + leading), so scale the vertical tolerance to the
+            // fragments' median row height rather than the abutting-fragment
+            // default. Safety rests on the unchanged column gating in
+            // `can_merge_tables` (equal col_count + matched X-start/width): a
+            // lone spurious 2-row prose strip has no same-column neighbour, so
+            // it stays short and is still dropped — the guard's intent holds.
+            let row_h = median_fragment_row_height(&final_tables);
+            let y_tol = (row_h * 1.5).max(3.0);
+            final_tables = consolidate_adjacent_table_fragments_with_tol(final_tables, 2.0, y_tol);
             // H-rule bounded detection lacks vertical-line evidence —
             // columns come from text-edge clustering alone (same shape as
             // the text-only fallback below).  Two-row results are
@@ -3689,11 +3828,51 @@ fn cell_span_separator(prev: &TextSpan, current: &TextSpan) -> &'static str {
 /// of consecutive fragments that satisfy the criteria. The merged table
 /// preserves the union of all rows and a bbox spanning both fragments.
 pub fn consolidate_adjacent_table_fragments(tables: Vec<Table>) -> Vec<Table> {
+    consolidate_adjacent_table_fragments_with_tol(tables, 2.0, 3.0)
+}
+
+/// Median per-row height across table fragments, estimated as each
+/// fragment's bbox height divided by its row count. Used to scale the
+/// vertical merge tolerance for rule-split bands. Returns 0.0 when no
+/// fragment carries usable geometry.
+fn median_fragment_row_height(tables: &[Table]) -> f32 {
+    let mut heights: Vec<f32> = tables
+        .iter()
+        .filter_map(|t| {
+            let b = t.bbox?;
+            let n = t.rows.len();
+            if n == 0 || b.height <= 0.0 {
+                None
+            } else {
+                Some(b.height / n as f32)
+            }
+        })
+        .collect();
+    if heights.is_empty() {
+        return 0.0;
+    }
+    heights.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    heights[heights.len() / 2]
+}
+
+/// Like [`consolidate_adjacent_table_fragments`] but with a caller-chosen
+/// vertical merge tolerance. The default 3.0 pt tolerance assumes fragments
+/// abut (a ruling line between every row leaves ~0 gap). The H-rule-bounded
+/// detector, however, emits one fragment per rule-delimited band, so two
+/// bands of the SAME logical table are separated by a full inter-row pitch
+/// (rule stroke + leading) — often ~10-15 pt. A larger `y_tol` lets those
+/// bands rejoin. Safety rests on the unchanged column gating in
+/// `can_merge_tables` (equal col_count + X-start ≤ x_tol + width ≤ x_tol):
+/// two genuinely distinct tables sharing all three within one row-height are
+/// vanishingly rare, whereas bands of one ruled table match them exactly.
+pub fn consolidate_adjacent_table_fragments_with_tol(
+    tables: Vec<Table>,
+    x_tolerance: f32,
+    y_tolerance: f32,
+) -> Vec<Table> {
     if tables.len() < 2 {
         return tables;
     }
-    const X_TOLERANCE: f32 = 2.0;
-    const Y_TOLERANCE: f32 = 3.0;
 
     // Sort by top-Y descending (top of page first in PDF y-up coordinates).
     let mut sorted = tables;
@@ -3707,7 +3886,7 @@ pub fn consolidate_adjacent_table_fragments(tables: Vec<Table>) -> Vec<Table> {
     for table in sorted {
         let merge_into_last = consolidated
             .last()
-            .map(|last| can_merge_tables(last, &table, X_TOLERANCE, Y_TOLERANCE))
+            .map(|last| can_merge_tables(last, &table, x_tolerance, y_tolerance))
             .unwrap_or(false);
         if merge_into_last {
             // Safety: merge_into_last is only true when consolidated.last()
@@ -4195,6 +4374,7 @@ mod tests {
             horizontal_scaling: 1.0,
             primary_detected: false,
             char_widths: vec![],
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
@@ -5235,6 +5415,125 @@ mod tests {
                 "A single cluster should not contain both header V-lines (y<145) and main V-lines (y>149)"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // WS0.3b (C) header-row inclusion
+    // -----------------------------------------------------------------------
+
+    /// (C) A ruled 3-column grid whose header text row sits just ABOVE the top
+    /// ruling (unruled header). Its three labels align to the three detected
+    /// columns and span the table width, so the row must be pulled in as the
+    /// table's header (cells preserved, not merged, marked as header).
+    #[test]
+    fn test_ws03b_header_row_above_included() {
+        let lines = vec![
+            make_h_line(100.0, 560.0, 300.0), // top ruling
+            make_h_line(100.0, 530.0, 300.0),
+            make_h_line(100.0, 500.0, 300.0),
+            make_v_line(100.0, 500.0, 60.0),
+            make_v_line(200.0, 500.0, 60.0),
+            make_v_line(300.0, 500.0, 60.0),
+            make_v_line(400.0, 500.0, 60.0),
+        ];
+        let spans = vec![
+            // Header row ABOVE the top ruling (y ~568..578), aligned to columns.
+            create_test_span("Name", 140.0, 568.0, 20.0, 10.0),
+            create_test_span("Age", 240.0, 568.0, 20.0, 10.0),
+            create_test_span("City", 340.0, 568.0, 20.0, 10.0),
+            // Body rows.
+            create_test_span("Ann", 145.0, 545.0, 10.0, 10.0),
+            create_test_span("30", 245.0, 545.0, 10.0, 10.0),
+            create_test_span("NYC", 345.0, 545.0, 10.0, 10.0),
+            create_test_span("Bob", 145.0, 515.0, 10.0, 10.0),
+            create_test_span("41", 245.0, 515.0, 10.0, 10.0),
+            create_test_span("LA", 345.0, 515.0, 10.0, 10.0),
+        ];
+        let config = TableDetectionConfig::default();
+        let clusters = group_lines_into_clusters(&lines, &config);
+        assert_eq!(clusters.len(), 1, "single ruled grid → one cluster");
+        let tables = detect_tables_in_cluster(&spans, &lines, &clusters[0], &config);
+        assert_eq!(tables.len(), 1, "one table expected");
+        let table = &tables[0];
+        assert_eq!(
+            table.rows.len(),
+            3,
+            "header row above the top ruling must be included (2 body + 1 header)"
+        );
+        assert!(table.has_header, "table must be flagged as having a header");
+        assert!(table.rows[0].is_header, "row 0 must be the header row");
+        // Header cells are preserved (not colspan-merged) and hold the labels.
+        let header_text: String = table.rows[0]
+            .cells
+            .iter()
+            .map(|c| c.text.trim())
+            .collect::<Vec<_>>()
+            .join("|");
+        for label in ["Name", "Age", "City"] {
+            assert!(
+                header_text.contains(label),
+                "header row must contain {label:?}, got {header_text:?}"
+            );
+        }
+    }
+
+    /// (C-negative) Unrelated text above the same grid at an x OUTSIDE the column
+    /// extent does NOT align to any column, so no header row is added and the
+    /// stray text is left out of the table (table unchanged: 2 body rows only).
+    #[test]
+    fn test_ws03b_unaligned_text_above_not_header() {
+        let lines = vec![
+            make_h_line(100.0, 560.0, 300.0),
+            make_h_line(100.0, 530.0, 300.0),
+            make_h_line(100.0, 500.0, 300.0),
+            make_v_line(100.0, 500.0, 60.0),
+            make_v_line(200.0, 500.0, 60.0),
+            make_v_line(300.0, 500.0, 60.0),
+            make_v_line(400.0, 500.0, 60.0),
+        ];
+        let spans = vec![
+            // Caption far to the RIGHT of the column extent (100..400) → unaligned.
+            create_test_span("Table", 520.0, 568.0, 20.0, 10.0),
+            create_test_span("caption", 560.0, 568.0, 40.0, 10.0),
+            // Body rows.
+            create_test_span("Ann", 145.0, 545.0, 10.0, 10.0),
+            create_test_span("30", 245.0, 545.0, 10.0, 10.0),
+            create_test_span("NYC", 345.0, 545.0, 10.0, 10.0),
+            create_test_span("Bob", 145.0, 515.0, 10.0, 10.0),
+            create_test_span("41", 245.0, 515.0, 10.0, 10.0),
+            create_test_span("LA", 345.0, 515.0, 10.0, 10.0),
+        ];
+        let config = TableDetectionConfig::default();
+
+        // The gate itself must reject the unaligned text.
+        let mut row_ys = vec![560.0_f32, 530.0, 500.0];
+        row_ys.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a));
+        let col_xs = vec![100.0_f32, 200.0, 300.0, 400.0];
+        assert!(
+            detect_header_row_above(&spans, &row_ys, &col_xs).is_none(),
+            "text outside the column extent must not be treated as a header row"
+        );
+
+        // End-to-end: table is unchanged (only the 2 ruled body rows) and the
+        // caption text is not present in any cell.
+        let clusters = group_lines_into_clusters(&lines, &config);
+        let tables = detect_tables_in_cluster(&spans, &lines, &clusters[0], &config);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(
+            tables[0].rows.len(),
+            2,
+            "no header row must be added for unaligned text above the grid"
+        );
+        let all_text: String = tables[0]
+            .rows
+            .iter()
+            .flat_map(|r| r.cells.iter())
+            .map(|c| c.text.clone())
+            .collect();
+        assert!(
+            !all_text.contains("caption"),
+            "unaligned caption text must stay out of the table, got {all_text:?}"
+        );
     }
 
     #[test]
@@ -6457,6 +6756,43 @@ mod tests {
         assert_eq!(result.len(), 2, "well-separated fragments stay distinct");
     }
 
+    /// A table ruled between row *bands* (not every row) emits fragments
+    /// separated by a full inter-row pitch, not abutting. The default 3pt
+    /// tolerance leaves them split (dropping the short band to the >=3-row
+    /// guard); the row-height-scaled tolerance rejoins them. Models the
+    /// PMC8103272 Table-1 [3, 2] → [5] recovery.
+    #[test]
+    fn consolidate_with_tol_merges_row_pitch_separated_bands() {
+        // Fragment with `extra` additional empty rows beyond make_fragment's one.
+        let frag = |x, y, cols, rows: usize| {
+            let mut t = make_fragment(x, y, 420.0, 16.0, cols);
+            for _ in 1..rows {
+                t.rows.push(TableRow::new(false));
+            }
+            t
+        };
+        // upper.bottom = 480; lower.top = 452 + 16 = 468 → 12pt gap (one pitch).
+        let upper = frag(90.0, 480.0, 6, 3);
+        let lower = frag(90.0, 452.0, 6, 2);
+        // Default tolerance: bands stay split (this is the pre-fix behaviour).
+        let split = consolidate_adjacent_table_fragments(vec![upper.clone(), lower.clone()]);
+        assert_eq!(split.len(), 2, "3pt tolerance leaves row-pitch bands split");
+        // Row-height-scaled tolerance (1.5 * ~16pt row height = 24 > 12pt gap): merge.
+        let merged = consolidate_adjacent_table_fragments_with_tol(vec![upper, lower], 2.0, 24.0);
+        assert_eq!(merged.len(), 1, "row-pitch bands rejoin under scaled tolerance");
+        assert_eq!(merged[0].rows.len(), 5, "[3,2] bands rejoin into a 5-row table");
+    }
+
+    /// The scaled tolerance still refuses fragments that are farther apart
+    /// than a plausible single row pitch — two genuinely distinct grids.
+    #[test]
+    fn consolidate_with_tol_still_rejects_far_bands() {
+        let upper = make_fragment(90.0, 600.0, 420.0, 16.0, 6);
+        let lower = make_fragment(90.0, 400.0, 420.0, 16.0, 6); // 184pt gap
+        let merged = consolidate_adjacent_table_fragments_with_tol(vec![upper, lower], 2.0, 24.0);
+        assert_eq!(merged.len(), 2, "a scaled tolerance is not an unbounded merge");
+    }
+
     /// Fragments with different column counts must NOT merge even if
     /// they sit adjacent vertically — they aren't a single logical table.
     #[test]
@@ -6545,6 +6881,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,

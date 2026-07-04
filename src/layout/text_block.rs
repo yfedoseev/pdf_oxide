@@ -81,6 +81,19 @@ pub struct TextSpan {
     /// for accurate per-glyph bounding boxes instead of uniform division.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub char_widths: Vec<f32>,
+    /// Accurate per-glyph baseline x-origins (user-space points), sourced from
+    /// the spec-aligned char-level extractor that `extract_chars` uses.
+    ///
+    /// When non-empty and matching `text.chars().count()`, [`Self::to_chars`]
+    /// uses these directly for each glyph's `origin_x` / `bbox.x` instead of
+    /// prefix-summing the nominal `char_widths` from `bbox.x`. The nominal
+    /// widths omit ISO 32000-1:2008 §9.4.3 TJ-array kerning adjustments and the
+    /// full §9.4.4 text-space displacement, so prefix-summing them drifts
+    /// cumulatively along a line; these offsets carry the real positions and so
+    /// do not drift. Empty (the default) preserves the legacy prefix-sum path
+    /// byte-for-byte.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub char_x_offsets: Vec<f32>,
     /// Heading level (1-6) when this span belongs to a document heading.
     /// Populated either from the source PDF's structure tree
     /// (`StructRole::Heading(n)`) or from a font-size-ratio heuristic when
@@ -176,6 +189,7 @@ impl Default for TextSpan {
             primary_detected: false,
             artifact_type: None,
             char_widths: Vec::new(),
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
@@ -191,6 +205,53 @@ impl TextSpan {
         let char_count = self.text.chars().count();
         if char_count == 0 {
             return Vec::new();
+        }
+
+        // Preferred path: accurate per-glyph x-origins captured from the
+        // spec-aligned char extractor (ISO 32000-1:2008 §9.4.3 / §9.4.4). These
+        // carry the real text-space positions, so they do not accumulate the
+        // TJ-kerning drift that prefix-summing `char_widths` from `bbox.x`
+        // produces. Only taken when the offsets cover every glyph exactly.
+        if self.char_x_offsets.len() == char_count {
+            let has_widths = self.char_widths.len() == char_count;
+            let offsets = &self.char_x_offsets;
+            return self
+                .text
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    let char_x = offsets[i];
+                    // Width preference: nominal char_widths (unchanged model)
+                    // when present, else the gap to the next offset, else the
+                    // remainder of the span bbox for the final glyph.
+                    let w = if has_widths {
+                        self.char_widths[i]
+                    } else if i + 1 < char_count {
+                        (offsets[i + 1] - char_x).max(0.0)
+                    } else {
+                        (self.bbox.x + self.bbox.width - char_x).max(0.0)
+                    };
+                    TextChar {
+                        char: c,
+                        bbox: Rect::new(char_x, self.bbox.y, w, self.bbox.height),
+                        font_name: self.font_name.clone(),
+                        font_size: self.font_size,
+                        font_weight: self.font_weight,
+                        is_italic: self.is_italic,
+                        is_monospace: self.is_monospace,
+                        color: self.color,
+                        mcid: self.mcid,
+                        origin_x: char_x,
+                        origin_y: self.bbox.y,
+                        rotation_degrees: 0.0,
+                        advance_width: w,
+                        rendered_advance: w,
+                        ascent: 0.95 * self.font_size,
+                        descent: -0.35 * self.font_size,
+                        matrix: Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+                    }
+                })
+                .collect();
         }
 
         // Use per-character widths when available and matching text length;
@@ -876,6 +937,79 @@ mod tests {
         assert!((chars[0].bbox.width - 10.0).abs() < 0.001);
         assert!((chars[1].bbox.width - 10.0).abs() < 0.001);
         assert!((chars[2].bbox.width - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_to_chars_prefers_char_x_offsets_over_widths() {
+        // char_x_offsets carry positions that DIVERGE from a prefix-sum of
+        // char_widths (simulating TJ-kerning drift). to_chars must honor the
+        // offsets for origin_x / bbox.x while still taking widths from
+        // char_widths (the unchanged Indic-guarded model).
+        let span = TextSpan {
+            text: "AB".to_string(),
+            bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
+            char_widths: vec![10.0, 20.0],
+            char_x_offsets: vec![10.0, 25.0], // NOT 10.0, 20.0 (prefix-sum)
+            ..TextSpan::default()
+        };
+        let chars = span.to_chars();
+        assert_eq!(chars.len(), 2);
+        // Positions come from char_x_offsets, not the prefix-sum of widths.
+        assert!((chars[0].origin_x - 10.0).abs() < 0.001);
+        assert!((chars[0].bbox.x - 10.0).abs() < 0.001);
+        assert!((chars[1].origin_x - 25.0).abs() < 0.001);
+        assert!((chars[1].bbox.x - 25.0).abs() < 0.001);
+        // Widths remain sourced from char_widths (unchanged model).
+        assert!((chars[0].bbox.width - 10.0).abs() < 0.001);
+        assert!((chars[1].bbox.width - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_to_chars_empty_offsets_is_byte_identical_fallback() {
+        // Empty char_x_offsets (the default) must produce exactly the legacy
+        // char_widths path — same positions and widths.
+        let with_offsets = TextSpan {
+            text: "AB".to_string(),
+            bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
+            char_widths: vec![10.0, 20.0],
+            char_x_offsets: Vec::new(),
+            ..TextSpan::default()
+        };
+        let legacy = TextSpan {
+            text: "AB".to_string(),
+            bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
+            char_widths: vec![10.0, 20.0],
+            ..TextSpan::default()
+        };
+        let a = with_offsets.to_chars();
+        let b = legacy.to_chars();
+        assert_eq!(a.len(), b.len());
+        for (ca, cb) in a.iter().zip(b.iter()) {
+            assert!((ca.origin_x - cb.origin_x).abs() < 1e-6);
+            assert!((ca.bbox.x - cb.bbox.x).abs() < 1e-6);
+            assert!((ca.bbox.width - cb.bbox.width).abs() < 1e-6);
+        }
+        // And it matches the documented legacy positions.
+        assert!((a[0].bbox.x - 10.0).abs() < 0.001);
+        assert!((a[1].bbox.x - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_to_chars_offset_count_mismatch_falls_back() {
+        // Offsets that do not cover every glyph must be ignored (legacy path).
+        let span = TextSpan {
+            text: "ABC".to_string(),
+            bbox: Rect::new(0.0, 0.0, 30.0, 12.0),
+            char_widths: vec![10.0, 10.0, 10.0],
+            char_x_offsets: vec![0.0, 15.0], // 2 offsets for 3 chars
+            ..TextSpan::default()
+        };
+        let chars = span.to_chars();
+        assert_eq!(chars.len(), 3);
+        // Falls through to char_widths prefix-sum: 0, 10, 20.
+        assert!((chars[0].bbox.x - 0.0).abs() < 0.001);
+        assert!((chars[1].bbox.x - 10.0).abs() < 0.001);
+        assert!((chars[2].bbox.x - 20.0).abs() < 0.001);
     }
 
     #[test]

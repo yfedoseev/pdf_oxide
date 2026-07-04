@@ -2332,8 +2332,9 @@ fn render_text_to_plate(
     let empty = SeparationColorState::new();
     let cs = color_state_stack.last().unwrap_or(&empty);
 
-    // Render mode 3 = invisible text. Still advance the text matrix but skip painting.
-    if gs.render_mode == 3 {
+    // Render mode 3 = invisible text; mode 7 = clip-only, no paint (§9.3.6,
+    // WS1.5). Both advance the text matrix but skip painting.
+    if gs.render_mode == 3 || gs.render_mode == 7 {
         return measure_text_advance(text, gs, ctx.fonts);
     }
 

@@ -272,6 +272,20 @@ pub struct PageRenderer {
     /// log doesn't spam on a degenerate document. Reset on each
     /// `render_page_with_options` entry.
     k_zero_warning_emitted: bool,
+    /// Recursion depth for Type 3 glyph rendering. A Type 3 glyph's
+    /// CharProcs stream is executed re-entrantly through
+    /// [`Self::execute_operators`]; a glyph that (directly or via a Form
+    /// XObject) shows text in the same Type 3 font would otherwise recurse
+    /// without bound. Incremented on entry to [`Self::render_type3_glyph`]
+    /// and decremented on exit; glyphs at or beyond [`MAX_TYPE3_DEPTH`] are
+    /// skipped (their advance width is still applied by the caller).
+    type3_depth: u32,
+    /// Active Type 3 `d1` fill-colour lock. When `Some`, a `d1` glyph
+    /// description is being executed: the glyph is a stencil painted with
+    /// this fill colour and every colour-setting operator inside it is
+    /// ignored (ISO 32000-1:2008 §9.6.5.2). `None` for `d0` glyphs and all
+    /// ordinary content, which paint with their own colour operators.
+    type3_fill_lock: Option<(f32, f32, f32)>,
 }
 
 /// Maximum SMask materialisation recursion depth. A cyclic
@@ -281,6 +295,13 @@ pub struct PageRenderer {
 /// unaffected; adversarial inputs fall through to the no-soft-mask
 /// branch once the cap engages.
 pub(crate) const MAX_SMASK_DEPTH: u32 = 32;
+
+/// Maximum Type 3 glyph rendering recursion depth. A Type 3 CharProcs
+/// stream is executed re-entrantly, so a glyph that shows text in the same
+/// Type 3 font (directly or through a nested Form XObject) would recurse
+/// without bound. The cap sits well above any realistic nesting; glyphs at
+/// or beyond it are skipped while their advance width is still applied.
+pub(crate) const MAX_TYPE3_DEPTH: u32 = 8;
 
 impl PageRenderer {
     /// Create a new page renderer with the specified options.
@@ -297,6 +318,8 @@ impl PageRenderer {
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
             k_zero_warning_emitted: false,
+            type3_depth: 0,
+            type3_fill_lock: None,
         }
     }
 
@@ -697,10 +720,35 @@ impl PageRenderer {
             gs.stroke_color_rgb = (0.0, 0.0, 0.0);
         }
 
+        // Type 3 `d1` glyph description: seed the fill colour with the locked
+        // current colour so the stencil paints in it. Set the same fields the
+        // `rg` operator would (RGB, colour space, and components) so the
+        // colour-resolution pipeline reproduces it exactly. Colour operators
+        // inside the glyph are ignored below (ISO 32000-1:2008 §9.6.5.2).
+        if let Some((r, g, b)) = self.type3_fill_lock {
+            let gs = gs_stack.current_mut();
+            gs.fill_color_rgb = (r, g, b);
+            gs.fill_color_space = "DeviceRGB".to_string();
+            gs.fill_color_components.clear();
+            gs.fill_color_components.extend_from_slice(&[r, g, b]);
+        }
+
         let mut in_text_object = false;
         let mut current_path = PathBuilder::new();
         let mut pending_clip: Option<(tiny_skia::Path, tiny_skia::FillRule)> = None;
         let mut clip_stack: Vec<Option<tiny_skia::Mask>> = vec![None]; // Start with no clip at depth 0
+
+        // WS1.5b — text-clip accumulator (ISO 32000-1 §9.3.6 / Table 106,
+        // `Tr` modes 4–7). Text render modes ≥4 add the union of their glyph
+        // outlines to a "text clip path" that is intersected into the current
+        // clip at `ET`. We accumulate that union as opaque glyph coverage in a
+        // page-sized scratch pixmap's alpha channel (unioned across shows via
+        // SourceOver), then convert it to a `Mask` at `ET`. This stays
+        // allocation-free for the normal-text hot path: the scratch is created
+        // lazily only when a mode-≥4 show actually fires, and modes 0–3 never
+        // touch it. Complexity is inherently capped — coverage folds into a
+        // fixed-size buffer, so no unbounded path growth is possible.
+        let mut text_clip_accum: Option<Pixmap> = None;
 
         // OCG layer exclusion tracking.
         // `excluded_layer_depth` counts how many nested BDC/OC scopes we are
@@ -732,6 +780,12 @@ impl PageRenderer {
         let mut ext_g_state_cache: std::collections::HashMap<String, ParsedExtGState> =
             std::collections::HashMap::new();
         for op in operators {
+            // While a Type 3 `d1` glyph stencil is being painted, colour-
+            // setting operators are ignored so the glyph keeps the current
+            // fill colour (ISO 32000-1:2008 §9.6.5.2).
+            if self.type3_fill_lock.is_some() && op.is_color_setting() {
+                continue;
+            }
             match op {
                 // Graphics state operators
                 Operator::SaveState => {
@@ -902,6 +956,9 @@ impl PageRenderer {
                     gs.fill_color_components
                         .extend_from_slice(&initial.components);
                     gs.fill_spot_inks = initial.spot_inks;
+                    // Selecting a colour space clears any previously selected
+                    // fill pattern; a fresh scn must re-name it (§8.7.3).
+                    gs.fill_pattern_name = None;
                     log::debug!("SetFillColorSpace: {}", name);
                 },
                 Operator::SetStrokeColorSpace { name } => {
@@ -1146,13 +1203,21 @@ impl PageRenderer {
                         gs.stroke_color_rgb
                     );
                 },
-                Operator::SetFillColorN { components, .. } => {
+                Operator::SetFillColorN { components, name } => {
                     let gs = gs_stack.current_mut();
                     let space_name = gs.fill_color_space.clone();
                     let resolved_space = self.color_spaces.get(&space_name);
                     gs.fill_color_components.clear();
                     gs.fill_color_components.extend_from_slice(components);
                     gs.fill_color_cmyk = None;
+                    // §8.7.3: retain the pattern name for the Fill path when the
+                    // active fill space is /Pattern; clear it otherwise so a
+                    // later device-colour scn cannot paint a stale pattern.
+                    gs.fill_pattern_name = if space_name == "Pattern" {
+                        name.as_ref().map(|n| n.as_str().to_string())
+                    } else {
+                        None
+                    };
 
                     match space_name.as_str() {
                         "DeviceGray" | "G" if !components.is_empty() => {
@@ -1624,91 +1689,115 @@ impl PageRenderer {
                             );
                             let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
                             let transform = combine_transforms(base_transform, &gs_clone.ctm);
-                            // §11.4.7 + §11.7.4: snapshot before the
-                            // paint so the post-paint modulators can
-                            // blend the backdrop (snapshot) with the
-                            // painted result.
-                            let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
-                            let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let overprint_snap = self.overprint_snapshot(pixmap, &gs_clone, true);
-                            let cmyk_compose_snap =
-                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
-                            let cmyk_sidecar_snap =
-                                self.cmyk_sidecar_snapshot(pixmap, &gs_clone, true);
-                            let rgb_sidecar_snap =
-                                self.cmyk_sidecar_snapshot_for_rgb_paint(pixmap, &gs_clone, true);
-                            let cmyk_coverage = self.rasterise_fill_coverage(
-                                &path,
-                                transform,
-                                tiny_skia::FillRule::Winding,
-                                clip,
-                            );
-                            self.path_rasterizer.fill_path_clipped(
-                                pixmap,
-                                &path,
-                                transform,
-                                render_gs,
-                                tiny_skia::FillRule::Winding,
-                                clip,
-                            );
-                            if let Some(snap) = cmyk_compose_snap {
-                                self.apply_cmyk_compose_after_paint_with_coverage(
+                            // §8.7.3: a Pattern-space fill routes to the
+                            // tiling-pattern rasteriser first. When it paints
+                            // the region the solid-colour paint below is
+                            // skipped; unsupported/shading patterns return
+                            // false and fall through to the solid fallback.
+                            if gs_clone.fill_color_space == "Pattern"
+                                && gs_clone.fill_pattern_name.is_some()
+                                && self.fill_with_tiling_pattern(
                                     pixmap,
-                                    &snap,
-                                    cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    true,
-                                );
-                            }
-                            if let Some(snap) = overprint_snap {
-                                self.apply_overprint_after_paint_with_coverage(
-                                    pixmap,
-                                    &snap,
-                                    cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    true,
-                                );
-                            }
-                            if let Some(snap) = cmyk_sidecar_snap {
-                                self.mirror_cmyk_paint_into_sidecar_with_coverage(
-                                    pixmap,
-                                    &snap,
-                                    cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    true,
-                                );
-                            }
-                            if let Some(snap) = rgb_sidecar_snap {
-                                self.mirror_rgb_paint_into_sidecar_with_coverage(
-                                    pixmap,
-                                    &snap,
-                                    cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    true,
-                                );
-                            }
-                            self.mirror_spot_paint_into_sidecar_with_coverage(
-                                pixmap,
-                                &[],
-                                cmyk_coverage.as_deref(),
-                                &gs_clone,
-                                true,
-                            );
-                            if let Some(snap) = smask_snap {
-                                self.apply_smask_after_paint(
-                                    pixmap,
-                                    &snap,
-                                    smask_spot_snap.as_deref(),
+                                    &path,
+                                    base_transform,
+                                    transform,
+                                    tiny_skia::FillRule::Winding,
+                                    clip,
                                     &gs_clone,
                                     doc,
                                     page_num,
                                     resources,
-                                    base_transform,
-                                )?;
+                                )?
+                            {
+                                // Painted by the tiling pattern.
+                            } else {
+                                // §11.4.7 + §11.7.4: snapshot before the
+                                // paint so the post-paint modulators can
+                                // blend the backdrop (snapshot) with the
+                                // painted result.
+                                let smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                                let smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                                let overprint_snap =
+                                    self.overprint_snapshot(pixmap, &gs_clone, true);
+                                let cmyk_compose_snap =
+                                    self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                                let cmyk_sidecar_snap =
+                                    self.cmyk_sidecar_snapshot(pixmap, &gs_clone, true);
+                                let rgb_sidecar_snap = self
+                                    .cmyk_sidecar_snapshot_for_rgb_paint(pixmap, &gs_clone, true);
+                                let cmyk_coverage = self.rasterise_fill_coverage(
+                                    &path,
+                                    transform,
+                                    tiny_skia::FillRule::Winding,
+                                    clip,
+                                );
+                                self.path_rasterizer.fill_path_clipped(
+                                    pixmap,
+                                    &path,
+                                    transform,
+                                    render_gs,
+                                    tiny_skia::FillRule::Winding,
+                                    clip,
+                                );
+                                if let Some(snap) = cmyk_compose_snap {
+                                    self.apply_cmyk_compose_after_paint_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        true,
+                                    );
+                                }
+                                if let Some(snap) = overprint_snap {
+                                    self.apply_overprint_after_paint_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        true,
+                                    );
+                                }
+                                if let Some(snap) = cmyk_sidecar_snap {
+                                    self.mirror_cmyk_paint_into_sidecar_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        true,
+                                    );
+                                }
+                                if let Some(snap) = rgb_sidecar_snap {
+                                    self.mirror_rgb_paint_into_sidecar_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        true,
+                                    );
+                                }
+                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                    pixmap,
+                                    &[],
+                                    cmyk_coverage.as_deref(),
+                                    &gs_clone,
+                                    true,
+                                );
+                                if let Some(snap) = smask_snap {
+                                    self.apply_smask_after_paint(
+                                        pixmap,
+                                        &snap,
+                                        smask_spot_snap.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        page_num,
+                                        resources,
+                                        base_transform,
+                                    )?;
+                                }
                             }
                         }
                     } else {
@@ -1769,6 +1858,24 @@ impl PageRenderer {
                             );
                             let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
 
+                            // §8.7.3: Pattern-space fills route to the tiling
+                            // rasteriser first; on success the solid fill side
+                            // is skipped (the stroke side still runs below).
+                            let fill_by_pattern = gs_clone.fill_color_space == "Pattern"
+                                && gs_clone.fill_pattern_name.is_some()
+                                && self.fill_with_tiling_pattern(
+                                    pixmap,
+                                    &path,
+                                    base_transform,
+                                    transform,
+                                    fill_rule,
+                                    clip,
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?;
+
                             // Fill side: snapshot before paint, paint,
                             // then run compose-first / overprint / SMask
                             // correctors against the fill-side gs fields.
@@ -1777,56 +1884,59 @@ impl PageRenderer {
                             // — the only difference here is the stroke
                             // pass also lays paint on top, so each side
                             // gets its own snapshot/apply cycle.
-                            let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
-                            let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let fill_overprint_snap =
-                                self.overprint_snapshot(pixmap, &gs_clone, true);
-                            let fill_cmyk_compose_snap =
-                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
-                            let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
-                            // §11.7.3 + §11.3.3 require per-pixel
-                            // coverage on every lane. The path-Fill
-                            // helper uses `rasterise_fill_coverage`;
-                            // the combo arm uses the same call so AA
-                            // edges receive fractional coverage and an
-                            // alternate-CS RGB collision with backdrop
-                            // does not mask the paint from the spot
-                            // mirror's diff branch.
-                            let fill_cmyk_coverage =
-                                self.rasterise_fill_coverage(&path, transform, fill_rule, clip);
-                            self.path_rasterizer.fill_path_clipped(
-                                pixmap, &path, transform, render_gs, fill_rule, clip,
-                            );
-                            if let Some(snap) = fill_cmyk_compose_snap {
-                                self.apply_cmyk_compose_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
+                            if !fill_by_pattern {
+                                let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                                let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                                let fill_overprint_snap =
+                                    self.overprint_snapshot(pixmap, &gs_clone, true);
+                                let fill_cmyk_compose_snap =
+                                    self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                                let fill_spot_snap =
+                                    self.spot_paint_snapshot(pixmap, &gs_clone, true);
+                                // §11.7.3 + §11.3.3 require per-pixel
+                                // coverage on every lane. The path-Fill
+                                // helper uses `rasterise_fill_coverage`;
+                                // the combo arm uses the same call so AA
+                                // edges receive fractional coverage and an
+                                // alternate-CS RGB collision with backdrop
+                                // does not mask the paint from the spot
+                                // mirror's diff branch.
+                                let fill_cmyk_coverage =
+                                    self.rasterise_fill_coverage(&path, transform, fill_rule, clip);
+                                self.path_rasterizer.fill_path_clipped(
+                                    pixmap, &path, transform, render_gs, fill_rule, clip,
                                 );
-                            }
-                            if let Some(snap) = fill_overprint_snap {
-                                self.apply_overprint_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
-                                );
-                            }
-                            if let Some(snap) = fill_spot_snap {
-                                self.mirror_spot_paint_into_sidecar_with_coverage(
-                                    pixmap,
-                                    &snap,
-                                    fill_cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    true,
-                                );
-                            }
-                            if let Some(snap) = fill_smask_snap {
-                                self.apply_smask_after_paint(
-                                    pixmap,
-                                    &snap,
-                                    fill_smask_spot_snap.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    page_num,
-                                    resources,
-                                    base_transform,
-                                )?;
+                                if let Some(snap) = fill_cmyk_compose_snap {
+                                    self.apply_cmyk_compose_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, true,
+                                    );
+                                }
+                                if let Some(snap) = fill_overprint_snap {
+                                    self.apply_overprint_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, true,
+                                    );
+                                }
+                                if let Some(snap) = fill_spot_snap {
+                                    self.mirror_spot_paint_into_sidecar_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        fill_cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        true,
+                                    );
+                                }
+                                if let Some(snap) = fill_smask_snap {
+                                    self.apply_smask_after_paint(
+                                        pixmap,
+                                        &snap,
+                                        fill_smask_spot_snap.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        page_num,
+                                        resources,
+                                        base_transform,
+                                    )?;
+                                }
                             }
 
                             // Stroke side: same snapshot/apply pattern
@@ -1907,66 +2017,87 @@ impl PageRenderer {
                             let spliced = self.pipeline_resolve_paint_gs(doc, &gs_clone, kind);
                             let render_gs: &GraphicsState = spliced.as_ref().unwrap_or(&gs_clone);
 
+                            // §8.7.3: Pattern-space fills route to the tiling
+                            // rasteriser first; on success the solid fill side
+                            // is skipped (the stroke side, if any, still runs).
+                            let fill_by_pattern = gs_clone.fill_color_space == "Pattern"
+                                && gs_clone.fill_pattern_name.is_some()
+                                && self.fill_with_tiling_pattern(
+                                    pixmap,
+                                    &path,
+                                    base_transform,
+                                    transform,
+                                    tiny_skia::FillRule::EvenOdd,
+                                    clip,
+                                    &gs_clone,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?;
+
                             // Fill side: snapshot + paint + correctors.
                             // §11.4.7 + §11.7.4 + §11.4 compose-first
                             // each apply to `f*` just as they do to `f`
                             // — the only difference is the EvenOdd fill
                             // rule, which only changes coverage, not
                             // the colour-composition rule.
-                            let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
-                            let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
-                            let fill_overprint_snap =
-                                self.overprint_snapshot(pixmap, &gs_clone, true);
-                            let fill_cmyk_compose_snap =
-                                self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
-                            let fill_spot_snap = self.spot_paint_snapshot(pixmap, &gs_clone, true);
-                            // §11.7.3 + §11.3.3 spot mirror needs a
-                            // real per-pixel coverage mask — see the
-                            // FillStroke arm above for the rationale.
-                            let fill_cmyk_coverage = self.rasterise_fill_coverage(
-                                &path,
-                                transform,
-                                tiny_skia::FillRule::EvenOdd,
-                                clip,
-                            );
-                            self.path_rasterizer.fill_path_clipped(
-                                pixmap,
-                                &path,
-                                transform,
-                                render_gs,
-                                tiny_skia::FillRule::EvenOdd,
-                                clip,
-                            );
-                            if let Some(snap) = fill_cmyk_compose_snap {
-                                self.apply_cmyk_compose_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
+                            if !fill_by_pattern {
+                                let fill_smask_snap = self.smask_snapshot(pixmap, &gs_clone);
+                                let fill_smask_spot_snap = self.smask_spot_snapshot(&gs_clone);
+                                let fill_overprint_snap =
+                                    self.overprint_snapshot(pixmap, &gs_clone, true);
+                                let fill_cmyk_compose_snap =
+                                    self.cmyk_compose_snapshot(pixmap, &gs_clone, doc, true);
+                                let fill_spot_snap =
+                                    self.spot_paint_snapshot(pixmap, &gs_clone, true);
+                                // §11.7.3 + §11.3.3 spot mirror needs a
+                                // real per-pixel coverage mask — see the
+                                // FillStroke arm above for the rationale.
+                                let fill_cmyk_coverage = self.rasterise_fill_coverage(
+                                    &path,
+                                    transform,
+                                    tiny_skia::FillRule::EvenOdd,
+                                    clip,
                                 );
-                            }
-                            if let Some(snap) = fill_overprint_snap {
-                                self.apply_overprint_after_paint(
-                                    pixmap, &snap, &gs_clone, doc, true,
-                                );
-                            }
-                            if let Some(snap) = fill_spot_snap {
-                                self.mirror_spot_paint_into_sidecar_with_coverage(
+                                self.path_rasterizer.fill_path_clipped(
                                     pixmap,
-                                    &snap,
-                                    fill_cmyk_coverage.as_deref(),
-                                    &gs_clone,
-                                    true,
+                                    &path,
+                                    transform,
+                                    render_gs,
+                                    tiny_skia::FillRule::EvenOdd,
+                                    clip,
                                 );
-                            }
-                            if let Some(snap) = fill_smask_snap {
-                                self.apply_smask_after_paint(
-                                    pixmap,
-                                    &snap,
-                                    fill_smask_spot_snap.as_deref(),
-                                    &gs_clone,
-                                    doc,
-                                    page_num,
-                                    resources,
-                                    base_transform,
-                                )?;
+                                if let Some(snap) = fill_cmyk_compose_snap {
+                                    self.apply_cmyk_compose_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, true,
+                                    );
+                                }
+                                if let Some(snap) = fill_overprint_snap {
+                                    self.apply_overprint_after_paint(
+                                        pixmap, &snap, &gs_clone, doc, true,
+                                    );
+                                }
+                                if let Some(snap) = fill_spot_snap {
+                                    self.mirror_spot_paint_into_sidecar_with_coverage(
+                                        pixmap,
+                                        &snap,
+                                        fill_cmyk_coverage.as_deref(),
+                                        &gs_clone,
+                                        true,
+                                    );
+                                }
+                                if let Some(snap) = fill_smask_snap {
+                                    self.apply_smask_after_paint(
+                                        pixmap,
+                                        &snap,
+                                        fill_smask_spot_snap.as_deref(),
+                                        &gs_clone,
+                                        doc,
+                                        page_num,
+                                        resources,
+                                        base_transform,
+                                    )?;
+                                }
                             }
 
                             if matches!(op, Operator::FillStrokeEvenOdd) {
@@ -2046,6 +2177,11 @@ impl PageRenderer {
                 // Text object operators
                 Operator::BeginText => {
                     in_text_object = true;
+                    // Start each text object with a clean text-clip path
+                    // (§9.4.1: the text clip path is reset at BT and applied
+                    // at ET). Any leftover from a malformed/unterminated prior
+                    // block is discarded here.
+                    text_clip_accum = None;
                     let gs = gs_stack.current_mut();
                     gs.text_matrix = Matrix::identity();
                     gs.text_line_matrix = Matrix::identity();
@@ -2053,6 +2189,30 @@ impl PageRenderer {
                 },
                 Operator::EndText => {
                     in_text_object = false;
+                    // WS1.5b — apply the accumulated text clip path (Tr 4–7).
+                    // If no clip-mode text was shown the accumulator is None and
+                    // ET behaves exactly as before. An all-transparent
+                    // accumulator (e.g. every glyph was whitespace or lacked an
+                    // outline) is treated as degenerate and leaves the clip
+                    // unchanged rather than collapsing it to empty.
+                    if let Some(scratch) = text_clip_accum.take() {
+                        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+                        if has_coverage {
+                            let text_mask = tiny_skia::Mask::from_pixmap(
+                                scratch.as_ref(),
+                                tiny_skia::MaskType::Alpha,
+                            );
+                            // Intersect (logical AND) the glyph silhouette with
+                            // the current scope's clip so subsequent content is
+                            // confined to the text shape *within* the existing
+                            // clip — never widened past it.
+                            if let Some(slot) = clip_stack.last_mut() {
+                                let existing = slot.take();
+                                *slot =
+                                    Some(intersect_with_inherited(text_mask, existing.as_ref()));
+                            }
+                        }
+                    }
                 },
 
                 // Text state operators
@@ -2080,10 +2240,51 @@ impl PageRenderer {
                 // text inside the same BT/ET paints at the correct X position.
                 Operator::Tj { text } => {
                     if in_text_object {
+                        // Type 3 fonts have no outline program; each glyph is a
+                        // CharProcs content stream painted under FontMatrix ×
+                        // text-space × CTM (ISO 32000-1 §9.6.5). It is handled
+                        // here because it re-enters the content-stream renderer.
+                        if self.current_font_is_type3(gs_stack.current()) {
+                            let advance = if excluded_layer_depth == 0 {
+                                let gs_snap = gs_stack.current().clone();
+                                self.render_type3_text(
+                                    pixmap,
+                                    text,
+                                    base_transform,
+                                    &gs_snap,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?
+                            } else {
+                                self.text_rasterizer.measure_text(
+                                    text,
+                                    gs_stack.current(),
+                                    &self.fonts,
+                                )
+                            };
+                            gs_stack.current_mut().advance_text_matrix(advance);
+                            continue;
+                        }
                         let gs = gs_stack.current();
                         let advance = if excluded_layer_depth == 0 {
                             let clip = clip_stack.last().and_then(|c| c.as_ref());
                             let transform = combine_transforms(base_transform, &gs.ctm);
+                            // WS1.5b — modes 4–7 add this show's glyph
+                            // outlines to the text clip path (applied at ET).
+                            // Gated here so modes 0–3 pay nothing.
+                            if gs.render_mode >= 4 {
+                                self.accumulate_text_clip_tj(
+                                    &mut text_clip_accum,
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    text,
+                                    transform,
+                                    gs,
+                                    resources,
+                                    doc,
+                                );
+                            }
                             // Resolve the fill (and/or stroke per Tr mode)
                             // once for the whole `Tj` call and hand the
                             // resolved RGBA to the rasteriser. The rasteriser
@@ -2186,6 +2387,30 @@ impl PageRenderer {
                         gs_mut.text_line_matrix = translation.multiply(&gs_mut.text_line_matrix);
                         gs_mut.text_matrix = gs_mut.text_line_matrix;
 
+                        // Type 3 glyphs are painted via the content-stream renderer.
+                        if self.current_font_is_type3(gs_stack.current()) {
+                            let advance = if excluded_layer_depth == 0 {
+                                let gs_snap = gs_stack.current().clone();
+                                self.render_type3_text(
+                                    pixmap,
+                                    text,
+                                    base_transform,
+                                    &gs_snap,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?
+                            } else {
+                                self.text_rasterizer.measure_text(
+                                    text,
+                                    gs_stack.current(),
+                                    &self.fonts,
+                                )
+                            };
+                            gs_stack.current_mut().advance_text_matrix(advance);
+                            continue;
+                        }
+
                         let gs = gs_stack.current();
                         let advance = if excluded_layer_depth == 0 {
                             let clip = clip_stack.last().and_then(|c| c.as_ref());
@@ -2199,6 +2424,19 @@ impl PageRenderer {
                                 gs.text_matrix.e,
                                 gs.text_matrix.f
                             );
+                            // WS1.5b — accumulate clip-mode glyph outlines.
+                            if gs.render_mode >= 4 {
+                                self.accumulate_text_clip_tj(
+                                    &mut text_clip_accum,
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    text,
+                                    transform,
+                                    gs,
+                                    resources,
+                                    doc,
+                                );
+                            }
                             // Same shape as `Tj`. `'` is `T* Tj` per
                             // ISO 32000-1; the resolved colour depends only
                             // on the prior colour-setting ops, so the resolve
@@ -2280,6 +2518,29 @@ impl PageRenderer {
                 },
                 Operator::TJ { array } => {
                     if in_text_object {
+                        // Type 3 glyphs are painted via the content-stream renderer.
+                        if self.current_font_is_type3(gs_stack.current()) {
+                            let advance = if excluded_layer_depth == 0 {
+                                let gs_snap = gs_stack.current().clone();
+                                self.render_type3_tj_array(
+                                    pixmap,
+                                    array,
+                                    base_transform,
+                                    &gs_snap,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?
+                            } else {
+                                self.text_rasterizer.measure_tj_array(
+                                    array,
+                                    gs_stack.current(),
+                                    &self.fonts,
+                                )
+                            };
+                            gs_stack.current_mut().advance_text_matrix(advance);
+                            continue;
+                        }
                         let gs = gs_stack.current();
                         let advance = if excluded_layer_depth == 0 {
                             let clip = clip_stack.last().and_then(|c| c.as_ref());
@@ -2293,6 +2554,20 @@ impl PageRenderer {
                                 gs.text_matrix.e,
                                 gs.text_matrix.f
                             );
+                            // WS1.5b — accumulate clip-mode glyph outlines
+                            // (Tr 4–7) for the whole positioning array.
+                            if gs.render_mode >= 4 {
+                                self.accumulate_text_clip_tj_array(
+                                    &mut text_clip_accum,
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    array,
+                                    transform,
+                                    gs,
+                                    resources,
+                                    doc,
+                                );
+                            }
                             // Resolve once for the whole `TJ` array — the
                             // numeric offsets inside `array` only adjust
                             // positioning; they cannot alter the active
@@ -2392,6 +2667,30 @@ impl PageRenderer {
                         gs_mut.text_line_matrix = translation.multiply(&gs_mut.text_line_matrix);
                         gs_mut.text_matrix = gs_mut.text_line_matrix;
 
+                        // Type 3 glyphs are painted via the content-stream renderer.
+                        if self.current_font_is_type3(gs_stack.current()) {
+                            let advance = if excluded_layer_depth == 0 {
+                                let gs_snap = gs_stack.current().clone();
+                                self.render_type3_text(
+                                    pixmap,
+                                    text,
+                                    base_transform,
+                                    &gs_snap,
+                                    doc,
+                                    page_num,
+                                    resources,
+                                )?
+                            } else {
+                                self.text_rasterizer.measure_text(
+                                    text,
+                                    gs_stack.current(),
+                                    &self.fonts,
+                                )
+                            };
+                            gs_stack.current_mut().advance_text_matrix(advance);
+                            continue;
+                        }
+
                         let gs = gs_stack.current();
                         let advance = if excluded_layer_depth == 0 {
                             let clip = clip_stack.last().and_then(|c| c.as_ref());
@@ -2405,6 +2704,19 @@ impl PageRenderer {
                                 gs.text_matrix.e,
                                 gs.text_matrix.f
                             );
+                            // WS1.5b — accumulate clip-mode glyph outlines.
+                            if gs.render_mode >= 4 {
+                                self.accumulate_text_clip_tj(
+                                    &mut text_clip_accum,
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    text,
+                                    transform,
+                                    gs,
+                                    resources,
+                                    doc,
+                                );
+                            }
                             // `"` is equivalent to setting Tw, Tc, then
                             // `T* Tj`. Tw/Tc are state-only and don't
                             // influence the resolved colour, so the resolve
@@ -2827,6 +3139,226 @@ impl PageRenderer {
         Ok(())
     }
 
+    /// Returns `true` when the font currently selected in `gs` is a Type 3
+    /// font. Type 3 glyphs are user-defined content streams, rendered by
+    /// [`Self::render_type3_text`] rather than the outline rasteriser.
+    fn current_font_is_type3(&self, gs: &GraphicsState) -> bool {
+        gs.font_name
+            .as_deref()
+            .and_then(|n| self.fonts.get(n))
+            .map(|f| f.subtype == "Type3")
+            .unwrap_or(false)
+    }
+
+    /// Render a Type 3 `TJ` array: each string element paints glyphs and each
+    /// numeric element shifts the cursor by `-offset/1000 × Tfs` along the
+    /// writing axis. Returns the total text-space advance; the caller applies
+    /// it once via `advance_text_matrix`.
+    fn render_type3_tj_array(
+        &mut self,
+        pixmap: &mut Pixmap,
+        array: &[crate::content::operators::TextElement],
+        base_transform: Transform,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+    ) -> Result<f32> {
+        use crate::content::operators::TextElement;
+        // A local graphics-state copy tracks the cursor across elements; the
+        // real text matrix is advanced once by the caller with the returned sum.
+        let mut gs_local = gs.clone();
+        let mut total = 0.0f32;
+        for element in array {
+            match element {
+                TextElement::String(text) => {
+                    let adv = self.render_type3_text(
+                        pixmap,
+                        text,
+                        base_transform,
+                        &gs_local,
+                        doc,
+                        page_num,
+                        resources,
+                    )?;
+                    gs_local.advance_text_matrix(adv);
+                    total += adv;
+                },
+                TextElement::Offset(offset) => {
+                    let shift = (-offset / 1000.0) * gs_local.font_size;
+                    gs_local.advance_text_matrix(shift);
+                    total += shift;
+                },
+            }
+        }
+        Ok(total)
+    }
+
+    /// Render one Type 3 text string. For each byte code the glyph name is
+    /// resolved through the font's `/Encoding` `/Differences`, its `/CharProcs`
+    /// content stream is executed under `FontMatrix × text-space × CTM`
+    /// (ISO 32000-1 §9.6.5) using the font's own `/Resources`, and the cursor
+    /// is advanced by the glyph width. Returns the total text-space advance.
+    fn render_type3_text(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &[u8],
+        base_transform: Transform,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+    ) -> Result<f32> {
+        let font_name = match gs.font_name.as_deref() {
+            Some(n) => n,
+            None => return Ok(0.0),
+        };
+        let font_info = match self.fonts.get(font_name) {
+            Some(f) => Arc::clone(f),
+            None => return Ok(0.0),
+        };
+
+        // Total advance for the whole string. Computed up front so it is
+        // applied even when individual glyph descriptions are missing, and
+        // shared with the outline text path for a consistent cursor.
+        let string_advance = self.text_rasterizer.measure_text(text, gs, &self.fonts);
+
+        // Resolve the raw Type 3 font dictionary from the resource tree.
+        let font_dict_obj = resources
+            .as_dict()
+            .and_then(|rd| rd.get("Font"))
+            .and_then(|f| doc.resolve_object(f).ok())
+            .and_then(|fonts| fonts.as_dict().and_then(|fd| fd.get(font_name)).cloned())
+            .and_then(|fref| doc.resolve_object(&fref).ok());
+        let font_dict = match font_dict_obj.as_ref().and_then(|o| o.as_dict()) {
+            Some(d) => d,
+            None => return Ok(string_advance),
+        };
+
+        // Glyph-space → text-space FontMatrix (default 1/1000 em, Type 1-like).
+        let font_matrix = type3_font_matrix(font_dict);
+
+        // /CharProcs (glyph name → content stream).
+        let char_procs_obj = font_dict
+            .get("CharProcs")
+            .and_then(|o| doc.resolve_object(o).ok());
+        let char_procs = match char_procs_obj.as_ref().and_then(|o| o.as_dict()) {
+            Some(cp) => cp,
+            None => return Ok(string_advance),
+        };
+
+        // The font's own /Resources, falling back to the page/form resources.
+        let font_resources = font_dict
+            .get("Resources")
+            .and_then(|o| doc.resolve_object(o).ok())
+            .unwrap_or_else(|| resources.clone());
+
+        // combined_base = base · CTM · Tm  (user→device · text matrix).
+        let transform = combine_transforms(base_transform, &gs.ctm);
+        let tm = &gs.text_matrix;
+        let combined_base =
+            transform.pre_concat(Transform::from_row(tm.a, tm.b, tm.c, tm.d, tm.e, tm.f));
+
+        let font_size = gs.font_size;
+        let h_scale = gs.horizontal_scaling / 100.0;
+        // Glyphs are suppressed for the invisible / clip-only render modes.
+        let paint_glyphs = gs.render_mode != 3 && gs.render_mode != 7;
+
+        // Load the Type 3 font's own resources into the font / colour-space
+        // caches for the duration of the glyph descriptions (mirrors the Form
+        // XObject path so CharProcs that reference fonts / XObjects resolve).
+        let saved_fonts = self.fonts.clone();
+        let saved_color_spaces = self.color_spaces.clone();
+        let _ = self.load_resources(doc, &font_resources);
+
+        let mut x_cursor = 0.0f32;
+        for &code in text {
+            let glyph_adv = font_info.get_glyph_width(code as u16) * font_size / 1000.0;
+
+            if paint_glyphs {
+                if let Some(name) = font_info.diff_glyph_names.get(&code) {
+                    if let Some(stream) = char_procs.get(name) {
+                        if let Some(data) = decode_type3_charproc(doc, stream) {
+                            // Glyph placement: combined_base · translate(cursor)
+                            // · scale(Tfs) · FontMatrix. The cursor is the
+                            // un-scaled x position with Th applied at placement,
+                            // matching the outline text path.
+                            let px = x_cursor * h_scale;
+                            let glyph_transform = combined_base
+                                .pre_translate(px, gs.text_rise)
+                                .pre_scale(font_size, font_size)
+                                .pre_concat(font_matrix);
+                            let _ = self.render_type3_glyph(
+                                pixmap,
+                                &data,
+                                glyph_transform,
+                                doc,
+                                page_num,
+                                &font_resources,
+                                gs.fill_color_rgb,
+                            );
+                        }
+                    }
+                }
+            }
+
+            x_cursor += glyph_adv + gs.char_space;
+            if code == 0x20 {
+                x_cursor += gs.word_space;
+            }
+        }
+
+        self.fonts = saved_fonts;
+        self.color_spaces = saved_color_spaces;
+        Ok(string_advance)
+    }
+
+    /// Execute a single Type 3 glyph description under `glyph_transform`. The
+    /// first glyph operator selects the colour model: `d1` marks a stencil
+    /// painted with the current fill colour (all colour operators inside are
+    /// ignored), while `d0` lets the glyph set its own colours (ISO 32000-1
+    /// §9.6.5.2). Malformed streams and over-deep recursion are skipped.
+    fn render_type3_glyph(
+        &mut self,
+        pixmap: &mut Pixmap,
+        data: &[u8],
+        glyph_transform: Transform,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+        fill_rgb: (f32, f32, f32),
+    ) -> Result<()> {
+        if self.type3_depth >= MAX_TYPE3_DEPTH {
+            return Ok(());
+        }
+        let operators = match parse_content_stream(data) {
+            Ok(ops) => ops,
+            Err(_) => return Ok(()), // malformed glyph — skip, width already applied
+        };
+
+        // Detect the d0 / d1 metric operator (parsed as `Other`). `d1` locks
+        // the fill colour; `d0` leaves the glyph free to set its own colours.
+        let is_d1 = operators
+            .iter()
+            .find_map(|op| match op {
+                Operator::Other { name, .. } if name == "d1" => Some(true),
+                Operator::Other { name, .. } if name == "d0" => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false);
+
+        self.type3_depth += 1;
+        let prev_lock = self.type3_fill_lock.take();
+        if is_d1 {
+            self.type3_fill_lock = Some(fill_rgb);
+        }
+        let result =
+            self.execute_operators(pixmap, glyph_transform, &operators, doc, page_num, resources);
+        self.type3_fill_lock = prev_lock;
+        self.type3_depth -= 1;
+        result
+    }
+
     /// Render a shading pattern (gradient).
     fn render_shading(
         &self,
@@ -2838,14 +3370,15 @@ impl PageRenderer {
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
     ) -> Result<()> {
-        // Look up shading resource
-        let shading_dict = if let Object::Dictionary(res_dict) = resources {
+        // Look up shading resource. Retain the full resolved object — for
+        // mesh shadings (Types 4-7) the geometry lives in the object's
+        // stream body, which `as_dict()` alone would drop.
+        let shading_obj = if let Object::Dictionary(res_dict) = resources {
             if let Some(shading_res) = res_dict.get("Shading") {
                 let resolved = doc.resolve_object(shading_res)?;
                 if let Some(shadings) = resolved.as_dict() {
                     if let Some(sh_obj) = shadings.get(name) {
-                        let sh = doc.resolve_object(sh_obj)?;
-                        sh.as_dict().cloned()
+                        Some(doc.resolve_object(sh_obj)?)
                     } else {
                         None
                     }
@@ -2859,8 +3392,8 @@ impl PageRenderer {
             None
         };
 
-        let shading = match shading_dict {
-            Some(d) => d,
+        let shading = match shading_obj.as_ref().and_then(|o| o.as_dict()) {
+            Some(d) => d.clone(),
             None => {
                 log::debug!("Shading '{}' not found in resources", name);
                 return Ok(());
@@ -2913,6 +3446,43 @@ impl PageRenderer {
                 clip_mask,
                 resolved_endpoints,
             ),
+            1 | 4 | 5 | 6 | 7 => {
+                // Mesh (Types 4-7) and function-based (Type 1) shadings are
+                // rasterised by the dedicated hand-written backend — they do
+                // not map onto a tiny-skia gradient shader. Colours read from
+                // the geometry stream (or produced by the shading's optional
+                // `/Function`) are routed back through the standard §8.6
+                // colour-space resolution path via this closure so DeviceN /
+                // Separation / ICCBased colour spaces resolve identically to
+                // the axial/radial endpoints.
+                let shading_obj = match shading_obj.as_ref() {
+                    Some(o) => o,
+                    None => return Ok(()),
+                };
+                let resolved_cs = shading
+                    .get("ColorSpace")
+                    .and_then(|o| doc.resolve_object(o).ok());
+                let resolve_color = |comps: &[f32]| -> Option<(f32, f32, f32, f32)> {
+                    let cs = resolved_cs.as_ref()?;
+                    self.pipeline_resolve_components(
+                        doc,
+                        &self.color_spaces,
+                        cs,
+                        comps,
+                        gs.fill_alpha,
+                    )
+                };
+                crate::rendering::mesh_shading::render_mesh_shading(
+                    pixmap,
+                    &shading,
+                    shading_obj,
+                    shading_type,
+                    transform,
+                    doc,
+                    clip_mask,
+                    &resolve_color,
+                )
+            },
             _ => {
                 log::debug!("Unsupported shading type {} for '{}'", shading_type, name);
                 Ok(())
@@ -3654,8 +4224,22 @@ impl PageRenderer {
                         },
                     }
                 }
+            } else if let Object::Array(mask_array) = &mask_ref {
+                // Colour-key masking (ISO 32000-1 §8.9.6.4): the /Mask is an
+                // array of 2 × ncomp integers [min1 max1 min2 max2 ...] in the
+                // image's pre-Decode colour-component space. A source pixel whose
+                // raw component samples all fall within their [min,max] range is
+                // made fully transparent.
+                let ncomp = pdf_image.color_space().components();
+                match parse_color_key_mask(mask_array, ncomp) {
+                    Some(ranges) => {
+                        apply_color_key_mask(&pdf_image, &ranges, &mut rgba_image);
+                    },
+                    None => {
+                        log::debug!("Ignoring malformed color-key /Mask array (ncomp={})", ncomp);
+                    },
+                }
             }
-            // If Mask is an array, it's a color-key mask (not yet implemented)
         }
 
         // Handle SMask if present
@@ -4053,6 +4637,343 @@ impl PageRenderer {
         }
 
         Ok(())
+    }
+
+    /// Rasterise a `/PatternType 1` tiling pattern into the current fill
+    /// region (ISO 32000-1:2008 §8.7.3).
+    ///
+    /// A tiling pattern paints a small cell — its own content stream
+    /// clipped to `/BBox` — repeated on a lattice spaced by `/XStep` ×
+    /// `/YStep` in pattern space. The pattern `/Matrix` maps pattern
+    /// space to the default (initial) coordinate system of the pattern's
+    /// parent content stream, here taken as `base_transform` (the device
+    /// transform in effect before the current CTM), NOT the CTM active at
+    /// fill time.
+    ///
+    /// `/PaintType 1` (coloured) cells supply their own colour; `/PaintType 2`
+    /// (uncoloured) cells are painted in the current fill colour
+    /// (`gs.fill_color_rgb`).
+    ///
+    /// Returns `Ok(true)` when the region was painted — either tiled, or
+    /// (on a perf/geometry guard) flooded with the cell's average colour —
+    /// and `Ok(false)` when the referenced pattern is not a usable tiling
+    /// pattern (`/PatternType 2` shading, missing/malformed dict, or an
+    /// over-large cell), so the caller paints its normal solid fill.
+    /// Never panics and never loops unboundedly.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_with_tiling_pattern(
+        &mut self,
+        pixmap: &mut Pixmap,
+        path: &tiny_skia::Path,
+        base_transform: Transform,
+        path_transform: Transform,
+        fill_rule: tiny_skia::FillRule,
+        clip: Option<&tiny_skia::Mask>,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+    ) -> Result<bool> {
+        // Cap the offscreen cell raster and the tile count so a pathological
+        // pattern cannot exhaust memory or spin. Beyond these limits we fall
+        // back to a solid flood (average colour) or defer to the caller.
+        const MAX_CELL_PX: u32 = 4096;
+        const MAX_TILES: i64 = 1_000_000;
+
+        let Some(pattern_name) = gs.fill_pattern_name.as_deref() else {
+            return Ok(false);
+        };
+
+        // Resources/Pattern/<name> -> pattern object (a stream for tiling).
+        let Some(res_dict) = resources.as_dict() else {
+            return Ok(false);
+        };
+        let Some(pattern_group) = res_dict.get("Pattern") else {
+            return Ok(false);
+        };
+        let pattern_group = doc.resolve_object(pattern_group)?;
+        let Some(pattern_map) = pattern_group.as_dict() else {
+            return Ok(false);
+        };
+        let Some(pattern_entry) = pattern_map.get(pattern_name) else {
+            return Ok(false);
+        };
+        let pattern_ref = pattern_entry.as_reference();
+        let pattern_obj = doc.resolve_object(pattern_entry)?;
+        let Some(pdict) = pattern_obj.as_dict() else {
+            return Ok(false);
+        };
+
+        // Only tiling patterns (PatternType 1) are handled here; shading
+        // patterns (PatternType 2) are left to the caller's solid fallback.
+        if pdict
+            .get("PatternType")
+            .and_then(|o| o.as_integer())
+            .unwrap_or(1)
+            != 1
+        {
+            return Ok(false);
+        }
+        let paint_type = pdict
+            .get("PaintType")
+            .and_then(|o| o.as_integer())
+            .unwrap_or(1);
+
+        let num = |o: &Object| -> Option<f32> {
+            o.as_integer()
+                .map(|i| i as f32)
+                .or_else(|| o.as_real().map(|r| r as f32))
+        };
+        let read_array = |key: &str, n: usize| -> Option<Vec<f32>> {
+            let arr = pdict.get(key)?.as_array()?;
+            if arr.len() < n {
+                return None;
+            }
+            arr.iter().take(n).map(&num).collect()
+        };
+
+        let Some(bbox) = read_array("BBox", 4) else {
+            return Ok(false);
+        };
+        let x_step = pdict
+            .get("XStep")
+            .and_then(&num)
+            .unwrap_or(bbox[2] - bbox[0]);
+        let y_step = pdict
+            .get("YStep")
+            .and_then(&num)
+            .unwrap_or(bbox[3] - bbox[1]);
+        let m = read_array("Matrix", 6).unwrap_or_else(|| vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let pattern_matrix = Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]);
+
+        // Own the pattern's resource dict before releasing the borrow on
+        // `pattern_obj` (needed again to decode the stream).
+        let pattern_resources = match pdict.get("Resources") {
+            Some(r) => doc.resolve_object(r)?,
+            None => resources.clone(),
+        };
+
+        // Pattern space -> device.
+        let t = base_transform.pre_concat(pattern_matrix);
+        let map = |x: f32, y: f32| -> (f32, f32) {
+            (x * t.sx + y * t.kx + t.tx, x * t.ky + y * t.sy + t.ty)
+        };
+
+        // Device bounding box of the /BBox cell rectangle.
+        let corners = [
+            map(bbox[0], bbox[1]),
+            map(bbox[2], bbox[1]),
+            map(bbox[2], bbox[3]),
+            map(bbox[0], bbox[3]),
+        ];
+        let (mut cminx, mut cminy, mut cmaxx, mut cmaxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (x, y) in corners {
+            cminx = cminx.min(x);
+            cminy = cminy.min(y);
+            cmaxx = cmaxx.max(x);
+            cmaxy = cmaxy.max(y);
+        }
+        if ![cminx, cminy, cmaxx, cmaxy].iter().all(|v| v.is_finite()) {
+            return Ok(false);
+        }
+        let cw = (cmaxx - cminx).ceil();
+        let ch = (cmaxy - cminy).ceil();
+        if !(1.0..=MAX_CELL_PX as f32).contains(&cw) || !(1.0..=MAX_CELL_PX as f32).contains(&ch) {
+            return Ok(false);
+        }
+        let (cw, ch) = (cw as u32, ch as u32);
+
+        // Device step vectors (linear part of `t` applied to the pattern-space
+        // step vectors). For an axis-aligned matrix the cross terms are ~0.
+        let step_x = (x_step * t.sx, x_step * t.ky);
+        let step_y = (y_step * t.kx, y_step * t.sy);
+        let scale =
+            t.sx.abs()
+                .max(t.sy.abs())
+                .max(t.kx.abs())
+                .max(t.ky.abs())
+                .max(1e-6);
+        let axis_aligned = t.kx.abs() <= 1e-3 * scale && t.ky.abs() <= 1e-3 * scale;
+        let step_x_len = step_x.0.hypot(step_x.1);
+        let step_y_len = step_y.0.hypot(step_y.1);
+
+        // Render one cell into an offscreen pixmap sized to the device /BBox.
+        let stream_data = if let Some(r) = pattern_ref {
+            doc.decode_stream_with_encryption(&pattern_obj, r)?
+        } else {
+            pattern_obj.decode_stream_data()?
+        };
+        let cell_ops = match parse_content_stream(&stream_data) {
+            Ok(ops) => ops,
+            Err(_) => return Ok(false),
+        };
+        let mut cell = match Pixmap::new(cw, ch) {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+        // Map pattern space into the cell pixmap: `t`, shifted so the cell's
+        // device min-corner lands at the pixmap origin.
+        let cell_transform = Transform::from_translate(-cminx, -cminy).pre_concat(t);
+        // Render the cell with a fresh resource scope and no CMYK sidecar
+        // (the sidecar is sized to the page pixmap, not this cell).
+        let saved_sidecar = self.cmyk_sidecar.take();
+        let saved_fonts = self.fonts.clone();
+        let saved_cs = self.color_spaces.clone();
+        let _ = self.load_resources(doc, &pattern_resources);
+        let render_res = self.execute_operators(
+            &mut cell,
+            cell_transform,
+            &cell_ops,
+            doc,
+            page_num,
+            &pattern_resources,
+        );
+        self.fonts = saved_fonts;
+        self.color_spaces = saved_cs;
+        self.cmyk_sidecar = saved_sidecar;
+        if render_res.is_err() {
+            return Ok(false);
+        }
+
+        // /PaintType 2 (uncoloured): recolour the cell coverage with the
+        // current fill colour, preserving the rendered alpha.
+        if paint_type == 2 {
+            let (fr, fg, fb) = gs.fill_color_rgb;
+            let (fr, fg, fb) = (
+                (fr.clamp(0.0, 1.0) * 255.0) as u32,
+                (fg.clamp(0.0, 1.0) * 255.0) as u32,
+                (fb.clamp(0.0, 1.0) * 255.0) as u32,
+            );
+            for px in cell.data_mut().chunks_exact_mut(4) {
+                let a = px[3] as u32;
+                px[0] = (fr * a / 255) as u8;
+                px[1] = (fg * a / 255) as u8;
+                px[2] = (fb * a / 255) as u8;
+            }
+        }
+
+        // Average (premultiplied) cell colour, used both for the geometry
+        // fallback and to skip fully-transparent cells.
+        let (mut sr, mut sg, mut sb, mut sa) = (0u64, 0u64, 0u64, 0u64);
+        for px in cell.data().chunks_exact(4) {
+            sr += px[0] as u64;
+            sg += px[1] as u64;
+            sb += px[2] as u64;
+            sa += px[3] as u64;
+        }
+        let npix = (cw as u64) * (ch as u64);
+        let avg_a = (sa / npix) as u8;
+        if avg_a == 0 && paint_type == 1 {
+            // Nothing visible in the cell — region stays as the backdrop.
+            return Ok(true);
+        }
+        // Un-premultiply the average to a straight colour for the flood path.
+        let unpremul = |sum: u64| -> u8 {
+            if avg_a == 0 {
+                0
+            } else {
+                (((sum / npix) as f32) * 255.0 / avg_a as f32).min(255.0) as u8
+            }
+        };
+        let avg_color =
+            tiny_skia::Color::from_rgba8(unpremul(sr), unpremul(sg), unpremul(sb), avg_a);
+
+        // Device-space region to cover: the fill path's bounds mapped through
+        // `path_transform`, clamped to the pixmap.
+        let b = path.bounds();
+        let pm = |x: f32, y: f32| -> (f32, f32) {
+            (
+                x * path_transform.sx + y * path_transform.kx + path_transform.tx,
+                x * path_transform.ky + y * path_transform.sy + path_transform.ty,
+            )
+        };
+        let pcorners = [
+            pm(b.left(), b.top()),
+            pm(b.right(), b.top()),
+            pm(b.right(), b.bottom()),
+            pm(b.left(), b.bottom()),
+        ];
+        let (mut rx0, mut ry0, mut rx1, mut ry1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (x, y) in pcorners {
+            rx0 = rx0.min(x);
+            ry0 = ry0.min(y);
+            rx1 = rx1.max(x);
+            ry1 = ry1.max(y);
+        }
+        let (w, h) = (pixmap.width() as f32, pixmap.height() as f32);
+        rx0 = rx0.max(0.0);
+        ry0 = ry0.max(0.0);
+        rx1 = rx1.min(w);
+        ry1 = ry1.min(h);
+        if rx1 <= rx0 || ry1 <= ry0 {
+            return Ok(true); // fill region off-screen — nothing to paint
+        }
+
+        // Geometry guards: rotated/sheared matrix, degenerate or too-dense
+        // steps, or an unusable tile count -> flood the path with the cell's
+        // average colour instead of tiling.
+        let mut base_paint = tiny_skia::Paint::default();
+        base_paint.anti_alias = true;
+        let flood = |pixmap: &mut Pixmap| {
+            let mut p = base_paint.clone();
+            p.set_color(avg_color);
+            pixmap.fill_path(path, &p, fill_rule, path_transform, clip);
+        };
+        if !axis_aligned
+            || x_step.abs() <= f32::EPSILON
+            || y_step.abs() <= f32::EPSILON
+            || step_x_len < 0.5
+            || step_y_len < 0.5
+        {
+            flood(pixmap);
+            return Ok(true);
+        }
+
+        let (i_lo, i_hi) = axis_tile_range(rx0, rx1, cminx, cw as f32, step_x.0);
+        let (j_lo, j_hi) = axis_tile_range(ry0, ry1, cminy, ch as f32, step_y.1);
+        let tile_count = (i_hi as i64 - i_lo as i64 + 1) * (j_hi as i64 - j_lo as i64 + 1);
+        if tile_count <= 0 || tile_count > MAX_TILES {
+            flood(pixmap);
+            return Ok(true);
+        }
+
+        // Build the fill-region mask (path coverage ∩ active clip) once and
+        // blit the cell into every lattice position under it.
+        let mut mask = match tiny_skia::Mask::new(pixmap.width(), pixmap.height()) {
+            Some(m) => m,
+            None => {
+                flood(pixmap);
+                return Ok(true);
+            },
+        };
+        mask.fill_path(path, fill_rule, true, path_transform);
+        if let Some(c) = clip {
+            for (mv, cv) in mask.data_mut().iter_mut().zip(c.data().iter()) {
+                *mv = (*mv).min(*cv);
+            }
+        }
+
+        let blit = PixmapPaint {
+            opacity: gs.fill_alpha.clamp(0.0, 1.0),
+            // Nearest keeps tile seams crisp for axis-aligned integer-ish steps.
+            quality: tiny_skia::FilterQuality::Nearest,
+            ..PixmapPaint::default()
+        };
+        for j in j_lo..=j_hi {
+            for i in i_lo..=i_hi {
+                let px = cminx + i as f32 * step_x.0 + j as f32 * step_y.0;
+                let py = cminy + i as f32 * step_x.1 + j as f32 * step_y.1;
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    cell.as_ref(),
+                    &blit,
+                    Transform::from_translate(px, py),
+                    Some(&mask),
+                );
+            }
+        }
+        Ok(true)
     }
 
     /// Take a snapshot of `pixmap` if the graphics state has an active
@@ -4478,6 +5399,13 @@ impl PageRenderer {
         // Strip SMask so the scratch render doesn't kick off a
         // recursive SMask compose with a different geometry.
         cov.smask = None;
+        // Force a fill-producing render mode. The visible mode may be 7
+        // (clip-only) or 3 (invisible), both of which the text rasteriser
+        // deliberately paints with transparent paint (WS1.5) — routing the
+        // coverage render through those modes would yield an empty silhouette
+        // and silently drop the clip. Mode 0 fills the glyph body opaquely,
+        // which is exactly the coverage the clip accumulation needs.
+        cov.render_mode = 0;
         cov
     }
 
@@ -4493,6 +5421,89 @@ impl PageRenderer {
     /// spot-mirror's coverage-aware path verbatim.
     fn extract_alpha_as_coverage(pixmap: &Pixmap) -> Vec<u8> {
         pixmap.data().chunks_exact(4).map(|px| px[3]).collect()
+    }
+
+    /// WS1.5b — union a clip-mode (`Tr` 4–7) `Tj` / `'` / `"` show's glyph
+    /// outlines into the text-clip accumulator.
+    ///
+    /// `accum` is a page-sized scratch pixmap whose alpha channel holds the
+    /// accumulated glyph silhouette for the enclosing `BT`…`ET` block; it is
+    /// created lazily on the first clip-mode show so modes 0–3 never allocate
+    /// it. Glyphs are laid down with [`Self::coverage_only_gs`] (opaque black,
+    /// `SourceOver`), so each show's outlines union with the previous ones in
+    /// place — exactly the "add to the current clip path" semantics of ISO
+    /// 32000-1 §9.4.1. [`Self::coverage_only_gs`] forces fill mode 0 so the
+    /// glyph bodies rasterise opaquely even when the visible mode is 7
+    /// (clip-only) or 3 (invisible), which the rasteriser paints transparent.
+    /// The inherited clip is intentionally *not* applied here; the final `ET`
+    /// intersection folds the silhouette into the live clip.
+    #[allow(clippy::too_many_arguments)]
+    fn accumulate_text_clip_tj(
+        &self,
+        accum: &mut Option<Pixmap>,
+        width: u32,
+        height: u32,
+        text: &[u8],
+        transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+    ) {
+        if accum.is_none() {
+            *accum = Pixmap::new(width, height);
+        }
+        let Some(scratch) = accum.as_mut() else {
+            return;
+        };
+        let cov_gs = Self::coverage_only_gs(gs);
+        // Coverage raster is permitted to fail silently — the visible-paint
+        // call for the same show already surfaces any real error, and a
+        // missing silhouette simply means no clip contribution.
+        let _ = self.text_rasterizer.render_text(
+            scratch,
+            text,
+            transform,
+            &cov_gs,
+            None,
+            resources,
+            doc,
+            None,
+            &self.fonts,
+        );
+    }
+
+    /// WS1.5b — `TJ` positioning-array counterpart of
+    /// [`Self::accumulate_text_clip_tj`]. Same contract.
+    #[allow(clippy::too_many_arguments)]
+    fn accumulate_text_clip_tj_array(
+        &self,
+        accum: &mut Option<Pixmap>,
+        width: u32,
+        height: u32,
+        array: &[crate::content::operators::TextElement],
+        transform: Transform,
+        gs: &GraphicsState,
+        resources: &Object,
+        doc: &PdfDocument,
+    ) {
+        if accum.is_none() {
+            *accum = Pixmap::new(width, height);
+        }
+        let Some(scratch) = accum.as_mut() else {
+            return;
+        };
+        let cov_gs = Self::coverage_only_gs(gs);
+        let _ = self.text_rasterizer.render_tj_array(
+            scratch,
+            array,
+            transform,
+            &cov_gs,
+            None,
+            resources,
+            doc,
+            None,
+            &self.fonts,
+        );
     }
 
     /// Rasterise the text-show coverage for a single `Tj` / `'` / `"`
@@ -8083,6 +9094,77 @@ fn combine_transforms(base: Transform, ctm: &Matrix) -> Transform {
     base.pre_concat(Transform::from_row(ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f))
 }
 
+/// Parse a Type 3 font's `/FontMatrix` into a glyph-space → text-space
+/// transform. Defaults to the Type 1 matrix `[0.001 0 0 0.001 0 0]` when the
+/// entry is missing or malformed (ISO 32000-1 §9.6.5).
+fn type3_font_matrix(font_dict: &HashMap<String, Object>) -> Transform {
+    if let Some(arr) = font_dict.get("FontMatrix").and_then(|o| o.as_array()) {
+        if arr.len() == 6 {
+            let f = |i: usize| -> Option<f32> {
+                arr[i]
+                    .as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| arr[i].as_integer().map(|v| v as f32))
+            };
+            if let (Some(a), Some(b), Some(c), Some(d), Some(e), Some(g)) =
+                (f(0), f(1), f(2), f(3), f(4), f(5))
+            {
+                if [a, b, c, d, e, g].iter().all(|v| v.is_finite()) {
+                    return Transform::from_row(a, b, c, d, e, g);
+                }
+            }
+        }
+    }
+    Transform::from_row(0.001, 0.0, 0.0, 0.001, 0.0, 0.0)
+}
+
+/// Decode a `/CharProcs` glyph stream. Resolves an indirect reference (with
+/// encryption support) or decodes a direct stream. Returns `None` for a
+/// non-stream object or on decode failure, so the caller skips the glyph.
+fn decode_type3_charproc(doc: &PdfDocument, obj: &Object) -> Option<Vec<u8>> {
+    if let Some(obj_ref) = obj.as_reference() {
+        let resolved = doc.load_object(obj_ref).ok()?;
+        if matches!(resolved, Object::Stream { .. }) {
+            return doc.decode_stream_with_encryption(&resolved, obj_ref).ok();
+        }
+        return None;
+    }
+    if matches!(obj, Object::Stream { .. }) {
+        return obj.decode_stream_data().ok();
+    }
+    None
+}
+
+/// Inclusive tile-index range `[lo, hi]` (along one axis) whose cells
+/// intersect the device interval `[region_lo, region_hi]`.
+///
+/// Tile `i` occupies device coordinates `[cell_min + i·step,
+/// cell_min + i·step + cell_extent]`. Solving for the indices whose cell
+/// interval overlaps the region gives the two bounds; `step` may be
+/// negative (a flipped pattern matrix), so the candidates are ordered by
+/// `min`/`max` rather than assuming a sign. The range is deliberately
+/// over-inclusive by up to one tile on each side (the per-tile clip mask
+/// discards any cell that falls entirely outside the fill path), which
+/// keeps the arithmetic branch-free.
+///
+/// `step` must be non-zero — callers guard `|step| >= 0.5` device px
+/// before calling — so this never divides by zero.
+fn axis_tile_range(
+    region_lo: f32,
+    region_hi: f32,
+    cell_min: f32,
+    cell_extent: f32,
+    step: f32,
+) -> (i32, i32) {
+    let a = (region_lo - cell_extent - cell_min) / step;
+    let b = (region_hi - cell_min) / step;
+    let lo = a.min(b).floor();
+    let hi = a.max(b).ceil();
+    // Clamp to i32 so an absurd (but guard-passing) region cannot overflow;
+    // the caller additionally caps the total tile count.
+    (lo.max(i32::MIN as f32) as i32, hi.min(i32::MAX as f32) as i32)
+}
+
 /// Build the image-space → user-space transform for a PDF image blit.
 ///
 /// Per ISO 32000-1 §8.9.5, PDF images live in a unit square in the user
@@ -8139,6 +9221,90 @@ fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     let g = 1.0 - (m + k).min(1.0);
     let b = 1.0 - (y + k).min(1.0);
     (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+}
+
+/// Parse a colour-key `/Mask` array (ISO 32000-1 §8.9.6.4) into per-component
+/// `(min, max)` sample ranges. The array is `[min1 max1 min2 max2 ...]` with one
+/// pair per colour component, in the image's pre-Decode component space.
+///
+/// Returns `None` for any malformed array — wrong length for `ncomp`, a
+/// non-integer entry, a negative bound, or `min > max` — so the caller can fall
+/// back to no masking rather than guess.
+fn parse_color_key_mask(arr: &[Object], ncomp: usize) -> Option<Vec<(u32, u32)>> {
+    if ncomp == 0 || arr.len() != ncomp * 2 {
+        return None;
+    }
+    let mut ranges = Vec::with_capacity(ncomp);
+    for pair in arr.chunks_exact(2) {
+        let lo = pair[0].as_integer()?;
+        let hi = pair[1].as_integer()?;
+        if lo < 0 || hi < 0 || lo > hi {
+            return None;
+        }
+        ranges.push((lo as u32, hi as u32));
+    }
+    Some(ranges)
+}
+
+/// Returns `true` when a pixel's raw component samples all fall within their
+/// corresponding colour-key `(min, max)` ranges, meaning the pixel must be made
+/// fully transparent (ISO 32000-1 §8.9.6.4). Returns `false` on any length
+/// mismatch so a bad range set never masks.
+fn color_key_pixel_masked(components: &[u8], ranges: &[(u32, u32)]) -> bool {
+    if components.is_empty() || components.len() != ranges.len() {
+        return false;
+    }
+    components
+        .iter()
+        .zip(ranges.iter())
+        .all(|(&c, &(lo, hi))| (c as u32) >= lo && (c as u32) <= hi)
+}
+
+/// Apply a colour-key `/Mask` to an already-decoded RGBA image by zeroing the
+/// alpha of every source pixel whose raw component samples all fall within the
+/// mask ranges.
+///
+/// Colour-key masking is defined against the raw pre-Decode samples. Those are
+/// only recoverable from an 8-bit `ImageData::Raw` buffer whose per-pixel byte
+/// count matches `ranges.len()`. For anything else (JPEG, non-8-bit depths, or a
+/// palette-expanded Indexed image whose original indices are lost) the ranges
+/// cannot be mapped onto the decoded pixels, so masking is skipped rather than
+/// applied incorrectly.
+fn apply_color_key_mask(
+    image: &crate::extractors::images::PdfImage,
+    ranges: &[(u32, u32)],
+    rgba: &mut image::RgbaImage,
+) {
+    use crate::extractors::images::ImageData;
+
+    let ncomp = ranges.len();
+    let ImageData::Raw { pixels, format } = image.data() else {
+        log::debug!("color-key /Mask: non-raw (e.g. JPEG) image, skipping");
+        return;
+    };
+    if image.bits_per_component() != 8 || format.bytes_per_pixel() != ncomp {
+        log::debug!(
+            "color-key /Mask: unsupported layout (bpc={}, bpp={}, ncomp={}), skipping",
+            image.bits_per_component(),
+            format.bytes_per_pixel(),
+            ncomp
+        );
+        return;
+    }
+    let w = rgba.width() as usize;
+    let h = rgba.height() as usize;
+    if pixels.len() < w * h * ncomp {
+        log::debug!("color-key /Mask: sample buffer too small, skipping");
+        return;
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let base = (y * w + x) * ncomp;
+            if color_key_pixel_masked(&pixels[base..base + ncomp], ranges) {
+                rgba.get_pixel_mut(x as u32, y as u32)[3] = 0;
+            }
+        }
+    }
 }
 
 // Test-only counter that records how many `apply_pending_clip` calls actually
@@ -8613,6 +9779,91 @@ mod tests {
     use crate::object::Object;
 
     #[test]
+    fn test_color_key_mask_range_logic() {
+        // Two-component (e.g. grayscale-with-alpha style) sanity of the range
+        // check: a component in [lo, hi] inclusive is masked.
+        let ranges = [(10u32, 20u32), (100u32, 150u32)];
+
+        // Both components in range -> masked (transparent).
+        assert!(color_key_pixel_masked(&[15, 120], &ranges));
+        // Boundaries are inclusive.
+        assert!(color_key_pixel_masked(&[10, 100], &ranges));
+        assert!(color_key_pixel_masked(&[20, 150], &ranges));
+        // One component out of range -> not masked.
+        assert!(!color_key_pixel_masked(&[9, 120], &ranges));
+        assert!(!color_key_pixel_masked(&[15, 151], &ranges));
+        // Length mismatch never masks.
+        assert!(!color_key_pixel_masked(&[15], &ranges));
+        assert!(!color_key_pixel_masked(&[], &ranges));
+
+        // RGB color-key: only pixels equal to the exact keyed colour drop out.
+        let rgb = [(255u32, 255u32), (0, 0), (0, 0)]; // pure red is transparent
+        assert!(color_key_pixel_masked(&[255, 0, 0], &rgb));
+        assert!(!color_key_pixel_masked(&[254, 0, 0], &rgb));
+        assert!(!color_key_pixel_masked(&[255, 1, 0], &rgb));
+    }
+
+    #[test]
+    fn test_parse_color_key_mask() {
+        // Well-formed 3-component array.
+        let arr = vec![
+            Object::Integer(0),
+            Object::Integer(10),
+            Object::Integer(20),
+            Object::Integer(30),
+            Object::Integer(40),
+            Object::Integer(50),
+        ];
+        assert_eq!(parse_color_key_mask(&arr, 3), Some(vec![(0, 10), (20, 30), (40, 50)]));
+
+        // Wrong length for ncomp -> None.
+        assert_eq!(parse_color_key_mask(&arr, 2), None);
+        // ncomp == 0 -> None.
+        assert_eq!(parse_color_key_mask(&arr, 0), None);
+        // min > max -> None.
+        let bad = vec![Object::Integer(30), Object::Integer(10)];
+        assert_eq!(parse_color_key_mask(&bad, 1), None);
+        // Negative bound -> None.
+        let neg = vec![Object::Integer(-1), Object::Integer(10)];
+        assert_eq!(parse_color_key_mask(&neg, 1), None);
+        // Non-integer entry -> None.
+        let non_int = vec![Object::Real(1.5), Object::Integer(10)];
+        assert_eq!(parse_color_key_mask(&non_int, 1), None);
+    }
+
+    #[test]
+    fn tiling_pattern_axis_tile_range_covers_region() {
+        // A 10-px cell anchored at device x=0, stepping every 10 px, must
+        // cover the region [5, 45] with tiles i = 0..=4.
+        let (lo, hi) = axis_tile_range(5.0, 45.0, 0.0, 10.0, 10.0);
+        assert!(lo <= 0, "lo {lo} should include tile 0");
+        assert!(hi >= 4, "hi {hi} should include tile 4");
+        for i in 0..=4 {
+            assert!(lo <= i && i <= hi, "tile {i} must be in [{lo},{hi}]");
+        }
+        assert!(hi < 100 && lo > -100);
+    }
+
+    #[test]
+    fn tiling_pattern_axis_tile_range_negative_step() {
+        // A flipped pattern axis (negative device step) must still yield a
+        // valid, region-covering range.
+        let (lo, hi) = axis_tile_range(0.0, 30.0, 0.0, 10.0, -10.0);
+        assert!(lo <= hi);
+        assert!(lo <= -3 && hi >= 0, "range [{lo},{hi}] must cover i in [-3,0]");
+    }
+
+    #[test]
+    fn tiling_pattern_axis_tile_range_offset_anchor() {
+        // Non-zero cell anchor: cell width 20, anchored at x=100, step 20,
+        // region [130, 175] → tiles i=1,2,3 all included.
+        let (lo, hi) = axis_tile_range(130.0, 175.0, 100.0, 20.0, 20.0);
+        for i in 1..=3 {
+            assert!(lo <= i && i <= hi, "tile {i} must be in [{lo},{hi}]");
+        }
+    }
+
+    #[test]
     fn test_cmyk_to_rgb_white() {
         let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 0.0);
         assert!((r - 1.0).abs() < 0.001);
@@ -8663,6 +9914,95 @@ mod tests {
         assert!((ny - 170.0).abs() < 0.001);
         assert!((nw - 50.0).abs() < 0.001);
         assert!((nh - 30.0).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------
+    // WS1.5b — text render modes 4–7 "add to clip" (ISO 32000-1 §9.4.1 /
+    // §9.3.6 Table 106).
+    // -----------------------------------------------------------------
+
+    /// The crux of the ET application: the accumulated glyph silhouette is
+    /// converted to an alpha `Mask` and AND-ed into the current clip, so
+    /// subsequent content survives only where it falls inside BOTH the text
+    /// shape and the pre-existing clip. This exercises the exact
+    /// `Mask::from_pixmap(Alpha)` + `intersect_with_inherited` path the `ET`
+    /// arm runs, minus glyph shaping (which the coverage rasteriser handles).
+    #[test]
+    fn text_clip_intersects_glyph_silhouette_within_existing_clip() {
+        use tiny_skia::{
+            Color, FillRule, Mask, MaskType, Paint, PathBuilder, Pixmap, Rect, Transform,
+        };
+
+        let w = 20u32;
+        let h = 20u32;
+
+        // Simulated accumulated text-clip silhouette: an opaque-black square
+        // covering the page's centre (x,y in 5..15). This is what
+        // `accumulate_text_clip_*` leaves in the scratch pixmap after a
+        // mode-≥4 show.
+        let mut scratch = Pixmap::new(w, h).unwrap();
+        let mut paint = Paint::default();
+        paint.set_color(Color::BLACK);
+        paint.anti_alias = false;
+        let sil = Rect::from_xywh(5.0, 5.0, 10.0, 10.0).unwrap();
+        scratch.fill_rect(sil, &paint, Transform::identity(), None);
+
+        // Degenerate guard: a silhouette WITH coverage reports true.
+        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        assert!(has_coverage, "painted silhouette must report coverage");
+
+        // Existing clip: top half of the page (y in 0..10) fully inside.
+        let mut existing = Mask::new(w, h).unwrap();
+        let mut pb = PathBuilder::new();
+        pb.push_rect(Rect::from_xywh(0.0, 0.0, 20.0, 10.0).unwrap());
+        existing.fill_path(&pb.finish().unwrap(), FillRule::Winding, false, Transform::identity());
+
+        // ET path: alpha mask from the silhouette, AND-ed with the clip.
+        let text_mask = Mask::from_pixmap(scratch.as_ref(), MaskType::Alpha);
+        let result = super::intersect_with_inherited(text_mask, Some(&existing));
+
+        let at = |x: u32, y: u32| result.data()[(y * w + x) as usize];
+        // Inside silhouette AND inside clip -> kept.
+        assert_eq!(at(7, 7), 255, "kept where text ∩ clip");
+        // Inside silhouette but BELOW the clip (y=12) -> removed by the clip.
+        assert_eq!(at(7, 12), 0, "clip must not be widened past its bound");
+        // Inside clip but OUTSIDE the silhouette (x=2) -> removed by the text.
+        assert_eq!(at(2, 2), 0, "content outside the glyph shape is clipped away");
+        // Corner outside both -> background.
+        assert_eq!(at(18, 18), 0, "corner outside the glyph stays background");
+    }
+
+    /// An accumulator that saw only whitespace / outline-less glyphs is fully
+    /// transparent; the `ET` arm must treat that as degenerate and leave the
+    /// clip untouched rather than collapsing it to an empty region.
+    #[test]
+    fn text_clip_empty_accumulator_is_degenerate() {
+        use tiny_skia::Pixmap;
+        let scratch = Pixmap::new(16, 16).unwrap(); // fresh -> fully transparent
+        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        assert!(!has_coverage, "empty accumulator must be treated as no clip change");
+    }
+
+    /// The coverage graphics state used to rasterise the clip silhouette must
+    /// force fill mode 0 (so clip-only mode-7 / invisible mode-3 glyphs still
+    /// rasterise their outline — the text rasteriser paints those modes with
+    /// transparent paint, which would otherwise yield an empty silhouette and
+    /// silently drop the clip) while forcing opaque paint (so alpha == coverage).
+    #[test]
+    fn coverage_gs_forces_fill_mode_for_clip_silhouette() {
+        use crate::content::graphics_state::GraphicsState;
+        for visible_mode in [3u8, 4, 5, 6, 7] {
+            let mut gs = GraphicsState::default();
+            gs.render_mode = visible_mode;
+            gs.fill_alpha = 0.3;
+            let cov = super::PageRenderer::coverage_only_gs(&gs);
+            assert_eq!(
+                cov.render_mode, 0,
+                "coverage must fill regardless of visible mode {visible_mode}"
+            );
+            assert_eq!(cov.fill_alpha, 1.0, "coverage must be opaque");
+            assert!(cov.smask.is_none(), "coverage must strip SMask");
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -9064,6 +10404,152 @@ mod tests {
             after_n_clips, N as u64,
             "{N} W operators each followed by {K} paint ops must materialize \
              exactly {N} times (got {after_n_clips})"
+        );
+    }
+
+    /// `type3_font_matrix` returns the explicit `/FontMatrix` when well-formed,
+    /// and falls back to the Type 1 default for missing / malformed entries.
+    #[test]
+    fn type3_font_matrix_parse() {
+        // Explicit, well-formed matrix is honoured.
+        let mut d: HashMap<String, Object> = HashMap::new();
+        d.insert(
+            "FontMatrix".into(),
+            Object::Array(vec![
+                Object::Real(0.01),
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Real(0.02),
+                Object::Integer(5),
+                Object::Integer(6),
+            ]),
+        );
+        let m = type3_font_matrix(&d);
+        assert!((m.sx - 0.01).abs() < 1e-9 && (m.sy - 0.02).abs() < 1e-9);
+        assert!((m.tx - 5.0).abs() < 1e-6 && (m.ty - 6.0).abs() < 1e-6);
+
+        // Missing entry → 1/1000 default.
+        let empty: HashMap<String, Object> = HashMap::new();
+        let def = type3_font_matrix(&empty);
+        assert!((def.sx - 0.001).abs() < 1e-9 && (def.sy - 0.001).abs() < 1e-9);
+
+        // Wrong arity → default.
+        let mut bad: HashMap<String, Object> = HashMap::new();
+        bad.insert("FontMatrix".into(), Object::Array(vec![Object::Real(0.5)]));
+        let badm = type3_font_matrix(&bad);
+        assert!((badm.sx - 0.001).abs() < 1e-9);
+    }
+
+    /// Build a minimal single-page PDF with a Type 3 font whose only glyph
+    /// (`/rect`, code 65) is a `d1` stencil that fills a 700×700 glyph-space
+    /// rectangle. The page shows it once, at font size 100, after setting the
+    /// fill colour to red.
+    fn build_type3_rect_pdf() -> Vec<u8> {
+        let mut pdf = Vec::new();
+        let mut offsets: Vec<usize> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.4\n");
+
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\n");
+
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\n");
+
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            b"3 0 obj\n\
+              << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]\n\
+                 /Contents 4 0 R\n\
+                 /Resources << /Font << /T3 5 0 R >> >>\n\
+              >>\nendobj\n\n",
+        );
+
+        // Page content: red fill, then show code 65 at size 100 near (10,10).
+        let content = b"BT /T3 100 Tf 1 0 0 rg 10 10 Td (A) Tj ET";
+        offsets.push(pdf.len());
+        let hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len());
+        pdf.extend_from_slice(hdr.as_bytes());
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n\n");
+
+        // Type 3 font dictionary.
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            b"5 0 obj\n\
+              << /Type /Font /Subtype /Type3 /FontBBox [0 0 750 750]\n\
+                 /FontMatrix [0.001 0 0 0.001 0 0]\n\
+                 /FirstChar 65 /LastChar 65 /Widths [700]\n\
+                 /Encoding 6 0 R /CharProcs 7 0 R >>\nendobj\n\n",
+        );
+
+        // Encoding: code 65 → glyph name /rect.
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            b"6 0 obj\n<< /Type /Encoding /Differences [65 /rect] >>\nendobj\n\n",
+        );
+
+        // CharProcs: /rect → glyph stream 8.
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"7 0 obj\n<< /rect 8 0 R >>\nendobj\n\n");
+
+        // Glyph description: d1 stencil filling a 700×700 glyph-space rect.
+        let glyph = b"700 0 0 0 700 700 d1 0 0 700 700 re f";
+        offsets.push(pdf.len());
+        let ghdr = format!("8 0 obj\n<< /Length {} >>\nstream\n", glyph.len());
+        pdf.extend_from_slice(ghdr.as_bytes());
+        pdf.extend_from_slice(glyph);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n\n");
+
+        let xref_offset = pdf.len();
+        let n_obj = offsets.len() + 1;
+        let mut xref = format!("xref\n0 {}\n", n_obj);
+        xref.push_str("0000000000 65535 f \n");
+        for off in &offsets {
+            xref.push_str(&format!("{:010} 00000 n \n", off));
+        }
+        pdf.extend_from_slice(xref.as_bytes());
+        let trailer = format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            n_obj, xref_offset
+        );
+        pdf.extend_from_slice(trailer.as_bytes());
+        pdf
+    }
+
+    /// The Type 3 `d1` glyph paints a filled rectangle that takes the current
+    /// (red) fill colour, producing non-blank red pixels in the glyph cell.
+    #[test]
+    fn type3_d1_glyph_renders_filled_rect() {
+        use crate::document::PdfDocument;
+
+        let pdf = build_type3_rect_pdf();
+        let doc = PdfDocument::from_bytes(pdf).expect("parse Type3 PDF");
+
+        let opts = RenderOptions {
+            format: ImageFormat::RawRgba8,
+            ..RenderOptions::with_dpi(150)
+        };
+        let mut renderer = PageRenderer::new(opts);
+        let img = renderer.render_page(&doc, 0).expect("render page");
+
+        assert_eq!(img.format, ImageFormat::RawRgba8);
+        assert_eq!(img.data.len(), (img.width * img.height * 4) as usize);
+
+        // Count red pixels: R high, G/B low. A blank page (glyph not painted)
+        // yields zero; the d1 stencil taking the current fill colour yields a
+        // solid red rectangle.
+        let mut red = 0usize;
+        for px in img.data.chunks_exact(4) {
+            if px[0] > 200 && px[1] < 80 && px[2] < 80 {
+                red += 1;
+            }
+        }
+        assert!(
+            red > 200,
+            "expected a red Type3 d1 glyph rectangle, found {red} red pixels \
+             in a {}x{} image",
+            img.width,
+            img.height
         );
     }
 }

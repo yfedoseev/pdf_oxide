@@ -475,6 +475,31 @@ pub enum TextElement {
 }
 
 impl Operator {
+    /// Returns `true` if this operator sets a colour or colour-space parameter.
+    ///
+    /// Used by the Type 3 `d1` glyph path: per ISO 32000-1:2008 §9.6.5.2, the
+    /// glyph description of a `d1` glyph is a stencil that is painted with the
+    /// current fill colour, and any colour operators inside it shall be
+    /// ignored. The renderer skips these operators while a `d1` colour lock is
+    /// in effect.
+    pub fn is_color_setting(&self) -> bool {
+        matches!(
+            self,
+            Operator::SetFillRgb { .. }
+                | Operator::SetStrokeRgb { .. }
+                | Operator::SetFillGray { .. }
+                | Operator::SetStrokeGray { .. }
+                | Operator::SetFillCmyk { .. }
+                | Operator::SetStrokeCmyk { .. }
+                | Operator::SetFillColorSpace { .. }
+                | Operator::SetStrokeColorSpace { .. }
+                | Operator::SetFillColor { .. }
+                | Operator::SetStrokeColor { .. }
+                | Operator::SetFillColorN { .. }
+                | Operator::SetStrokeColorN { .. }
+        )
+    }
+
     /// Validate operand count and types according to PDF spec Table A.1.
     ///
     /// PDF Spec: ISO 32000-1:2008, Appendix A - Table A.1 - PDF content stream operators

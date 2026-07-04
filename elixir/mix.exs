@@ -4,7 +4,7 @@ defmodule PdfOxide.MixProject do
   def project do
     [
       app: :pdf_oxide,
-      version: "0.3.70",
+      version: "0.3.71",
       elixir: "~> 1.15",
       compilers: [:elixir_make | Mix.compilers()],
       make_targets: ["all"],

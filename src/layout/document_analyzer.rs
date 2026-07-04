@@ -146,27 +146,31 @@ impl DocumentProperties {
     }
 
     /// Compute median font size from characters.
+    ///
+    /// Uses `select_nth_unstable_by` (O(n) quickselect) rather than a full
+    /// sort — only the middle order-statistic is needed, and the result is
+    /// exact.
     fn compute_median_font_size(chars: &[TextChar]) -> f32 {
         let mut font_sizes: Vec<f32> = chars.iter().map(|c| c.font_size).collect();
-        font_sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-
         if font_sizes.is_empty() {
             return 12.0; // Default fallback
         }
-
-        font_sizes[font_sizes.len() / 2]
+        let mid = font_sizes.len() / 2;
+        font_sizes.select_nth_unstable_by(mid, |a, b| crate::utils::safe_float_cmp(*a, *b));
+        font_sizes[mid]
     }
 
     /// Compute median character width from characters.
+    ///
+    /// O(n) quickselect for the median (see `compute_median_font_size`).
     fn compute_median_char_width(chars: &[TextChar]) -> f32 {
         let mut widths: Vec<f32> = chars.iter().map(|c| c.bbox.width).collect();
-        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-
         if widths.is_empty() {
             return 6.0; // Default fallback
         }
-
-        widths[widths.len() / 2]
+        let mid = widths.len() / 2;
+        widths.select_nth_unstable_by(mid, |a, b| crate::utils::safe_float_cmp(*a, *b));
+        widths[mid]
     }
 
     /// Estimate line spacing properties.
@@ -205,8 +209,9 @@ impl DocumentProperties {
         let median_line_spacing = if spacings.is_empty() {
             12.0
         } else {
-            spacings.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-            spacings[spacings.len() / 2]
+            let mid = spacings.len() / 2;
+            spacings.select_nth_unstable_by(mid, |a, b| crate::utils::safe_float_cmp(*a, *b));
+            spacings[mid]
         };
 
         // Compute average characters per line

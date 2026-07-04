@@ -1256,11 +1256,20 @@ impl PdfXValidator {
             return Ok(());
         }
 
-        // Get the ICC profile stream dictionary
+        // Get the ICC profile stream dictionary. Per ISO 32000-1 §8.6.5.5 an
+        // ICCBased colour space is `[ /ICCBased stream ]` — the profile is
+        // always embedded as a STREAM object, so the resolved object is
+        // `Object::Stream { dict, .. }`, not a bare `Object::Dictionary`. Accept
+        // both (a `Dictionary` only arises from a malformed/inline form); reading
+        // /N from the stream's dictionary is what the check below needs. Failing
+        // to handle `Object::Stream` here caused a false XCOLOR-005 on every
+        // conforming ICCBased profile (e.g. the Ghent Workgroup PDF/X-4 suite).
         let profile_dict = match &arr[1] {
             Object::Dictionary(d) => d.clone(),
+            Object::Stream { dict, .. } => dict.clone(),
             Object::Reference(r) => match document.load_object(*r)? {
                 Object::Dictionary(d) => d,
+                Object::Stream { dict, .. } => dict,
                 _ => {
                     result.add_error(
                         XComplianceError::new(
@@ -1341,6 +1350,120 @@ mod tests {
 
         assert!(validator.stop_on_first_error);
         assert!(!validator.include_warnings);
+    }
+
+    /// A minimal PDF whose single page has a page-level ICCBased colour space
+    /// `/CS0` referencing an ICC profile embedded as object `5 0 R` — a real
+    /// PDF **stream** (ISO 32000-1 §8.6.5.5). `include_n` toggles the required
+    /// `/N` entry so both the valid and the genuinely-invalid cases can be built.
+    fn build_pdf_with_iccbased_colorspace(include_n: bool) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /ColorSpace << /CS0 [/ICCBased 5 0 R] >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        let content: &[u8] = b"/CS0 cs 0 0 0 1 scn 50 50 200 200 re f";
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        // Object 5: the ICC profile STREAM — a 128-byte valid ICC header
+        // (profile size at 0..4, colour space `CMYK` at 16..20, `acsp`
+        // signature at 36..40), uncompressed (no /Filter).
+        let mut icc = vec![0u8; 128];
+        icc[0..4].copy_from_slice(&128u32.to_be_bytes());
+        icc[16..20].copy_from_slice(b"CMYK");
+        icc[36..40].copy_from_slice(b"acsp");
+        let off5 = pdf.len();
+        let dict = if include_n {
+            format!("<< /N 4 /Length {} >>", icc.len())
+        } else {
+            format!("<< /Length {} >>", icc.len())
+        };
+        pdf.extend_from_slice(format!("5 0 obj\n{}\nstream\n", dict).as_bytes());
+        pdf.extend_from_slice(&icc);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn iccbased_stream_profile_not_flagged_xcolor005() {
+        // Regression for #797: a conforming ICCBased colour space embeds its ICC
+        // profile as a STREAM (ISO 32000-1 §8.6.5.5, `[ /ICCBased stream ]`),
+        // which resolves to `Object::Stream`, not `Object::Dictionary`. The
+        // validator must accept it and read /N from the stream dict rather than
+        // emit a false "not a valid stream" XCOLOR-005 (which broke every
+        // conforming ICCBased profile, e.g. the Ghent Workgroup PDF/X-4 suite).
+        use crate::object::ObjectRef;
+        let mut doc =
+            crate::document::PdfDocument::from_bytes(build_pdf_with_iccbased_colorspace(true))
+                .expect("parse test pdf");
+        let validator = PdfXValidator::new(PdfXLevel::X4);
+        let mut result = XValidationResult::new(PdfXLevel::X4);
+        let cs_obj = Object::Array(vec![
+            Object::Name("ICCBased".to_string()),
+            Object::Reference(ObjectRef { id: 5, gen: 0 }),
+        ]);
+        validator
+            .validate_icc_profile(&cs_obj, "CS0", 1, &mut doc, &mut result)
+            .expect("validate_icc_profile");
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.code == XErrorCode::IccProfileInvalid),
+            "valid ICC profile stream must not trigger XCOLOR-005: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn iccbased_stream_missing_n_still_flagged() {
+        // The /N check must still fire through the stream path: an ICC profile
+        // stream without the required /N entry is genuinely non-conformant.
+        use crate::object::ObjectRef;
+        let mut doc =
+            crate::document::PdfDocument::from_bytes(build_pdf_with_iccbased_colorspace(false))
+                .expect("parse test pdf");
+        let validator = PdfXValidator::new(PdfXLevel::X4);
+        let mut result = XValidationResult::new(PdfXLevel::X4);
+        let cs_obj = Object::Array(vec![
+            Object::Name("ICCBased".to_string()),
+            Object::Reference(ObjectRef { id: 5, gen: 0 }),
+        ]);
+        validator
+            .validate_icc_profile(&cs_obj, "CS0", 1, &mut doc, &mut result)
+            .expect("validate_icc_profile");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == XErrorCode::IccProfileInvalid),
+            "ICC stream missing /N must be flagged: {:?}",
+            result.errors
+        );
     }
 
     #[test]

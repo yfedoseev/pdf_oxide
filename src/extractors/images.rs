@@ -854,15 +854,23 @@ pub fn extract_image_from_xobject(
             let pixel_format = color_space_to_pixel_format(&color_space);
             // ISO 32000-1 §8.9.5.2: BitsPerComponent 16 stores each colour
             // sample as a big-endian 16-bit value. The rest of the image
-            // pipeline assumes 8-bit samples, so collapse each sample to its
-            // high byte. Without this the raw buffer is twice the expected
-            // length; the lenient `ImageBuffer::from_raw` then builds an
-            // oversized image whose buffer the PNG encoder rejects with a
-            // panic (`assertion left == right failed: Invalid buffer length`).
+            // pipeline (and the render target, an 8-bit tiny_skia pixmap)
+            // assumes 8-bit samples, so reduce each sample to 8 bits. Without
+            // this the raw buffer is twice the expected length; the lenient
+            // `ImageBuffer::from_raw` then builds an oversized image whose
+            // buffer the PNG encoder rejects with a panic (`assertion
+            // left == right failed: Invalid buffer length`).
+            //
+            // The reduction rounds `v * 255 / 65535` to the nearest 8-bit
+            // value rather than dropping the low byte (`v >> 8`, i.e. floor):
+            // truncation biases every sample downward by up to ~1 LSB, most
+            // visibly darkening near-white highlights. Full u16 precision
+            // through extraction is deferred (v0.3.72) — no current consumer
+            // benefits, as both the PNG path and the rasteriser are 8-bit.
             let pixels = if bits_per_component == 16 {
                 decoded_data
                     .chunks_exact(2)
-                    .map(|sample| sample[0])
+                    .map(|sample| reduce_16_to_8(sample[0], sample[1]))
                     .collect()
             } else {
                 decoded_data
@@ -1104,6 +1112,16 @@ fn resolve_indexed_palette(
         palette: palette_bytes,
         base_profile,
     }))
+}
+
+/// Reduce a big-endian 16-bit colour sample (`hi`, `lo` bytes) to 8 bits,
+/// rounding `v * 255 / 65535` to the nearest value. Preferred over the crude
+/// high-byte drop (`v >> 8`), which floors and biases every sample downward by
+/// up to ~1 LSB. `v == 0xFFFF` maps to `255` and `v == 0` to `0` exactly.
+#[inline]
+fn reduce_16_to_8(hi: u8, lo: u8) -> u8 {
+    let v = u16::from_be_bytes([hi, lo]) as u32;
+    ((v * 255 + 32_767) / 65_535) as u8
 }
 
 /// Expand packed Indexed image indices into RGB bytes using the palette.
@@ -1818,7 +1836,9 @@ fn decode_jbig2_image(
     _width: u32,
     _height: u32,
 ) -> Result<ImageData> {
-    Err(Error::UnsupportedFilter("JBIG2Decode".to_string()))
+    Err(Error::UnsupportedFilter(
+        "JBIG2Decode — rebuild with the `rendering` feature to decode".to_string(),
+    ))
 }
 
 /// Decode a JPEG 2000 (`/JPXDecode`) image stream into raw interleaved samples.
@@ -3114,5 +3134,31 @@ mod png_bytes_panic_safety_tests {
         );
         let png = img.to_png_bytes().expect("correctly sized RGB must encode");
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "valid PNG signature");
+    }
+
+    /// The 16→8 reduction rounds `v*255/65535` to nearest and hits the endpoints
+    /// exactly, rather than flooring via a high-byte drop (WS1.8b). The floor
+    /// form `v >> 8` would map 0xFF80 → 0xFF (255) here too, but biases the
+    /// mid-range and interior values downward; these anchors pin the rounding.
+    #[test]
+    fn reduce_16_to_8_rounds_to_nearest() {
+        assert_eq!(reduce_16_to_8(0x00, 0x00), 0, "black stays black");
+        assert_eq!(reduce_16_to_8(0xFF, 0xFF), 255, "white stays white");
+        // 0x0080 = 128: 128*255/65535 = 0.498 → rounds to 0; high-byte drop also 0.
+        assert_eq!(reduce_16_to_8(0x00, 0x80), 0);
+        // 0x0100 = 256: 256*255/65535 = 0.996 → rounds to 1 (floor >> 8 = 1 too).
+        assert_eq!(reduce_16_to_8(0x01, 0x00), 1);
+        // 0x8080 = 32896: 32896*255/65535 = 127.998 → 128; floor >>8 = 0x80 = 128.
+        assert_eq!(reduce_16_to_8(0x80, 0x80), 128);
+        // 0xFF7F = 65407: 65407*255/65535 = 254.5 → rounds up to 255; >>8 = 255.
+        assert_eq!(reduce_16_to_8(0xFF, 0x7F), 255);
+        // Monotonic and full-range: every high-byte value round-trips near itself.
+        for hi in 0u8..=255 {
+            let out = reduce_16_to_8(hi, hi);
+            assert!(
+                out >= hi.saturating_sub(1) && out <= hi.saturating_add(1),
+                "reduction stays within 1 LSB of the high byte for hi={hi}"
+            );
+        }
     }
 }

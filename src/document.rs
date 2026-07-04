@@ -3709,6 +3709,20 @@ impl PdfDocument {
         crate::structure::parse_structure_tree(self)
     }
 
+    /// Returns the document's structure tree, bounding the parse work by an
+    /// optional wall-clock `budget`.
+    ///
+    /// `None` parses the complete tree (identical to [`Self::structure_tree`]);
+    /// `Some(duration)` returns `Ok(None)` if parsing exceeds that budget, so a
+    /// latency-sensitive caller can fall back to another strategy. Prefer `None`
+    /// unless you have a concrete responsiveness requirement.
+    pub fn structure_tree_with_budget(
+        &self,
+        budget: Option<std::time::Duration>,
+    ) -> Result<Option<crate::structure::StructTreeRoot>> {
+        crate::structure::parse_structure_tree_with_budget(self, budget)
+    }
+
     /// Returns the document's structure tree **only when it is trustworthy for
     /// reading-order purposes**, per ISO 32000-1:2008 §14.8.2.3.1 and §14.7.1.
     ///
@@ -8575,6 +8589,7 @@ impl PdfDocument {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -8744,6 +8759,7 @@ impl PdfDocument {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -11506,7 +11522,166 @@ impl PdfDocument {
         // raw two-glyph order "´Ecole" instead of "École".
         Self::apply_combining_mark_composition(&mut spans);
 
+        // Stamp accurate per-glyph x-origins onto the finalized spans so that
+        // `to_chars()` (and thus extract_words / extract_spans /
+        // extract_text_lines, which all decompose spans through it) reports
+        // spec-aligned positions instead of drifting prefix-sums. Runs last, on
+        // the fully post-processed spans, so alignment sees the same text the
+        // consumers do.
+        self.stamp_char_x_offsets(page_index, &mut spans);
+
         Ok(spans)
+    }
+
+    /// Copy the spec-aligned per-glyph baseline x-origins from the char-level
+    /// extractor onto each span's [`char_x_offsets`](crate::layout::TextSpan::char_x_offsets).
+    ///
+    /// # Why
+    ///
+    /// [`TextSpan::to_chars`](crate::layout::TextSpan::to_chars) otherwise
+    /// reconstructs each glyph's x by prefix-summing the span's nominal
+    /// `char_widths` from `bbox.x`. Those nominal widths omit the ISO
+    /// 32000-1:2008 §9.4.3 TJ-array adjustment (the number in a TJ array is
+    /// "expressed in thousandths of a unit of text space … subtracted from the
+    /// current … coordinate") and the full §9.4.4 text-space displacement
+    /// (`t_x = ((w0 − Tj/1000) · Tfs + Tc + Tw) · Th`). Prefix-summing the
+    /// nominal widths therefore drifts cumulatively along a line. The
+    /// char-level extractor that [`extract_chars`](Self::extract_chars) uses
+    /// implements §9.4.4 / §9.4.3 in full (it matches Poppler `pdftotext
+    /// -bbox`), so its `origin_x` values are the authoritative positions this
+    /// function stamps back onto the spans.
+    ///
+    /// # Alignment (robust, per span)
+    ///
+    /// A naive global greedy walk on char values mis-jumps on repeated
+    /// letters / spaces. Instead, for each span we take only the accurate chars
+    /// on the SAME baseline (`|origin_y − span.bbox.y| ≤ 0.5·font_size`), sort
+    /// them by x, and match the span's glyph sequence as a CONTIGUOUS run,
+    /// choosing the run whose first glyph's `origin_x` is nearest `span.bbox.x`.
+    ///
+    /// # Fallback (never guess)
+    ///
+    /// If a span cannot be fully, unambiguously aligned — no contiguous run of
+    /// exactly the span's glyphs exists on its line (count mismatch from a
+    /// post-processing text edit, ligature expansion, a synthetic space glyph
+    /// not present in the char stream, …) — its `char_x_offsets` is left empty
+    /// so `to_chars` uses the legacy prefix-sum path. A cleared span is a
+    /// no-op, never a regression. `char_widths` is never touched (a downstream
+    /// word-boundary heuristic keys off its length).
+    ///
+    /// Rotated pages (`/Rotate` 90/180/270) are skipped entirely: the accurate
+    /// chars are in unrotated page space while the spans have been mapped into
+    /// the displayed frame, so a horizontal-x stamp would not correspond.
+    fn stamp_char_x_offsets(&self, page_index: usize, spans: &mut [crate::layout::TextSpan]) {
+        // Horizontal-x offsets only make sense in an unrotated frame.
+        let rotated = matches!(
+            self.get_page_rotation(page_index)
+                .unwrap_or(0)
+                .rem_euclid(360),
+            90 | 180 | 270
+        );
+        if rotated {
+            return;
+        }
+
+        let accurate = match self.extract_chars(page_index) {
+            Ok(chars) if !chars.is_empty() => chars,
+            _ => return,
+        };
+
+        for span in spans.iter_mut() {
+            // Start clean: any offsets carried over via struct-update from a
+            // source span must not be trusted for this (possibly edited) text.
+            span.char_x_offsets.clear();
+
+            let glyphs: Vec<char> = span.text.chars().collect();
+            let n = glyphs.len();
+            if n == 0 {
+                continue;
+            }
+
+            // Accurate chars sharing this span's baseline, left-to-right.
+            let baseline_tol = 0.6 * span.font_size.max(1.0);
+            let mut line: Vec<&crate::layout::TextChar> = accurate
+                .iter()
+                .filter(|c| (c.origin_y - span.bbox.y).abs() <= baseline_tol)
+                .collect();
+            if line.is_empty() {
+                continue;
+            }
+            line.sort_by(|a, b| crate::utils::safe_float_cmp(a.origin_x, b.origin_x));
+
+            // Greedy per-glyph alignment. Anchor the scan cursor at the accurate
+            // char nearest this span's left edge, then walk the span's glyphs,
+            // matching each to the next equal accurate char within a small
+            // forward window. Unlike an all-or-nothing contiguous match, a single
+            // unmatched glyph (an inserted word-boundary space, a ligature split,
+            // a combining mark) no longer discards the whole span — such glyphs
+            // are interpolated below so `char_x_offsets` still fills every index.
+            let start = line
+                .iter()
+                .position(|c| c.origin_x >= span.bbox.x - 0.5)
+                .unwrap_or(0);
+            let mut assigned: Vec<Option<f32>> = vec![None; n];
+            let mut li = start;
+            for (k, &g) in glyphs.iter().enumerate() {
+                let mut j = li;
+                let mut steps = 0;
+                while j < line.len() && steps < 6 {
+                    if line[j].char == g {
+                        assigned[k] = Some(line[j].origin_x);
+                        li = j + 1;
+                        break;
+                    }
+                    j += 1;
+                    steps += 1;
+                }
+            }
+
+            // Need enough real anchors to trust the run; otherwise fall back.
+            let anchors = assigned.iter().filter(|a| a.is_some()).count();
+            if anchors * 5 < n * 3 {
+                // < 60% matched
+                continue;
+            }
+
+            // Fill the gaps: each unmatched glyph takes the nearest preceding
+            // anchor plus the prefix sum of the (locally accurate) char_widths
+            // between them; if there is no preceding anchor, walk back from the
+            // nearest following one. Over the short spans between anchors the
+            // cumulative drift these interpolations reintroduce is sub-point.
+            let cw = &span.char_widths;
+            let width_at = |i: usize| -> f32 {
+                if cw.len() == n {
+                    cw[i]
+                } else {
+                    span.bbox.width / n as f32
+                }
+            };
+            let mut offs = vec![0.0f32; n];
+            // forward pass from preceding anchors
+            let mut last: Option<(usize, f32)> = None;
+            for k in 0..n {
+                if let Some(x) = assigned[k] {
+                    offs[k] = x;
+                    last = Some((k, x));
+                } else if let Some((lk, lx)) = last {
+                    let acc: f32 = (lk..k).map(width_at).sum();
+                    offs[k] = lx + acc;
+                }
+            }
+            // backfill any leading None from the first following anchor
+            if assigned[0].is_none() {
+                if let Some(fk) = assigned.iter().position(|a| a.is_some()) {
+                    let fx = assigned[fk].unwrap();
+                    for k in 0..fk {
+                        let acc: f32 = (k..fk).map(width_at).sum();
+                        offs[k] = fx - acc;
+                    }
+                }
+            }
+            span.char_x_offsets = offs;
+        }
     }
 
     /// Fold a one-char spacing-diacritic span into the following
@@ -16817,6 +16992,7 @@ impl PdfDocument {
                 horizontal_scaling: 1.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -18559,6 +18735,7 @@ impl PdfDocument {
                 horizontal_scaling: 1.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -18849,7 +19026,22 @@ impl PdfDocument {
         // gone from EVERY downstream path — tables, headings, reading order
         // (#609: markdown previously ignored `exclude_regions`/`include_region`,
         // which were only honoured by the plain-text path).
-        let base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+        let mut base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+
+        // WS2.6: strip repeated running headers/footers from untagged output
+        // when requested. Opt-in (default off); the /Artifact-tag path already
+        // handles tagged PDFs. Computed once per page here — fine for the
+        // per-page `to_markdown`; multi-page callers pay O(pages) extra scans.
+        if options.strip_running_headers_footers {
+            let repeated = self.repeated_running_head_foot(0.6);
+            if !repeated.is_empty() {
+                let media_h = self
+                    .get_page_media_box(page_index)
+                    .map(|m| m.3)
+                    .unwrap_or(792.0);
+                base_spans.retain(|s| !Self::is_running_head_foot(s, media_h, &repeated));
+            }
+        }
 
         // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3): the column-major text is
         // a single flowing paragraph. The horizontal converter pipeline would
@@ -20299,6 +20491,175 @@ impl PdfDocument {
     pub fn extract_images(&self, page_index: usize) -> Result<Vec<crate::extractors::PdfImage>> {
         self.require_authenticated()?;
         self.extract_images_filtered(page_index, &ImageExtractFilter::default())
+    }
+
+    /// WS2.6: normalized top/bottom-band text lines that recur on a majority
+    /// of pages — running headers/footers. Page-number digits are stripped so
+    /// "Page 3"/"Page 4" collapse to one signature. Empty for documents under
+    /// 3 pages (repetition can't be judged) or when nothing repeats.
+    pub(crate) fn repeated_running_head_foot(
+        &self,
+        threshold: f32,
+    ) -> std::collections::HashSet<String> {
+        use std::collections::{HashMap, HashSet};
+        let mut out: HashSet<String> = HashSet::new();
+        let Ok(page_count) = self.page_count() else {
+            return out;
+        };
+        if page_count < 3 {
+            return out;
+        }
+        let min_occ = (((page_count as f32) * threshold).ceil() as usize).max(2);
+        let mut occ: HashMap<String, usize> = HashMap::new();
+        for p in 0..page_count {
+            let media_h = self.get_page_media_box(p).map(|m| m.3).unwrap_or(792.0);
+            let Ok(spans) = self.extract_spans(p) else {
+                continue;
+            };
+            let mut seen: HashSet<String> = HashSet::new();
+            for s in &spans {
+                if !Self::in_head_foot_band(s, media_h) {
+                    continue;
+                }
+                let norm = Self::normalize_band_line(&s.text);
+                // Count each distinct line once per page.
+                if norm.len() > 3 && seen.insert(norm.clone()) {
+                    *occ.entry(norm).or_default() += 1;
+                }
+            }
+        }
+        for (text, n) in occ {
+            if n >= min_occ {
+                out.insert(text);
+            }
+        }
+        out
+    }
+
+    /// True when a span sits in the top or bottom 15% band of the page.
+    fn in_head_foot_band(s: &crate::layout::TextSpan, media_h: f32) -> bool {
+        s.bbox.y > media_h * 0.85 || (s.bbox.y + s.bbox.height) < media_h * 0.15
+    }
+
+    /// Normalize a band line for repetition matching: drop ASCII digits (page
+    /// numbers vary), collapse whitespace, lowercase.
+    fn normalize_band_line(text: &str) -> String {
+        let stripped: String = text.chars().filter(|c| !c.is_ascii_digit()).collect();
+        stripped
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    /// True when `span` is a running header/footer to strip: in the top/bottom
+    /// band and its normalized text is one of the `repeated` signatures.
+    fn is_running_head_foot(
+        span: &crate::layout::TextSpan,
+        media_h: f32,
+        repeated: &std::collections::HashSet<String>,
+    ) -> bool {
+        Self::in_head_foot_band(span, media_h)
+            && repeated.contains(&Self::normalize_band_line(&span.text))
+    }
+
+    /// Extract embedded files / attachments (WS1.8a, ISO 32000-1 §7.11.4).
+    ///
+    /// Walks the catalog's `/Names /EmbeddedFiles` name tree and returns
+    /// `(filename, decoded bytes)` for each `/Filespec`'s `/EF /F` (or `/UF`)
+    /// embedded-file stream. Complements the existing embedded-file writer.
+    /// Returns an empty vector when the document has no attachments.
+    pub fn extract_embedded_files(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        self.require_authenticated()?;
+        let catalog = self.catalog()?;
+        let Some(cat_dict) = catalog.as_dict() else {
+            return Ok(Vec::new());
+        };
+        // catalog → /Names → /EmbeddedFiles (name-tree root).
+        let names = cat_dict
+            .get("Names")
+            .and_then(|n| self.resolve_object(n).ok());
+        let Some(ef_root) = names
+            .as_ref()
+            .and_then(|n| n.as_dict())
+            .and_then(|d| d.get("EmbeddedFiles"))
+            .and_then(|e| self.resolve_object(e).ok())
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut filespecs: Vec<Object> = Vec::new();
+        self.collect_embedded_filespecs(&ef_root, &mut filespecs, 0);
+
+        let mut out = Vec::new();
+        for fs in &filespecs {
+            let Some(fs_dict) = fs.as_dict() else {
+                continue;
+            };
+            // Prefer the Unicode filename /UF, fall back to /F.
+            let filename = fs_dict
+                .get("UF")
+                .or_else(|| fs_dict.get("F"))
+                .and_then(|n| self.resolve_object(n).ok())
+                .and_then(|n| {
+                    n.as_string()
+                        .map(|s| String::from_utf8_lossy(s).into_owned())
+                })
+                .unwrap_or_else(|| "attachment".to_string());
+            // /EF → { /F <stream ref> } (or /UF).
+            let Some(ef) = fs_dict.get("EF").and_then(|e| self.resolve_object(e).ok()) else {
+                continue;
+            };
+            let Some(ef_dict) = ef.as_dict() else {
+                continue;
+            };
+            let Some(stream_ref) = ef_dict
+                .get("F")
+                .or_else(|| ef_dict.get("UF"))
+                .and_then(|r| r.as_reference())
+            else {
+                continue;
+            };
+            if let Ok(stream_obj) = self.load_object(stream_ref) {
+                if let Ok(bytes) = self.decode_stream_with_encryption(&stream_obj, stream_ref) {
+                    out.push((filename, bytes));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recursively collect `/Filespec` objects from an `/EmbeddedFiles`
+    /// name-tree node: leaf `/Names [key filespec …]` pairs plus `/Kids`.
+    fn collect_embedded_filespecs(&self, node: &Object, out: &mut Vec<Object>, depth: u8) {
+        if depth > 32 {
+            return;
+        }
+        let Ok(node) = self.resolve_object(node) else {
+            return;
+        };
+        let Some(dict) = node.as_dict() else {
+            return;
+        };
+        if let Some(names) = dict.get("Names").and_then(|n| self.resolve_object(n).ok()) {
+            if let Some(arr) = names.as_array() {
+                // Flat [key1 filespec1 key2 filespec2 …]: the odd indices.
+                let mut i = 1;
+                while i < arr.len() {
+                    if let Ok(fs) = self.resolve_object(&arr[i]) {
+                        out.push(fs);
+                    }
+                    i += 2;
+                }
+            }
+        }
+        if let Some(kids) = dict.get("Kids").and_then(|k| self.resolve_object(k).ok()) {
+            if let Some(arr) = kids.as_array() {
+                for kid in arr {
+                    self.collect_embedded_filespecs(kid, out, depth + 1);
+                }
+            }
+        }
     }
 
     /// Build the resource-name → colour-space-object map from a resolved
@@ -22235,6 +22596,71 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// Regression: `extract_spans().to_chars()` per-glyph x must track the
+    /// accurate `extract_chars()` positions instead of drifting via the
+    /// nominal-`char_widths` prefix-sum (ISO 32000-1:2008 §9.4.3 / §9.4.4).
+    ///
+    /// Loads a real-world PDF (skipped when absent so CI is unaffected),
+    /// extracts accurate chars and spans, flattens the spans via `to_chars`,
+    /// pairs each span-glyph against the accurate char stream by char value in
+    /// reading order, and asserts ≥95% of matched glyphs land within 0.5pt.
+    /// A prior BUFFER-sourced attempt scored only 15%.
+    #[test]
+    fn extract_spans_glyph_x_tracks_extract_chars() {
+        let path = "/tmp/claude-1000/-home-yfedoseev-projects-pdf-oxide-fixes3\
+/fde760b5-e8d4-45bf-8a9b-2f6311d5149d/scratchpad/issue-598-example.pdf";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("repro PDF absent — skipping");
+            return;
+        }
+        let doc = PdfDocument::open(path).expect("open repro pdf");
+
+        let accurate = doc.extract_chars(0).expect("extract_chars");
+        let spans = doc.extract_spans(0).expect("extract_spans");
+        let glyphs: Vec<crate::layout::TextChar> =
+            spans.iter().flat_map(|s| s.to_chars()).collect();
+
+        // Pair each span-glyph against the next accurate char of the same value
+        // on (roughly) the same baseline, walking both in reading order.
+        let mut used = vec![false; accurate.len()];
+        let mut deltas: Vec<f32> = Vec::new();
+        for g in &glyphs {
+            if g.char.is_whitespace() {
+                continue;
+            }
+            let mut best: Option<usize> = None;
+            let mut best_score = f32::MAX;
+            for (i, a) in accurate.iter().enumerate() {
+                if used[i] || a.char != g.char {
+                    continue;
+                }
+                if (a.origin_y - g.origin_y).abs() > 3.0 {
+                    continue;
+                }
+                let score = (a.origin_x - g.origin_x).abs() + (a.origin_y - g.origin_y).abs();
+                if score < best_score {
+                    best_score = score;
+                    best = Some(i);
+                }
+            }
+            if let Some(i) = best {
+                used[i] = true;
+                deltas.push((accurate[i].origin_x - g.origin_x).abs());
+            }
+        }
+
+        assert!(!deltas.is_empty(), "no glyphs paired");
+        let matched = deltas.len();
+        let under = deltas.iter().filter(|d| **d <= 0.5).count();
+        let pct = 100.0 * under as f32 / matched as f32;
+        let maxd = deltas.iter().cloned().fold(0.0_f32, f32::max);
+        eprintln!("paired {matched} glyphs — {pct:.1}% within 0.5pt (max drift {maxd:.2}pt)");
+        assert!(
+            pct >= 95.0,
+            "only {pct:.1}% of glyphs within 0.5pt (max drift {maxd:.2}pt); expected >= 95%"
+        );
+    }
+
     #[test]
     fn test_run_is_signed_number() {
         // Signed numeric exponents (unit notation) are detected for every
@@ -23351,6 +23777,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
@@ -23848,6 +24275,7 @@ mod tests {
             primary_detected: false,
             artifact_type: None,
             char_widths,
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
@@ -24242,6 +24670,7 @@ mod tests {
             text: "تاييدلا".to_string(),
             bbox: Rect::new(100.0, 700.0, 70.0, 12.0),
             char_widths: vec![10.0; 7],
+            char_x_offsets: Vec::new(),
             font_size: 12.0,
             ..TextSpan::default()
         };
@@ -24282,6 +24711,7 @@ mod tests {
             text: "ةعئاش".to_string(),
             bbox: Rect::new(100.0, 700.0, 50.0, 12.0),
             char_widths: vec![10.0; 5],
+            char_x_offsets: Vec::new(),
             font_size: 12.0,
             ..TextSpan::default()
         };
@@ -24295,6 +24725,7 @@ mod tests {
             text: "عاونأ".to_string(),
             bbox: Rect::new(160.0, 700.0, 50.0, 12.0),
             char_widths: vec![10.0; 5],
+            char_x_offsets: Vec::new(),
             font_size: 12.0,
             ..TextSpan::default()
         };
@@ -27688,6 +28119,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -27755,6 +28187,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,
@@ -28443,6 +28876,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -28516,6 +28950,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -28588,6 +29023,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,

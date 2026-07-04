@@ -316,6 +316,17 @@ pub struct GraphicsState {
     /// Same as [`Self::fill_spot_inks`], for the stroke side
     /// (`SetStrokeColorN`, §8.6.5.1).
     pub stroke_spot_inks: Vec<(String, f32)>,
+
+    /// Name of the pattern selected by the most recent `scn` operator when
+    /// the active fill colour space is `/Pattern` (ISO 32000-1 §8.7.3).
+    /// The `scn` operator carries the pattern name (e.g. `/P0`) but the
+    /// renderer's colour dispatch only kept the numeric components; this
+    /// field retains the name so the `Fill` path can look the pattern
+    /// stream up in `Resources/Pattern/<name>` and rasterise it (tiling
+    /// pattern cells for `/PatternType 1`). `None` means no pattern is
+    /// selected for filling. Cleared whenever a device/CIE fill colour is
+    /// set.
+    pub fill_pattern_name: Option<String>,
 }
 
 /// Subtype of a soft-mask (§11.4.7 / Table 144 `S` field). Alpha uses
@@ -395,6 +406,7 @@ impl GraphicsState {
             smask: None,                     // §11.4.7 default (no soft mask)
             fill_spot_inks: Vec::new(),      // no spot source yet
             stroke_spot_inks: Vec::new(),    // no spot source yet
+            fill_pattern_name: None,         // no fill pattern selected yet
         }
     }
 

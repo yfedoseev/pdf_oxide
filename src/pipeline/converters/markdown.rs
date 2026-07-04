@@ -861,7 +861,153 @@ impl MarkdownOutputConverter {
             return false;
         }
 
+        // Reject leader/rule/separator artifacts: a run of 4+ identical fill
+        // characters (dot leaders, dashed rules, table separators) is TOC/table
+        // furniture, never a heading — e.g. a font-listing row
+        // "Embedded font--------------------Bavhavs" that a font-size tier would
+        // otherwise promote (172 spurious `#` observed on one font-sample doc).
+        {
+            let mut run = 1usize;
+            let mut prev = '\0';
+            for c in trimmed.chars() {
+                run = if c == prev && matches!(c, '-' | '_' | '.' | '·' | '—' | '=' | '*') {
+                    run + 1
+                } else {
+                    1
+                };
+                if run >= 4 {
+                    return false;
+                }
+                prev = c;
+            }
+        }
+
+        // Reject a line ending in a hyphen: that is a mid-word line break
+        // ("...three categories: com-"), i.e. a wrapped body line, not a heading.
+        if trimmed.ends_with('-') {
+            return false;
+        }
+
+        // Reject a lowercase-initial multi-word run: a real multi-word heading
+        // leads with a capital; a lowercase start on 5+ words is a body
+        // continuation wrongly caught by a font-size tier. (CJK/Arabic have no
+        // case, so `is_lowercase()` is false there and those headings pass.)
+        if word_count >= 5 {
+            if let Some(f) = trimmed.chars().find(|c| c.is_alphabetic()) {
+                if f.is_lowercase() {
+                    return false;
+                }
+            }
+        }
+
+        // Title-case vs sentence-case: this is the line-shape signal that a
+        // pure font-size heuristic (pymupdf4llm) lacks and an ML layout model
+        // (marker) captures. A long line whose Latin-script words are mostly
+        // lowercase is flowing prose — body text glued onto a promoted span —
+        // not a heading, however large the font. Real multi-word headings are
+        // title-cased (or short, <=8 words, which are exempt). Only cased-script
+        // words are counted, so CJK/Arabic/numeric headings are unaffected.
+        if word_count > 8 {
+            let cased: Vec<char> = trimmed
+                .split_whitespace()
+                .filter_map(|w| w.chars().next())
+                .filter(|c| c.is_uppercase() || c.is_lowercase())
+                .collect();
+            if !cased.is_empty() {
+                let upper = cased.iter().filter(|c| c.is_uppercase()).count();
+                // < 40% of cased words capitalised → sentence-case body.
+                if upper * 5 < cased.len() * 2 {
+                    return false;
+                }
+            }
+        }
+
         true
+    }
+
+    /// Re-validate every emitted heading against its COMPLETE line, demoting
+    /// (dropping the `#` prefix) any that no longer reads as a heading.
+    ///
+    /// Heading level is decided per span (before the line's spans are
+    /// concatenated), so a short span that passed [`Self::is_valid_heading_text`]
+    /// can accrete a body continuation into a long, sentence-case line. This
+    /// applies the same gate at line granularity — the block-level view an ML
+    /// layout model would take. Demotion-only: a genuine heading always passes,
+    /// so this can never remove a real heading nor create a false one.
+    fn demote_body_like_headings(md: &str) -> String {
+        let mut out = String::with_capacity(md.len());
+        for (i, line) in md.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let hashes = line.bytes().take_while(|&b| b == b'#').count();
+            if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
+                let text = line[hashes + 1..].trim();
+                if !Self::is_valid_heading_text(text) {
+                    // Demote to a plain paragraph line (keep the text verbatim).
+                    out.push_str(line[hashes + 1..].trim_start());
+                    continue;
+                }
+            }
+            out.push_str(line);
+        }
+        out
+    }
+
+    /// Distinct left-edge x-positions of list-marker spans, ascending,
+    /// collapsed to ~3pt buckets. A list item's nesting depth (WS2.5) is the
+    /// number of these levels strictly to its left. A flat list yields one
+    /// level, so every item is depth 0 and its markdown is byte-identical to
+    /// the pre-nesting output — inert unless a document genuinely indents.
+    fn list_marker_x_levels(spans: &[&OrderedTextSpan]) -> Vec<f32> {
+        let mut xs: Vec<f32> = spans
+            .iter()
+            .filter(|s| {
+                let t = s.span.text.trim_start();
+                Self::is_bullet_span(&s.span.text)
+                    || Self::starts_with_bullet(&s.span.text)
+                    || Self::is_ordered_list_marker(t).is_some()
+            })
+            .map(|s| s.span.bbox.x)
+            .collect();
+        xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        let mut levels: Vec<f32> = Vec::new();
+        for x in xs {
+            if levels.last().is_none_or(|&l| x - l > 3.0) {
+                levels.push(x);
+            }
+        }
+        levels
+    }
+
+    /// Two-space markdown indent for a list marker at `x` (two spaces per level
+    /// to its left; empty at the leftmost level).
+    fn list_indent(x: f32, levels: &[f32]) -> String {
+        "  ".repeat(levels.iter().filter(|&&l| x > l + 3.0).count())
+    }
+
+    /// Append a `- ` list marker to `line`, prefixed with the WS2.5 nesting
+    /// indent when `line` is empty (i.e. at the start of a fresh list line —
+    /// mid-line bullets are left unindented). Flat lists yield an empty indent,
+    /// keeping output byte-identical to before.
+    fn push_list_marker(line: &mut String, x: f32, levels: &[f32]) {
+        if line.is_empty() {
+            line.push_str(&Self::list_indent(x, levels));
+        }
+        line.push_str("- ");
+    }
+
+    /// Flush-time trim that preserves a list item's leading indent. Identical
+    /// to `str::trim()` for every non-list line, but keeps leading spaces when
+    /// the trimmed content is a markdown list marker — so WS2.5 nesting
+    /// survives the line flush. Inert on flat lists (their indent is empty).
+    fn flush_line(s: &str) -> &str {
+        let te = s.trim_end();
+        if te.trim_start().starts_with("- ") {
+            te
+        } else {
+            te.trim_start()
+        }
     }
 
     /// Strip the leading bullet character from text, returning the rest.
@@ -913,6 +1059,111 @@ impl MarkdownOutputConverter {
         } else {
             None
         }
+    }
+
+    /// WS2.4b — the distinct heading-size "tiers" present in the document, as
+    /// representative point sizes sorted DESCENDING and capped at six. A tier is
+    /// a cluster of heading-candidate sizes (valid heading text, clearly above
+    /// body) merged when they differ by less than a small gap. Used only to feed
+    /// the additive `heading_level_by_tier` fallback, so this changes nothing on
+    /// its own. Empty (and thus inert) unless the document actually has text at
+    /// >= 1.15x the body size.
+    fn heading_size_tiers(sorted: &[&OrderedTextSpan], base_font_size: f32) -> Vec<f32> {
+        if base_font_size <= 0.0 {
+            return Vec::new();
+        }
+        let floor = base_font_size * 1.15;
+        let mut sizes: Vec<f32> = sorted
+            .iter()
+            .filter(|s| {
+                s.span.font_size >= floor && Self::is_valid_heading_text(s.span.text.trim())
+            })
+            .map(|s| s.span.font_size)
+            .collect();
+        if sizes.is_empty() {
+            return Vec::new();
+        }
+        // Descending, then cluster: a new tier starts only when the size drops by
+        // more than max(0.75pt, 3% of the tier size) below the current tier.
+        sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let mut tiers: Vec<f32> = Vec::new();
+        for sz in sizes {
+            let same_tier = tiers
+                .last()
+                .map(|&last| (last - sz).abs() <= 0.75_f32.max(last * 0.03))
+                .unwrap_or(false);
+            if !same_tier {
+                tiers.push(sz);
+            }
+        }
+        tiers.truncate(6);
+        tiers
+    }
+
+    /// WS2.4b — additive fallback level for a heading-size span the primary ratio
+    /// heuristic did NOT promote (e.g. a heading only ~1.15-1.2x body and not
+    /// bold, which `heading_level_ratio` leaves as body). Matches the span's size
+    /// to a document tier from [`Self::heading_size_tiers`] and uses that tier's
+    /// RANK as the H-level, so a document whose headings are only slightly larger
+    /// than body but form clean, repeated tiers still gets a hierarchy. Returns
+    /// `None` unless the span is valid heading text sitting at a recognized tier,
+    /// so it never promotes ordinary body text.
+    fn heading_level_by_tier(&self, span: &OrderedTextSpan, tiers: &[f32]) -> Option<u8> {
+        if tiers.is_empty() || !Self::is_valid_heading_text(span.span.text.trim()) {
+            return None;
+        }
+        let sz = span.span.font_size;
+        let idx = tiers
+            .iter()
+            .position(|&t| (t - sz).abs() <= 0.75_f32.max(t * 0.03))?;
+        Some(((idx + 1) as u8).clamp(1, 6))
+    }
+
+    /// WS2.4: promote a multi-level numbered section title ("2.1.3 Results")
+    /// to a heading whose level is its dot-depth (2.1.3 → H3), capped at H6.
+    /// Only DOTTED patterns (≥1 dot) qualify — a bare "1. " leads an ordered
+    /// list item, and a bare "2 Foo" is too ambiguous — so this never steals
+    /// from the list path. Used only as a FALLBACK when the font-size heuristic
+    /// finds no heading, so it is purely additive: it adds section headings a
+    /// same-font-size numbered document would otherwise flatten, and never
+    /// changes a size-derived level.
+    fn numbered_heading_level(text: &str) -> Option<u8> {
+        let t = text.trim_start();
+        // Leading "N.N(.N)*" then whitespace then a non-digit title word.
+        let mut chars = t.char_indices().peekable();
+        let mut dots = 0u8;
+        let mut saw_digit = false;
+        let mut end = 0usize;
+        while let Some(&(i, c)) = chars.peek() {
+            if c.is_ascii_digit() {
+                saw_digit = true;
+                end = i + 1;
+                chars.next();
+            } else if c == '.' {
+                // A trailing "1. " (dot then space) is an ordered-list marker,
+                // not a section number — require another digit after the dot.
+                let after = t[i + 1..].chars().next();
+                if after.is_some_and(|n| n.is_ascii_digit()) {
+                    dots += 1;
+                    end = i + 1;
+                    chars.next();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if !saw_digit || dots == 0 {
+            return None;
+        }
+        // Require a real title after the number (whitespace then a letter).
+        let rest = t[end..].trim_start();
+        let starts_alpha = rest.chars().next().is_some_and(|c| c.is_alphabetic());
+        if !starts_alpha || rest.len() < 2 || rest.len() > 120 {
+            return None;
+        }
+        Some((dots + 1).min(6))
     }
 
     /// Render a Table as a markdown table string.
@@ -996,7 +1247,15 @@ impl MarkdownOutputConverter {
 
                         if i > 0 {
                             let prev = &cell.spans[i - 1];
-                            let has_gap = super::has_horizontal_gap(prev, span);
+                            // Insert an inter-span space when there is a visible
+                            // gap OR when the word-boundary detector already
+                            // determined this span begins a new word (splitting a
+                            // fused run). The cell path previously used the gap
+                            // alone and so glued tight-set word pairs like
+                            // "Value"+"Aktien" -> "ValueAktien" that the main text
+                            // path separates via that same boundary metadata.
+                            let has_gap =
+                                super::has_horizontal_gap(prev, span) || span.split_boundary_before;
                             let already_has_space =
                                 cell_md.ends_with(' ') || span.text.starts_with(' ');
                             if has_gap && !already_has_space {
@@ -1120,6 +1379,23 @@ impl MarkdownOutputConverter {
         // so that heading-only documents still produce sensible ratios.
         let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
+        // WS2.4b — distinct heading-size tiers, computed once, for the additive
+        // rank fallback below. Empty (inert) unless the document has text well
+        // above body size.
+        let heading_tiers = if config.output.detect_headings {
+            Self::heading_size_tiers(&sorted, base_font_size)
+        } else {
+            Vec::new()
+        };
+
+        // Footnote detection (WS2.7). Conservative, high-precision: an
+        // inline superscript marker is only rewritten to `[^N]` when a
+        // matching page-bottom definition block starting with the SAME
+        // token is also present, and vice-versa. When either half is
+        // missing the plan is empty and rendering is byte-identical to
+        // before. See `detect_footnotes` for the heuristics.
+        let footnote_plan = detect_footnotes(&sorted, base_font_size);
+
         // Per-block margins: the rightmost edge and the leftmost edge any span
         // sharing a paragraph `block_id` reaches. A *wrapped* prose line runs to
         // the column margin (the right edge for left-to-right text, the LEFT
@@ -1218,11 +1494,26 @@ impl MarkdownOutputConverter {
             out
         }
 
+        // WS2.5: left-edge levels for list-item nesting depth (inert on flat lists).
+        let list_x_levels = Self::list_marker_x_levels(&sorted);
+
         for (idx, span) in sorted.iter().enumerate() {
             // Skip artifacts (pagination, headers, footers)
             if span.span.artifact_type.is_some() {
                 continue;
             }
+
+            // Suppress spans that make up a confirmed page-bottom footnote
+            // definition block: they are re-emitted as `[^N]: …` lines at
+            // the end of the document instead of appearing inline as body
+            // text. (Empty set when no footnotes were confirmed.)
+            if footnote_plan.definition_spans.contains(&idx) {
+                continue;
+            }
+
+            // Whether this span is a confirmed inline footnote marker
+            // (a raised superscript token with a matching bottom def).
+            let footnote_marker_label = footnote_plan.inline_markers.get(&idx);
 
             // Skip "noise" spans: isolated single-character fragments that
             // are purely punctuation/symbol (e.g. a bare "|" or "—" on its
@@ -1248,6 +1539,7 @@ impl MarkdownOutputConverter {
                     && !t.chars().any(|c| c.is_alphanumeric())
                     && !Self::is_bullet_span(t)
                     && !Self::starts_with_bullet(t)
+                    && footnote_marker_label.is_none()
                 {
                     let carries_space = span.span.text.chars().any(|c| c.is_whitespace());
                     let rtl_separator = carries_space && {
@@ -1301,7 +1593,20 @@ impl MarkdownOutputConverter {
             let span_heading_level = match span.struct_role {
                 Some(StructRole::Heading(level)) => Some(level.clamp(1, 6)),
                 _ if config.output.detect_headings => {
+                    // Font-size heuristic first; fall back to numbered-section
+                    // promotion (WS2.4) so same-point-size numbered headings
+                    // ("2.1 Method") are still recovered.
                     self.heading_level_ratio(span, base_font_size)
+                        .or_else(|| {
+                            if Self::is_valid_heading_text(span.span.text.trim()) {
+                                Self::numbered_heading_level(&span.span.text)
+                            } else {
+                                None
+                            }
+                        })
+                        // WS2.4b — last resort: a heading-size span the ratio and
+                        // numbered heuristics both missed, promoted by its tier rank.
+                        .or_else(|| self.heading_level_by_tier(span, &heading_tiers))
                 },
                 _ => None,
             };
@@ -1504,7 +1809,7 @@ impl MarkdownOutputConverter {
                     }
                     current_heading_level = span_heading_level;
                     if is_list_item_role && !span_is_ordered {
-                        current_line.push_str("- ");
+                        Self::push_list_marker(&mut current_line, span.span.bbox.x, &list_x_levels);
                     }
                 } else if !same_line {
                     // Different visual line but within paragraph spacing.
@@ -1548,14 +1853,18 @@ impl MarkdownOutputConverter {
                                     strip_emphasis(current_line.trim())
                                 ));
                             } else {
-                                result.push_str(current_line.trim());
+                                result.push_str(Self::flush_line(&current_line));
                                 result.push('\n');
                             }
                             current_line.clear();
                         }
                         current_heading_level = span_heading_level;
                         if starts_new_list_item && !span_is_ordered {
-                            current_line.push_str("- ");
+                            Self::push_list_marker(
+                                &mut current_line,
+                                span.span.bbox.x,
+                                &list_x_levels,
+                            );
                         }
                     } else {
                         // Different visual line within the same paragraph — close
@@ -1581,7 +1890,7 @@ impl MarkdownOutputConverter {
             } else {
                 current_heading_level = span_heading_level;
                 if is_list_item_role && !span_is_ordered {
-                    current_line.push_str("- ");
+                    Self::push_list_marker(&mut current_line, span.span.bbox.x, &list_x_levels);
                 }
             }
 
@@ -1591,7 +1900,7 @@ impl MarkdownOutputConverter {
                     if !current_line.is_empty() && !current_line.ends_with(' ') {
                         current_line.push(' ');
                     }
-                    current_line.push_str("- ");
+                    Self::push_list_marker(&mut current_line, span.span.bbox.x, &list_x_levels);
                 }
                 prev_span = Some(span);
                 continue;
@@ -1604,6 +1913,14 @@ impl MarkdownOutputConverter {
             // for markdown output too.
             let mut text_str = String::new();
             crate::document::PdfDocument::push_span_text(&mut text_str, &span.span);
+
+            // Confirmed inline footnote marker: replace the raw superscript
+            // token (e.g. "1" / "*") with markdown footnote-reference
+            // syntax `[^N]`. It then flows through the normal same-line
+            // append path and glues onto the preceding body text.
+            if let Some(label) = footnote_marker_label {
+                text_str = label.clone();
+            }
 
             // Normalize known mis-extracted bullet glyphs (DEL from Zapf
             // Dingbats mappings, ❍ from ligature remaps) to U+2022 so the
@@ -1646,7 +1963,7 @@ impl MarkdownOutputConverter {
                     if !current_line.is_empty() && !current_line.ends_with(' ') {
                         current_line.push(' ');
                     }
-                    current_line.push_str("- ");
+                    Self::push_list_marker(&mut current_line, span.span.bbox.x, &list_x_levels);
                 }
                 text = stripped;
             }
@@ -1829,11 +2146,11 @@ impl MarkdownOutputConverter {
                 // Trailing monospace paragraph — sentinel-wrap so the fence pass
                 // fuses it with any preceding code lines.
                 result.push(MONO_SENTINEL);
-                result.push_str(current_line.trim());
+                result.push_str(Self::flush_line(&current_line));
                 result.push(MONO_SENTINEL);
                 result.push('\n');
             } else {
-                result.push_str(current_line.trim());
+                result.push_str(Self::flush_line(&current_line));
                 result.push('\n');
             }
         }
@@ -1914,6 +2231,13 @@ impl MarkdownOutputConverter {
         if !is_tagged {
             final_result = collapse_numeric_heading_runs(&final_result);
             final_result = merge_consecutive_same_level_headings(&final_result);
+            // Line-level heading re-validation: the level is decided per span,
+            // before the line's spans are concatenated, so a short promoted span
+            // can accrete a body continuation into a long, sentence-like line.
+            // Re-apply the heading gate to each COMPLETE line and demote body
+            // text back to a paragraph (marker-style block-level classification).
+            // Tagged PDFs are skipped — their `/H` tags are authoritative.
+            final_result = Self::demote_body_like_headings(&final_result);
         }
         // INTENTIONALLY NOT INVOKED — these would damage legitimate
         // content and were removed after a 70-PDF baseline-vs-HEAD
@@ -2021,8 +2345,350 @@ impl MarkdownOutputConverter {
             final_result = wrap_bidi_isolates_per_line(&final_result);
         }
 
+        // Append confirmed footnote definitions as a trailing block of
+        // `[^N]: text` lines, separated from the body by a blank line.
+        // Emitted after all body post-processing so the definition
+        // markers are never mistaken for table/list syntax. Empty when
+        // no footnotes were confirmed (byte-identical output).
+        if !footnote_plan.definitions.is_empty() {
+            let trailing_nl = final_result
+                .chars()
+                .rev()
+                .take_while(|&c| c == '\n')
+                .count();
+            for _ in trailing_nl..2 {
+                final_result.push('\n');
+            }
+            for def in &footnote_plan.definitions {
+                final_result.push_str(def);
+                final_result.push('\n');
+            }
+        }
+
         Ok(final_result)
     }
+}
+
+/// A footnote reference token: either a run of digits (`1`, `12`) or a
+/// single footnote symbol (`*`, `†`, `‡`, `§`, `¶`). Markers and
+/// definitions are matched by the equality of these tokens.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FootnoteToken {
+    /// Numeric marker; stored as the raw digit string so `[^12]` keeps
+    /// the author's number.
+    Number(String),
+    /// Symbol marker (`*`/`†`/`‡`/`§`/`¶`).
+    Symbol(char),
+}
+
+impl FootnoteToken {
+    /// String used to match a marker against a definition (`"1"`, `"*"`).
+    fn key(&self) -> String {
+        match self {
+            FootnoteToken::Number(s) => s.clone(),
+            FootnoteToken::Symbol(c) => c.to_string(),
+        }
+    }
+}
+
+/// The result of footnote detection over one page's spans.
+///
+/// All index fields are positions into the `sorted` slice passed to
+/// `detect_footnotes` (which is exactly the enumeration index used by
+/// the render loop). Every collection is empty when no footnote was
+/// confirmed, in which case rendering is byte-for-byte unchanged.
+#[derive(Default)]
+struct FootnotePlan {
+    /// span index → inline replacement text (`"[^1]"`).
+    inline_markers: std::collections::HashMap<usize, String>,
+    /// span indices belonging to a confirmed definition block (suppressed
+    /// from normal body rendering).
+    definition_spans: std::collections::HashSet<usize>,
+    /// assembled definition lines (`"[^1]: Smith et al. 2019"`), ordered.
+    definitions: Vec<String>,
+}
+
+/// Parse a whole span's text as a footnote *marker* token. Accepts a run
+/// of 1–3 digits or a single footnote symbol; anything else (letters, an
+/// ordinal suffix like `th`, multi-symbol runs) yields `None`.
+fn parse_footnote_marker_token(text: &str) -> Option<FootnoteToken> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if t.chars().count() == 1 {
+        let c = t.chars().next().unwrap();
+        if matches!(c, '*' | '†' | '‡' | '§' | '¶') {
+            return Some(FootnoteToken::Symbol(c));
+        }
+    }
+    if t.len() <= 3 && t.chars().all(|c| c.is_ascii_digit()) {
+        return Some(FootnoteToken::Number(t.to_string()));
+    }
+    None
+}
+
+/// Parse a page-bottom definition line: a leading footnote token, an
+/// optional single `.`/`)`/`:` separator, then the definition text. The
+/// marker must be followed by whitespace or a separator (so `1st` or
+/// `12x` do not falsely parse), and the remaining definition must be
+/// non-empty.
+fn split_leading_footnote_def(line: &str) -> Option<(FootnoteToken, String)> {
+    let t = line.trim_start();
+    let first = t.chars().next()?;
+    let (token, consumed) = if matches!(first, '*' | '†' | '‡' | '§' | '¶') {
+        (FootnoteToken::Symbol(first), first.len_utf8())
+    } else if first.is_ascii_digit() {
+        let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() > 3 {
+            return None;
+        }
+        let len = digits.len();
+        (FootnoteToken::Number(digits), len)
+    } else {
+        return None;
+    };
+    let after = &t[consumed..];
+    // Boundary: marker must be delimited from the definition text.
+    if !(after.starts_with(char::is_whitespace) || after.starts_with(['.', ')', ':'])) {
+        return None;
+    }
+    let rest = after.strip_prefix(['.', ')', ':']).unwrap_or(after);
+    let def = rest.trim();
+    if def.is_empty() {
+        return None;
+    }
+    // A footnote definition is prose (a citation or note), not a stray numeric
+    // run. Require a few letters so a math/table row like "2 2 1 2" — which
+    // happens to lead with a digit token — is not mistaken for a definition.
+    // Because a footnote is only emitted when a marker has a MATCHING
+    // definition, rejecting the garbage def also suppresses the spurious inline
+    // `[^n]` marker (the false-positive seen on math-heavy arXiv text).
+    if def.chars().filter(|c| c.is_alphabetic()).count() < 3 {
+        return None;
+    }
+    Some((token, def.to_string()))
+}
+
+/// Find the adjacent body span for a candidate superscript marker at
+/// index `i`: the immediate predecessor or successor whose text carries a
+/// letter (real prose, not another marker), preferring the larger font.
+fn adjacent_body_span(spans: &[&OrderedTextSpan], i: usize) -> Option<usize> {
+    let candidates = [i.checked_sub(1), (i + 1 < spans.len()).then_some(i + 1)];
+    let mut best: Option<usize> = None;
+    for c in candidates.into_iter().flatten() {
+        if !spans[c].span.text.chars().any(|ch| ch.is_alphabetic()) {
+            continue;
+        }
+        best = match best {
+            Some(b) if spans[b].span.font_size >= spans[c].span.font_size => Some(b),
+            _ => Some(c),
+        };
+    }
+    best
+}
+
+/// Conservative, high-precision footnote detection (WS2.7).
+///
+/// A footnote is only emitted when BOTH halves are found and their tokens
+/// match: (a) an inline superscript marker in body text — a small, raised
+/// digit/symbol span — AND (b) a page-bottom definition line starting with
+/// the same token in a smaller-than-body font. Missing either half leaves
+/// the text untouched (a false footnote is worse than a missed one).
+///
+/// Thresholds (chosen for precision): a marker font must be < 0.75× its
+/// adjacent body span and its baseline raised by > 0.1× that body font;
+/// the definition band is the bottom 18% of the page's baseline range and
+/// its leading span must be < 0.92× the body font.
+fn detect_footnotes(spans: &[&OrderedTextSpan], base_font_size: f32) -> FootnotePlan {
+    use std::collections::{HashMap, HashSet};
+    let mut plan = FootnotePlan::default();
+    if spans.len() < 2 || base_font_size <= 0.0 {
+        return plan;
+    }
+
+    // Page baseline extent. Higher y = higher on the page.
+    let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
+    for s in spans {
+        let y = s.span.bbox.y;
+        y_min = y_min.min(y);
+        y_max = y_max.max(y);
+    }
+    let y_range = y_max - y_min;
+    if y_range <= 0.0 {
+        return plan;
+    }
+    let bottom_cut = y_min + 0.18 * y_range;
+
+    // --- Candidate definitions from the bottom band. ---
+    let mut bottom: Vec<usize> = (0..spans.len())
+        .filter(|&i| spans[i].span.bbox.y <= bottom_cut)
+        .collect();
+    bottom.sort_by(|&a, &b| {
+        spans[b]
+            .span
+            .bbox
+            .y
+            .partial_cmp(&spans[a].span.bbox.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(
+                spans[a]
+                    .span
+                    .bbox
+                    .x
+                    .partial_cmp(&spans[b].span.bbox.x)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    // Group bottom-band spans into lines by baseline proximity.
+    let mut def_lines: Vec<Vec<usize>> = Vec::new();
+    for &i in &bottom {
+        let y = spans[i].span.bbox.y;
+        if let Some(last) = def_lines.last_mut() {
+            let ly = spans[last[0]].span.bbox.y;
+            let tol = spans[i].span.font_size.max(1.0) * 0.6;
+            if (ly - y).abs() <= tol {
+                last.push(i);
+                continue;
+            }
+        }
+        def_lines.push(vec![i]);
+    }
+    // token, member-span indices, definition text.
+    let mut cand_defs: Vec<(FootnoteToken, Vec<usize>, String)> = Vec::new();
+    for line in &def_lines {
+        let mut ordered = line.clone();
+        ordered.sort_by(|&a, &b| {
+            spans[a]
+                .span
+                .bbox
+                .x
+                .partial_cmp(&spans[b].span.bbox.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // The leading (marker) span must be in a smaller-than-body font.
+        if spans[ordered[0]].span.font_size >= base_font_size * 0.92 {
+            continue;
+        }
+        let mut text = String::new();
+        for &si in &ordered {
+            let t = spans[si].span.text.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if !text.is_empty() && !text.ends_with(' ') {
+                text.push(' ');
+            }
+            text.push_str(t);
+        }
+        if let Some((token, def)) = split_leading_footnote_def(&text) {
+            cand_defs.push((token, ordered, def));
+        }
+    }
+    if cand_defs.is_empty() {
+        return plan;
+    }
+
+    // --- Candidate inline markers in body text. ---
+    let mut cand_markers: Vec<(usize, FootnoteToken)> = Vec::new();
+    for i in 0..spans.len() {
+        let s = spans[i];
+        if s.span.bbox.y <= bottom_cut {
+            continue; // markers live in body text, not the bottom band
+        }
+        let token = match parse_footnote_marker_token(&s.span.text) {
+            Some(t) => t,
+            None => continue,
+        };
+        let adj = match adjacent_body_span(spans, i) {
+            Some(a) => a,
+            None => continue,
+        };
+        let body = spans[adj];
+        // Meaningfully smaller font.
+        if s.span.font_size >= body.span.font_size * 0.75 {
+            continue;
+        }
+        // Baseline raised relative to the body span (superscript).
+        if s.span.bbox.y <= body.span.bbox.y + body.span.font_size * 0.1 {
+            continue;
+        }
+        // Still on roughly the same line (inline, not a separate row).
+        if (s.span.bbox.y - body.span.bbox.y).abs() > body.span.font_size * 1.2 {
+            continue;
+        }
+        // A footnote reference attaches to the end of a WORD ("compressible¹").
+        // A raised digit that immediately follows another digit (or a lone
+        // variable) is a sub/superscript inside an equation, not a footnote —
+        // the false positive in math-heavy academic text, where a math
+        // subscript coincidentally matches a real footnote number. Suppress a
+        // marker whose immediate predecessor on the same line ends in a digit.
+        if let Some(prev) = i.checked_sub(1) {
+            let p = spans[prev];
+            let same_line =
+                (p.span.bbox.y - s.span.bbox.y).abs() <= s.span.font_size.max(1.0) * 1.5;
+            if same_line {
+                if let Some(last) = p.span.text.trim_end().chars().next_back() {
+                    if last.is_ascii_digit() {
+                        continue;
+                    }
+                }
+            }
+        }
+        cand_markers.push((i, token));
+    }
+    if cand_markers.is_empty() {
+        return plan;
+    }
+
+    // --- Confirm tokens present in BOTH sets, assign labels. ---
+    let def_tokens: HashSet<String> = cand_defs.iter().map(|(t, _, _)| t.key()).collect();
+    // token key → label name used inside `[^ ]` (digits, or a sequential
+    // id for symbols in first-appearance order).
+    let mut token_name: HashMap<String, String> = HashMap::new();
+    let mut symbol_counter: u32 = 0;
+    for (i, token) in &cand_markers {
+        let key = token.key();
+        if !def_tokens.contains(&key) {
+            continue;
+        }
+        let name = token_name
+            .entry(key)
+            .or_insert_with(|| match token {
+                FootnoteToken::Number(s) => s.clone(),
+                FootnoteToken::Symbol(_) => {
+                    symbol_counter += 1;
+                    symbol_counter.to_string()
+                },
+            })
+            .clone();
+        plan.inline_markers.insert(*i, format!("[^{name}]"));
+    }
+    if plan.inline_markers.is_empty() {
+        return plan;
+    }
+
+    // --- Emit definitions for confirmed tokens (first line per token). ---
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut ordered_defs: Vec<(u32, String)> = Vec::new();
+    for (token, indices, def) in &cand_defs {
+        let key = token.key();
+        let name = match token_name.get(&key) {
+            Some(n) => n.clone(),
+            None => continue,
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        for &si in indices {
+            plan.definition_spans.insert(si);
+        }
+        let order = name.parse::<u32>().unwrap_or(u32::MAX);
+        ordered_defs.push((order, format!("[^{name}]: {def}")));
+    }
+    ordered_defs.sort_by_key(|(o, _)| *o);
+    plan.definitions = ordered_defs.into_iter().map(|(_, s)| s).collect();
+    plan
 }
 
 /// Walk `text` line by line and wrap each line's RTL runs (or LTR
@@ -3589,6 +4255,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -3627,6 +4294,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -3634,6 +4302,201 @@ mod tests {
             },
             0,
         )
+    }
+
+    /// WS2.5: a list item whose bullet sits further right than the top-level
+    /// markers gets a 2-space indent per level; a flat list is unindented
+    /// (byte-identical to before).
+    #[test]
+    fn md_nested_list_indents_by_marker_x() {
+        let config = TextPipelineConfig::default();
+        let converter = MarkdownOutputConverter::new();
+
+        let nested = converter
+            .convert(
+                &[
+                    make_span("• Alpha", 50.0, 700.0, 12.0, FontWeight::Normal),
+                    make_span("• Beta", 50.0, 686.0, 12.0, FontWeight::Normal),
+                    make_span("• Gamma", 80.0, 672.0, 12.0, FontWeight::Normal),
+                ],
+                &config,
+            )
+            .unwrap();
+        assert!(nested.contains("- Alpha"), "top-level item unindented: {nested:?}");
+        assert!(nested.contains("  - Gamma"), "deeper-x item gets a 2-space indent: {nested:?}");
+
+        let flat = converter
+            .convert(
+                &[
+                    make_span("• One", 50.0, 700.0, 12.0, FontWeight::Normal),
+                    make_span("• Two", 50.0, 686.0, 12.0, FontWeight::Normal),
+                ],
+                &config,
+            )
+            .unwrap();
+        assert!(!flat.contains("  - "), "a flat list must not be indented: {flat:?}");
+    }
+
+    /// WS2.4: multi-level numbered section titles promote to headings at their
+    /// dot-depth; list markers and non-headings do not.
+    #[test]
+    fn md_numbered_heading_promotion() {
+        let f = MarkdownOutputConverter::numbered_heading_level;
+        assert_eq!(f("2.1.3 Results and discussion"), Some(3));
+        assert_eq!(f("2.1 Method"), Some(2));
+        assert_eq!(f("4.2.1.5 Deep"), Some(4)); // 3 dots → level 4
+                                                // Not headings:
+        assert_eq!(f("1. First list item"), None, "single-dot+space is a list marker");
+        assert_eq!(f("3 Discussion"), None, "no dot is too ambiguous");
+        assert_eq!(f("Introduction"), None, "no number");
+        assert_eq!(f("2.1.3"), None, "number with no title");
+        assert_eq!(f("2020.05.13"), None, "date-like, no alpha title");
+    }
+
+    // ---- WS2.4b heading font-size tier ranking ----
+
+    #[test]
+    fn ws24b_tier_rank_promotes_slightly_larger_heading() {
+        // Body at 10pt; two heading tiers at 15pt and 11.5pt (1.15x body). The
+        // ratio heuristic promotes the 15pt (>=1.4x → H2) but leaves the 11.5pt
+        // (1.15x, non-bold) as body. The tier fallback recovers it as H2 (rank 2
+        // of the two tiers). Proves the additive recovery.
+        let converter = MarkdownOutputConverter::new();
+        let mut config = TextPipelineConfig::default();
+        config.output.detect_headings = true;
+        let mut spans = vec![
+            make_span_w("Big Section", 0.0, 800.0, 100.0, 15.0, FontWeight::Normal),
+            make_span_w("Sub Section", 0.0, 700.0, 100.0, 11.5, FontWeight::Normal),
+        ];
+        // Body text at 10pt so base_font_size resolves to ~10.
+        for i in 0..8 {
+            spans.push(make_span_w(
+                "ordinary body paragraph text here",
+                0.0,
+                600.0 - (i as f32) * 12.0,
+                200.0,
+                10.0,
+                FontWeight::Normal,
+            ));
+        }
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("## Sub Section"), "tier fallback missed H2: {md:?}");
+    }
+
+    #[test]
+    fn ws24b_tier_rank_does_not_promote_body_text() {
+        // A document with a single heading tier (14pt) over 10pt body. The body
+        // spans (10pt, < 1.15x floor) must never be promoted by the tier
+        // fallback — only the 14pt heading is a tier.
+        let converter = MarkdownOutputConverter::new();
+        let mut config = TextPipelineConfig::default();
+        config.output.detect_headings = true;
+        let mut spans = vec![make_span_w(
+            "Title Here",
+            0.0,
+            800.0,
+            100.0,
+            14.0,
+            FontWeight::Normal,
+        )];
+        for i in 0..8 {
+            spans.push(make_span_w(
+                "plain body sentence that is clearly not a heading at all",
+                0.0,
+                700.0 - (i as f32) * 12.0,
+                260.0,
+                10.0,
+                FontWeight::Normal,
+            ));
+        }
+        let md = converter.convert(&spans, &config).unwrap();
+        // No body line should have become a heading (no stray leading '#').
+        for line in md.lines() {
+            if line.starts_with('#') {
+                assert!(
+                    line.contains("Title Here"),
+                    "body text wrongly promoted to heading: {line:?}"
+                );
+            }
+        }
+    }
+
+    // ---- WS2.7 footnote detection ----
+
+    #[test]
+    fn footnote_marker_with_matching_bottom_def_emits_reference() {
+        // Body text ending in a raised superscript "1" plus a page-bottom
+        // definition line "1 Smith et al. 2019" → inline `[^1]` and a
+        // trailing `[^1]: …` definition.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("As shown", 0.0, 700.0, 60.0, 11.0, FontWeight::Normal),
+            // raised (y 702 > 700) and small (7pt < 0.75×11)
+            make_span_w("1", 60.0, 702.0, 5.0, 7.0, FontWeight::Normal),
+            // page-bottom definition block (bottom 18% band)
+            make_span_w("1", 0.0, 50.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("Smith et al. 2019", 10.0, 50.0, 120.0, 7.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("As shown[^1]"), "inline reference missing: {md:?}");
+        assert!(md.contains("[^1]: Smith et al. 2019"), "definition missing: {md:?}");
+    }
+
+    #[test]
+    fn footnote_symbol_marker_with_matching_def_emits_sequential_id() {
+        // A symbol marker (`*`) is confirmed by a matching bottom def and
+        // assigned the sequential id `1`. Also guards the noise-filter: a
+        // lone `*` span must survive because it is a confirmed marker.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("See note", 0.0, 700.0, 60.0, 11.0, FontWeight::Normal),
+            make_span_w("*", 60.0, 702.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("*", 0.0, 50.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("Important caveat", 10.0, 50.0, 100.0, 7.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(md.contains("See note[^1]"), "inline reference missing: {md:?}");
+        assert!(md.contains("[^1]: Important caveat"), "definition missing: {md:?}");
+    }
+
+    #[test]
+    fn footnote_superscript_without_matching_def_left_unchanged() {
+        // A raised superscript "1" whose only bottom block starts with a
+        // DIFFERENT token ("2") must not be rewritten — neither half is
+        // confirmed, so no footnote syntax is emitted at all.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("As shown", 0.0, 700.0, 60.0, 11.0, FontWeight::Normal),
+            make_span_w("1", 60.0, 702.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("2", 0.0, 50.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("Unrelated note", 10.0, 50.0, 100.0, 7.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(!md.contains("[^"), "unexpected footnote syntax: {md:?}");
+        assert!(md.contains("As shown"), "body text lost: {md:?}");
+    }
+
+    #[test]
+    fn footnote_ordinal_superscript_not_treated_as_footnote() {
+        // "May 5th" with a superscript ordinal "th" must never be treated
+        // as a footnote: the token is letters, not a digit/symbol, so it
+        // is never even a candidate marker.
+        let converter = MarkdownOutputConverter::new();
+        let config = TextPipelineConfig::default();
+        let spans = vec![
+            make_span_w("May", 0.0, 700.0, 30.0, 11.0, FontWeight::Normal),
+            make_span_w("5", 30.0, 700.0, 8.0, 11.0, FontWeight::Normal),
+            make_span_w("th", 38.0, 702.0, 8.0, 7.0, FontWeight::Normal),
+            // a bottom block that would confirm a real footnote is present
+            // but cannot match a letter-token "th".
+            make_span_w("1", 0.0, 50.0, 5.0, 7.0, FontWeight::Normal),
+            make_span_w("Footer note", 10.0, 50.0, 90.0, 7.0, FontWeight::Normal),
+        ];
+        let md = converter.convert(&spans, &config).unwrap();
+        assert!(!md.contains("[^"), "ordinal wrongly footnoted: {md:?}");
     }
 
     #[test]
@@ -4211,6 +5074,7 @@ mod tests {
                 horizontal_scaling: 100.0,
                 primary_detected: false,
                 char_widths: vec![],
+                char_x_offsets: Vec::new(),
                 heading_level: None,
                 rotation_degrees: 0.0,
                 wmode: 0,
@@ -4983,6 +5847,7 @@ mod tests {
             horizontal_scaling: 100.0,
             primary_detected: false,
             char_widths: vec![],
+            char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: 0.0,
             wmode: 0,

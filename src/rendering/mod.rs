@@ -32,6 +32,7 @@
 
 pub(crate) mod blend_nonsep;
 pub(crate) mod ext_gstate;
+pub(crate) mod mesh_shading;
 pub(crate) mod page_renderer;
 mod path_rasterizer;
 pub(crate) mod resolution;

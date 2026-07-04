@@ -396,8 +396,12 @@ impl TextRasterizer {
                 );
             }
         }
-        // Text rendering mode 3 = invisible text (used for searchable OCR layers)
-        if gs.render_mode == 3 {
+        // Text rendering mode 3 = invisible text (searchable OCR layers).
+        // Mode 7 = add-to-clip-path only, with NO painting (ISO 32000-1
+        // §9.3.6); it previously fell through and painted glyphs visibly. The
+        // clip-path accumulation itself (modes 4–7) is not yet applied, but
+        // mode-7 glyphs must at minimum not paint. (WS1.5)
+        if gs.render_mode == 3 || gs.render_mode == 7 {
             paint.set_color(tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.0).unwrap());
         }
 

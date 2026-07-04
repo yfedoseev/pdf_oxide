@@ -1,6 +1,6 @@
 .{
     .name = .pdf_oxide,
-    .version = "0.3.70",
+    .version = "0.3.71",
     .fingerprint = 0x991319f35cdc7f8a,
     .minimum_zig_version = "0.15.0",
     .paths = .{

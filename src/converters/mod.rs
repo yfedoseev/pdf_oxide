@@ -221,6 +221,14 @@ pub struct ConversionOptions {
     /// Note: GitHub/GitLab Markdown renderers block base64 images for security.
     pub embed_images: bool,
 
+    /// Strip repeated running headers/footers from untagged documents (WS2.6).
+    ///
+    /// When true, a cross-page pass finds top/bottom-band text lines that
+    /// recur on a majority of pages (page numbers ignored) and drops them from
+    /// the output — the geometric counterpart to the `/Artifact`-tag filtering
+    /// that already handles tagged PDFs. Off by default (behaviour change).
+    pub strip_running_headers_footers: bool,
+
     /// Reading order determination mode.
     ///
     /// Controls how text blocks are ordered in the output.
@@ -370,6 +378,7 @@ impl Default for ConversionOptions {
             include_images: false,
             image_output_dir: None,
             embed_images: true,
+            strip_running_headers_footers: false,
             reading_order_mode: ReadingOrderMode::StructureTreeFirst { mcid_order: vec![] },
             bold_marker_behavior: BoldMarkerBehavior::Conservative,
             table_detection_config: None,

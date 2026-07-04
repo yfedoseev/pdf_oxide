@@ -2,6 +2,26 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.71] - 2026-07-04
+
+> Spec-alignment & extraction-leadership release — the renderer gains tiling patterns, Type 3 fonts, and mesh shadings; the markdown converter gains first-class tables, images, links, headings, nested lists, running header/footer removal, and footnotes; plus accurate per-glyph coordinates on the word/span APIs, correct PDF/X ICC validation, and a structure-tree parser that no longer drops large trees.
+
+### Added
+
+- **Renderer spec alignment (ISO 32000-1)** — the CPU rasteriser now paints several previously-unsupported constructs: **tiling patterns** (PatternType 1, §8.7.3), **Type 3 font glyphs** (CharProcs executed under the font matrix with `d0`/`d1`, §9.6.5), **mesh shadings** (free-form and lattice-form Gouraud triangle meshes and Coons/tensor patches — types 4/5/6/7 — plus function-based type 1, §8.7.4.5), **text rendering modes 4–7** (glyph-outline clip accumulation across `BT`/`ET`, §9.3.6), and **colour-key masking** (`/Mask [ranges]`, §8.9.6.4). JPEG 2000 images with chroma-subsampled components are now upsampled and decoded rather than skipped.
+- **First-class tables in the markdown/HTML converters** — the pipeline converter renders detected tables directly (pipe tables with header rows and colspan handling), replacing the fragile text-post-processing path.
+- **Images, links, and document structure in markdown** — figures are emitted as `![](…)`, `/Link` annotations become `[text](uri)` / `<a href>` (with a safe-scheme gate), heading hierarchy is inferred as `#`–`######`, indentation-based nested lists are preserved, cross-page running headers/footers are detected and filtered, and superscript-marker + page-bottom footnotes become `[^n]` references.
+- **Hybrid-reference files (`/XRefStm`, §7.5.8.4)** — a classic trailer's cross-reference-stream supplement is now parsed and merged, so hybrid PDFs resolve all objects.
+
+### Fixed
+
+- **Per-glyph coordinates in `extract_words` / `extract_spans` / `extract_text_lines` drifted on CID/Type 0 fonts (#780, part 2)** — these APIs reconstructed each glyph's x-position by summing nominal advance widths, which omits the ISO 32000-1 §9.4.3 `TJ`-array kerning, so positions drifted cumulatively along a line (up to tens of points) versus `extract_chars`. Each glyph's x now comes from the accurate content-stream position (matching `extract_chars` and Poppler's `pdftotext -bbox`); on the reporter's repro, glyphs within 0.5 pt of the reference went from 15 % to 97 %. Word segmentation is unchanged (the char-width array is untouched), so complex-script extraction does not regress. Thanks @ankursri494 for the report and reproducer.
+- **Valid ICC profiles reported as `[XCOLOR-005] … not a valid stream` in `validate_pdf_x` (#797)** — an ICCBased colour space embeds its profile as a *stream* (§8.6.5.5, `[ /ICCBased stream ]`), but the validator only accepted a bare dictionary and flagged every conforming profile (including the Ghent Workgroup PDF/X-4 suite). It now reads `/N` from the stream dictionary. Thanks @takoportal for the detailed report and repro.
+- **Structure-tree parsing dropped large trees under a hard-coded budget (#801)** — `parse_structure_tree` imposed a 200 ms wall-clock budget and a 10 000-element cap and returned *no* structure tree at all when either was exceeded (e.g. the 756-page ISO 32000-1 specification), which is non-deterministic across machines and silently loses data. The default now parses the complete tree; callers that need to bound the work can opt in via the new `parse_structure_tree_with_budget(&doc, Option<Duration>)` (and `doc.structure_tree_with_budget(…)`). The redundant post-parse size check is removed. Thanks @bjorn3 for the report and proposed API.
+- **Numeric median selection** — heading/base-font-size statistics now use `select_nth_unstable_by` (exact O(n)) instead of a full sort.
+
+_Thanks to @ankursri494 (#780), @takoportal (#797), and @bjorn3 (#801) for reporting the issues that drove this release._
+
 ## [0.3.70] - 2026-07-02
 
 > Extraction-fidelity release — kerning-split words rejoined in plain text, table/form line cells split consistently regardless of word width, resolved `/BaseFont` names on the span/word APIs, and content-stream order exposed on extracted spans and words.
