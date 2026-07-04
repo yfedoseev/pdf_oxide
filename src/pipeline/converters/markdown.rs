@@ -4282,41 +4282,13 @@ mod tests {
         assert_eq!(f("2020.05.13"), None, "date-like, no alpha title");
     }
 
-    // ---- WS2.4b heading font-size tier ranking ----
+    // ---- Heading size-ratio promotion: body text must not be over-promoted ----
 
     #[test]
-    fn ws24b_tier_rank_promotes_slightly_larger_heading() {
-        // Body at 10pt; two heading tiers at 15pt and 11.5pt (1.15x body). The
-        // ratio heuristic promotes the 15pt (>=1.4x → H2) but leaves the 11.5pt
-        // (1.15x, non-bold) as body. The tier fallback recovers it as H2 (rank 2
-        // of the two tiers). Proves the additive recovery.
-        let converter = MarkdownOutputConverter::new();
-        let mut config = TextPipelineConfig::default();
-        config.output.detect_headings = true;
-        let mut spans = vec![
-            make_span_w("Big Section", 0.0, 800.0, 100.0, 15.0, FontWeight::Normal),
-            make_span_w("Sub Section", 0.0, 700.0, 100.0, 11.5, FontWeight::Normal),
-        ];
-        // Body text at 10pt so base_font_size resolves to ~10.
-        for i in 0..8 {
-            spans.push(make_span_w(
-                "ordinary body paragraph text here",
-                0.0,
-                600.0 - (i as f32) * 12.0,
-                200.0,
-                10.0,
-                FontWeight::Normal,
-            ));
-        }
-        let md = converter.convert(&spans, &config).unwrap();
-        assert!(md.contains("## Sub Section"), "tier fallback missed H2: {md:?}");
-    }
-
-    #[test]
-    fn ws24b_tier_rank_does_not_promote_body_text() {
-        // A document with a single heading tier (14pt) over 10pt body. The body
-        // spans (10pt, < 1.15x floor) must never be promoted by the tier
-        // fallback — only the 14pt heading is a tier.
+    fn heading_ratio_does_not_promote_body_text() {
+        // A document with a single clear heading (14pt) over 10pt body. The body
+        // spans (10pt) must never be promoted to a heading — only the 14pt title,
+        // which the size-ratio heuristic recovers.
         let converter = MarkdownOutputConverter::new();
         let mut config = TextPipelineConfig::default();
         config.output.detect_headings = true;
