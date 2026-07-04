@@ -892,6 +892,7 @@ mod tests {
             text: "AB".to_string(),
             bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
             char_widths: vec![10.0, 20.0],
+            char_x_offsets: Vec::new(),
             ..TextSpan::default()
         };
         let chars = span.to_chars();
@@ -979,6 +980,7 @@ mod tests {
             text: "AB".to_string(),
             bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
             char_widths: vec![10.0, 20.0],
+            char_x_offsets: Vec::new(),
             ..TextSpan::default()
         };
         let a = with_offsets.to_chars();

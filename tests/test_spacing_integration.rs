@@ -52,6 +52,7 @@ fn create_test_span(
         horizontal_scaling: 100.0, // Tz parameter (Section 9.3.1)
         primary_detected: false,
         char_widths: vec![],
+        char_x_offsets: Vec::new(),
         heading_level: None,
         rotation_degrees: 0.0,
         wmode: 0,
