@@ -127,6 +127,7 @@ pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
 }
 
 /// Nearest-neighbour upsample of an `sw×sh` f32 sample plane to `fw×fh` u8.
+#[cfg(feature = "jpeg2000")]
 fn upsample_nearest_u8(sub: &[f32], sw: usize, sh: usize, fw: usize, fh: usize) -> Vec<u8> {
     let mut out = vec![0u8; fw * fh];
     for y in 0..fh {
