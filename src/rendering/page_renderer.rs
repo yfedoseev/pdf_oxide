@@ -2302,7 +2302,7 @@ impl PageRenderer {
                             let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
-                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let spot_snap = self.text_fill_spot_snapshot(pixmap, gs);
                             // §9.4 + §11.7.3 + §11.3.3: rasterise the
                             // glyph-outline coverage in parallel with
                             // the visible paint so the spot mirror has
@@ -2447,7 +2447,7 @@ impl PageRenderer {
                             let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
-                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let spot_snap = self.text_fill_spot_snapshot(pixmap, gs);
                             let text_coverage = spot_snap.as_ref().and_then(|_| {
                                 self.rasterise_text_coverage_render_text(
                                     text, transform, gs, resources, doc, clip,
@@ -2581,7 +2581,7 @@ impl PageRenderer {
                             let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
-                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let spot_snap = self.text_fill_spot_snapshot(pixmap, gs);
                             let text_coverage = spot_snap.as_ref().and_then(|_| {
                                 self.rasterise_text_coverage_render_tj_array(
                                     array, transform, gs, resources, doc, clip,
@@ -2728,7 +2728,7 @@ impl PageRenderer {
                             let overprint_snap = self.overprint_snapshot(pixmap, gs, true);
                             let cmyk_compose_snap =
                                 self.cmyk_compose_snapshot(pixmap, gs, doc, true);
-                            let spot_snap = self.spot_paint_snapshot(pixmap, gs, true);
+                            let spot_snap = self.text_fill_spot_snapshot(pixmap, gs);
                             let text_coverage = spot_snap.as_ref().and_then(|_| {
                                 self.rasterise_text_coverage_render_text(
                                     text, transform, gs, resources, doc, clip,
@@ -5102,6 +5102,23 @@ impl PageRenderer {
             return None;
         }
         Some(pixmap.data().to_vec())
+    }
+
+    /// Fill-side spot snapshot for a text show, additionally gated on the
+    /// fill-producing text render modes (`Tr` 0/2/4/6). ISO 32000-1 §9.3.6
+    /// Table 106: modes 1/3/5/7 lay down no visible *fill* mark — mode 3 is
+    /// fully invisible, 1/5 stroke only, 7 clip only. The spot mirror derives
+    /// its coverage from [`Self::coverage_only_gs`], which force-overrides the
+    /// render mode to 0 so the coverage scratch always paints; without this
+    /// gate an invisible (`3 Tr`) or stroke-only show would still write the
+    /// spot/InkA lane where nothing was painted. `spot_paint_active` cannot
+    /// carry this check because it is shared with path paints, for which the
+    /// text render mode is meaningless.
+    fn text_fill_spot_snapshot(&self, pixmap: &Pixmap, gs: &GraphicsState) -> Option<Vec<u8>> {
+        if !matches!(gs.render_mode, 0 | 2 | 4 | 6) {
+            return None;
+        }
+        self.spot_paint_snapshot(pixmap, gs, true)
     }
 
     /// Snapshot the pixmap when the CMYK sidecar plane is present and
