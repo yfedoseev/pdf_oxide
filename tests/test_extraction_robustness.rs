@@ -315,6 +315,120 @@ fn rotated_page_extraction_does_not_crash() {
     );
 }
 
+/// A `/Rotate` 90 or 270 page must keep its spatial-extraction geometry in RAW
+/// user space (matching `extract_chars`) and group there. The earlier behaviour
+/// rotated span bboxes into the displayed frame before clustering, but
+/// `TextSpan::to_chars` still lays glyphs horizontally with raw advance widths,
+/// so it could not represent a run whose visual direction was now vertical. The
+/// net effect was that every raw text row (constant raw-y) collapsed onto a
+/// single displayed-y band and unrelated cells from perpendicular columns fused
+/// into one giant token (a whole table column returned as a 1000+ char "word",
+/// separate rows fused into one line).
+///
+/// This builds a landscape page with `/Rotate 90` holding two short labels in
+/// the SAME column (same raw x) on two DISTINCT rows (different raw y). The
+/// deterministic guard is that the emitted word geometry is raw (x ≈ the content
+/// x), not the rotated displayed x (≈ raw y); a bonus check confirms the rows do
+/// not fuse into a single token.
+#[test]
+fn rotate_90_keeps_raw_coords_and_does_not_fuse_rows() {
+    let content = b"BT /F1 12 Tf 100 200 Td (Alpha) Tj ET\nBT /F1 12 Tf 100 214 Td (Bravo) Tj ET";
+    let pdf = build_minimal_pdf_raw(
+        content,
+        b"/Type /Page /Parent 2 0 R /MediaBox [0 0 800 600] /Rotate 90",
+    );
+    let doc = PdfDocument::from_bytes(pdf).expect("rotated page must open without error");
+    assert_eq!(doc.get_page_rotation(0).unwrap(), 90, "sanity: /Rotate 90 parsed");
+
+    let words = doc
+        .extract_words(0)
+        .expect("extract_words must not error on a rotated page");
+
+    // No single token may contain BOTH labels — that is the column-fusion bug.
+    for w in &words {
+        assert!(
+            !(w.text.contains("Alpha") && w.text.contains("Bravo")),
+            "distinct rows fused into one token on a /Rotate 90 page: {:?}",
+            w.text
+        );
+    }
+    assert!(
+        words.iter().any(|w| w.text.contains("Alpha")),
+        "Alpha row missing; got {:?}",
+        words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+    assert!(
+        words.iter().any(|w| w.text.contains("Bravo")),
+        "Bravo row missing; got {:?}",
+        words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+
+    // Word geometry stays RAW: x ≈ 100 (the content x), NOT the rotated displayed
+    // x (≈ raw y = 200). This is the direct signature of the fix and agrees with
+    // extract_chars, which already returns raw coordinates.
+    let alpha = words
+        .iter()
+        .find(|w| w.text.contains("Alpha"))
+        .expect("Alpha word present");
+    assert!(
+        (alpha.bbox.x - 100.0).abs() < 20.0,
+        "word x must be in raw user space (~100); got {} (the rotated frame would be ~200)",
+        alpha.bbox.x
+    );
+}
+
+/// Issue #804 (case 2): text drawn with a rotated text matrix — `Tm = [0 1 -1 0
+/// e f]` — models vertical table-column headers / chart-axis labels. Such a run's
+/// glyphs advance along a rotated axis, but the extractor stores a span bbox
+/// FLATTENED onto the x-axis (width = Σ advances, height = font). Two adjacent
+/// rotated columns therefore get overlapping flattened bboxes, and the
+/// reading-order word-merge (and the y-band line grouping) would fuse the columns
+/// into one giant token / line — the dominant #804 failure on real documents
+/// (whole rotated columns returned as 300–3400 char "words"). Each rotated run
+/// must remain its own word(s) and its own line.
+#[test]
+fn rotated_text_matrix_columns_do_not_fuse() {
+    // Two adjacent rotated columns, run starts only 10 units apart on x so their
+    // flattened bboxes (each ~= the run's advance length) heavily overlap.
+    let content = b"BT /F1 12 Tf 0 1 -1 0 200 100 Tm (Alpha) Tj ET\n\
+                    BT /F1 12 Tf 0 1 -1 0 210 100 Tm (Bravo) Tj ET";
+    let pdf = build_minimal_pdf_raw(content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 400 400]");
+    let doc = PdfDocument::from_bytes(pdf).expect("PDF must open without error");
+
+    let words = doc
+        .extract_words(0)
+        .expect("extract_words must not error on rotated-matrix text");
+    for w in &words {
+        assert!(
+            !(w.text.contains("Alpha") && w.text.contains("Bravo")),
+            "adjacent rotated columns fused into one word: {:?}",
+            w.text
+        );
+    }
+    assert!(
+        words.iter().any(|w| w.text.contains("Alpha")),
+        "Alpha column missing; got {:?}",
+        words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+    assert!(
+        words.iter().any(|w| w.text.contains("Bravo")),
+        "Bravo column missing; got {:?}",
+        words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+
+    // The two rotated columns must also not collapse into a single line.
+    let lines = doc
+        .extract_text_lines(0)
+        .expect("extract_text_lines must not error on rotated-matrix text");
+    for l in &lines {
+        assert!(
+            !(l.text.contains("Alpha") && l.text.contains("Bravo")),
+            "adjacent rotated columns fused into one line: {:?}",
+            l.text
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section 2 — non-empty text on a page with a rich annotation set
 // ---------------------------------------------------------------------------

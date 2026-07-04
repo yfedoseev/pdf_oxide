@@ -2,6 +2,24 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.72] - 2026-07-05
+
+> Rotated-page text extraction & a transitive-dependency security patch — the spatial extractors no longer garble text on rotated pages, and the optional Office-export path clears an untrusted-XML denial-of-service advisory.
+
+### Security
+
+- **`office_oxide` 0.1.2 → 0.1.3 (clears RUSTSEC-2026-0194 / RUSTSEC-2026-0195)** — the optional Office-document export path depended on `office_oxide` 0.1.2, whose transitive `quick-xml` 0.40 has an unbounded per-`xmlns` heap allocation in `NsReader::push` that a crafted DOCX/XLSX/PPTX could use to exhaust memory (a denial-of-service on untrusted input). `office_oxide` 0.1.3 upgrades to `quick-xml` 0.41, which bounds the allocation. pdf_oxide's own `quick-xml` was already 0.41; this bump closes the remaining transitive path so the dependency tree is advisory-clean.
+
+### Fixed
+
+- **`extract_words` / `extract_spans` / `extract_text_lines` garbled text on rotated pages (#804)** — on rotated pages the spatial extractors clustered along the wrong axis and fused unrelated cells into giant tokens (a whole column returned as a single 1000+ character "word", separate rows fused into one line). Two independent root causes were fixed:
+  - **Page `/Rotate` 90/270 (§7.7.3.3).** Span bounding boxes were mapped into the page's *displayed* frame before word/line clustering, but a span decomposes into characters by laying glyphs horizontally along its bbox with their raw advance widths — a representation that cannot express a run whose visual direction has become vertical. Every raw text row therefore collapsed onto one displayed band and perpendicular columns fused. Because the horizontal clustering is already correct in raw user space (and `extract_chars` already reports raw coordinates), 90°/270° pages now keep their span geometry in raw space; all four spatial APIs agree. (180° pages, where text stays horizontal, keep their existing mirror.)
+  - **Rotated text matrices (`rotation_degrees = ±90` — vertical column headers, chart-axis labels).** A run drawn with a rotated text matrix advances along a rotated axis, but the extractor stores a span bbox flattened onto the x-axis (width = Σ advances, height = font), so adjacent rotated columns overlap and the reading-order word merge and y-band line grouping fused them. Rotated runs are now excluded from both the cross-span word merge and the line grouping — each stays its own word(s) and its own line.
+
+  Thanks @ankursri494 for the report and the public, PII-free reproducers.
+
+_Thanks to @ankursri494 (#804) for reporting the issue that drove this release._
+
 ## [0.3.71] - 2026-07-04
 
 > Spec-alignment & extraction-leadership release — the renderer gains tiling patterns, Type 3 fonts, and mesh shadings; the markdown converter gains first-class tables, images, links, headings, nested lists, running header/footer removal, and footnotes; plus accurate per-glyph coordinates on the word/span APIs, correct PDF/X ICC validation, and a structure-tree parser that no longer drops large trees.
