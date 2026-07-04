@@ -3497,24 +3497,34 @@ impl FontInfo {
     /// CID font with no explicit /W entry for 0x20 — returns the 0.25 em (250)
     /// typographic default rather than the font's (often much wider) /DW.
     pub fn get_space_glyph_width(&self) -> f32 {
-        // CID-keyed (Type0) fonts almost never place the space glyph at code
-        // 0x20 under Identity-H, so `get_glyph_width(0x20)` falls through to the
-        // font's *default* width (/DW) — commonly 0.5 em or wider. That default
-        // is NOT a space advance. Callers derive their geometric word-gap
-        // threshold from this width (threshold = space_width × ratio); feeding
-        // the inflated /DW in makes the threshold so large that tightly typeset
-        // word gaps — words positioned with incremental Td offsets and no space
-        // glyph — fall below it and glue together ("Master of Science" ->
-        // "MasterofScience"). PyMuPDF / poppler infer those spaces; oxide was
-        // the outlier. Trust code 0x20 only when it is an explicit /W entry;
-        // otherwise fall back to the 0.25 em typographic default.
+        // The space advance feeds the caller's geometric word-gap threshold
+        // (threshold = space_width × ratio); a value that is not actually the
+        // space glyph's advance skews that threshold and mis-detects word
+        // boundaries.
+        //
+        // Type0 (CID-keyed) fonts under Identity-H/V — the encoding of nearly
+        // every embedded subset — map character code 0x20 to CID 32, an
+        // arbitrary font-internal glyph, NOT the space. The space glyph, if
+        // present, lives at a CID reached through the font's CMap / ToUnicode,
+        // never at code 0x20 (ISO 32000-2 §9.7.5.2, §9.10.2). So `cid_widths`
+        // keyed by 0x20 is the advance of whatever glyph sits at CID 32 —
+        // frequently ~0.5 em+ (TimesNewRomanPSMT reports 563) — and feeding it
+        // into the threshold makes it so wide that real justified word gaps
+        // fall below it and adjacent words glue together ("All rights reserved"
+        // -> "Allrightsreserved", #803). For Identity-encoded Type0 fonts,
+        // ignore code 0x20 entirely and use the 0.25 em typographic default.
         if self.subtype == "Type0" {
+            if matches!(self.encoding, Encoding::Identity) {
+                return 250.0;
+            }
+            // Non-Identity predefined CMap (e.g. 90ms-RKSJ-H): code 0x20 can map
+            // to a real space CID, so an explicit /W entry is meaningful.
             return match self.cid_widths.as_ref().and_then(|w| w.get(&0x20)) {
                 Some(&w) if w >= 50.0 => w,
                 _ => 250.0,
             };
         }
-        // Space character is always code 0x20 (32) in PDF.
+        // Space character is always code 0x20 (32) in a simple font.
         let w = self.get_glyph_width(0x20);
         // Many simple subset fonts (notably shaped Arabic from Chrome /
         // browser print) omit a glyph for code 0x20 entirely, so this returns
@@ -8159,6 +8169,74 @@ mod tests {
         };
         overrides(&mut f);
         f
+    }
+
+    // =========================================================================
+    // get_space_glyph_width — the space advance drives the geometric word-gap
+    // threshold, so it must be a REAL space advance, never an arbitrary glyph.
+    // Regression guard for #803 (justified TJ words glued together).
+    // =========================================================================
+
+    #[test]
+    fn space_width_identity_type0_ignores_cid32_glyph() {
+        // #803: under Identity-H, character code 0x20 maps to CID 32 — an
+        // arbitrary font glyph (real repro: TimesNewRomanPSMT reports 563 units
+        // ≈ 0.56 em), NOT the space. Trusting it as the space advance inflated
+        // the word-gap threshold (0.75 × 0.56 em) so far that real ~0.25 em
+        // justified word gaps were suppressed and adjacent words glued together
+        // ("All rights reserved" -> "Allrightsreserved"). The reference must
+        // fall back to the 0.25 em (250-unit) typographic default instead.
+        let mut cid_widths = HashMap::new();
+        cid_widths.insert(0x20_u16, 563.0);
+        let font = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.encoding = Encoding::Identity;
+            f.cid_widths = Some(cid_widths);
+        });
+        assert_eq!(
+            font.get_space_glyph_width(),
+            250.0,
+            "Identity Type0 must not treat the CID-32 glyph width as the space advance"
+        );
+    }
+
+    #[test]
+    fn space_width_identity_type0_without_cid32_defaults() {
+        // Identity Type0 with no /W entry for CID 32 also defaults to 0.25 em.
+        let font = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.encoding = Encoding::Identity;
+            f.cid_widths = Some(HashMap::new());
+        });
+        assert_eq!(font.get_space_glyph_width(), 250.0);
+    }
+
+    #[test]
+    fn space_width_non_identity_type0_trusts_explicit_space_cid() {
+        // A non-Identity predefined CMap can genuinely place the space at code
+        // 0x20, so an explicit /W entry there is a real space advance and is
+        // kept — only Identity encoding remaps 0x20 to an arbitrary CID.
+        let mut cid_widths = HashMap::new();
+        cid_widths.insert(0x20_u16, 280.0);
+        let font = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.encoding = Encoding::Standard("Predefined-CMap".to_string());
+            f.cid_widths = Some(cid_widths);
+        });
+        assert_eq!(font.get_space_glyph_width(), 280.0);
+    }
+
+    #[test]
+    fn space_width_simple_font_uses_explicit_widths_space() {
+        // A simple font that declares 0x20 in /Widths (FirstChar covers code 32)
+        // uses that real space advance unchanged.
+        let font = make_font(|f| {
+            f.subtype = "Type1".to_string();
+            f.first_char = Some(32);
+            // index 0 = code 32 (space) = 260 units.
+            f.widths = Some(vec![260.0, 500.0, 500.0]);
+        });
+        assert_eq!(font.get_space_glyph_width(), 260.0);
     }
 
     // =========================================================================
