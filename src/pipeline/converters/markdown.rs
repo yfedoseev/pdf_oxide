@@ -1061,64 +1061,6 @@ impl MarkdownOutputConverter {
         }
     }
 
-    /// WS2.4b — the distinct heading-size "tiers" present in the document, as
-    /// representative point sizes sorted DESCENDING and capped at six. A tier is
-    /// a cluster of heading-candidate sizes (valid heading text, clearly above
-    /// body) merged when they differ by less than a small gap. Used only to feed
-    /// the additive `heading_level_by_tier` fallback, so this changes nothing on
-    /// its own. Empty (and thus inert) unless the document actually has text at
-    /// >= 1.15x the body size.
-    fn heading_size_tiers(sorted: &[&OrderedTextSpan], base_font_size: f32) -> Vec<f32> {
-        if base_font_size <= 0.0 {
-            return Vec::new();
-        }
-        let floor = base_font_size * 1.15;
-        let mut sizes: Vec<f32> = sorted
-            .iter()
-            .filter(|s| {
-                s.span.font_size >= floor && Self::is_valid_heading_text(s.span.text.trim())
-            })
-            .map(|s| s.span.font_size)
-            .collect();
-        if sizes.is_empty() {
-            return Vec::new();
-        }
-        // Descending, then cluster: a new tier starts only when the size drops by
-        // more than max(0.75pt, 3% of the tier size) below the current tier.
-        sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        let mut tiers: Vec<f32> = Vec::new();
-        for sz in sizes {
-            let same_tier = tiers
-                .last()
-                .map(|&last| (last - sz).abs() <= 0.75_f32.max(last * 0.03))
-                .unwrap_or(false);
-            if !same_tier {
-                tiers.push(sz);
-            }
-        }
-        tiers.truncate(6);
-        tiers
-    }
-
-    /// WS2.4b — additive fallback level for a heading-size span the primary ratio
-    /// heuristic did NOT promote (e.g. a heading only ~1.15-1.2x body and not
-    /// bold, which `heading_level_ratio` leaves as body). Matches the span's size
-    /// to a document tier from [`Self::heading_size_tiers`] and uses that tier's
-    /// RANK as the H-level, so a document whose headings are only slightly larger
-    /// than body but form clean, repeated tiers still gets a hierarchy. Returns
-    /// `None` unless the span is valid heading text sitting at a recognized tier,
-    /// so it never promotes ordinary body text.
-    fn heading_level_by_tier(&self, span: &OrderedTextSpan, tiers: &[f32]) -> Option<u8> {
-        if tiers.is_empty() || !Self::is_valid_heading_text(span.span.text.trim()) {
-            return None;
-        }
-        let sz = span.span.font_size;
-        let idx = tiers
-            .iter()
-            .position(|&t| (t - sz).abs() <= 0.75_f32.max(t * 0.03))?;
-        Some(((idx + 1) as u8).clamp(1, 6))
-    }
-
     /// WS2.4: promote a multi-level numbered section title ("2.1.3 Results")
     /// to a heading whose level is its dot-depth (2.1.3 → H3), capped at H6.
     /// Only DOTTED patterns (≥1 dot) qualify — a bare "1. " leads an ordered
@@ -1379,15 +1321,6 @@ impl MarkdownOutputConverter {
         // so that heading-only documents still produce sensible ratios.
         let base_font_size = super::base_heading_font_size(&sorted, config.output.detect_headings);
 
-        // WS2.4b — distinct heading-size tiers, computed once, for the additive
-        // rank fallback below. Empty (inert) unless the document has text well
-        // above body size.
-        let heading_tiers = if config.output.detect_headings {
-            Self::heading_size_tiers(&sorted, base_font_size)
-        } else {
-            Vec::new()
-        };
-
         // Footnote detection (WS2.7). Conservative, high-precision: an
         // inline superscript marker is only rewritten to `[^N]` when a
         // matching page-bottom definition block starting with the SAME
@@ -1596,17 +1529,13 @@ impl MarkdownOutputConverter {
                     // Font-size heuristic first; fall back to numbered-section
                     // promotion (WS2.4) so same-point-size numbered headings
                     // ("2.1 Method") are still recovered.
-                    self.heading_level_ratio(span, base_font_size)
-                        .or_else(|| {
-                            if Self::is_valid_heading_text(span.span.text.trim()) {
-                                Self::numbered_heading_level(&span.span.text)
-                            } else {
-                                None
-                            }
-                        })
-                        // WS2.4b — last resort: a heading-size span the ratio and
-                        // numbered heuristics both missed, promoted by its tier rank.
-                        .or_else(|| self.heading_level_by_tier(span, &heading_tiers))
+                    self.heading_level_ratio(span, base_font_size).or_else(|| {
+                        if Self::is_valid_heading_text(span.span.text.trim()) {
+                            Self::numbered_heading_level(&span.span.text)
+                        } else {
+                            None
+                        }
+                    })
                 },
                 _ => None,
             };
