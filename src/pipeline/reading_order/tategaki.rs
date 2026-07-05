@@ -19,12 +19,10 @@ use super::{ReadingOrderContext, ReadingOrderStrategy};
 /// Right-to-left, top-to-bottom reading order for vertical writing
 /// (CJK tategaki).
 ///
-/// Algorithm: cluster spans into columns by X-center proximity (using
-/// the median span width as the tolerance — wide enough to keep glyphs
-/// of one body column together, narrow enough to separate adjacent
-/// columns). Sort primarily by descending X-center (right column first)
-/// and secondarily by descending Y (PDF user space y increases upward,
-/// so descending y means top-first within a column).
+/// Delegates to `crate::utils::sort_vertical_tategaki`: spans are
+/// clustered into columns by X-center proximity (single-linkage, median
+/// span width as the tolerance), then ordered rightmost column first,
+/// top-to-bottom within each column.
 pub struct TategakiStrategy;
 
 impl ReadingOrderStrategy for TategakiStrategy {
@@ -37,33 +35,12 @@ impl ReadingOrderStrategy for TategakiStrategy {
             return Ok(Vec::new());
         }
 
-        // Median span width as the per-column-clustering tolerance.
-        // Robust to outliers from rotated annotations / single-glyph
-        // ruby annotations.
-        let mut widths: Vec<f32> = spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
-        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-        let median_w = widths[widths.len() / 2].max(1.0);
-        let tol = median_w;
+        let sorted = crate::utils::sort_vertical_tategaki(spans, |s| &s.bbox);
 
-        let mut indexed: Vec<(usize, TextSpan)> = spans.into_iter().enumerate().collect();
-        let x_center = |s: &TextSpan| -> f32 { s.bbox.x + s.bbox.width * 0.5 };
-
-        indexed.sort_by(|(_, a), (_, b)| {
-            let ax = x_center(a);
-            let bx = x_center(b);
-            if (ax - bx).abs() <= tol {
-                // Same column: top first (PDF user space — descending y).
-                crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
-            } else {
-                // Different columns: rightmost first (descending x_center).
-                crate::utils::safe_float_cmp(bx, ax)
-            }
-        });
-
-        Ok(indexed
+        Ok(sorted
             .into_iter()
             .enumerate()
-            .map(|(order, (_, span))| {
+            .map(|(order, span)| {
                 OrderedTextSpan::with_info(span, order, ReadingOrderInfo::simple())
             })
             .collect())
@@ -122,5 +99,44 @@ mod tests {
         let ordered = strategy.apply(spans, &context).unwrap();
         let combined: String = ordered.iter().map(|o| o.span.text.as_str()).collect();
         assert_eq!(combined, "ABC");
+    }
+
+    /// X-centers chaining within the tolerance form ONE column
+    /// (single-linkage), read top-to-bottom — the input class that made
+    /// the old banded/pairwise comparator non-transitive and panicked.
+    #[test]
+    fn tategaki_chained_centers_total_order() {
+        let spans: Vec<TextSpan> = (0..64)
+            .map(|i| {
+                let x = i as f32 * 10.0;
+                let y = ((i * 37) % 64) as f32 * 7.0; // distinct, scrambled
+                mk(&format!("s{i}"), x, y)
+            })
+            .collect();
+        let strategy = TategakiStrategy;
+        let context = ReadingOrderContext::new();
+        let ordered = strategy.apply(spans, &context).unwrap();
+        assert_eq!(ordered.len(), 64);
+        let ys: Vec<f32> = ordered.iter().map(|o| o.span.bbox.y).collect();
+        assert!(
+            ys.windows(2).all(|w| w[0] >= w[1]),
+            "chained centers must read as one column, top-to-bottom: {ys:?}"
+        );
+    }
+
+    /// Non-finite coordinates must not panic the sort, and every span
+    /// must survive.
+    #[test]
+    fn tategaki_nan_coordinates_do_not_panic() {
+        let mut spans: Vec<TextSpan> = (0..32)
+            .map(|i| mk(&format!("s{i}"), (i % 8) as f32 * 10.0, i as f32 * 5.0))
+            .collect();
+        spans[3].bbox.x = f32::NAN;
+        spans[11].bbox.y = f32::NAN;
+        spans[17].bbox.width = f32::NAN;
+        let strategy = TategakiStrategy;
+        let context = ReadingOrderContext::new();
+        let ordered = strategy.apply(spans, &context).unwrap();
+        assert_eq!(ordered.len(), 32);
     }
 }

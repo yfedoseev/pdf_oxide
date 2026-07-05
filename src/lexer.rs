@@ -193,9 +193,19 @@ fn parse_number(input: &[u8]) -> IResult<&[u8], Token<'_>> {
             num_str.push('0'); // 5. becomes 5.0
         }
 
-        let num: f64 = num_str.parse().map_err(|_| {
+        let mut num: f64 = num_str.parse().map_err(|_| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
         })?;
+        // PDF 32000-1:2008 Annex C.2, Table C.1: real values are bounded to
+        // approximately ±3.403×10^38. `f64::from_str` saturates an
+        // oversized all-digit literal to `f64::INFINITY` rather than
+        // erroring, and that Infinity can poison downstream arithmetic
+        // into NaN (e.g. combined with a degenerate CTM component,
+        // `0.0 * Infinity`). Clamp to the spec's implementation limit
+        // instead of propagating an out-of-spec magnitude.
+        if num.is_infinite() {
+            num = f64::from(f32::MAX).copysign(num);
+        }
         Ok((input, Token::Real(num)))
     } else {
         // Integer - we know int_part exists here
@@ -588,6 +598,34 @@ mod tests {
     fn test_parse_negative_real_starting_with_dot() {
         let result = token(b"-.002");
         assert_eq!(result, Ok((&b""[..], Token::Real(-0.002))));
+    }
+
+    /// A real literal with enough digits to overflow `f64` (well past the
+    /// PDF 32000-1 Annex C.2 implementation limit of ±3.403×10^38) must
+    /// clamp to a finite value instead of becoming `Infinity` — an infinite
+    /// coordinate can poison downstream arithmetic into NaN.
+    #[test]
+    fn test_parse_oversized_real_clamps_to_finite() {
+        let huge = "9".repeat(400) + ".0";
+        let (rest, tok) = token(huge.as_bytes()).unwrap();
+        assert!(rest.is_empty());
+        match tok {
+            Token::Real(n) => assert!(n.is_finite(), "expected a finite clamp, got {n}"),
+            other => panic!("expected Token::Real, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_oversized_negative_real_clamps_to_finite_negative() {
+        let huge = "-".to_string() + &"9".repeat(400) + ".0";
+        let (rest, tok) = token(huge.as_bytes()).unwrap();
+        assert!(rest.is_empty());
+        match tok {
+            Token::Real(n) => {
+                assert!(n.is_finite() && n < 0.0, "expected a finite negative clamp, got {n}")
+            },
+            other => panic!("expected Token::Real, got {other:?}"),
+        }
     }
 
     // ========================================================================

@@ -14,7 +14,7 @@
 # rule is added here — that wiring is intentionally left to the release tooling).
 Pod::Spec.new do |spec|
   spec.name         = 'PdfOxide'
-  spec.version      = '0.3.72'
+  spec.version      = '0.3.73'
   spec.summary      = 'Idiomatic Objective-C bindings for pdf_oxide, a fast pure-Rust PDF toolkit.'
   spec.description  = <<-DESC
     Objective-C bindings over the pdf_oxide C ABI. NSObject wrappers (POXDocument,

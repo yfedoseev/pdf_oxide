@@ -4,7 +4,7 @@
 ;; Java NativeLoader resolves the JNI cdylib via the `fyi.oxide.pdf.lib.path`
 ;; system property (pointed at the freshly built libpdf_oxide_jni below).
 {:paths ["src"]
- :deps {fyi.oxide/pdf-oxide {:mvn/version "0.3.72"}}
+ :deps {fyi.oxide/pdf-oxide {:mvn/version "0.3.73"}}
  :aliases
  {:test
   {:extra-paths ["test"]

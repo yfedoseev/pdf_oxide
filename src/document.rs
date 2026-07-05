@@ -2896,13 +2896,7 @@ impl PdfDocument {
         if labels.is_empty() {
             return;
         }
-        labels.sort_by(|&a, &b| {
-            spans[b]
-                .bbox
-                .y
-                .partial_cmp(&spans[a].bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        labels.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
 
         // Labels that sit at near-identical Y values almost always
         // annotate the same logical row block (e.g. a test-name in the
@@ -5377,7 +5371,7 @@ impl PdfDocument {
         if widths.is_empty() {
             return None;
         }
-        widths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let gw = widths[widths.len() / 2];
 
         // Discriminate vertical (tategaki) from horizontal CJK by each glyph's
@@ -11113,7 +11107,7 @@ impl PdfDocument {
         if body_sizes.is_empty() {
             return;
         }
-        body_sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        body_sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let body_size = body_sizes[body_sizes.len() / 2];
 
         // Span indices sorted by left edge, and the widest font on the page, so
@@ -11381,31 +11375,9 @@ impl PdfDocument {
         // horizontal corpus untouched.
         let vertical_count = spans.iter().filter(|s| s.wmode == 1).count();
         if !spans.is_empty() && vertical_count * 2 >= spans.len() {
-            // Cluster tolerance: median span width. Wide enough to keep one
-            // vertical column together, narrow enough to separate adjacent
-            // columns. Robust to single rotated outliers.
-            //
-            // Assumption (M7): tategaki CJK body text is functionally
-            // monospaced (full-width kanji/kana, half-width digits all
-            // advance by similar widths), so the median span width
-            // approximates the column pitch. Mixed-pitch tategaki (rare —
-            // typically only ruby annotations) may overcluster; that
-            // would be an explicit follow-up if it shows up in real
-            // corpora.
-            let mut widths: Vec<f32> = spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
-            widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-            let tol = widths[widths.len() / 2].max(1.0);
-            spans.sort_by(|a, b| {
-                let ax = a.bbox.x + a.bbox.width * 0.5;
-                let bx = b.bbox.x + b.bbox.width * 0.5;
-                if (ax - bx).abs() <= tol {
-                    // Same column: top first (descending y in PDF user space).
-                    crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
-                } else {
-                    // Different column: rightmost first.
-                    crate::utils::safe_float_cmp(bx, ax)
-                }
-            });
+            // See `crate::utils::sort_vertical_tategaki` for the
+            // column-clustering algorithm and the total-order rationale.
+            spans = crate::utils::sort_vertical_tategaki(spans, |s| &s.bbox);
         } else if let Some(ordered) = Self::sidebar_body_reading_order(&spans) {
             // RW-1: narrow-sidebar + wide-body first pages (full-width title band
             // over a metadata sidebar + body). Handled before the XY-cut so the
@@ -13691,7 +13663,7 @@ impl PdfDocument {
             if total == 0 {
                 return 0.0;
             }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
             let mut best = 1usize;
             let mut current = 1usize;
             let mut last = xs[0];
@@ -23268,6 +23240,124 @@ mod tests {
         );
 
         pdf
+    }
+
+    /// Build a minimal PDF with a `/Font` resource (needed for `Tf`/`Tj`
+    /// to resolve glyph widths), used by the NaN-bbox regression test.
+    fn build_minimal_pdf_with_font(content: &[u8]) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        // Deliberately no /MediaBox (and none on /Pages 2 0 R to inherit):
+        // `postprocess_spans`'s off-page span filter is skipped entirely
+        // when `get_page_media_box` errors, so a page missing /MediaBox
+        // is the one path where a NaN bbox component survives to the
+        // reading-order sort instead of being silently dropped.
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+              /Encoding /WinAnsiEncoding >>\nendobj\n",
+        );
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        pdf
+    }
+
+    /// Regression test: a content stream with a degenerate CTM (`a == 0`)
+    /// and an oversized `Tm` translation literal. The lexer now clamps an
+    /// overflowing real literal to a finite value (see
+    /// `lexer::tests::test_parse_oversized_real_clamps_to_finite`), so this
+    /// specific literal no longer reaches `TjBuffer::new` as `Infinity` and
+    /// can no longer turn into NaN via `ctm.a * Infinity`. This test is
+    /// kept as a regression guard for that class of bug — before the lexer
+    /// clamp, `f64::from_str` *saturated* the all-digit literal to
+    /// `f64::INFINITY` rather than erroring, and combined with the zero
+    /// CTM component this became a NaN `bbox.y` in `TjBuffer::new`,
+    /// panicking `snap_superscript_baselines`'s index sort — the first
+    /// span sort that runs on every page, before `postprocess_spans`'s
+    /// off-page filter (which otherwise silently drops any NaN-bbox span
+    /// and requires a missing `/MediaBox` to bypass, see
+    /// `build_minimal_pdf_with_font`) — with the exact signature
+    /// `smallsort.rs: user-provided comparison function does not
+    /// correctly implement a total order`.
+    ///
+    /// 320 glyphs with distinct (sub-point-jittered) Y coordinates —
+    /// matching real OCR/scanned-text bbox noise, so no two glyphs tie in
+    /// the sort key — emitted in a riffle-shuffled, far-from-sorted
+    /// order: a near-sorted input lets Rust's pattern-defeating sort skip
+    /// the internal total-order consistency check entirely, which is why
+    /// a naive grid/row-major layout would not have reproduced the
+    /// original panic even with the same NaN present.
+    #[test]
+    fn test_nan_bbox_from_oversized_tm_literal_does_not_panic() {
+        let n = 320usize;
+        let ys: Vec<f32> = (0..n).map(|i| 750.0 - (i as f32) * 1.37).collect();
+        let mid = ys.len() / 2;
+        let (a, b) = ys.split_at(mid);
+        let mut shuffled: Vec<f32> = Vec::with_capacity(ys.len());
+        let (mut ai, mut bi) = (a.iter(), b.iter());
+        loop {
+            match (ai.next(), bi.next()) {
+                (Some(x), Some(y)) => {
+                    shuffled.push(*x);
+                    shuffled.push(*y);
+                },
+                (Some(x), None) => shuffled.push(*x),
+                (None, Some(y)) => shuffled.push(*y),
+                (None, None) => break,
+            }
+        }
+
+        let mut content = Vec::new();
+        content.extend_from_slice(b"BT\n/F1 10 Tf\n");
+        for (i, y) in shuffled.iter().enumerate() {
+            if i == 1 {
+                // The malicious glyph, isolated under its own degenerate
+                // CTM (a = 0) so only this glyph's position collapses
+                // via `0.0 * Infinity`; ordinary glyphs are unaffected.
+                let huge = "9".repeat(400) + ".0";
+                content.extend_from_slice(b"ET\nq\n0 0 0 1 0 0 cm\nBT\n/F1 10 Tf\n");
+                content.extend_from_slice(format!("1 0 0 1 {huge} 400 Tm\n(BOOM) Tj\n").as_bytes());
+                content.extend_from_slice(b"ET\nQ\nBT\n/F1 10 Tf\n");
+            }
+            content.extend_from_slice(format!("1 0 0 1 20 {y} Tm\n(X) Tj\n").as_bytes());
+        }
+        content.extend_from_slice(b"ET\n");
+
+        let pdf_bytes = build_minimal_pdf_with_font(&content);
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+        let result1 = doc.extract_text(0);
+        assert!(result1.is_ok(), "extract_text panicked or errored on NaN bbox coordinate");
+        let result2 = doc.to_plain_text_all(&crate::converters::ConversionOptions::default());
+        assert!(result2.is_ok(), "to_plain_text_all panicked or errored on NaN bbox coordinate");
     }
 
     /// Build a minimal PDF with a multi-page structure (given page count).

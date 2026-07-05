@@ -332,13 +332,7 @@ impl OrderedSpans {
         }
 
         let mut sorted: Vec<_> = self.spans.iter().collect();
-        sorted.sort_by(|a, b| {
-            b.span
-                .bbox
-                .y
-                .partial_cmp(&a.span.bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sorted.sort_by(|a, b| crate::utils::safe_float_cmp(b.span.bbox.y, a.span.bbox.y));
 
         let mut lines: Vec<Vec<&OrderedTextSpan>> = Vec::new();
         let mut current_line: Vec<&OrderedTextSpan> = vec![sorted[0]];

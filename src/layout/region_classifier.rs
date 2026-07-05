@@ -191,7 +191,7 @@ fn median_height(spans: &[TextSpan], indices: &[usize]) -> f32 {
     if hs.is_empty() {
         return 1.0;
     }
-    hs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    hs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     hs[hs.len() / 2]
 }
 
@@ -199,18 +199,8 @@ fn median_height(spans: &[TextSpan], indices: &[usize]) -> f32 {
 fn cluster_lines(spans: &[TextSpan], indices: &[usize], med_h: f32) -> Vec<LineStat> {
     let mut order: Vec<usize> = indices.to_vec();
     order.sort_by(|&a, &b| {
-        spans[a]
-            .bbox
-            .top()
-            .partial_cmp(&spans[b].bbox.top())
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                spans[a]
-                    .bbox
-                    .left()
-                    .partial_cmp(&spans[b].bbox.left())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        crate::utils::safe_float_cmp(spans[a].bbox.top(), spans[b].bbox.top())
+            .then_with(|| crate::utils::safe_float_cmp(spans[a].bbox.left(), spans[b].bbox.left()))
     });
 
     let tol = med_h * 0.6;
@@ -249,7 +239,7 @@ fn cluster_lines(spans: &[TextSpan], indices: &[usize], med_h: f32) -> Vec<LineS
             .copied()
             .zip(l.span_rights.iter().copied())
             .collect();
-        paired.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        paired.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
         l.span_lefts = paired.iter().map(|p| p.0).collect();
         l.span_rights = paired.iter().map(|p| p.1).collect();
     }

@@ -2454,20 +2454,8 @@ fn detect_footnotes(spans: &[&OrderedTextSpan], base_font_size: f32) -> Footnote
         .filter(|&i| spans[i].span.bbox.y <= bottom_cut)
         .collect();
     bottom.sort_by(|&a, &b| {
-        spans[b]
-            .span
-            .bbox
-            .y
-            .partial_cmp(&spans[a].span.bbox.y)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                spans[a]
-                    .span
-                    .bbox
-                    .x
-                    .partial_cmp(&spans[b].span.bbox.x)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+        crate::utils::safe_float_cmp(spans[b].span.bbox.y, spans[a].span.bbox.y)
+            .then(crate::utils::safe_float_cmp(spans[a].span.bbox.x, spans[b].span.bbox.x))
     });
     // Group bottom-band spans into lines by baseline proximity.
     let mut def_lines: Vec<Vec<usize>> = Vec::new();
@@ -2488,12 +2476,7 @@ fn detect_footnotes(spans: &[&OrderedTextSpan], base_font_size: f32) -> Footnote
     for line in &def_lines {
         let mut ordered = line.clone();
         ordered.sort_by(|&a, &b| {
-            spans[a]
-                .span
-                .bbox
-                .x
-                .partial_cmp(&spans[b].span.bbox.x)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            crate::utils::safe_float_cmp(spans[a].span.bbox.x, spans[b].span.bbox.x)
         });
         // The leading (marker) span must be in a smaller-than-body font.
         if spans[ordered[0]].span.font_size >= base_font_size * 0.92 {

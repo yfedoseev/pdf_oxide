@@ -2,6 +2,20 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.73] - 2026-07-06
+
+> Two independent reading-order sort panics fixed — a non-transitive vertical-CJK (tategaki) column comparator and an oversized-literal lexer overflow — so malformed and scanned PDFs no longer crash extraction instead of returning text.
+
+### Fixed
+
+- **Reading-order sort could panic on malformed or scanned PDFs instead of returning text (#807)** — Rust's `sort_by`/`sort_unstable_by` (1.81+) detects a comparator that violates total order and panics with `does not correctly implement a total order` — uncatchable across the FFI boundary, aborting the host process across every binding. Two independent causes were fixed:
+  - **Tategaki (vertical-writing) column grouping (ISO 32000-1 §9.7.4.3, `WMode` 1).** `sort_spans_vertical_tategaki` and its two duplicated call sites (`postprocess_spans`'s tategaki intercept, `TategakiStrategy`) decided "same column" with a pairwise `|a - b| <= tol` check on each span's X-center. That check is not transitive: a chain of spans each within `tol` of its neighbor can span far more than `tol` end to end, so the comparator can claim `A<B`, `B<C`, and `C<A` all at once. This is exactly what a scanned vertical-CJK OCR layer produces — hundreds of single-glyph, sub-point-wide spans whose X-centers step by a fraction of the column pitch. Columns are now found by single-linkage clustering of X-centers (order right-to-left, start a new column when the gap to the previous center exceeds the tolerance), then sorted by `(column, Y)` — a genuine total order, and more accurate than quantizing each center into a fixed-size band independently, which can split two spans only a couple points apart into different columns if they straddle a band boundary.
+  - **Oversized real-number literals silently overflowing to `Infinity`.** PDF 32000-1:2008 Annex C.2 bounds real values to approximately ±3.403×10^38, but the lexer parsed real literals via `f64::from_str`, which *saturates* an all-digit literal past that limit to `f64::INFINITY` rather than erroring. Combined with a degenerate content-stream matrix (a zero CTM/`Tm` component), `0.0 × Infinity` produced a NaN glyph coordinate that could panic the same class of sort elsewhere in the pipeline. Oversized literals are now clamped to the spec's implementation limit at parse time, so an out-of-range literal can no longer poison downstream arithmetic into NaN.
+
+  @tobocop2 reported this, root-caused it, and submitted a working fix (#808) using single-linkage column clustering, along with a minimal repro and three real-world vertical-Japanese novels to stress-test against. We folded that clustering approach directly into this fix (verified byte-identical output against #808 on all three novels) alongside the separate lexer fix below, so #808 was closed in favor of this PR.
+
+_Thanks to @tobocop2 (#807, #808) for finding, root-causing, and fixing this._
+
 ## [0.3.72] - 2026-07-05
 
 > Rotated-page text extraction & a transitive-dependency security patch — the spatial extractors no longer garble text on rotated pages, and the optional Office-export path clears an untrusted-XML denial-of-service advisory.
