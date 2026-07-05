@@ -254,13 +254,7 @@ impl PlainTextConverter {
             for run_idx in run_start..run_end {
                 let run_len = runs[run_idx].2;
                 let mut col: Vec<&'a OrderedTextSpan> = sorted[cursor..cursor + run_len].to_vec();
-                col.sort_by(|a, b| {
-                    b.span
-                        .bbox
-                        .y
-                        .partial_cmp(&a.span.bbox.y)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                col.sort_by(|a, b| crate::utils::safe_float_cmp(b.span.bbox.y, a.span.bbox.y));
                 columns.push(col);
                 cursor += run_len;
             }
@@ -354,12 +348,7 @@ impl PlainTextConverter {
         // Within each cluster, sort spans by X-position (left to right).
         for cluster in &mut clusters {
             cluster.1.sort_by(|&a, &b| {
-                sorted[a]
-                    .span
-                    .bbox
-                    .x
-                    .partial_cmp(&sorted[b].span.bbox.x)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                crate::utils::safe_float_cmp(sorted[a].span.bbox.x, sorted[b].span.bbox.x)
             });
         }
 
@@ -544,15 +533,8 @@ impl PlainTextConverter {
                 let ya = a.span.bbox.y;
                 let yb = b.span.bbox.y;
                 // Higher Y = higher on page = comes first in reading order
-                yb.partial_cmp(&ya)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| {
-                        a.span
-                            .bbox
-                            .x
-                            .partial_cmp(&b.span.bbox.x)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
+                crate::utils::safe_float_cmp(yb, ya)
+                    .then_with(|| crate::utils::safe_float_cmp(a.span.bbox.x, b.span.bbox.x))
             });
 
             // Group orphans that share the same Y-line (within tolerance).

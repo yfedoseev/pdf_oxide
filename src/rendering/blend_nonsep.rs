@@ -204,7 +204,7 @@ fn set_sat(c: (f32, f32, f32), s: f32) -> (f32, f32, f32) {
     let (r, g, b) = c;
     // Sort channels by value, tracking original positions.
     let mut chans = [(r, 0u8), (g, 1u8), (b, 2u8)];
-    chans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    chans.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
 
     let (cmin, cmid, cmax) = (chans[0].0, chans[1].0, chans[2].0);
     let (imin, imid, imax) = (chans[0].1, chans[1].1, chans[2].1);

@@ -117,7 +117,7 @@ pub(crate) fn find_music_regions(doc: &PdfDocument, page_idx: usize) -> Vec<Rect
 
     // Sort lines by y (ascending = bottom-up in PDF space) and group
     // consecutive lines whose vertical gap is ≤ 6 pt.
-    hlines.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+    hlines.sort_by(|a, b| crate::utils::safe_float_cmp(a.y, b.y));
 
     struct Cluster {
         y_min: f32,
@@ -170,7 +170,7 @@ pub(crate) fn find_music_regions(doc: &PdfDocument, page_idx: usize) -> Vec<Rect
     // "music systems" (treble + bass staves on one line of music).
     // We DON'T union across the 80-pt vertical gap between systems —
     // the 5-pt slack here is well below that gap.
-    regions.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+    regions.sort_by(|a, b| crate::utils::safe_float_cmp(a.y, b.y));
     let mut merged: Vec<Rect> = Vec::new();
     for r in regions {
         let unioned = merged.last_mut().and_then(|m| {

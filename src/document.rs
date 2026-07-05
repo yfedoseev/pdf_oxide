@@ -2896,13 +2896,7 @@ impl PdfDocument {
         if labels.is_empty() {
             return;
         }
-        labels.sort_by(|&a, &b| {
-            spans[b]
-                .bbox
-                .y
-                .partial_cmp(&spans[a].bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        labels.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
 
         // Labels that sit at near-identical Y values almost always
         // annotate the same logical row block (e.g. a test-name in the
@@ -5377,7 +5371,7 @@ impl PdfDocument {
         if widths.is_empty() {
             return None;
         }
-        widths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let gw = widths[widths.len() / 2];
 
         // Discriminate vertical (tategaki) from horizontal CJK by each glyph's
@@ -11113,7 +11107,7 @@ impl PdfDocument {
         if body_sizes.is_empty() {
             return;
         }
-        body_sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        body_sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let body_size = body_sizes[body_sizes.len() / 2];
 
         // Span indices sorted by left edge, and the widest font on the page, so
@@ -11381,31 +11375,10 @@ impl PdfDocument {
         // horizontal corpus untouched.
         let vertical_count = spans.iter().filter(|s| s.wmode == 1).count();
         if !spans.is_empty() && vertical_count * 2 >= spans.len() {
-            // Cluster tolerance: median span width. Wide enough to keep one
-            // vertical column together, narrow enough to separate adjacent
-            // columns. Robust to single rotated outliers.
-            //
-            // Assumption (M7): tategaki CJK body text is functionally
-            // monospaced (full-width kanji/kana, half-width digits all
-            // advance by similar widths), so the median span width
-            // approximates the column pitch. Mixed-pitch tategaki (rare —
-            // typically only ruby annotations) may overcluster; that
-            // would be an explicit follow-up if it shows up in real
-            // corpora.
-            let mut widths: Vec<f32> = spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
-            widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-            let tol = widths[widths.len() / 2].max(1.0);
-            spans.sort_by(|a, b| {
-                let ax = a.bbox.x + a.bbox.width * 0.5;
-                let bx = b.bbox.x + b.bbox.width * 0.5;
-                if (ax - bx).abs() <= tol {
-                    // Same column: top first (descending y in PDF user space).
-                    crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y)
-                } else {
-                    // Different column: rightmost first.
-                    crate::utils::safe_float_cmp(bx, ax)
-                }
-            });
+            // See `crate::utils::sort_vertical_tategaki` for the
+            // median-width column clustering and the total-order
+            // rationale (issue #807).
+            spans = crate::utils::sort_vertical_tategaki(spans, |s| &s.bbox);
         } else if let Some(ordered) = Self::sidebar_body_reading_order(&spans) {
             // RW-1: narrow-sidebar + wide-body first pages (full-width title band
             // over a metadata sidebar + body). Handled before the XY-cut so the
@@ -13691,7 +13664,7 @@ impl PdfDocument {
             if total == 0 {
                 return 0.0;
             }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
             let mut best = 1usize;
             let mut current = 1usize;
             let mut last = xs[0];

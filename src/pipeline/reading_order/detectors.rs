@@ -137,13 +137,13 @@ pub fn detect_dense_single_line(glyphs: &[DetectorGlyph]) -> bool {
         .filter(|g| (g.y * 2.0).round() as i32 == dominant_key)
         .map(|g| g.x)
         .collect();
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     let mut gaps: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
     if gaps.is_empty() {
         return false;
     }
     let max_gap = gaps.iter().cloned().fold(0.0f32, f32::max);
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     let median_gap = gaps[gaps.len() / 2];
     // Bimodal: one gap is much larger than the typical (median)
     // intra-glyph gap. Ratio > 4 catches the SEC DEF 14A case
@@ -201,7 +201,7 @@ pub fn detect_narrow_tracked(glyphs: &[DetectorGlyph]) -> bool {
     }
     // Sort an index vector by X instead of cloning the glyph slice.
     let mut order: Vec<usize> = (0..glyphs.len()).collect();
-    order.sort_by(|&a, &b| glyphs[a].x.partial_cmp(&glyphs[b].x).unwrap());
+    order.sort_by(|&a, &b| crate::utils::safe_float_cmp(glyphs[a].x, glyphs[b].x));
     let mut gaps: Vec<f32> = order
         .windows(2)
         .map(|w| {
@@ -212,7 +212,7 @@ pub fn detect_narrow_tracked(glyphs: &[DetectorGlyph]) -> bool {
     if gaps.is_empty() {
         return false;
     }
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     // Median gap.
     let median = gaps[gaps.len() / 2];
     // Expected intra-word gap for proportional font @ avg font_size:

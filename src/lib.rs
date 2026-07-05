@@ -516,6 +516,87 @@ pub(crate) mod utils {
         });
     }
 
+    /// Sort spans into tategaki (vertical-writing) reading order:
+    /// right-to-left across columns, top-to-bottom within each column
+    /// (PDF user-space Y increases upward, so top-first means Y descending).
+    ///
+    /// Columns are found by single-linkage clustering of span X-centers:
+    /// after ordering the centers right-to-left, a gap greater than the
+    /// tolerance starts a new column. The tolerance is the median span
+    /// width — tategaki CJK body text is functionally monospaced (full-width
+    /// kanji/kana advance by similar widths), so the median width
+    /// approximates the column pitch: wide enough to keep one vertical
+    /// column together, narrow enough to separate adjacent columns, robust
+    /// to rotated-annotation outliers.
+    ///
+    /// Clustering first, then sorting by `(column, Y)` keeps every
+    /// comparison a total order. Comparing raw X-centers with a tolerance
+    /// *inside* the comparator (`|ax − bx| ≤ tol` → same column) is
+    /// non-transitive when centers chain — a ≈ b and b ≈ c but a ≉ c — and
+    /// `slice::sort_by` detects the broken total order and panics
+    /// ("user-provided comparison function does not correctly implement a
+    /// total order", issue #807). Same trap as [`row_aware_span_cmp`]'s
+    /// banding, solved the same way: derive a discrete key, sort by the key.
+    ///
+    /// Non-finite coordinates follow the crate's NaN policy
+    /// ([`safe_float_cmp`]); a non-finite X-center never chains, so each
+    /// such span forms its own column.
+    pub fn sort_vertical_tategaki<T>(
+        items: Vec<T>,
+        get_bbox: impl Fn(&T) -> &crate::geometry::Rect,
+    ) -> Vec<T> {
+        if items.len() < 2 {
+            return items;
+        }
+
+        let mut widths: Vec<f32> = items.iter().map(|it| get_bbox(it).width.max(1.0)).collect();
+        widths.sort_by(|a, b| safe_float_cmp(*a, *b));
+        let tol = widths[widths.len() / 2].max(1.0);
+
+        let centers: Vec<f32> = items
+            .iter()
+            .map(|it| {
+                let b = get_bbox(it);
+                b.x + b.width * 0.5
+            })
+            .collect();
+        let ys: Vec<f32> = items.iter().map(|it| get_bbox(it).y).collect();
+
+        // Right-to-left pass assigning column ids (stable sort → ties keep
+        // input order, so the clustering is deterministic).
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by(|&a, &b| safe_float_cmp(centers[b], centers[a]));
+
+        let mut column = vec![0u32; items.len()];
+        let mut current = 0u32;
+        let mut prev = centers[order[0]];
+        for &idx in &order[1..] {
+            let center = centers[idx];
+            // `prev - center` is NaN when either end is non-finite —
+            // a non-finite center never chains, so it starts a new column.
+            let gap = prev - center;
+            if gap.is_nan() || gap > tol {
+                current += 1;
+            }
+            column[idx] = current;
+            prev = center;
+        }
+
+        // Column ascending (columns were numbered right-to-left above),
+        // then top-to-bottom. Both keys are total orders.
+        order.sort_by(|&a, &b| {
+            column[a]
+                .cmp(&column[b])
+                .then_with(|| safe_float_cmp(ys[b], ys[a]))
+        });
+
+        let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+        order
+            .into_iter()
+            .map(|i| slots[i].take().expect("each index appears once"))
+            .collect()
+    }
+
     /// Total-order wrapper over `f32` for use as a sort key. For finite values
     /// `total_cmp` is identical to `safe_float_cmp` / `partial_cmp`.
     #[derive(Clone, Copy, PartialEq)]
@@ -553,6 +634,61 @@ pub(crate) mod utils {
             sort_by_row_band(&mut a, |t| t.0, |t| t.1);
             b.sort_by(|p, q| row_aware_span_cmp(p.0, p.1, q.0, q.1));
             assert_eq!(a, b, "cached-key sort must match the comparator permutation");
+        }
+
+        fn tategaki_rect(x: f32, y: f32, w: f32) -> crate::geometry::Rect {
+            crate::geometry::Rect::new(x, y, w, 12.0)
+        }
+
+        /// Two well-separated columns: rightmost column first, top-to-bottom
+        /// within each (same ordering the pre-#807 comparator produced).
+        #[test]
+        fn test_sort_vertical_tategaki_two_columns() {
+            let items = vec![
+                ("D", tategaki_rect(300.0, 700.0, 12.0)),
+                ("F", tategaki_rect(300.0, 676.0, 12.0)),
+                ("B", tategaki_rect(500.0, 688.0, 12.0)),
+                ("C", tategaki_rect(500.0, 676.0, 12.0)),
+                ("A", tategaki_rect(500.0, 700.0, 12.0)),
+                ("E", tategaki_rect(300.0, 688.0, 12.0)),
+            ];
+            let sorted = sort_vertical_tategaki(items, |it| &it.1);
+            let order: String = sorted.iter().map(|it| it.0).collect();
+            assert_eq!(order, "ABCDEF");
+        }
+
+        /// X-centers chaining within the tolerance form ONE column
+        /// (single-linkage), read top-to-bottom — the input class that made
+        /// the old banded comparator non-transitive and panicked driftsort
+        /// (issue #807).
+        #[test]
+        fn test_sort_vertical_tategaki_chained_centers() {
+            let items: Vec<(usize, crate::geometry::Rect)> = (0..64)
+                .map(|i| (i, tategaki_rect(i as f32 * 10.0, ((i * 37) % 64) as f32 * 7.0, 12.0)))
+                .collect();
+            let sorted = sort_vertical_tategaki(items, |it| &it.1);
+            assert_eq!(sorted.len(), 64);
+            assert!(
+                sorted.windows(2).all(|w| w[0].1.y >= w[1].1.y),
+                "one chained column must read top-to-bottom"
+            );
+        }
+
+        /// Non-finite coordinates must not panic and every item must
+        /// survive the permutation exactly once.
+        #[test]
+        fn test_sort_vertical_tategaki_non_finite() {
+            let mut items: Vec<(usize, crate::geometry::Rect)> = (0..32)
+                .map(|i| (i, tategaki_rect((i % 8) as f32 * 40.0, i as f32 * 5.0, 12.0)))
+                .collect();
+            items[3].1.x = f32::NAN;
+            items[11].1.y = f32::NAN;
+            items[17].1.width = f32::NAN;
+            items[23].1.x = f32::INFINITY;
+            let sorted = sort_vertical_tategaki(items, |it| &it.1);
+            let mut ids: Vec<usize> = sorted.iter().map(|it| it.0).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, (0..32).collect::<Vec<_>>());
         }
 
         #[test]

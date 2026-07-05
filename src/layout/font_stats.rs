@@ -161,7 +161,7 @@ fn compute_line_height(spans: &[TextSpan], body_font: &str, dominant_em: f32) ->
     }
 
     // Sort descending (highest y = top of page first in PDF coords).
-    ys.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    ys.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a));
 
     // Deduplicate baselines within 0.5 pt: multiple spans on the same
     // text line (bold run, mixed font) would otherwise inject zero-gaps.
@@ -181,7 +181,7 @@ fn compute_line_height(spans: &[TextSpan], body_font: &str, dominant_em: f32) ->
     if gaps.is_empty() {
         return None;
     }
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     Some(gaps[gaps.len() / 2])
 }
 

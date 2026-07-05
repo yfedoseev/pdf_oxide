@@ -231,7 +231,7 @@ fn detect_gutter_x(body: &[&TextSpan], page_width: f32) -> Option<f32> {
     if boxes.len() < 4 {
         return None;
     }
-    boxes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    boxes.sort_by(|a, b| crate::utils::safe_float_cmp(a.0, b.0));
 
     // Sweep-merge the extents left-to-right; the widest forward jump between the
     // running right edge and the next span's left edge is the widest empty

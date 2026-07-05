@@ -3872,12 +3872,7 @@ impl<'doc> TextExtractor<'doc> {
         let max_fs = snapshot.iter().map(|s| s.3).fold(0.0f32, f32::max);
         let max_half_em = max_fs * 0.5;
         let mut by_order: Vec<usize> = (0..n).collect();
-        by_order.sort_by(|&a, &b| {
-            snapshot[a]
-                .1
-                .partial_cmp(&snapshot[b].1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        by_order.sort_by(|&a, &b| crate::utils::safe_float_cmp(snapshot[a].1, snapshot[b].1));
         let ys_sorted: Vec<f32> = by_order.iter().map(|&idx| snapshot[idx].1).collect();
 
         for i in 0..n {
@@ -3998,56 +3993,12 @@ impl<'doc> TextExtractor<'doc> {
     }
 
     /// Sort spans in vertical writing (tategaki) order: right-to-left
-    /// across columns, top-to-bottom within each column. Spans whose
-    /// horizontal X-centers cluster together belong to the same column.
-    ///
-    /// The cluster tolerance is the median span width — wide enough to keep
-    /// glyphs of one body column together, narrow enough to separate
-    /// adjacent columns. PDF user-space y increases upward, so within a
-    /// column we sort by descending y (top first).
+    /// across columns, top-to-bottom within each column. See
+    /// [`crate::utils::sort_vertical_tategaki`] for the clustering
+    /// algorithm and the total-order rationale (issue #807).
     fn sort_spans_vertical_tategaki(&mut self) {
-        if self.spans.is_empty() {
-            return;
-        }
-
-        // Estimate a per-column-grouping tolerance from the median span
-        // width (cheap, robust to outliers from rotated annotations).
-        //
-        // Assumption (M7): tategaki CJK body text is functionally
-        // monospaced — every glyph occupies roughly one em (full-width
-        // kanji, hiragana, katakana, halfwidth digits all advance by
-        // similar widths). The median span width therefore approximates
-        // the column pitch, and `tol = median_w` cleanly separates a
-        // column whose glyphs cluster around one X-center from an
-        // adjacent column shifted by another median width. Mixed-pitch
-        // tategaki (rare — typically only ruby annotations) may
-        // overcluster; that is an explicit follow-up if it shows up in
-        // real corpora.
-        let mut widths: Vec<f32> = self.spans.iter().map(|s| s.bbox.width.max(1.0)).collect();
-        widths.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-        let median_w = widths[widths.len() / 2].max(1.0);
-        let tol = median_w; // ±median width groups glyphs of the same vertical run
-
-        // Compute each span's X center, then cluster centers by proximity.
-        let mut sorted_idx: Vec<usize> = (0..self.spans.len()).collect();
-        let x_center = |i: usize| -> f32 { self.spans[i].bbox.x + self.spans[i].bbox.width * 0.5 };
-        // Right-to-left primary: descending x_center, then descending y.
-        sorted_idx.sort_by(|&a, &b| {
-            let ax = x_center(a);
-            let bx = x_center(b);
-            if (ax - bx).abs() <= tol {
-                // Same column: top first (PDF user space — descending y).
-                crate::utils::safe_float_cmp(self.spans[b].bbox.y, self.spans[a].bbox.y)
-            } else {
-                crate::utils::safe_float_cmp(bx, ax) // descending x_center
-            }
-        });
-
-        let new_spans: Vec<TextSpan> = sorted_idx
-            .into_iter()
-            .map(|i| self.spans[i].clone())
-            .collect();
-        self.spans = new_spans;
+        self.spans =
+            crate::utils::sort_vertical_tategaki(std::mem::take(&mut self.spans), |s| &s.bbox);
     }
 
     /// Simple Y-then-X sorting for single-column layouts.
@@ -11567,6 +11518,37 @@ mod tests {
         // Should not panic with NaN values
         extractor.sort_by_reading_order();
         assert_eq!(extractor.chars.len(), 2);
+    }
+
+    /// Regression for issue #807: a vertical-majority page whose span
+    /// X-centers chain within the column tolerance (each neighbor ≤ tol
+    /// apart, endpoints far apart) made the tategaki comparator
+    /// non-transitive; `slice::sort_by` detected the broken total order and
+    /// panicked, aborting text extraction for the whole page. The chained
+    /// centers form one column, so the sorted output must be top-to-bottom.
+    #[test]
+    fn test_tategaki_chained_centers_total_order() {
+        let mut extractor = TextExtractor::new();
+        // Width 12 → tol (median width) = 12; center step 10 < tol chains
+        // all 64 spans; the extreme centers are 630 apart (≫ tol).
+        extractor.spans = (0..64)
+            .map(|i| TextSpan {
+                text: format!("s{i}"),
+                bbox: Rect::new(i as f32 * 10.0, ((i * 37) % 64) as f32 * 7.0, 12.0, 12.0),
+                font_size: 12.0,
+                wmode: 1,
+                ..TextSpan::default()
+            })
+            .collect();
+
+        extractor.sort_spans_by_reading_order();
+
+        assert_eq!(extractor.spans.len(), 64);
+        let ys: Vec<f32> = extractor.spans.iter().map(|s| s.bbox.y).collect();
+        assert!(
+            ys.windows(2).all(|w| w[0] >= w[1]),
+            "chained centers must read as one column, top-to-bottom: {ys:?}"
+        );
     }
 
     // ========================================================================

@@ -590,7 +590,7 @@ fn page_to_section(
     // when we cross its y-position (i.e. between the paragraph above
     // it and the paragraph below it).
     let mut rules_top_down: Vec<f32> = rules.iter().map(|r| r.y_pdf).collect();
-    rules_top_down.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    rules_top_down.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a));
     let mut rules_iter = rules_top_down.into_iter().peekable();
 
     let mut prev_para_min_y: Option<f32> = None;
@@ -986,7 +986,7 @@ fn group_into_paragraphs_with_lines(
     sorted.sort_by(|a, b| {
         let ay = a.bbox.y + a.bbox.height * 0.5;
         let by = b.bbox.y + b.bbox.height * 0.5;
-        by.partial_cmp(&ay).unwrap_or(std::cmp::Ordering::Equal)
+        crate::utils::safe_float_cmp(by, ay)
     });
 
     if sorted.is_empty() {
@@ -1014,12 +1014,7 @@ fn group_into_paragraphs_with_lines(
 
     // 3. Sort each line left-to-right by X.
     for line in &mut lines {
-        line.sort_by(|a, b| {
-            a.bbox
-                .x
-                .partial_cmp(&b.bbox.x)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        line.sort_by(|a, b| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x));
     }
 
     // Materialise lines as owned `Vec<TextSpan>` for downstream use.
@@ -1174,7 +1169,7 @@ fn detect_columns(all_lines: &[Vec<TextSpan>], page_w_pt: f32) -> Option<ColumnL
     // MIN_GUTTER_PT if too few samples.
     let col1_right = if col1_rights_on_two_col_lines.len() >= 5 {
         let mut v = col1_rights_on_two_col_lines.clone();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         v[(v.len() as f32 * 0.9) as usize]
     } else {
         col2_left - MIN_GUTTER_PT
@@ -1359,7 +1354,7 @@ fn char_spacing_opt(spacing_pt: f32) -> Option<i32> {
 
 fn median_font_size(spans: &[TextSpan]) -> f32 {
     let mut sizes: Vec<f32> = spans.iter().map(|s| s.font_size).collect();
-    sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sizes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     let n = sizes.len();
     if n == 0 {
         return 12.0;
