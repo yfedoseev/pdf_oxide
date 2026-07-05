@@ -429,6 +429,58 @@ fn rotated_text_matrix_columns_do_not_fuse() {
     }
 }
 
+/// Issue #804 follow-up — a page whose `/Rotate` and content rotation must
+/// COMBINE. A landscape document authored by drawing every glyph sideways
+/// (`rotation_degrees = 90`, a rotated text matrix) inside a PORTRAIT MediaBox
+/// with `/Rotate 90` reads upright only when the page rotation is applied to the
+/// rotated content so it composes with the content rotation. Leaving such a page
+/// "raw" (which is correct for *horizontal* content on a rotated page — see
+/// `rotate_90_keeps_raw_coords_and_does_not_fuse_rows`) reads it sideways and
+/// scrambles the reading order.
+///
+/// The two rotated runs here read, in the displayed (upright) frame, `BRAVO`
+/// (higher) then `ALPHA` (lower) — the order pdfplumber/pdfminer produce for the
+/// same page. Each run must also stay intact (not reversed, not fused).
+#[test]
+fn rotate_90_portrait_page_with_rotated_content_reads_upright() {
+    // Portrait MediaBox + /Rotate 90; both runs drawn with Tm = [0 1 -1 0]
+    // (content rotation 90). BRAVO is drawn at raw x=100, ALPHA at raw x=300,
+    // which map to displayed `top` 90 and 290 respectively.
+    let content = b"BT /F1 12 Tf 0 1 -1 0 300 100 Tm (ALPHA) Tj ET\n\
+                    BT /F1 12 Tf 0 1 -1 0 100 100 Tm (BRAVO) Tj ET";
+    let pdf = build_minimal_pdf_raw(
+        content,
+        b"/Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] /Rotate 90",
+    );
+    let doc = PdfDocument::from_bytes(pdf).expect("PDF must open without error");
+    assert_eq!(doc.get_page_rotation(0).unwrap(), 90, "sanity: /Rotate 90");
+
+    // The content is drawn with a rotated text matrix.
+    let chars = doc.extract_chars(0).expect("extract_chars must not error");
+    assert!(
+        chars.iter().any(|c| c.rotation_degrees.abs() > 45.0),
+        "content should be detected as rotated (rotation_degrees ~= 90)"
+    );
+
+    let text = doc.extract_text(0).expect("extract_text must not error");
+    // Both runs intact and not reversed.
+    assert!(text.contains("ALPHA"), "ALPHA run intact; got {:?}", text);
+    assert!(text.contains("BRAVO"), "BRAVO run intact; got {:?}", text);
+    assert!(
+        !text.contains("AHPLA") && !text.contains("OVARB"),
+        "rotated runs must not be reversed; got {:?}",
+        text
+    );
+    // Displayed reading order: BRAVO (upper) before ALPHA (lower) — matches
+    // pdfplumber. The pre-fix "keep raw" path read the page sideways.
+    let (b, a) = (text.find("BRAVO"), text.find("ALPHA"));
+    assert!(
+        b < a,
+        "rotated page must read in upright displayed order (BRAVO before ALPHA); got {:?}",
+        text
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Section 2 — non-empty text on a page with a rich annotation set
 // ---------------------------------------------------------------------------

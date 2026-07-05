@@ -11316,34 +11316,40 @@ impl PdfDocument {
         // reading-order sort can strand them (drop-cap / table-title initials).
         Self::merge_drop_cap_initials(&mut spans);
 
-        // Apply page /Rotate to span geometry BEFORE reading-order sorting —
-        // but ONLY for 180°.
+        // Apply page /Rotate to span geometry BEFORE reading-order sorting.
         //
         // A page with a /Rotate entry must be read in its DISPLAYED orientation
         // or the row-aware sort emits text in the wrong order (pdf.js issue14415
         // is a 180° English page that otherwise comes out word- and line-reversed).
-        // For 180° the text stays horizontal (both axes mirror), so mapping each
-        // span through `rotate_span_bbox` and re-sorting is sufficient and
-        // numerically identical to the legacy mirror.
         //
-        // 90° / 270° are DELIBERATELY left in raw user space. Rotating a span's
-        // bbox by ±90° only rotates the RECTANGLE — but `TextSpan::to_chars` still
-        // lays glyphs horizontally along `bbox.x` using raw advance widths, so it
-        // cannot represent a run whose visual direction is now vertical. The net
-        // effect is that every raw text row (constant raw-y) collapses onto a
-        // single displayed-y band and unrelated cells from perpendicular columns
-        // fuse into one token (issue: `extract_words` returning a whole column as
-        // one 1000+ char "word", `extract_text_lines` fusing separate rows). The
-        // original /Rotate support (v0.3.58) noted 90/270 "interact with column
-        // detection and table geometry" and left them for a dedicated change; the
-        // grouping code assumes horizontal reading, and raw user space IS
-        // horizontal for these pages, so grouping there is correct and un-fused.
-        // Keeping 90/270 raw also matches `extract_chars`, which already returns
-        // raw (unrotated) coordinates — so all four spatial APIs agree.
+        // The transform is applied selectively, because a rotated page carries two
+        // very different kinds of run, distinguished by each span's own
+        // `rotation_degrees` (the content-stream text-matrix rotation):
+        //
+        // * **Horizontal content (`rotation_degrees == 0`) on a 90°/270° page** —
+        //   e.g. a landscape table stored rotated (`/Rotate 90`, MediaBox already
+        //   landscape). This text is horizontal in raw user space, so it reads and
+        //   groups correctly THERE. Rotating its bbox by ±90° only rotates the
+        //   RECTANGLE, but `TextSpan::to_chars` still lays glyphs horizontally with
+        //   raw advance widths and cannot express a now-vertical run, so every raw
+        //   row collapses onto one displayed band and perpendicular columns fuse
+        //   into one 1000+ char token (#804). These are LEFT RAW — matching
+        //   `extract_chars`, which also returns raw coordinates.
+        //
+        // * **Rotated content (`rotation_degrees == ±90`) on a 90°/270° page** —
+        //   e.g. a chart axis, a sideways table, or a whole landscape page authored
+        //   by drawing every glyph sideways in a portrait MediaBox with `/Rotate 90`
+        //   to present it upright. Here the page /Rotate must be applied so it
+        //   COMBINES with the content rotation (which `order_rotated_blocks` undoes
+        //   for ordering) into the correct upright displayed frame; leaving it raw
+        //   reads the page sideways. These ARE mapped.
+        //
+        // 180° maps everything (text stays horizontal; both axes just mirror —
+        // numerically identical to the legacy mirror).
         //
         // Captured so the same transform is applied to annotation spans appended
-        // later (their /Rect is in unrotated page space too). `None` for rot in
-        // {0, 90, 270} or unknown media box — those pages keep raw geometry.
+        // later (their /Rect is in unrotated page space too). `None` for rot == 0
+        // or unknown media box — those pages keep raw geometry.
         let page_rotation: Option<(i32, f32, f32, f32, f32)> =
             match self.get_page_media_box(page_index) {
                 Ok((llx, lly, urx, ury)) => {
@@ -11351,12 +11357,17 @@ impl PdfDocument {
                         .get_page_rotation(page_index)
                         .unwrap_or(0)
                         .rem_euclid(360);
-                    (rot == 180).then_some((rot, llx, lly, urx - llx, ury - lly))
+                    matches!(rot, 90 | 180 | 270).then_some((rot, llx, lly, urx - llx, ury - lly))
                 },
                 Err(_) => None,
             };
         if let Some((rot, llx, lly, w, h)) = page_rotation {
             for s in spans.iter_mut() {
+                // 90°/270°: only map runs whose own content is rotated; horizontal
+                // content stays in raw user space (see rationale above).
+                if rot != 180 && s.rotation_degrees == 0.0 {
+                    continue;
+                }
                 Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
             }
         }
@@ -11469,10 +11480,15 @@ impl PdfDocument {
         // regular extractor. On a /Rotate'd page their /Rect-derived bboxes are
         // in unrotated page space, so map the appended spans into the same
         // displayed frame as the content spans (no-op for unrotated pages).
+        // Annotation text is horizontal (rotation_degrees == 0), so on a 90°/270°
+        // page it stays raw, matching the horizontal content spans above.
         let pre_annotation_len = spans.len();
         spans.extend(self.annotation_content_spans(page_index));
         if let Some((rot, llx, lly, w, h)) = page_rotation {
             for s in spans[pre_annotation_len..].iter_mut() {
+                if rot != 180 && s.rotation_degrees == 0.0 {
+                    continue;
+                }
                 Self::map_span_into_rotated_frame(s, rot, llx, lly, w, h);
             }
         }
@@ -11582,14 +11598,16 @@ impl PdfDocument {
     /// no-op, never a regression. `char_widths` is never touched (a downstream
     /// word-boundary heuristic keys off its length).
     ///
-    /// Only 180° pages are skipped: there the spans have been mirrored into the
-    /// displayed frame while the accurate chars remain in unrotated page space,
-    /// so a horizontal-x stamp would not correspond. 90°/270° pages keep their
-    /// spans in raw user space (see `postprocess_spans`), so the stamp aligns
-    /// with `extract_chars` and is applied normally.
+    /// 180° pages are skipped entirely: the spans are mirrored into the displayed
+    /// frame while the accurate chars remain in unrotated page space, so a
+    /// horizontal-x stamp would not correspond. On 90°/270° pages, horizontal
+    /// content spans stay in raw user space and ARE stamped, but rotated-content
+    /// spans (`rotation_degrees != 0`) have been mapped into the displayed frame
+    /// (see `postprocess_spans`) and their glyphs run along a rotated axis, so a
+    /// horizontal-x stamp would misalign — those individual spans are skipped.
     fn stamp_char_x_offsets(&self, page_index: usize, spans: &mut [crate::layout::TextSpan]) {
         // Horizontal-x offsets only make sense in an unrotated frame; the 180°
-        // mirror is the one rotation that leaves spans in the displayed frame.
+        // mirror is the one rotation that leaves ALL spans in the displayed frame.
         if self
             .get_page_rotation(page_index)
             .unwrap_or(0)
@@ -11605,6 +11623,12 @@ impl PdfDocument {
         };
 
         for span in spans.iter_mut() {
+            // Rotated-content spans are in the displayed frame (mapped on 90/270)
+            // and their glyphs run vertically; a horizontal-x stamp from the raw
+            // chars would not correspond, so leave them to the prefix-sum path.
+            if span.rotation_degrees != 0.0 {
+                continue;
+            }
             // Start clean: any offsets carried over via struct-update from a
             // source span must not be trusted for this (possibly edited) text.
             span.char_x_offsets.clear();
