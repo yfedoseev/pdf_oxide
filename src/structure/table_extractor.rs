@@ -502,6 +502,7 @@ pub fn extract_table_from_spans(
                 is_italic: s.is_italic,
                 mcid: s.mcid,
                 sequence: s.sequence,
+                rotation_degrees: s.rotation_degrees,
             }
         })
         .collect();

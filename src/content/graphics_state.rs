@@ -72,6 +72,28 @@ impl Matrix {
             && self.f == 0.0
     }
 
+    /// Effective scale this matrix applies to a stroked line width.
+    ///
+    /// Per ISO 32000-1:2008 §8.4.3.2 the line width is expressed in user
+    /// space and transformed by the CTM like all other geometry. A
+    /// non-uniform matrix has no single width scale, so this returns the
+    /// standard `sqrt(|det|)` (area-preserving) approximation used by PDF
+    /// rasterizers; it is exact for uniform scaling and rotation, and `1.0`
+    /// for translation-only matrices.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pdf_oxide::content::Matrix;
+    ///
+    /// assert_eq!(Matrix::identity().stroke_scale(), 1.0);
+    /// assert_eq!(Matrix::scaling(3.0, 3.0).stroke_scale(), 3.0);
+    /// assert_eq!(Matrix::translation(10.0, 20.0).stroke_scale(), 1.0);
+    /// ```
+    pub fn stroke_scale(&self) -> f32 {
+        (self.a * self.d - self.b * self.c).abs().sqrt()
+    }
+
     /// Create a translation matrix.
     ///
     /// # Examples

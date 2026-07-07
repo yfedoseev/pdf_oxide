@@ -1561,6 +1561,12 @@ fn group_lines_into_clusters(
     if lines.is_empty() {
         return Vec::new();
     }
+    // All clustering geometry below works on RENDERED extents: a table rule
+    // encoded as a 1 pt segment with a table-height stroke width must
+    // cluster with (and span) the rules its drawn bar actually touches, not
+    // the ones near its geometric speck. Computed once — pure
+    // arithmetic per path.
+    let rendered: Vec<crate::geometry::Rect> = lines.iter().map(|p| p.rendered_bbox()).collect();
     let mut uf = UnionFind::new(lines.len());
     let mut valid_indices: Vec<usize> = lines
         .iter()
@@ -1570,12 +1576,12 @@ fn group_lines_into_clusters(
         .collect();
 
     // Optimization: Sort by X-coordinate to enable sweep-line early exit (O(n log n))
-    valid_indices.sort_by(|&a, &b| crate::utils::safe_float_cmp(lines[a].bbox.x, lines[b].bbox.x));
+    valid_indices.sort_by(|&a, &b| crate::utils::safe_float_cmp(rendered[a].x, rendered[b].x));
 
     const EXPANSION: f32 = 3.0;
     for i in 0..valid_indices.len() {
         let idx_a = valid_indices[i];
-        let bbox_a = &lines[idx_a].bbox;
+        let bbox_a = &rendered[idx_a];
         let expanded_a = crate::geometry::Rect::new(
             bbox_a.x - EXPANSION,
             bbox_a.y - EXPANSION,
@@ -1585,7 +1591,7 @@ fn group_lines_into_clusters(
 
         for j in (i + 1)..valid_indices.len() {
             let idx_b = valid_indices[j];
-            let bbox_b = &lines[idx_b].bbox;
+            let bbox_b = &rendered[idx_b];
 
             // Optimization: If the next path's X-start is beyond our search threshold,
             // no subsequent paths in the sorted list can possibly intersect.
@@ -1608,7 +1614,7 @@ fn group_lines_into_clusters(
     let mut cluster_map: HashMap<usize, LineCluster> = HashMap::new();
     for i in valid_indices {
         let root = uf.find(i);
-        let bbox = lines[i].bbox;
+        let bbox = rendered[i];
         cluster_map
             .entry(root)
             .and_modify(|c| c.add(i, bbox))
@@ -1633,9 +1639,9 @@ fn group_lines_into_clusters(
         let mut v_ranges: Vec<(usize, f32, f32)> = Vec::new(); // (line_idx, y_min, y_max)
         for &idx in &cluster.lines {
             let path = &lines[idx];
-            if path.is_vertical_line(LINE_AXIS_TOL) && path.bbox.height.abs() > 5.0 {
-                let y_min = path.bbox.y;
-                let y_max = path.bbox.y + path.bbox.height;
+            if path.is_vertical_line(LINE_AXIS_TOL) && rendered[idx].height.abs() > 5.0 {
+                let y_min = rendered[idx].y;
+                let y_max = rendered[idx].y + rendered[idx].height;
                 let (y_min, y_max) = if y_min <= y_max {
                     (y_min, y_max)
                 } else {
@@ -1676,7 +1682,7 @@ fn group_lines_into_clusters(
         // Split: assign each line in the cluster to the band it best fits.
         let mut sub_clusters: Vec<Vec<usize>> = vec![Vec::new(); bands.len()];
         for &idx in &cluster.lines {
-            let bbox = &lines[idx].bbox;
+            let bbox = &rendered[idx];
             let line_y_mid = bbox.y + bbox.height * 0.5;
             // Find the band whose range contains (or is closest to) the line's midpoint.
             let mut best_band = 0;
@@ -1700,10 +1706,10 @@ fn group_lines_into_clusters(
             if sub.is_empty() {
                 continue;
             }
-            let first_bbox = lines[sub[0]].bbox;
+            let first_bbox = rendered[sub[0]];
             let mut lc = LineCluster::new(sub[0], first_bbox);
             for &idx in &sub[1..] {
-                lc.add(idx, lines[idx].bbox);
+                lc.add(idx, rendered[idx]);
             }
             result.push(lc);
         }
@@ -1814,7 +1820,9 @@ fn detect_tables_in_cluster(
     let mut v_xs: Vec<f32> = Vec::new();
     for &idx in &cluster.lines {
         let path = &all_lines[idx];
-        let bbox = &path.bbox;
+        // Rendered extents: a stroke-width-encoded rule's center and length
+        // come from the drawn bar, not the geometric speck.
+        let bbox = path.rendered_bbox();
         if path.is_horizontal_line(LINE_AXIS_TOL) && bbox.width > MIN_LINE_LENGTH {
             h_ys.push(bbox.center().y);
         }
@@ -1945,9 +1953,10 @@ fn detect_tables_in_cluster(
                     let row_bottom = grid.rows[r].y_min;
                     let has_separator = cluster.lines.iter().any(|&idx| {
                         let path = &all_lines[idx];
+                        let rendered = path.rendered_bbox();
                         path.is_horizontal_line(LINE_AXIS_TOL)
-                            && path.bbox.width > table_width * 0.8
-                            && (path.bbox.center().y - row_bottom).abs() < config.row_tolerance
+                            && rendered.width > table_width * 0.8
+                            && (rendered.center().y - row_bottom).abs() < config.row_tolerance
                     });
                     if has_separator {
                         header_rows_detected = r + 1;
@@ -2024,10 +2033,14 @@ fn detect_merged_cells_visually(
                 let y_max = grid.rows[r].y_max;
                 let has_separator = cluster.lines.iter().any(|&idx| {
                     let path = &all_lines[idx];
+                    // Rendered extents: a stroke-width-encoded column rule
+                    // crosses every row its drawn bar spans, not just the
+                    // band around its geometric midline.
+                    let rendered = path.rendered_bbox();
                     path.is_vertical_line(LINE_TOLERANCE)
-                        && (path.bbox.center().x - separator_x).abs() < LINE_TOLERANCE
-                        && path.bbox.y < y_max
-                        && (path.bbox.y + path.bbox.height) > y_min
+                        && (rendered.center().x - separator_x).abs() < LINE_TOLERANCE
+                        && rendered.y < y_max
+                        && (rendered.y + rendered.height) > y_min
                 });
                 if !has_separator || (cell_text_width > total_cell_width + 2.0) {
                     colspan += 1;
@@ -2060,10 +2073,15 @@ fn detect_merged_cells_visually(
                 let x_max = grid.columns[c + current_colspan as usize - 1].x_max;
                 let has_separator = cluster.lines.iter().any(|&idx| {
                     let path = &all_lines[idx];
+                    // Rendered extents, mirroring the colspan check above: a
+                    // row rule encoded as a short vertical segment with a
+                    // table-width stroke spans every column its drawn bar
+                    // crosses.
+                    let rendered = path.rendered_bbox();
                     path.is_horizontal_line(LINE_TOLERANCE)
-                        && (path.bbox.center().y - separator_y).abs() < LINE_TOLERANCE
-                        && path.bbox.x < x_max
-                        && (path.bbox.x + path.bbox.width) > x_min
+                        && (rendered.center().y - separator_y).abs() < LINE_TOLERANCE
+                        && rendered.x < x_max
+                        && (rendered.x + rendered.width) > x_min
                 });
                 if !has_separator {
                     rowspan += 1;
@@ -2141,16 +2159,21 @@ fn extract_edges(lines: &[crate::elements::PathContent]) -> (Vec<Edge>, Vec<Edge
     for path in lines {
         let bbox = &path.bbox;
         if path.is_horizontal_line(LINE_AXIS_TOL) {
+            // Rendered extents so a stroke-width-encoded rule contributes
+            // the edge its drawn bar covers, not its geometric speck
+            // Identical to `bbox` for ordinary thin rules.
+            let rendered = path.rendered_bbox();
             h_edges.push(Edge {
-                coord: bbox.center().y,
-                start: bbox.left(),
-                end: bbox.right(),
+                coord: rendered.center().y,
+                start: rendered.left(),
+                end: rendered.right(),
             });
         } else if path.is_vertical_line(LINE_AXIS_TOL) {
+            let rendered = path.rendered_bbox();
             v_edges.push(Edge {
-                coord: bbox.center().x,
-                start: bbox.top(),
-                end: bbox.bottom(),
+                coord: rendered.center().x,
+                start: rendered.top(),
+                end: rendered.bottom(),
             });
         } else if path.is_rectangle() {
             // Decompose rectangle into 4 edges.

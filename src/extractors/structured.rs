@@ -324,6 +324,7 @@ impl StructuredExtractor {
                 is_italic: span.is_italic,
                 mcid: span.mcid,
                 sequence: span.sequence,
+                rotation_degrees: span.rotation_degrees,
             })
             .collect()
     }
