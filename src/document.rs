@@ -6763,11 +6763,11 @@ impl PdfDocument {
         // RTL ratio so that punctuation or stray markers adjacent to
         // Arabic do not trigger a reversal.
         //
-        // Pass 1 below handles the other common shape where each Arabic
+        // Pass 0.75 below handles the other common shape where each RTL
         // character is emitted as its own short span and the reversal is
         // a span-granularity concern. The two passes are independent:
         // a span either fires Pass 0 (pre-shaped, reverse in place) or
-        // Pass 1 (per-glyph spans, reverse span order), never both.
+        // Pass 0.75 (per-glyph spans, merge + reverse), never both.
         //
         // This is separate from `normalize_arabic_presentation_forms`,
         // which runs later on the assembled output string and unshapes
@@ -6806,6 +6806,108 @@ impl PdfDocument {
             {
                 let reversed: String = span.text.chars().rev().collect();
                 span.text = reversed;
+            }
+        }
+
+        // Pass 0.75 (#826): merge per-glyph visual-order runs BEFORE the
+        // word-order pass. Some producers (scanned-Hebrew OCR text layers
+        // are the common case) emit one show op per glyph; the reading-order
+        // sort leaves those single-glyph spans in x-ascending — i.e. VISUAL —
+        // order. Merge each maximal run into one span whose characters are
+        // reversed to logical order (keeping digit runs forward, combining
+        // marks attached to their base, and 2-letter build-time pieces
+        // atomic). Running before Pass 0.5 is essential: the previous
+        // arrangement (span-order reversal in Pass 0.5 followed by a
+        // reverse-order merge in the old Pass 1) applied two reversals to
+        // the same run, cancelling out and leaking visual-order text —
+        // letter-spaced Hebrew running heads were the visible symptom.
+        if spans.len() >= 4 {
+            let mut i = 0;
+            while i < spans.len() {
+                let is_short_rtl = spans[i].text.chars().count() <= 2
+                    && spans[i].text.chars().any(|c| is_rtl_text(c as u32));
+                if !is_short_rtl {
+                    i += 1;
+                    continue;
+                }
+                let run_start = i;
+                let y = spans[i].bbox.y;
+                let mut j = i + 1;
+                while j < spans.len() {
+                    let y_same = (spans[j].bbox.y - y).abs() < 2.0;
+                    let is_short = spans[j].text.chars().count() <= 2;
+                    let has_rtl_or_space = spans[j]
+                        .text
+                        .chars()
+                        .all(|c| is_rtl_text(c as u32) || c == ' ');
+                    if y_same && is_short && has_rtl_or_space {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let run_end = j;
+                let run_len = run_end - run_start;
+
+                // Only process runs of 4+ spans (avoid false positives)
+                if run_len >= 4 {
+                    use crate::text::rtl_detector::is_rtl_diacritic;
+                    // Build atomic groups in forward (visual) order, then
+                    // emit the groups in reverse to obtain logical order.
+                    let mut groups: Vec<String> = Vec::new();
+                    for span in spans[run_start..run_end].iter() {
+                        let cs: Vec<char> = span.text.chars().collect();
+                        let atomic_pair = cs.len() == 2
+                            && !cs[0].is_whitespace()
+                            && !cs[1].is_whitespace();
+                        if atomic_pair {
+                            // Ligature/base+mark piece decoded from a single
+                            // show op — its chars are already logical.
+                            groups.push(cs.iter().collect());
+                        } else {
+                            for &c in &cs {
+                                if is_rtl_diacritic(c as u32) && !groups.is_empty() {
+                                    // Combining mark rides on the preceding base.
+                                    groups.last_mut().unwrap().push(c);
+                                } else {
+                                    groups.push(c.to_string());
+                                }
+                            }
+                        }
+                    }
+                    // Fold consecutive single-digit groups into one atomic
+                    // group so numbers stay forward (UAX #9 rule L2).
+                    let mut folded: Vec<String> = Vec::new();
+                    for g in groups {
+                        let is_digit_group =
+                            g.chars().count() == 1 && g.chars().all(|c| c.is_ascii_digit());
+                        if is_digit_group {
+                            if let Some(last) = folded.last_mut() {
+                                if last.chars().all(|c| c.is_ascii_digit()) {
+                                    last.push_str(&g);
+                                    continue;
+                                }
+                            }
+                        }
+                        folded.push(g);
+                    }
+                    let reversed_text: String =
+                        folded.iter().rev().flat_map(|g| g.chars()).collect();
+
+                    // Merge into first span, expand bbox to cover entire run
+                    let last_span = &spans[run_end - 1];
+                    let new_width =
+                        (last_span.bbox.x + last_span.bbox.width) - spans[run_start].bbox.x;
+                    spans[run_start].text = reversed_text;
+                    spans[run_start].bbox.width = new_width;
+
+                    // Remove the rest of the run
+                    spans.drain(run_start + 1..run_end);
+
+                    i = run_start + 1;
+                } else {
+                    i = run_end;
+                }
             }
         }
 
@@ -6855,65 +6957,6 @@ impl PdfDocument {
             i = end;
         }
 
-        if spans.len() < 4 {
-            return;
-        }
-
-        // Iterate forward; drain consumed runs so subsequent indices stay valid
-        let mut i = 0;
-        while i < spans.len() {
-            // Check if this span starts an RTL single-char run
-            let is_short_rtl = spans[i].text.chars().count() <= 2
-                && spans[i].text.chars().any(|c| is_rtl_text(c as u32));
-
-            if !is_short_rtl {
-                i += 1;
-                continue;
-            }
-
-            // Find the end of this RTL run (consecutive short spans on same line)
-            let run_start = i;
-            let y = spans[i].bbox.y;
-            let mut j = i + 1;
-            while j < spans.len() {
-                let y_same = (spans[j].bbox.y - y).abs() < 2.0;
-                let is_short = spans[j].text.chars().count() <= 2;
-                let has_rtl_or_space = spans[j]
-                    .text
-                    .chars()
-                    .all(|c| is_rtl_text(c as u32) || c == ' ');
-                if y_same && is_short && has_rtl_or_space {
-                    j += 1;
-                } else {
-                    break;
-                }
-            }
-            let run_end = j;
-            let run_len = run_end - run_start;
-
-            // Only process runs of 4+ spans (avoid false positives)
-            if run_len >= 4 {
-                // Collect span texts in reverse order (visual LTR → logical RTL).
-                // Preserve space spans as word separators.
-                let mut reversed_text = String::new();
-                for span in spans[run_start..run_end].iter().rev() {
-                    reversed_text.push_str(&span.text);
-                }
-
-                // Merge into first span, expand bbox to cover entire run
-                let last_span = &spans[run_end - 1];
-                let new_width = (last_span.bbox.x + last_span.bbox.width) - spans[run_start].bbox.x;
-                spans[run_start].text = reversed_text;
-                spans[run_start].bbox.width = new_width;
-
-                // Remove the rest of the run
-                spans.drain(run_start + 1..run_end);
-
-                i = run_start + 1;
-            } else {
-                i = run_end;
-            }
-        }
     }
 
     /// Normalize Arabic Presentation Forms to base Unicode characters.

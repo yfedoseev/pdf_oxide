@@ -4402,6 +4402,121 @@ impl<'doc> TextExtractor<'doc> {
         }
     }
 
+    /// Whether `s` is a per-glyph piece eligible for the visual-RTL run
+    /// reversal in [`Self::finalize_visual_rtl_glyph_span`]: whitespace-only,
+    /// or a single glyph (one non-mark char, optionally followed by RTL
+    /// combining marks) that is not a strong LTR letter. Producers that
+    /// emit one show op per glyph (common in OCR text layers) yield spans
+    /// of exactly this shape; multi-char show strings — whose storage
+    /// order was already resolved at build time by the flush-path
+    /// detectors — never qualify.
+    fn is_rtl_glyph_piece(s: &TextSpan) -> bool {
+        use crate::text::rtl_detector::{is_rtl_diacritic, is_rtl_text};
+        let mut bases = 0usize;
+        for c in s.text.chars() {
+            if c.is_whitespace() {
+                continue;
+            }
+            let cp = c as u32;
+            if is_rtl_diacritic(cp) {
+                // Combining mark riding on the preceding base glyph.
+                continue;
+            }
+            // A strong LTR letter (Latin, Greek, Cyrillic, CJK, …) makes
+            // the run ineligible — embedded LTR words must keep their
+            // build-time order.
+            if c.is_alphabetic() && !is_rtl_text(cp) {
+                return false;
+            }
+            bases += 1;
+            if bases > 1 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reverse a visual-order RTL chunk to logical order, keeping each
+    /// digit run forward (UAX #9 rule L2) and each combining mark attached
+    /// to its base character.
+    fn reverse_visual_rtl_text(text: &str) -> String {
+        use crate::text::rtl_detector::is_rtl_diacritic;
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let is_digit = |c: char| c.is_ascii_digit();
+        let is_sep = |c: char| matches!(c, '.' | ',' | ':');
+        let mut groups: Vec<&[char]> = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let start = i;
+            if is_digit(chars[i]) {
+                // Maximal number run: digit (sep digit)* — kept forward.
+                let mut j = i + 1;
+                loop {
+                    if j < n && is_digit(chars[j]) {
+                        j += 1;
+                    } else if j + 1 < n && is_sep(chars[j]) && is_digit(chars[j + 1]) {
+                        j += 2;
+                    } else {
+                        break;
+                    }
+                }
+                i = j;
+            } else {
+                // Base char plus any trailing combining marks.
+                i += 1;
+                while i < n && is_rtl_diacritic(chars[i] as u32) {
+                    i += 1;
+                }
+            }
+            groups.push(&chars[start..i]);
+        }
+        groups.iter().rev().flat_map(|g| g.iter()).collect()
+    }
+
+    /// Visual→logical reversal for a span merged from per-glyph pieces.
+    ///
+    /// `merge_adjacent_spans` walks spans in x-ascending order, so a span
+    /// assembled from single-glyph pieces holds the *visual* left-to-right
+    /// character sequence regardless of how the producer stored the text —
+    /// per-glyph show ops carry no storage-order information of their own.
+    /// For a pure-RTL chunk the logical reading order is the reverse of
+    /// that visual sequence. This closes the per-glyph gap that neither
+    /// the flush-path detectors (they only see one glyph at a time) nor
+    /// `reverse_rtl_visual_order_runs` Pass 1 (the merge has already
+    /// collapsed the short-span runs it looks for) can reach — the shape
+    /// of scanned Hebrew OCR text layers.
+    ///
+    /// Gated to spans merged from ≥2 qualifying pieces with ≥2 RTL chars
+    /// and no strong LTR letters, so build-time-corrected multi-char show
+    /// strings and Latin/CJK output stay byte-identical.
+    fn finalize_visual_rtl_glyph_span(span: &mut TextSpan, all_glyph_pieces: bool, pieces: usize) {
+        use crate::text::rtl_detector::is_rtl_text;
+        if !all_glyph_pieces || pieces < 2 {
+            return;
+        }
+        let mut rtl = 0usize;
+        for c in span.text.chars() {
+            if c.is_alphabetic() && !is_rtl_text(c as u32) {
+                return;
+            }
+            if is_rtl_text(c as u32) {
+                rtl += 1;
+            }
+        }
+        if rtl < 2 {
+            return;
+        }
+        let reversed = Self::reverse_visual_rtl_text(&span.text);
+        if reversed != span.text {
+            // Keep char_widths positionally aligned with the reversed text.
+            if span.char_widths.len() == span.text.chars().count() {
+                span.char_widths.reverse();
+            }
+            span.text = reversed;
+        }
+    }
+
     /// This matches the behavior of industry-standard PDF tools.
     fn merge_adjacent_spans(&mut self) {
         if self.spans.is_empty() {
@@ -4413,19 +4528,29 @@ impl<'doc> TextExtractor<'doc> {
         let spans = std::mem::take(&mut self.spans);
         let mut merged = Vec::with_capacity(old_len);
         let mut current_span: Option<TextSpan> = None;
+        // Visual-RTL glyph-run tracking for `finalize_visual_rtl_glyph_span`:
+        // whether every piece merged into `current_span` so far was a
+        // single-glyph piece, and how many pieces it was built from.
+        let mut cur_all_glyph = false;
+        let mut cur_pieces = 0usize;
 
         for span in spans {
             if current_span.is_none() {
                 // First span — move, no clone needed
+                cur_all_glyph = Self::is_rtl_glyph_piece(&span);
+                cur_pieces = 1;
                 current_span = Some(span);
                 continue;
             }
+            let span_is_glyph_piece = Self::is_rtl_glyph_piece(&span);
 
             // Take ownership of current to avoid borrow checker issues.
             // Safety: checked is_none() above which continues, so this is always Some.
             let mut current = match current_span.take() {
                 Some(s) => s,
                 None => {
+                    cur_all_glyph = span_is_glyph_piece;
+                    cur_pieces = 1;
                     current_span = Some(span);
                     continue;
                 },
@@ -4769,6 +4894,8 @@ impl<'doc> TextExtractor<'doc> {
             }
 
             if decimal_merge || should_merge || cross_font_word_glue {
+                cur_all_glyph &= span_is_glyph_piece;
+                cur_pieces += 1;
                 // A merged span is logical-draw RTL if any of its glyph runs was
                 // drawn right-to-left (see `detect_rtl_draw_direction`).
                 current.rtl_draw_logical |= span.rtl_draw_logical;
@@ -4878,13 +5005,17 @@ impl<'doc> TextExtractor<'doc> {
                         );
                     }
                 }
+                Self::finalize_visual_rtl_glyph_span(&mut current, cur_all_glyph, cur_pieces);
                 merged.push(current);
+                cur_all_glyph = span_is_glyph_piece;
+                cur_pieces = 1;
                 current_span = Some(span);
             }
         }
 
         // Don't forget the last span
-        if let Some(last) = current_span {
+        if let Some(mut last) = current_span {
+            Self::finalize_visual_rtl_glyph_span(&mut last, cur_all_glyph, cur_pieces);
             merged.push(last);
         }
 
