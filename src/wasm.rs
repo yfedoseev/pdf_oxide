@@ -1375,6 +1375,17 @@ impl WasmPdfDocument {
                         "height": path.bbox.height
                     }),
                 );
+                // Stroke-inflated extents — what the reader sees.
+                let rendered = path.rendered_bbox();
+                obj.insert(
+                    "rendered_bbox".into(),
+                    serde_json::json!({
+                        "x": rendered.x,
+                        "y": rendered.y,
+                        "width": rendered.width,
+                        "height": rendered.height
+                    }),
+                );
                 obj.insert("stroke_width".into(), serde_json::Value::from(path.stroke_width));
 
                 if let Some(ref color) = path.stroke_color {
@@ -1461,13 +1472,13 @@ impl WasmPdfDocument {
             if r.len() != 4 {
                 return Err(JsValue::from_str("Region must have exactly 4 elements [x, y, w, h]"));
             }
-            inner.extract_rects(page_index).map(|list| {
-                use crate::layout::SpatialCollectionFiltering;
-                list.filter_by_rect(
-                    &crate::geometry::Rect::new(r[0], r[1], r[2], r[3]),
-                    crate::layout::RectFilterMode::Intersects,
-                )
-            })
+            // Delegate to the rendered-extents region query so a
+            // stroke-width-encoded rule matches a region over its drawn
+            // bar, in parity with the Rust/Python entry points.
+            inner.extract_rects_in_rect(
+                page_index,
+                crate::geometry::Rect::new(r[0], r[1], r[2], r[3]),
+            )
         } else {
             inner.extract_rects(page_index)
         };
@@ -1499,13 +1510,12 @@ impl WasmPdfDocument {
             if r.len() != 4 {
                 return Err(JsValue::from_str("Region must have exactly 4 elements [x, y, w, h]"));
             }
-            inner.extract_lines(page_index).map(|list| {
-                use crate::layout::SpatialCollectionFiltering;
-                list.filter_by_rect(
-                    &crate::geometry::Rect::new(r[0], r[1], r[2], r[3]),
-                    crate::layout::RectFilterMode::Intersects,
-                )
-            })
+            // Rendered-extents region query, in parity with the
+            // Rust/Python entry points.
+            inner.extract_lines_in_rect(
+                page_index,
+                crate::geometry::Rect::new(r[0], r[1], r[2], r[3]),
+            )
         } else {
             inner.extract_lines(page_index)
         };

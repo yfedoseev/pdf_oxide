@@ -83,7 +83,123 @@ fn page_reading_order_inner(
     }
 
     let pipeline = TextPipeline::with_config(TextPipelineConfig::default());
+
+    // Text-matrix-rotated content. Gated to unrotated pages:
+    // on a `/Rotate`d page `postprocess_spans` already mapped
+    // rotated-content spans into the displayed frame, so their retained
+    // `rotation_degrees` describes the pre-display frame and re-rotating
+    // here would double-transform.
+    if doc.get_page_rotation(page_index).unwrap_or(0) == 0 {
+        // A dominant rotation (a landscape table typeset on a portrait
+        // page) reorders the WHOLE page in the rotated reading frame.
+        if let Some(rot) = crate::utils::dominant_rotation(&spans).and_then(reading_frame_quadrant)
+        {
+            log::debug!(
+                "page {page_index}: dominant text rotation {rot}° — ordering in rotated frame"
+            );
+            return order_in_rotated_frame(doc, page_index, spans, context, &pipeline, rot);
+        }
+        // Otherwise mirror the span path's per-span rotation firewall:
+        // rotated minority runs (margin stamps, figure labels) break the
+        // axis-aligned assumptions of the geometric strategies, so lift
+        // them out, order each rotation group in its upright frame, and
+        // append after the horizontal flow.
+        if spans.iter().any(|s| s.rotation_degrees != 0.0) {
+            let (rotated, upright): (Vec<_>, Vec<_>) =
+                spans.into_iter().partition(|s| s.rotation_degrees != 0.0);
+            log::debug!(
+                "page {page_index}: {} rotated minority span(s) appended after the horizontal flow",
+                rotated.len()
+            );
+            let mut ordered = if upright.is_empty() {
+                Vec::new()
+            } else {
+                pipeline.process(upright, context)?
+            };
+            let base = ordered.len();
+            ordered.extend(
+                PdfDocument::order_rotated_blocks(rotated)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, s)| OrderedTextSpan::new(s, base + i)),
+            );
+            return Ok(ordered);
+        }
+    }
+
     pipeline.process(spans, context)
+}
+
+/// Display-rotation quadrant that turns text of the given snapped rotation
+/// upright: `90°` text (reading bottom-to-top) becomes readable when the
+/// page is displayed as if `/Rotate 90`, `-90°` under `/Rotate 270`, and
+/// `180°` under `/Rotate 180`. Mirrored or free-angle runs (which
+/// `snap_run_rotation` reports as raw angles) have no quadrant frame.
+fn reading_frame_quadrant(degrees: f32) -> Option<i32> {
+    for (deg, rot) in [(90.0, 90), (180.0, 180), (-90.0, 270)] {
+        if (degrees - deg).abs() < 0.5 {
+            return Some(rot);
+        }
+    }
+    None
+}
+
+/// Order a dominant-rotation page in its rotated reading frame: map every
+/// span bbox through the display rotation (so the text becomes horizontal),
+/// run the standard pipeline there, then map the bboxes back so callers see
+/// true page coordinates — only the ORDER reflects the rotated frame.
+fn order_in_rotated_frame(
+    doc: &PdfDocument,
+    page_index: usize,
+    mut spans: Vec<crate::layout::TextSpan>,
+    context: ReadingOrderContext,
+    pipeline: &TextPipeline,
+    rot: i32,
+) -> Result<Vec<OrderedTextSpan>> {
+    let (llx, lly, urx, ury) = doc
+        .get_page_media_box(page_index)
+        .unwrap_or((0.0, 0.0, 612.0, 792.0));
+    let (w, h) = (urx - llx, ury - lly);
+
+    // Rotated spans store TEXT-LOCAL extents (origin + advance-along-the-
+    // run as `width` + font size as `height`), so mapping into the reading
+    // frame rotates the ORIGIN as a point — through the same quadrant map
+    // as `PdfDocument::rotate_span_bbox` — and keeps the extents, which
+    // already describe the run in its own upright frame. This mirrors
+    // `order_rotated_blocks`, which sorts rotated origins the same way.
+    let map_origin = |x: f32, y: f32, rot: i32, fw: f32, fh: f32| -> (f32, f32) {
+        let (rx, ry) = (x - llx, y - lly);
+        let (mx, my) = match rot {
+            90 => (ry, fw - rx),
+            180 => (fw - rx, fh - ry),
+            270 => (fh - ry, rx),
+            _ => (rx, ry),
+        };
+        (llx + mx, lly + my)
+    };
+
+    for s in &mut spans {
+        let (x, y) = map_origin(s.bbox.x, s.bbox.y, rot, w, h);
+        s.bbox.x = x;
+        s.bbox.y = y;
+    }
+    // The rotated frame swaps the page dimensions for 90°/270°.
+    let (fw, fh) = if rot % 180 == 90 { (h, w) } else { (w, h) };
+    let context = context.with_bbox(Rect::new(llx, lly, fw, fh));
+
+    let mut ordered = pipeline.process(spans, context)?;
+
+    // Inverse map: the opposite quadrant applied with the rotated frame's
+    // dimensions. `w - (w - x)` round-trips within ~1 ULP of the page
+    // dimension in f32 (≈6e-5 pt on a Letter page) — well inside every
+    // downstream tolerance, but not bit-exact.
+    let inv = (360 - rot) % 360;
+    for os in &mut ordered {
+        let (x, y) = map_origin(os.span.bbox.x, os.span.bbox.y, inv, fw, fh);
+        os.span.bbox.x = x;
+        os.span.bbox.y = y;
+    }
+    Ok(ordered)
 }
 
 /// Article-thread (#458) bead rectangles for `page_index`, in `/N` chain order,

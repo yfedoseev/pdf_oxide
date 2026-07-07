@@ -4446,8 +4446,20 @@ impl<'doc> TextExtractor<'doc> {
             // the two glyphs into a single horizontal span and clobbers
             // the wmode metadata for the vertical glyph.
             let wmode_compatible = current.wmode == span.wmode;
+            // ±90°-rotated runs (text matrix rotation, not wmode) advance
+            // along Y with their line axis on X, so the portrait same-line
+            // test below reads PERPENDICULAR geometry for them: two runs
+            // from adjacent rotated lines share a baseline-Y and sit a
+            // word-gap apart in X, which glued words from different lines
+            // of a rotated table into one span ("row" + "row" → "row row",
+            //). Runs in a rotated frame never merge here; each
+            // stays per-literal and the rotated-frame reading order and
+            // word assembly handle them downstream.
+            let quadrant_vertical = |deg: f32| (deg - 90.0).abs() < 0.5 || (deg + 90.0).abs() < 0.5;
+            let rotation_compatible = !quadrant_vertical(current.rotation_degrees)
+                && !quadrant_vertical(span.rotation_degrees);
             let y_diff = (span.bbox.y - current.bbox.y).abs();
-            let same_line = y_diff < 1.0 && wmode_compatible;
+            let same_line = y_diff < 1.0 && wmode_compatible && rotation_compatible;
 
             // Gap between end of current span and start of next span
             let current_end_x = current.bbox.x + current.bbox.width;
@@ -4648,6 +4660,14 @@ impl<'doc> TextExtractor<'doc> {
                 && span.text.chars().all(|c| c.is_ascii_digit())
                 && (1..=2).contains(&span.text.len());
 
+            // Snapshot the pre-merge shape for the positional `char_widths`
+            // maintenance below: the merged text is `current + [separator] +
+            // span`, so each contribution's widths must land at the same
+            // position its chars occupy. (Captured before any branch mutates
+            // `current.text` / `current.bbox`.)
+            let current_chars_before = current.text.chars().count();
+            let span_char_count = span.text.chars().count();
+
             if decimal_merge {
                 // Join integer and decimal parts with "."
                 log::debug!(
@@ -4779,26 +4799,72 @@ impl<'doc> TextExtractor<'doc> {
                 current.bbox.width = new_width;
                 current.bbox.height = new_height;
 
-                // Keep `char_widths` in lockstep with the merged text. The
-                // downstream width-based splitters `is_column_spanning_decimal`
-                // and `char_widths_boundary_split` (document.rs) fire when
-                // `char_widths.len() < char_count`, so a merged multi-glyph span
-                // (e.g. per-glyph `Td <hex> Tj` table cells like "0.99" / "Q1")
-                // would otherwise be wrongly split — dropping the decimal point
-                // ("0.99" → "0 99") or gluing a space at the letter→digit
-                // boundary ("Q1" → "Q 1"). Append this span's per-glyph widths,
-                // then pad to the exact char count to cover any inserted '.'/
-                // ' ' separator (or a source span whose widths were sparse).
-                current.char_widths.extend_from_slice(&span.char_widths);
+                // Keep `char_widths` in POSITIONAL lockstep with the merged
+                // text. The downstream width-based splitters
+                // `is_column_spanning_decimal` and `char_widths_boundary_split`
+                // (document.rs) fire when `char_widths.len() < char_count`, and
+                // `TextSpan::to_chars` pairs each glyph's accurate
+                // `char_x_offsets` origin with `char_widths[i]` — so every
+                // width entry must sit at the same index as its char, not
+                // merely make the lengths match. A trailing `resize` after a
+                // width-less contribution (e.g. a TJ-offset space span merging
+                // FIRST) shifted every later width one slot left, pairing each
+                // glyph with its neighbor's advance and opening phantom
+                // intra-word gaps that the word-gap clusterer split on
+                // (`module` → `m|odu|le`). Maintain the merged
+                // vector as `current + [separator] + span`, normalizing each
+                // contribution at its own position instead.
+                let pad = if current.font_size > 0.0 {
+                    current.font_size * 0.25
+                } else {
+                    1.0
+                };
+                // 1. Normalize the accumulated widths to the pre-merge char
+                //    count. A width-less contribution is split uniformly
+                //    across its bbox (matching `to_chars`' uniform fallback);
+                //    a partially-populated one keeps the legacy tail-pad.
+                if current.char_widths.is_empty() && current_chars_before > 0 {
+                    let old_width = (current_end_x - current.bbox.x).max(0.0);
+                    current
+                        .char_widths
+                        .resize(current_chars_before, old_width / current_chars_before as f32);
+                } else if current.char_widths.len() != current_chars_before {
+                    current.char_widths.resize(current_chars_before, pad);
+                }
+                // 2. Inserted separator ('.' or ' ') widths land at the
+                //    separator's own position: the real geometric gap the
+                //    separator stands in for, with the legacy pad as the
+                //    fallback for overlapping/degenerate layouts.
                 let merged_char_count = current.text.chars().count();
-                if current.char_widths.len() != merged_char_count {
-                    let pad = if current.font_size > 0.0 {
-                        current.font_size * 0.25
+                let separator_count =
+                    merged_char_count.saturating_sub(current_chars_before + span_char_count);
+                if separator_count > 0 {
+                    let sep_gap = span.bbox.x - current_end_x;
+                    let sep_width = if sep_gap.is_finite() && sep_gap > 0.0 {
+                        sep_gap / separator_count as f32
                     } else {
-                        1.0
+                        pad
                     };
+                    current
+                        .char_widths
+                        .resize(current_chars_before + separator_count, sep_width);
+                }
+                // 3. Append the merged-in span's widths, normalized the same
+                //    way at its position.
+                if span.char_widths.is_empty() && span_char_count > 0 {
+                    let per_char = (span.bbox.width / span_char_count as f32).max(0.0);
+                    current
+                        .char_widths
+                        .extend(std::iter::repeat_n(per_char, span_char_count));
+                } else {
+                    current.char_widths.extend_from_slice(&span.char_widths);
                     current.char_widths.resize(merged_char_count, pad);
                 }
+                debug_assert_eq!(
+                    current.char_widths.len(),
+                    merged_char_count,
+                    "char_widths must stay in lockstep with merged text"
+                );
 
                 // Preserve the merged-in glyph's TRUE origin for scrambled-RTL
                 // producers (e.g. /ReversedChars + per-glyph /ActualText Arabic,
@@ -8224,6 +8290,15 @@ impl<'doc> TextExtractor<'doc> {
         // em) plus Tw, scaled by Th. In vertical mode Tz does not apply
         // (§9.3.4) and we use the same magnitude as a writing-axis step
         // — the synthetic gap a TJ offset stands in for.
+        //
+        // NOTE: the displacement is expressed against the raw `Tf` size,
+        // not the `Tm`-scaled effective size, so for print-era producers
+        // that set `/F 1 Tf` with the size in `Tm` this span is narrower
+        // in device space than a quarter em. That geometry is load-bearing
+        // for the downstream column/line heuristics, which were tuned
+        // against it — widening it reorders text on real documents — so
+        // the lockstep fix below keeps a `char_widths` entry
+        // consistent with this bbox rather than rescaling both.
         let space_advance = if wmode == 0 {
             (250.0 * font_size / 1000.0 + word_space) * horizontal_scaling / 100.0
         } else {
@@ -8290,7 +8365,11 @@ impl<'doc> TextExtractor<'doc> {
             is_monospace: false,
             primary_detected: false,
             artifact_type: self.current_artifact_type(),
-            char_widths: vec![],
+            // One synthetic space char ⇒ one width entry, so the span-merge
+            // lockstep (`char_widths.len() == text.chars().count()`) holds
+            // from birth regardless of merge order. The width is
+            // the bbox extent along x, consistent with `to_chars` geometry.
+            char_widths: vec![space_width],
             char_x_offsets: Vec::new(),
             heading_level: None,
             rotation_degrees: snap_run_rotation(&state.ctm.multiply(&state.text_matrix)),

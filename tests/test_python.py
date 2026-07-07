@@ -781,6 +781,11 @@ def test_extract_paths():
         for path in paths:
             assert isinstance(path, dict)
             assert "bbox" in path
+            # Stroke-inflated extents never undershoot the
+            # geometric bbox.
+            assert "rendered_bbox" in path
+            assert path["rendered_bbox"][2] >= path["bbox"][2]
+            assert path["rendered_bbox"][3] >= path["bbox"][3]
     except (OSError, RuntimeError):
         pytest.skip("Test fixture 'simple.pdf' not available or invalid")
 
@@ -1518,6 +1523,9 @@ def test_extract_words_basic():
             assert hasattr(w, "bbox")
             assert isinstance(w.text, str)
             assert len(w.text) > 0
+            # Quadrant-snapped glyph-run rotation; horizontal
+            # documents report 0.0.
+            assert isinstance(w.rotation_degrees, float)
     except (OSError, RuntimeError):
         pytest.skip("Test fixture '1.pdf' not available or invalid")
 

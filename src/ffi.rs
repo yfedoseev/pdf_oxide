@@ -6400,6 +6400,31 @@ pub extern "C" fn pdf_oxide_word_get_sequence(
     list.words[index as usize].sequence as i64
 }
 
+/// Rotation of the word's glyph run in degrees, snapped to a quadrant
+/// (0 / 90 / 180 / -90) from the composed text-rendering matrix
+/// (ISO 32000-1:2008 section 9.4.4). 90 means the text reads bottom-to-top
+/// on an unrotated page — a landscape table typeset on a portrait page —
+/// so callers can transform coordinates into the reading frame.
+/// Returns 0.0 (with an error code) on a null handle or out-of-range index.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_word_get_rotation(
+    words: *const FfiWordList,
+    index: i32,
+    error_code: *mut i32,
+) -> f32 {
+    if words.is_null() || index < 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return 0.0;
+    }
+    let list = handle_ref(words);
+    if (index as usize) >= list.words.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return 0.0;
+    }
+    set_error(error_code, ERR_SUCCESS);
+    list.words[index as usize].rotation_degrees
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_word_list_free(handle: *mut FfiWordList) {
     if !handle.is_null() {
@@ -7793,6 +7818,39 @@ pub extern "C" fn pdf_oxide_path_get_bbox(
         return;
     }
     let b = &list.paths[index as usize].bbox;
+    write_out(x, b.x);
+    write_out(y, b.y);
+    write_out(w, b.width);
+    write_out(h, b.height);
+    set_error(error_code, ERR_SUCCESS);
+}
+
+/// Rendered extents of the path: the geometric bbox inflated by the stroke
+/// (ISO 32000-1:2008 section 8.4.3.2 — half the line width straddles each
+/// side of the path). A table rule drawn as a ~1pt segment stroked as wide
+/// as the table is tall reports the bar the reader sees instead of a 1x0pt
+/// speck. Identical to pdf_oxide_path_get_bbox for unstroked
+/// paths.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_path_get_rendered_bbox(
+    paths: *const FfiPathList,
+    index: i32,
+    x: *mut f32,
+    y: *mut f32,
+    w: *mut f32,
+    h: *mut f32,
+    error_code: *mut i32,
+) {
+    if paths.is_null() || index < 0 || x.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return;
+    }
+    let list = handle_ref(paths);
+    if (index as usize) >= list.paths.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return;
+    }
+    let b = list.paths[index as usize].rendered_bbox();
     write_out(x, b.x);
     write_out(y, b.y);
     write_out(w, b.width);

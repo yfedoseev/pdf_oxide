@@ -2868,18 +2868,20 @@ impl<'a> PdfPageRegion<'a> {
     /// Extract rectangles from this region.
     pub fn extract_rects(&mut self) -> Result<Vec<crate::elements::PathContent>> {
         let rects = self.pdf.extract_rects(self.page_index)?;
+        // Rendered extents, matching `extract_paths_in_rect`.
         Ok(rects
             .into_iter()
-            .filter(|p| p.bbox.intersects(&self.region))
+            .filter(|p| p.rendered_bbox().intersects(&self.region))
             .collect())
     }
 
     /// Extract straight lines from this region.
     pub fn extract_lines(&mut self) -> Result<Vec<crate::elements::PathContent>> {
         let lines = self.pdf.extract_lines(self.page_index)?;
+        // Rendered extents, matching `extract_paths_in_rect`.
         Ok(lines
             .into_iter()
-            .filter(|p| p.bbox.intersects(&self.region))
+            .filter(|p| p.rendered_bbox().intersects(&self.region))
             .collect())
     }
 

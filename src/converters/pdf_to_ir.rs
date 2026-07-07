@@ -229,18 +229,22 @@ fn extract_horizontal_rules(
     let mut out = Vec::new();
     let min_w = page_w_pt * 0.3;
     for p in paths {
-        let w = p.bbox.width;
+        // Length from the RENDERED extents so a stroke-width-encoded rule
+        // (speck segment, page-wide stroke) qualifies;
+        // thinness stays geometric — the drawn thickness of a rule is its
+        // stroke, not a disqualifier.
+        let rendered = p.rendered_bbox();
+        let w = rendered.width;
         let h = p.bbox.height;
         // Two patterns: very thin rect (filled or stroked) or a
         // horizontal stroked line.
         let thin_rect = w >= min_w && h <= 2.0 && h > 0.0;
         let h_line = p.is_straight_line() && w >= min_w && h <= 1.0;
         if thin_rect || h_line {
-            // Use the centre of the rule (bbox.y + height/2) as its
-            // y-coordinate so it interleaves cleanly between
-            // paragraphs above and below.
+            // Use the centre of the rendered rule as its y-coordinate so
+            // it interleaves cleanly between paragraphs above and below.
             out.push(HorizontalRule {
-                y_pdf: p.bbox.y + h * 0.5,
+                y_pdf: rendered.y + rendered.height * 0.5,
             });
         }
     }

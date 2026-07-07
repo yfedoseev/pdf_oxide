@@ -289,6 +289,7 @@ impl MarkdownConverter {
                     is_italic: span.is_italic,
                     mcid: span.mcid,
                     sequence: span.sequence,
+                    rotation_degrees: span.rotation_degrees,
                 })
             })
             .collect();
@@ -2006,6 +2007,7 @@ mod tests {
                 is_italic: false,
                 mcid: None,
                 sequence: 0,
+                rotation_degrees: 0.0,
             },
             TextBlock {
                 chars: vec![],
@@ -2017,6 +2019,7 @@ mod tests {
                 is_italic: false,
                 mcid: None,
                 sequence: 0,
+                rotation_degrees: 0.0,
             },
             TextBlock {
                 chars: vec![],
@@ -2028,6 +2031,7 @@ mod tests {
                 is_italic: false,
                 mcid: None,
                 sequence: 0,
+                rotation_degrees: 0.0,
             },
         ];
 
