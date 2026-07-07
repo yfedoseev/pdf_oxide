@@ -58,6 +58,11 @@ pub const Word = struct {
     /// consecutive draws from merely-spatially-close ones (independent of
     /// reading order).
     sequence: i64,
+    /// Rotation of the word's glyph run in degrees, snapped to a quadrant
+    /// (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+    /// unrotated page, so callers can transform coordinates into the
+    /// reading frame.
+    rotationDegrees: f32,
 };
 
 /// A single extracted text line. `text` is allocator-owned (free it).
@@ -131,6 +136,10 @@ pub const Annotation = struct {
 /// A vector path on a page.
 pub const Path = struct {
     bbox: Bbox,
+    /// Rendered extents of the path: the geometric bbox inflated by the
+    /// stroke (half the line width straddles each side of the path).
+    /// Identical to `bbox` for unstroked paths.
+    renderedBbox: Bbox,
     strokeWidth: f32,
     hasStroke: bool,
     hasFill: bool,
@@ -307,6 +316,7 @@ pub const Document = struct {
             const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
             const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
             const sequence = c.pdf_oxide_word_get_sequence(list, idx, &code);
+            const rotation = c.pdf_oxide_word_get_rotation(list, idx, &code);
             out[i] = .{
                 .text = word_text,
                 .bbox = .{ .x = x, .y = y, .width = w, .height = h },
@@ -314,6 +324,7 @@ pub const Document = struct {
                 .fontSize = font_size,
                 .bold = bold,
                 .sequence = sequence,
+                .rotationDegrees = rotation,
             };
         }
         return out;
@@ -591,12 +602,18 @@ pub const Document = struct {
             var w: f32 = 0;
             var h: f32 = 0;
             c.pdf_oxide_path_get_bbox(list, idx, &x, &y, &w, &h, &code);
+            var rx: f32 = 0;
+            var ry: f32 = 0;
+            var rw: f32 = 0;
+            var rh: f32 = 0;
+            c.pdf_oxide_path_get_rendered_bbox(list, idx, &rx, &ry, &rw, &rh, &code);
             const stroke_width = c.pdf_oxide_path_get_stroke_width(list, idx, &code);
             const has_stroke = c.pdf_oxide_path_has_stroke(list, idx, &code);
             const has_fill = c.pdf_oxide_path_has_fill(list, idx, &code);
             const op_count = c.pdf_oxide_path_get_operation_count(list, idx, &code);
             out[i] = .{
                 .bbox = .{ .x = x, .y = y, .width = w, .height = h },
+                .renderedBbox = .{ .x = rx, .y = ry, .width = rw, .height = rh },
                 .strokeWidth = stroke_width,
                 .hasStroke = has_stroke,
                 .hasFill = has_fill,
@@ -1272,6 +1289,7 @@ fn collectWordList(alloc: std.mem.Allocator, list: *c.FfiWordList) Error![]Word 
         const font_size = c.pdf_oxide_word_get_font_size(list, idx, &code);
         const bold = c.pdf_oxide_word_is_bold(list, idx, &code);
         const sequence = c.pdf_oxide_word_get_sequence(list, idx, &code);
+        const rotation = c.pdf_oxide_word_get_rotation(list, idx, &code);
         out[i] = .{
             .text = word_text,
             .bbox = .{ .x = x, .y = y, .width = w, .height = h },
@@ -1279,6 +1297,7 @@ fn collectWordList(alloc: std.mem.Allocator, list: *c.FfiWordList) Error![]Word 
             .fontSize = font_size,
             .bold = bold,
             .sequence = sequence,
+            .rotationDegrees = rotation,
         };
     }
     return out;
@@ -4342,6 +4361,7 @@ test "Document: element extraction (chars/words/lines/tables)" {
     try testing.expect(words[0].text.len > 0);
     try testing.expect(words[0].bbox.width >= 0);
     try testing.expect(words[0].sequence >= 0);
+    try testing.expect(@mod(words[0].rotationDegrees, 90.0) == 0.0); // quadrant-snapped
 
     // extractChars: non-empty
     const chars = try doc.extractChars(a, 0);
@@ -4382,9 +4402,14 @@ test "Document: phase-2 extraction (fonts/images/annotations/paths/search)" {
     const annotations = try doc.pageAnnotations(a, 0);
     defer Document.freeAnnotations(a, annotations);
 
-    // extractPaths: returns a list (may be empty) without error
+    // extractPaths: returns a list (may be empty) without error; the rendered
+    // bbox is the geometric bbox inflated by the stroke, never smaller
     const paths = try doc.extractPaths(a, 0);
     defer Document.freePaths(a, paths);
+    for (paths) |pth| {
+        try testing.expect(pth.renderedBbox.width >= pth.bbox.width);
+        try testing.expect(pth.renderedBbox.height >= pth.bbox.height);
+    }
 
     // search: non-empty, first result text contains "Alpha", page >= 0
     const hits = try doc.search(a, 0, "Alpha", false);

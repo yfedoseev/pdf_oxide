@@ -99,6 +99,8 @@ defmodule PdfOxideTest do
       assert is_number(w.bbox.x) and is_number(w.bbox.width)
       assert is_boolean(w.bold)
       assert is_integer(w.sequence)
+      assert is_float(w.rotation_degrees)
+      assert w.rotation_degrees in [0.0, 90.0, 180.0, -90.0]
 
       assert {:ok, chars} = PdfOxide.extract_chars(doc, 0)
       assert is_list(chars)
@@ -128,6 +130,12 @@ defmodule PdfOxideTest do
 
       assert {:ok, paths} = PdfOxide.extract_paths(doc, 0)
       assert is_list(paths)
+
+      Enum.each(paths, fn p ->
+        assert %PdfOxide.Bbox{} = p.rendered_bbox
+        assert p.rendered_bbox.width >= p.bbox.width
+        assert p.rendered_bbox.height >= p.bbox.height
+      end)
     end
 
     test "search + search_all", %{doc: doc} do

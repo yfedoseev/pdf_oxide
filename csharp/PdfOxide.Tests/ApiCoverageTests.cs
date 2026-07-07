@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using PdfOxide.Core;
 using PdfOxide.Exceptions;
 using Xunit;
@@ -58,6 +59,92 @@ namespace PdfOxide.Tests
             Assert.NotNull(words);
             Assert.True(words.Length > 0);
             Assert.Contains(words, w => w.Text.Contains("WORDTEST"));
+        }
+
+        [Fact]
+        public void ExtractWords_Rotation_Is_Zero_For_Horizontal_Text()
+        {
+            using var tmp = WriteTempPdf("ROTZERO");
+            using var doc = PdfDocument.Open(tmp);
+            var words = doc.ExtractWords(0);
+            Assert.True(words.Length > 0);
+            Assert.All(words, w => Assert.Equal(0f, w.RotationDegrees));
+        }
+
+        [Fact]
+        public void ExtractWords_Rotation_Reports_90_For_Bottom_To_Top_Text()
+        {
+            // Mirrors tests/test_rotated_text_reading_order.rs:
+            // Tm = [0 1 -1 0] draws text reading bottom-to-top, plus an
+            // upright footer word so both quadrants are asserted.
+            var bytes = BuildRotatedTextPdf();
+            using var doc = PdfDocument.Open(bytes);
+            var words = doc.ExtractWords(0);
+            Assert.True(words.Length > 0);
+            Assert.All(words, w =>
+                Assert.Equal(w.Text == "page" ? 0f : 90f, w.RotationDegrees));
+        }
+
+        [Fact]
+        public void ExtractPaths_RenderedBbox_Is_Inflated_By_Stroke_Width()
+        {
+            // Issue: a horizontal line has a ~0pt-tall geometric bbox;
+            // the rendered bbox is inflated by half the stroke width per side.
+            using var builder = DocumentBuilder.Create();
+            builder.LetterPage().StrokeLine(100f, 300f, 400f, 300f, width: 8f).Done();
+            using var doc = PdfDocument.Open(builder.Build());
+            var paths = doc.ExtractPaths(0);
+            Assert.True(paths.Length > 0);
+            var p = paths.First(q => q.StrokeWidth > 7f);
+            Assert.True(p.RenderedH >= p.H + 7f,
+                $"rendered height {p.RenderedH} should exceed geometric height {p.H} by ~stroke width");
+            Assert.True(p.RenderedY <= p.Y - 3f,
+                $"rendered y {p.RenderedY} should sit half a stroke below geometric y {p.Y}");
+            Assert.True(p.RenderedW >= p.W,
+                $"rendered width {p.RenderedW} should be at least geometric width {p.W}");
+        }
+
+        /// <summary>
+        /// Minimal raw PDF with one bottom-to-top word (Tm = [0 1 -1 0]) and one
+        /// upright footer word — same shape as the Rust fixture for.
+        /// </summary>
+        private static byte[] BuildRotatedTextPdf()
+        {
+            const string content =
+                "BT /F1 10 Tf\n" +
+                "0 1 -1 0 100 200 Tm (VERTICAL) Tj\n" +
+                "1 0 0 1 100 50 Tm (page) Tj\n" +
+                "ET";
+
+            using var pdf = new MemoryStream();
+            void W(string s)
+            {
+                var b = Encoding.ASCII.GetBytes(s);
+                pdf.Write(b, 0, b.Length);
+            }
+
+            W("%PDF-1.4\n");
+            var offsets = new long[6];
+            offsets[1] = pdf.Length;
+            W("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+            offsets[2] = pdf.Length;
+            W("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+            offsets[3] = pdf.Length;
+            W("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+              "/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+            offsets[4] = pdf.Length;
+            W($"4 0 obj\n<< /Length {content.Length} >>\nstream\n{content}\nendstream\nendobj\n");
+            offsets[5] = pdf.Length;
+            W("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica " +
+              "/Encoding /WinAnsiEncoding >>\nendobj\n");
+
+            long xrefPos = pdf.Length;
+            W("xref\n0 6\n");
+            W("0000000000 65535 f\r\n");
+            for (int i = 1; i < offsets.Length; i++)
+                W($"{offsets[i]:D10} 00000 n\r\n");
+            W($"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xrefPos}\n%%EOF\n");
+            return pdf.ToArray();
         }
 
         [Fact]

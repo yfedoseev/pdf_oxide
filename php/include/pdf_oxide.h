@@ -921,6 +921,8 @@ bool pdf_oxide_word_is_bold(const FfiWordList *words, int32_t index, int32_t *er
 
 int64_t pdf_oxide_word_get_sequence(const FfiWordList *words, int32_t index, int32_t *error_code);
 
+float pdf_oxide_word_get_rotation(const FfiWordList *words, int32_t index, int32_t *error_code);
+
 void pdf_oxide_word_list_free(FfiWordList *handle);
 
 FfiTextLineList *pdf_document_extract_text_lines(PdfDocument *handle,
@@ -1148,6 +1150,14 @@ void pdf_oxide_path_get_bbox(const FfiPathList *paths,
                              float *w,
                              float *h,
                              int32_t *error_code);
+
+void pdf_oxide_path_get_rendered_bbox(const FfiPathList *paths,
+                                      int32_t index,
+                                      float *x,
+                                      float *y,
+                                      float *w,
+                                      float *h,
+                                      int32_t *error_code);
 
 float pdf_oxide_path_get_stroke_width(const FfiPathList *paths, int32_t index, int32_t *error_code);
 

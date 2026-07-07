@@ -68,6 +68,7 @@ import {
 } from './managers/index';
 import type {
   Column,
+  Path,
   SpanCell,
   StreamingTableConfig,
   Table,
@@ -611,7 +612,7 @@ class PdfDocumentImpl {
     this.ensureOpen();
     return native.extractTables(this._handle, pageIndex);
   }
-  extractPaths(pageIndex: number): any {
+  extractPaths(pageIndex: number): Path[] {
     this.ensureOpen();
     return native.extractPaths(this._handle, pageIndex);
   }
@@ -926,7 +927,7 @@ class Page {
   images(): any {
     return this._doc.getEmbeddedImages(this._index);
   }
-  paths(): any {
+  paths(): Path[] {
     return this._doc.extractPaths(this._index);
   }
   annotations(): any {
@@ -1144,6 +1145,7 @@ export type {
   BatchResult,
   BatchStatistics,
   Column,
+  Path,
   SpanCell,
   StreamingTableConfig,
   Table,

@@ -64,6 +64,11 @@ typedef struct {
 /// consecutive draws from ones that merely happen to be spatially close. This
 /// is independent of reading order.
 @property(nonatomic, readonly) int64_t sequence;
+/// Rotation of the word's glyph run in degrees, snapped to a quadrant
+/// (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+/// unrotated page — a landscape table typeset on a portrait page — so
+/// callers can transform coordinates into the reading frame.
+@property(nonatomic, readonly) float rotationDegrees;
 @end
 
 /// A single extracted text line (Phase-1 element extraction).
@@ -141,6 +146,10 @@ typedef struct {
 /// A single vector path (Phase-2 extraction).
 @interface POXPath : NSObject
 @property(nonatomic, readonly) POXBbox bbox;
+/// Rendered extents of the path: `bbox` inflated by the stroke (half the
+/// line width straddles each side of the path), so a thin stroked segment
+/// reports the bar the reader sees. Identical to `bbox` for unstroked paths.
+@property(nonatomic, readonly) POXBbox renderedBbox;
 @property(nonatomic, readonly) float strokeWidth;
 @property(nonatomic, readonly) BOOL hasStroke;
 @property(nonatomic, readonly) BOOL hasFill;

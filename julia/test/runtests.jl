@@ -58,6 +58,8 @@ end
         @test words[1].font_size >= 0
         @test words[1].bold isa Bool
         @test words[1].sequence isa Int64
+        @test words[1].rotation_degrees isa Float64
+        @test words[1].rotation_degrees == 0.0                # horizontal text on the sample doc
     end
     let chars = extract_chars(doc, 0)             # extract_chars
         @test !isempty(chars)
@@ -119,6 +121,9 @@ end
         @test paths isa Vector{Path}              # may be empty — just call succeeds
         for pa in paths
             @test pa.bbox isa Bbox
+            @test pa.renderedBbox isa Bbox
+            @test pa.renderedBbox.width >= pa.bbox.width
+            @test pa.renderedBbox.height >= pa.bbox.height
             @test pa.strokeWidth >= 0
             @test pa.hasStroke isa Bool
             @test pa.hasFill isa Bool

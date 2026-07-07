@@ -52,6 +52,11 @@ public struct Word {
     /// consecutively-drawn words from merely spatially-close ones, independent of
     /// reading order.
     public let sequence: Int
+    /// Rotation of the word's glyph run in degrees, snapped to a quadrant
+    /// (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+    /// unrotated page — a landscape table typeset on a portrait page — so
+    /// callers can transform coordinates into the reading frame.
+    public let rotationDegrees: Double
 }
 
 /// A single extracted line of text.
@@ -114,6 +119,11 @@ public struct Annotation {
 /// A single vector path.
 public struct Path {
     public let bbox: Bbox
+    /// Rendered extents of the path: `bbox` inflated by the stroke (half the
+    /// line width straddles each side of the path), so a thin stroked rule
+    /// reports the bar the reader sees. Identical to `bbox` for unstroked
+    /// paths.
+    public let renderedBbox: Bbox
     public let strokeWidth: Double
     public let hasStroke: Bool
     public let hasFill: Bool
@@ -366,6 +376,7 @@ public final class Document {
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
             let sequence = pdf_oxide_word_get_sequence(list, idx, &code)
+            let rotation = pdf_oxide_word_get_rotation(list, idx, &code)
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &x, &y, &w, &h, &code)
             result.append(
@@ -375,7 +386,8 @@ public final class Document {
                     fontName: fontName,
                     fontSize: Double(fontSize),
                     bold: bold,
-                    sequence: Int(sequence)
+                    sequence: Int(sequence),
+                    rotationDegrees: Double(rotation)
                 ))
         }
         return result
@@ -562,9 +574,13 @@ public final class Document {
             let operationCount = Int(pdf_oxide_path_get_operation_count(list, idx, &code))
             var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
             pdf_oxide_path_get_bbox(list, idx, &x, &y, &w, &h, &code)
+            var rx: Float = 0, ry: Float = 0, rw: Float = 0, rh: Float = 0
+            pdf_oxide_path_get_rendered_bbox(list, idx, &rx, &ry, &rw, &rh, &code)
             result.append(
                 Path(
                     bbox: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(h)),
+                    renderedBbox: Bbox(
+                        x: Double(rx), y: Double(ry), width: Double(rw), height: Double(rh)),
                     strokeWidth: Double(strokeWidth),
                     hasStroke: hasStroke, hasFill: hasFill, operationCount: operationCount
                 ))
@@ -933,6 +949,7 @@ public final class Document {
             let fontSize = pdf_oxide_word_get_font_size(list, idx, &code)
             let bold = pdf_oxide_word_is_bold(list, idx, &code)
             let sequence = pdf_oxide_word_get_sequence(list, idx, &code)
+            let rotation = pdf_oxide_word_get_rotation(list, idx, &code)
             var bx: Float = 0, by: Float = 0, bw: Float = 0, bh: Float = 0
             pdf_oxide_word_get_bbox(list, idx, &bx, &by, &bw, &bh, &code)
             result.append(
@@ -940,7 +957,8 @@ public final class Document {
                     text: text,
                     bbox: Bbox(x: Double(bx), y: Double(by), width: Double(bw), height: Double(bh)),
                     fontName: fontName, fontSize: Double(fontSize), bold: bold,
-                    sequence: Int(sequence)
+                    sequence: Int(sequence),
+                    rotationDegrees: Double(rotation)
                 ))
         }
         return result

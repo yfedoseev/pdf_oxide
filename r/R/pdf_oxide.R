@@ -168,9 +168,12 @@ pdf_extract_chars <- function(doc, page) {
 #' @param doc A `pdfoxide_document`.
 #' @param page 0-based page index (required).
 #' @return A list of `Word` records, each `list(text=, bbox=, font_name=,
-#'   font_size=, bold=, sequence=)`. `sequence` is the content-stream draw
-#'   order of the word's originating span (adjacent values were drawn
-#'   consecutively), independent of reading order.
+#'   font_size=, bold=, sequence=, rotation_degrees=)`. `sequence` is the
+#'   content-stream draw order of the word's originating span (adjacent values
+#'   were drawn consecutively), independent of reading order. `rotation_degrees`
+#'   is the glyph-run rotation in degrees, snapped to a quadrant
+#'   (0 / 90 / 180 / -90); 90 means the text reads bottom-to-top on an
+#'   unrotated page.
 #' @export
 pdf_extract_words <- function(doc, page) {
   .Call(C_r_doc_extract_words, doc, as.integer(page))
@@ -240,7 +243,9 @@ pdf_page_annotations <- function(doc, page) {
 #' @param doc A `pdfoxide_document`.
 #' @param page 0-based page index (required).
 #' @return A list of `Path` records, each `list(bbox=, stroke_width=, has_stroke=,
-#'   has_fill=, operation_count=)`.
+#'   has_fill=, operation_count=, rendered_bbox=)`. `rendered_bbox` is the
+#'   geometric bbox inflated by the stroke (half the line width straddles each
+#'   side of the path); identical to `bbox` for unstroked paths.
 #' @export
 pdf_extract_paths <- function(doc, page) {
   .Call(C_r_doc_extract_paths, doc, as.integer(page))
@@ -2706,9 +2711,10 @@ pdf_extract_text_in_rect <- function(doc, page, x, y, width, height) {
 }
 #' Extract words within a rectangle on a (0-based) page.
 #' @inheritParams pdf_extract_text_in_rect
-#' @return A list of `Word` records (`list(text=, bbox=, sequence=)`, where
-#'   `sequence` is the content-stream draw order of the word's originating
-#'   span, independent of reading order).
+#' @return A list of `Word` records (`list(text=, bbox=, sequence=,
+#'   rotation_degrees=)`, where `sequence` is the content-stream draw order of
+#'   the word's originating span, independent of reading order, and
+#'   `rotation_degrees` is the quadrant-snapped glyph-run rotation in degrees).
 #' @export
 pdf_extract_words_in_rect <- function(doc, page, x, y, width, height) {
   .Call(C_r_doc_extract_words_in_rect, doc, as.integer(page),

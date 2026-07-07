@@ -103,6 +103,10 @@ int main(void) {
                 CHECK(w0.bbox.width >= 0 && w0.bbox.height >= 0);
                 CHECK(w0.bold == YES || w0.bold == NO);
                 CHECK(w0.sequence >= 0); // content-stream emission order
+                CHECK(w0.rotationDegrees == 0.0f || w0.rotationDegrees == 90.0f ||
+                      w0.rotationDegrees == 180.0f ||
+                      w0.rotationDegrees ==
+                          -90.0f); // quadrant-snapped glyph-run rotation
             }
             NSArray<POXChar*>* chars = [doc extractChars:0 error:&err]; // extractChars
             CHECK(chars != nil && chars.count > 0);
@@ -134,6 +138,11 @@ int main(void) {
             NSArray<POXPath*>* paths =
                 [doc extractPaths:0 error:&pe]; // extractPaths (may be empty)
             CHECK(paths != nil && pe == nil);
+            for (POXPath* p in paths) {
+                // renderedBbox: stroke-inflated extents contain the geometric bbox
+                CHECK(p.renderedBbox.width >= p.bbox.width);
+                CHECK(p.renderedBbox.height >= p.bbox.height);
+            }
 
             NSArray<POXSearchResult*>* hits = [doc search:0
                                                      term:@"Alpha"

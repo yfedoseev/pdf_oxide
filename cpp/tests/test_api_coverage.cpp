@@ -90,6 +90,8 @@ int main() {
             (void)words[0].bold;
             // content-stream emission order of the originating span
             CHECK(words[0].sequence >= 0);
+            // horizontal prose on an unrotated page reads left-to-right
+            CHECK(words[0].rotation_degrees == 0.0f);
         }
 
         auto chars = doc.extract_chars(0); // extract_chars
@@ -160,6 +162,9 @@ int main() {
         CHECK(paths.size() >= 0);
         for (const auto& p : paths) {
             (void)p.bbox;
+            // stroke-inflated extents never shrink below the geometric bbox
+            CHECK(p.rendered_bbox.width >= p.bbox.width);
+            CHECK(p.rendered_bbox.height >= p.bbox.height);
             (void)p.stroke_width;
             (void)p.has_stroke;
             (void)p.has_fill;

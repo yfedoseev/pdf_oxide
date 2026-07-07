@@ -868,7 +868,7 @@ namespace PdfOxide.Core
         }
 
         /// <summary>Extracts words from a page. Returns handle-based results (use NativeMethods directly for now).</summary>
-        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWords(int pageIndex)
+        public (string Text, float X, float Y, float W, float H, long Sequence, float RotationDegrees)[] ExtractWords(int pageIndex)
         {
             _lock.EnterReadLock();
             try
@@ -876,18 +876,19 @@ namespace PdfOxide.Core
                 ThrowIfDisposed();
                 var handle = NativeMethods.pdf_document_extract_words(_handle.Ptr, pageIndex, out var errorCode);
                 ExceptionMapper.ThrowIfError(errorCode);
-                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long)>();
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long, float)>();
                 try
                 {
                     var count = NativeMethods.pdf_oxide_word_count(handle);
-                    var results = new (string, float, float, float, float, long)[count];
+                    var results = new (string, float, float, float, float, long, float)[count];
                     for (int i = 0; i < count; i++)
                     {
                         var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
                         var text = StringMarshaler.PtrToStringAndFree(textPtr);
                         NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
                         var sequence = NativeMethods.pdf_oxide_word_get_sequence(handle, i, out _);
-                        results[i] = (text, x, y, w, h, sequence);
+                        var rotation = NativeMethods.pdf_oxide_word_get_rotation(handle, i, out _);
+                        results[i] = (text, x, y, w, h, sequence, rotation);
                     }
                     return results;
                 }
@@ -1150,7 +1151,7 @@ namespace PdfOxide.Core
         }
 
         /// <summary>Extracts paths from a page.</summary>
-        public (float X, float Y, float W, float H, float StrokeWidth)[] ExtractPaths(int pageIndex)
+        public (float X, float Y, float W, float H, float StrokeWidth, float RenderedX, float RenderedY, float RenderedW, float RenderedH)[] ExtractPaths(int pageIndex)
         {
             _lock.EnterReadLock();
             try
@@ -1158,16 +1159,17 @@ namespace PdfOxide.Core
                 ThrowIfDisposed();
                 var handle = NativeMethods.pdf_document_extract_paths(_handle.Ptr, pageIndex, out var errorCode);
                 ExceptionMapper.ThrowIfError(errorCode);
-                if (handle == IntPtr.Zero) return Array.Empty<(float, float, float, float, float)>();
+                if (handle == IntPtr.Zero) return Array.Empty<(float, float, float, float, float, float, float, float, float)>();
                 try
                 {
                     var count = NativeMethods.pdf_oxide_path_count(handle);
-                    var results = new (float, float, float, float, float)[count];
+                    var results = new (float, float, float, float, float, float, float, float, float)[count];
                     for (int i = 0; i < count; i++)
                     {
                         NativeMethods.pdf_oxide_path_get_bbox(handle, i, out var x, out var y, out var w, out var h, out _);
                         var sw = NativeMethods.pdf_oxide_path_get_stroke_width(handle, i, out _);
-                        results[i] = (x, y, w, h, sw);
+                        NativeMethods.pdf_oxide_path_get_rendered_bbox(handle, i, out var rx, out var ry, out var rw, out var rh, out _);
+                        results[i] = (x, y, w, h, sw, rx, ry, rw, rh);
                     }
                     return results;
                 }
@@ -1177,7 +1179,7 @@ namespace PdfOxide.Core
         }
 
         /// <summary>Extracts words from a rectangular region.</summary>
-        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWordsInRect(int pageIndex, float x, float y, float width, float height)
+        public (string Text, float X, float Y, float W, float H, long Sequence, float RotationDegrees)[] ExtractWordsInRect(int pageIndex, float x, float y, float width, float height)
         {
             _lock.EnterReadLock();
             try
@@ -1185,18 +1187,19 @@ namespace PdfOxide.Core
                 ThrowIfDisposed();
                 var handle = NativeMethods.pdf_document_extract_words_in_rect(_handle.Ptr, pageIndex, x, y, width, height, out var errorCode);
                 ExceptionMapper.ThrowIfError(errorCode);
-                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long)>();
+                if (handle == IntPtr.Zero) return Array.Empty<(string, float, float, float, float, long, float)>();
                 try
                 {
                     var count = NativeMethods.pdf_oxide_word_count(handle);
-                    var results = new (string, float, float, float, float, long)[count];
+                    var results = new (string, float, float, float, float, long, float)[count];
                     for (int i = 0; i < count; i++)
                     {
                         var textPtr = NativeMethods.pdf_oxide_word_get_text(handle, i, out _);
                         var text = StringMarshaler.PtrToStringAndFree(textPtr);
                         NativeMethods.pdf_oxide_word_get_bbox(handle, i, out var wx, out var wy, out var ww, out var wh, out _);
                         var sequence = NativeMethods.pdf_oxide_word_get_sequence(handle, i, out _);
-                        results[i] = (text, wx, wy, ww, wh, sequence);
+                        var rotation = NativeMethods.pdf_oxide_word_get_rotation(handle, i, out _);
+                        results[i] = (text, wx, wy, ww, wh, sequence, rotation);
                     }
                     return results;
                 }
@@ -1927,7 +1930,7 @@ namespace PdfOxide.Core
             Task.Run(() => _doc.ToPlainText(Index), ct);
 
         /// <summary>Extracts words with bounding boxes.</summary>
-        public (string Text, float X, float Y, float W, float H, long Sequence)[] ExtractWords() =>
+        public (string Text, float X, float Y, float W, float H, long Sequence, float RotationDegrees)[] ExtractWords() =>
             _doc.ExtractWords(Index);
 
         /// <summary>Extracts text lines with bounding boxes.</summary>
@@ -1945,7 +1948,7 @@ namespace PdfOxide.Core
             _doc.ExtractChars(Index);
 
         /// <summary>Extracts path geometries from the page.</summary>
-        public (float X, float Y, float W, float H, float StrokeWidth)[] ExtractPaths() =>
+        public (float X, float Y, float W, float H, float StrokeWidth, float RenderedX, float RenderedY, float RenderedW, float RenderedH)[] ExtractPaths() =>
             _doc.ExtractPaths(Index);
 
         /// <summary>Returns font names used on the page.</summary>

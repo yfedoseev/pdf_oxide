@@ -556,6 +556,8 @@ class _Native {
             .lookupFunction<_ListBoolC, _ListBoolD>('pdf_oxide_word_is_bold'),
         wordGetSequence = lib.lookupFunction<_ListI64C, _ListI64D>(
             'pdf_oxide_word_get_sequence'),
+        wordGetRotation = lib.lookupFunction<_ListF32C, _ListF32D>(
+            'pdf_oxide_word_get_rotation'),
         wordListFree = lib
             .lookupFunction<_ListFreeC, _ListFreeD>('pdf_oxide_word_list_free'),
         // text lines
@@ -648,6 +650,8 @@ class _Native {
             .lookupFunction<_ListCountC, _ListCountD>('pdf_oxide_path_count'),
         pathGetBbox = lib
             .lookupFunction<_ListBboxC, _ListBboxD>('pdf_oxide_path_get_bbox'),
+        pathGetRenderedBbox = lib.lookupFunction<_ListBboxC, _ListBboxD>(
+            'pdf_oxide_path_get_rendered_bbox'),
         pathGetStrokeWidth = lib.lookupFunction<_ListF32C, _ListF32D>(
             'pdf_oxide_path_get_stroke_width'),
         pathHasStroke = lib.lookupFunction<_ListBoolC, _ListBoolD>(
@@ -1392,6 +1396,7 @@ class _Native {
   final _ListF32D wordGetFontSize;
   final _ListBoolD wordIsBold;
   final _ListI64D wordGetSequence;
+  final _ListF32D wordGetRotation;
   final _ListFreeD wordListFree;
   // text lines
   final _ExtractD extractLines;
@@ -1441,6 +1446,7 @@ class _Native {
   final _ExtractD extractPaths;
   final _ListCountD pathCount;
   final _ListBboxD pathGetBbox;
+  final _ListBboxD pathGetRenderedBbox;
   final _ListF32D pathGetStrokeWidth;
   final _ListBoolD pathHasStroke;
   final _ListBoolD pathHasFill;
@@ -2195,7 +2201,7 @@ class Char {
 /// A single extracted word.
 class Word {
   const Word(this.text, this.bbox, this.fontName, this.fontSize, this.bold,
-      this.sequence);
+      this.sequence, this.rotationDegrees);
   final String text;
   final Bbox bbox;
   final String fontName;
@@ -2209,6 +2215,14 @@ class Word {
   /// words that merely happen to be spatially close. Independent of reading
   /// order.
   final int sequence;
+
+  /// Rotation of this word's glyph run in degrees, snapped to a quadrant
+  /// (0 / 90 / 180 / -90).
+  ///
+  /// 90 means the text reads bottom-to-top on an unrotated page — a
+  /// landscape table typeset on a portrait page — so callers can transform
+  /// coordinates into the reading frame.
+  final double rotationDegrees;
 }
 
 /// A single extracted line of text.
@@ -2267,9 +2281,17 @@ class Annotation {
 
 /// A vector path (graphics) element on a page.
 class Path {
-  const Path(this.bbox, this.strokeWidth, this.hasStroke, this.hasFill,
-      this.operationCount);
+  const Path(this.bbox, this.renderedBbox, this.strokeWidth, this.hasStroke,
+      this.hasFill, this.operationCount);
   final Bbox bbox;
+
+  /// Rendered extents of the path: [bbox] inflated by the stroke (half the
+  /// line width straddles each side of the path).
+  ///
+  /// A table rule drawn as a thin segment stroked as wide as the table is
+  /// tall reports the bar the reader sees instead of a hairline speck.
+  /// Identical to [bbox] for unstroked paths.
+  final Bbox renderedBbox;
   final double strokeWidth;
   final bool hasStroke;
   final bool hasFill;
@@ -2669,7 +2691,9 @@ class PdfDocument implements Finalizable {
         if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
         final sequence = _n.wordGetSequence(list, i, code);
         if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
-        out.add(Word(text, bbox, fontName, fontSize, bold, sequence));
+        final rotation = _n.wordGetRotation(list, i, code);
+        if (code.value != 0) throw PdfOxideError(code.value, 'extractWords');
+        out.add(Word(text, bbox, fontName, fontSize, bold, sequence, rotation));
       }
       return out;
     } finally {
@@ -2979,6 +3003,8 @@ class PdfDocument implements Finalizable {
       final out = <Path>[];
       for (var i = 0; i < n; i++) {
         final bbox = _bbox(_n.pathGetBbox, list, i, 'extractPaths');
+        final renderedBbox =
+            _bbox(_n.pathGetRenderedBbox, list, i, 'extractPaths');
         final strokeWidth = _n.pathGetStrokeWidth(list, i, code);
         if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
         final hasStroke = _n.pathHasStroke(list, i, code);
@@ -2987,7 +3013,8 @@ class PdfDocument implements Finalizable {
         if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
         final operationCount = _n.pathGetOperationCount(list, i, code);
         if (code.value != 0) throw PdfOxideError(code.value, 'extractPaths');
-        out.add(Path(bbox, strokeWidth, hasStroke, hasFill, operationCount));
+        out.add(Path(bbox, renderedBbox, strokeWidth, hasStroke, hasFill,
+            operationCount));
       }
       return out;
     } finally {
@@ -3556,7 +3583,11 @@ class PdfDocument implements Finalizable {
         if (code.value != 0) {
           throw PdfOxideError(code.value, 'extractWordsInRect');
         }
-        out.add(Word(text, bbox, fontName, fontSize, bold, sequence));
+        final rotation = _n.wordGetRotation(list, i, code);
+        if (code.value != 0) {
+          throw PdfOxideError(code.value, 'extractWordsInRect');
+        }
+        out.add(Word(text, bbox, fontName, fontSize, bold, sequence, rotation));
       }
       return out;
     } finally {

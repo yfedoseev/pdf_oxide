@@ -80,6 +80,8 @@ void main() {
       expect(words[0].text, isNotEmpty);
       expect(words[0].bbox, isA<Bbox>());
       expect(words[0].sequence, isA<int>());
+      expect(words[0].rotationDegrees, isA<double>());
+      expect(words[0].rotationDegrees, anyOf(0.0, 90.0, 180.0, -90.0));
     });
     test('extractChars', () => expect(doc.extractChars(0), isNotEmpty));
     test('extractTextLines', () => expect(doc.extractTextLines(0), isNotEmpty));
@@ -93,7 +95,15 @@ void main() {
         () => expect(doc.embeddedImages(0), isA<List<Image>>()));
     test('pageAnnotations',
         () => expect(doc.pageAnnotations(0), isA<List<Annotation>>()));
-    test('extractPaths', () => expect(doc.extractPaths(0), isA<List<Path>>()));
+    test('extractPaths', () {
+      final paths = doc.extractPaths(0);
+      expect(paths, isA<List<Path>>());
+      for (final p in paths) {
+        expect(p.renderedBbox, isA<Bbox>());
+        expect(p.renderedBbox.width, greaterThanOrEqualTo(p.bbox.width));
+        expect(p.renderedBbox.height, greaterThanOrEqualTo(p.bbox.height));
+      }
+    });
     test('search', () {
       final hits = doc.search(0, 'Alpha', false);
       expect(hits, isNotEmpty);

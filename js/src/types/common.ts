@@ -39,6 +39,44 @@ export interface Word {
    *  consecutive draws from words that merely happen to be spatially close,
    *  independent of reading order. */
   sequence: number;
+  /** Rotation of the word's glyph run in degrees, snapped to a quadrant
+   *  (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+   *  unrotated page — e.g. a landscape table typeset on a portrait page —
+   *  so callers can transform coordinates into the reading frame. Horizontal
+   *  text reports 0. */
+  rotationDegrees: number;
+}
+
+/** A vector path extracted from a PDF page. */
+export interface Path {
+  /** X coordinate of the path's geometric bounding box. */
+  x: number;
+  /** Y coordinate of the path's geometric bounding box. */
+  y: number;
+  /** Width of the path's geometric bounding box. */
+  width: number;
+  /** Height of the path's geometric bounding box. */
+  height: number;
+  /** X coordinate of the path's rendered bounding box: the geometric bbox
+   *  inflated by the stroke (half the line width straddles each side of the
+   *  path), reporting the mark the reader sees — e.g. a thin table rule
+   *  stroked as wide as the table is tall. Identical to the geometric bbox
+   *  for unstroked paths. */
+  renderedX: number;
+  /** Y coordinate of the path's rendered bounding box. */
+  renderedY: number;
+  /** Width of the path's rendered bounding box. */
+  renderedWidth: number;
+  /** Height of the path's rendered bounding box. */
+  renderedHeight: number;
+  /** Stroke width in points. */
+  strokeWidth: number;
+  /** True if the path is stroked. */
+  hasStroke: boolean;
+  /** True if the path is filled. */
+  hasFill: boolean;
+  /** Number of path construction operations. */
+  operationCount: number;
 }
 
 // Re-export commonly used native types

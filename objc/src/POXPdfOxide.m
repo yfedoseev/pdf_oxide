@@ -89,7 +89,8 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                     fontName:(NSString*)fontName
                     fontSize:(float)fontSize
                         bold:(BOOL)bold
-                    sequence:(int64_t)sequence;
+                    sequence:(int64_t)sequence
+             rotationDegrees:(float)rotation;
 @end
 
 @interface POXTextLine ()
@@ -154,6 +155,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 
 @interface POXPath ()
 - (instancetype)initWithBbox:(POXBbox)bbox
+                renderedBbox:(POXBbox)renderedBbox
                  strokeWidth:(float)strokeWidth
                    hasStroke:(BOOL)hasStroke
                      hasFill:(BOOL)hasFill
@@ -191,7 +193,8 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
                     fontName:(NSString*)fontName
                     fontSize:(float)fontSize
                         bold:(BOOL)bold
-                    sequence:(int64_t)sequence {
+                    sequence:(int64_t)sequence
+             rotationDegrees:(float)rotation {
     if ((self = [super init])) {
         _text = [text copy];
         _bbox = bbox;
@@ -199,6 +202,7 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         _fontSize = fontSize;
         _bold = bold;
         _sequence = sequence;
+        _rotationDegrees = rotation;
     }
     return self;
 }
@@ -317,12 +321,14 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
 
 @implementation POXPath
 - (instancetype)initWithBbox:(POXBbox)bbox
+                renderedBbox:(POXBbox)renderedBbox
                  strokeWidth:(float)strokeWidth
                    hasStroke:(BOOL)hasStroke
                      hasFill:(BOOL)hasFill
               operationCount:(NSInteger)operationCount {
     if ((self = [super init])) {
         _bbox = bbox;
+        _renderedBbox = renderedBbox;
         _strokeWidth = strokeWidth;
         _hasStroke = hasStroke;
         _hasFill = hasFill;
@@ -567,12 +573,13 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
         int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
+        float rotation = pdf_oxide_word_get_rotation(list, i, &c);
         POXBbox bbox = {x, y, w, h};
-        [out addObject:[[POXWord alloc]
-                           initWithText:(text ?: @"")
-                                   bbox:bbox
-                               fontName:(fontName ?: @"")fontSize:fontSize
-                                   bold:(bold ? YES : NO)sequence:sequence]];
+        [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
+                                                bbox:bbox
+                                            fontName:(fontName ?: @"")fontSize:fontSize
+                                                bold:(bold ? YES : NO)sequence:sequence
+                                     rotationDegrees:rotation]];
     }
     pdf_oxide_word_list_free(list);
     return out;
@@ -819,12 +826,16 @@ static NSString* _Nullable POXTakeString(char* s, int32_t code, NSString* op,
         int32_t c = 0;
         float x = 0, y = 0, w = 0, h = 0;
         pdf_oxide_path_get_bbox(list, i, &x, &y, &w, &h, &c);
+        float rx = 0, ry = 0, rw = 0, rh = 0;
+        pdf_oxide_path_get_rendered_bbox(list, i, &rx, &ry, &rw, &rh, &c);
         float strokeWidth = pdf_oxide_path_get_stroke_width(list, i, &c);
         bool hasStroke = pdf_oxide_path_has_stroke(list, i, &c);
         bool hasFill = pdf_oxide_path_has_fill(list, i, &c);
         int32_t operationCount = pdf_oxide_path_get_operation_count(list, i, &c);
         POXBbox bbox = {x, y, w, h};
+        POXBbox renderedBbox = {rx, ry, rw, rh};
         [out addObject:[[POXPath alloc] initWithBbox:bbox
+                                        renderedBbox:renderedBbox
                                          strokeWidth:strokeWidth
                                            hasStroke:(hasStroke ? YES : NO)hasFill
                                                     :(hasFill ? YES : NO)operationCount
@@ -1246,12 +1257,13 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
         float fontSize = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
         int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
+        float rotation = pdf_oxide_word_get_rotation(list, i, &c);
         POXBbox bbox = {bx, by, bw, bh};
-        [out addObject:[[POXWord alloc]
-                           initWithText:(text ?: @"")
-                                   bbox:bbox
-                               fontName:(fontName ?: @"")fontSize:fontSize
-                                   bold:(bold ? YES : NO)sequence:sequence]];
+        [out addObject:[[POXWord alloc] initWithText:(text ?: @"")
+                                                bbox:bbox
+                                            fontName:(fontName ?: @"")fontSize:fontSize
+                                                bold:(bold ? YES : NO)sequence:sequence
+                                     rotationDegrees:rotation]];
     }
     pdf_oxide_word_list_free(list);
     return out;
