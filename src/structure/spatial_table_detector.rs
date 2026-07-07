@@ -3404,6 +3404,44 @@ fn merge_vertically_adjacent_tables(tables: &mut Vec<Table>) {
     *tables = merged;
 }
 
+/// True when the page carries vertical-ruling evidence that should route
+/// table detection through the grid pipelines instead of the
+/// horizontal-rule-bounded fallback.
+///
+/// Mirrors `extract_edges`' vertical-edge sources, with one distinction: a
+/// path whose verticality comes only from its stroke width (a geometric
+/// speck rendered as a bar) counts only if the painted bar crosses one of
+/// the horizontal rules. A stroke-width-encoded column rule necessarily
+/// spans the row rules of the table it rules; an isolated heavy-stroked
+/// speck — a tick mark, list dash, or other decoration — crosses nothing
+/// and says nothing about how the page's tables are ruled, so it must not
+/// disable the horizontal-rule fallback for the whole page. Vertical lines
+/// with real geometric extent, and rectangles (decomposed into edges),
+/// keep their pre-existing veto unchanged.
+fn has_vertical_ruling_evidence(lines: &[crate::elements::PathContent], h_edges: &[Edge]) -> bool {
+    const LINE_AXIS_TOL: f32 = 2.0;
+    lines.iter().any(|path| {
+        if path.is_horizontal_line(LINE_AXIS_TOL) {
+            return false;
+        }
+        if path.is_vertical_line(LINE_AXIS_TOL) {
+            if path.bbox.height.abs() >= LINE_AXIS_TOL {
+                return true;
+            }
+            // Stroke-promoted vertical (geometric speck): ruling evidence
+            // only if its rendered bar crosses a horizontal rule.
+            let r = path.rendered_bbox();
+            return h_edges.iter().any(|h| {
+                r.y <= h.coord
+                    && (r.y + r.height) >= h.coord
+                    && (r.x + r.width) >= h.start
+                    && r.x <= h.end
+            });
+        }
+        path.is_rectangle()
+    })
+}
+
 /// Detect tables in regions bounded by horizontal rules (H-lines) when no vertical
 /// lines are present.  Groups H-edges by Y-position to find horizontal table
 /// boundaries, then runs text-edge detection on the spans within each bounded
@@ -3539,8 +3577,8 @@ pub fn detect_tables_with_lines(
     // When intersection and cluster pipelines found nothing, try H-rule bounded detection:
     // use horizontal lines as table region boundaries with text-edge column detection.
     if final_tables.is_empty() {
-        let (mut h_edges, v_edges) = extract_edges(lines);
-        if !h_edges.is_empty() && v_edges.is_empty() {
+        let (mut h_edges, _) = extract_edges(lines);
+        if !h_edges.is_empty() && !has_vertical_ruling_evidence(lines, &h_edges) {
             snap_and_merge(&mut h_edges);
             final_tables = detect_tables_from_horizontal_rules(spans, &h_edges, config);
             // A logical table ruled between row *bands* (a rule under the

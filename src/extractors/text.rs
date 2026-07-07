@@ -1128,6 +1128,33 @@ pub(crate) fn strip_prime_decimal_boundary_spaces(text: &str) -> String {
     out
 }
 
+/// True when any drawn glyph run puts ink inside the horizontal gap between
+/// `left` and `right`, overlapping their vertical band.
+///
+/// Used by the decimal-value merge: two pure-digit runs a split-box-sized
+/// gap apart merge into one decimal amount ONLY if the gap is empty. A
+/// separator glyph occupying the gap — the comma of a subscript index pair
+/// (`P_{1,0}`), a list delimiter — proves the runs are distinct tokens, no
+/// matter where in the content stream it was drawn. The pair's own boxes
+/// bound the gap exactly, so a small epsilon keeps them (and touching
+/// neighbours) from counting as intruders.
+fn decimal_gap_has_ink(ink_boxes: &[Rect], left: &Rect, right: &Rect) -> bool {
+    const EPS: f32 = 0.01;
+    let gap_start = left.x + left.width;
+    let gap_end = right.x;
+    if gap_end - gap_start <= 2.0 * EPS {
+        return false;
+    }
+    let band_bottom = left.y.min(right.y);
+    let band_top = (left.y + left.height).max(right.y + right.height);
+    ink_boxes.iter().any(|b| {
+        b.x + b.width > gap_start + EPS
+            && b.x < gap_end - EPS
+            && b.y < band_top
+            && b.y + b.height > band_bottom
+    })
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -4411,6 +4438,18 @@ impl<'doc> TextExtractor<'doc> {
         // Take ownership of spans to avoid cloning during iteration
         let old_len = self.spans.len();
         let spans = std::mem::take(&mut self.spans);
+        // Geometry of every drawn (non-whitespace) glyph run, captured
+        // before the fold consumes the list. The decimal-merge branch below
+        // needs it: a separator glyph between two digit runs — the comma of
+        // a subscript index pair like `P_{1,0}` — is often drawn elsewhere
+        // in the content stream, so the fold sees the digits as adjacent
+        // and only a geometric test over ALL runs can spot the ink sitting
+        // in the gap.
+        let ink_boxes: Vec<Rect> = spans
+            .iter()
+            .filter(|s| !s.text.trim().is_empty())
+            .map(|s| s.bbox)
+            .collect();
         let mut merged = Vec::with_capacity(old_len);
         let mut current_span: Option<TextSpan> = None;
 
@@ -4649,6 +4688,12 @@ impl<'doc> TextExtractor<'doc> {
             // gaps was being mangled into "201.3", losing the year token from
             // word-F1 scoring. Real "$123 _ 45" split-box layouts always have
             // a gap > ~half the font size; tight letter spacing is < 0.1 em.
+            // A separator glyph drawn INSIDE the gap is proof the two digit
+            // runs are distinct tokens (the comma of a subscript index pair
+            // like `P_{1,0}`, drawn out of content-stream order): a genuine
+            // split-box amount has nothing between its boxes. The gap band
+            // alone cannot make this call — an index pair and a real
+            // split-box amount can sit at the same gap-to-font-size ratio.
             let min_decimal_gap = current.font_size * 0.4;
             let decimal_merge = same_line
                 && same_mcid
@@ -4658,7 +4703,8 @@ impl<'doc> TextExtractor<'doc> {
                 && !span.text.is_empty()
                 && current.text.chars().all(|c| c.is_ascii_digit())
                 && span.text.chars().all(|c| c.is_ascii_digit())
-                && (1..=2).contains(&span.text.len());
+                && (1..=2).contains(&span.text.len())
+                && !decimal_gap_has_ink(&ink_boxes, &current.bbox, &span.bbox);
 
             // Snapshot the pre-merge shape for the positional `char_widths`
             // maintenance below: the merged text is `current + [separator] +
@@ -16459,6 +16505,92 @@ mod profile_based_space_tests {
             extractor.spans.len(),
             2,
             "3-digit decimal part should not trigger decimal merge"
+        );
+    }
+
+    /// Compact TextSpan builder for the intervening-ink decimal tests.
+    fn digit_test_span(text: &str, bbox: Rect, font_size: f32) -> TextSpan {
+        TextSpan {
+            text_rise: 0.0,
+            artifact_type: None,
+            text: text.to_string(),
+            bbox,
+            font_name: "F1".to_string(),
+            font_size,
+            font_weight: FontWeight::Normal,
+            color: Color::black(),
+            mcid: None,
+            mcid_scope: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            is_italic: false,
+            is_monospace: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 0.0,
+            wmode: 0,
+            rtl_draw_logical: false,
+        }
+    }
+
+    #[test]
+    fn test_no_decimal_merge_with_intervening_comma_glyph() {
+        // Subscript index pairs (`P_{1,0}`, `i_2, i_4`) place two small
+        // digit runs a split-box-sized gap apart WITH the separating comma
+        // drawn between them — often later in the content stream, so the
+        // digit spans are sequence-adjacent. Ink inside the gap proves the
+        // digits are separate tokens: a genuine split-box amount has empty
+        // space between its boxes. Gap here: 110.0 - 103.5 = 6.5pt at 7pt
+        // font = 0.93x — squarely inside the genuine split-box band, so a
+        // gap ceiling alone cannot reject it.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        extractor.spans = vec![
+            digit_test_span("1", Rect::new(100.0, 700.0, 3.5, 7.0), 7.0),
+            digit_test_span("0", Rect::new(110.0, 700.0, 3.5, 7.0), 7.0),
+            // The comma, drawn after both digits in the content stream but
+            // sitting geometrically inside the gap.
+            digit_test_span(",", Rect::new(104.8, 699.0, 1.8, 3.0), 7.0),
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert!(
+            !extractor.spans.iter().any(|s| s.text.contains("1.0")),
+            "digits separated by a drawn comma must not merge into a decimal, got {:?}",
+            extractor
+                .spans
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_decimal_merge_with_ink_elsewhere_on_line_still_joins() {
+        // Positive control for the intervening-ink test: ink elsewhere on
+        // the same line (a comma before the amount) must not block a
+        // genuine split-box merge — only ink INSIDE the gap counts.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        extractor.spans = vec![
+            digit_test_span("123456", Rect::new(382.3, 700.0, 39.6, 12.0), 12.0),
+            digit_test_span("72", Rect::new(432.7, 700.0, 13.2, 12.0), 12.0), // 10.8pt gap
+            digit_test_span(",", Rect::new(300.0, 700.0, 2.5, 4.0), 12.0),    // far left of both
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert!(
+            extractor.spans.iter().any(|s| s.text == "123456.72"),
+            "split-box amount must still merge when the line's other ink is outside the gap, got {:?}",
+            extractor.spans.iter().map(|s| s.text.clone()).collect::<Vec<_>>()
         );
     }
 
