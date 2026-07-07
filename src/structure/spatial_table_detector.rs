@@ -3557,20 +3557,37 @@ fn detect_tables_from_horizontal_rules(
 
             // Collect spans within this Y-range and X-range (with small padding).
             let pad = 2.0;
-            let region_spans: Vec<TextSpan> = spans
-                .iter()
-                .filter(|s| {
-                    let cy = s.bbox.center().y;
-                    let cx = s.bbox.center().x;
-                    cy <= y_top + pad
-                        && cy >= y_bot - pad
-                        && cx >= x_overlap_start - pad
-                        && cx <= x_overlap_end + pad
-                })
-                .cloned()
-                .collect();
+            let mut region_spans: Vec<TextSpan> = Vec::new();
+            let mut outside_width = 0.0f32;
+            let mut inside_width = 0.0f32;
+            for s in spans {
+                let cy = s.bbox.center().y;
+                if cy > y_top + pad || cy < y_bot - pad {
+                    continue;
+                }
+                let cx = s.bbox.center().x;
+                if cx >= x_overlap_start - pad && cx <= x_overlap_end + pad {
+                    inside_width += s.bbox.width.max(0.0);
+                    region_spans.push(s.clone());
+                } else {
+                    outside_width += s.bbox.width.max(0.0);
+                }
+            }
 
             if region_spans.is_empty() {
+                continue;
+            }
+
+            // A pair of rules bounds a table only if the band's text is
+            // horizontally CONTAINED by the rules: a table's boundary
+            // rules span the rows they rule, while a fraction bar floats
+            // inside surrounding math that continues to its left and
+            // right (relation symbols, equation numbers). X-range-coherent
+            // vinculums from an aligned multi-step derivation pass the
+            // family check above, but the text spilling past the bars
+            // gives them away — when a third of the band's text mass lies
+            // outside the rules, they don't bound anything.
+            if outside_width / (outside_width + inside_width) > 0.3 {
                 continue;
             }
 

@@ -460,3 +460,86 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
     );
     pdf
 }
+
+/// The adversarial variant of the scattered-bars page: an aligned
+/// multi-step derivation. Fraction bars in consecutive `align`-style
+/// equation steps line up at the relation sign, so the vinculums share
+/// their x-start AND have similar widths — they pass any x-range
+/// coherence test — while spanning most of the page height. They still
+/// are not table rules, and the derivation text between them must not be
+/// reflowed into fake rows.
+fn aligned_derivation_bars_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"0 J 0 j 0.478 w\n");
+    // Six vinculums, identical x-start, near-identical widths
+    // (0.85+ pairwise overlap/union), spanning y=720 down to y=240.
+    let bars: [(i32, i32, i32); 6] = [
+        (250, 118, 720),
+        (250, 112, 624),
+        (250, 120, 528),
+        (250, 115, 432),
+        (250, 110, 336),
+        (250, 118, 240),
+    ];
+    for (x, w, y) in bars {
+        content.extend_from_slice(format!("{x} {y} m {} {y} l S\n", x + w).as_bytes());
+    }
+    // Aligned-derivation text: lhs at a fixed x, numerator above and
+    // denominator below each bar at the bar's x — the repetitive column
+    // structure a real derivation has.
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    for (i, (x, _w, y)) in bars.iter().enumerate() {
+        content.extend_from_slice(
+            format!("1 0 0 1 150 {} Tm (DerivStep{} equals) Tj\n", y - 2, i + 1).as_bytes(),
+        );
+        content.extend_from_slice(
+            format!("1 0 0 1 {} {} Tm (alpha sub k plus one) Tj\n", x, y + 5).as_bytes(),
+        );
+        content.extend_from_slice(
+            format!("1 0 0 1 {} {} Tm (beta sub k minus one) Tj\n", x, y - 12).as_bytes(),
+        );
+        // Right-margin equation number, as align blocks carry.
+        content.extend_from_slice(
+            format!("1 0 0 1 500 {} Tm (open {} close) Tj\n", y - 2, i + 1).as_bytes(),
+        );
+    }
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
+}
+
+#[test]
+fn aligned_derivation_bars_do_not_form_a_table() {
+    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
+    config.text_fallback = false;
+    let doc = PdfDocument::from_bytes(aligned_derivation_bars_pdf()).expect("parse");
+    let tables = doc
+        .extract_tables_with_config(0, config)
+        .expect("extract tables");
+    assert!(
+        tables.is_empty(),
+        "x-aligned derivation vinculums must not be grouped into a table, got {} table(s): {:?}",
+        tables.len(),
+        tables
+            .iter()
+            .map(|t| t.rows.iter().map(|r| r.cells.len()).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn aligned_derivation_bars_preserve_reading_order() {
+    let doc = PdfDocument::from_bytes(aligned_derivation_bars_pdf()).expect("parse");
+    let text = doc.extract_text(0).expect("extract text");
+    let positions: Vec<usize> = (1..=6)
+        .map(|i| {
+            text.find(&format!("DerivStep{i} "))
+                .unwrap_or_else(|| panic!("DerivStep{i} missing from output: {text}"))
+        })
+        .collect();
+    let mut sorted = positions.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        positions, sorted,
+        "derivation steps must read top-to-bottom, got {positions:?} in: {text}"
+    );
+}
