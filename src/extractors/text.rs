@@ -4637,11 +4637,20 @@ impl<'doc> TextExtractor<'doc> {
             // gaps was being mangled into "201.3", losing the year token from
             // word-F1 scoring. Real "$123 _ 45" split-box layouts always have
             // a gap > ~half the font size; tight letter spacing is < 0.1 em.
+            //
+            // The gap also needs an upper ceiling. In scientific and math
+            // PDFs, subscript index pairs like `P_{1,0}` draw the two subscript
+            // digits in a smaller font (~7pt) spaced ~1.5-1.7x the font size
+            // apart; too loose a ceiling lets the rule fire and invent a
+            // decimal ("1" + "0" -> "1.0"). Genuine split-box amounts cluster
+            // near ~0.8-1.0x the font size, so a 1.3x ceiling separates real
+            // integer/cents boxes from widely-spaced subscripts.
             let min_decimal_gap = current.font_size * 0.4;
+            let max_decimal_gap = current.font_size * 1.3;
             let decimal_merge = same_line
                 && same_mcid
                 && gap > min_decimal_gap
-                && gap < current.font_size * 2.0
+                && gap < max_decimal_gap
                 && !current.text.is_empty()
                 && !span.text.is_empty()
                 && current.text.chars().all(|c| c.is_ascii_digit())
@@ -16381,6 +16390,162 @@ mod profile_based_space_tests {
             2,
             "3-digit decimal part should not trigger decimal merge"
         );
+    }
+
+    #[test]
+    fn test_no_decimal_merge_for_wide_subscript_digits() {
+        // Subscript index pairs (e.g. `P_{1,0}` in scientific PDFs) draw the
+        // two subscript digits in a smaller font (~7pt) spaced far apart
+        // (~1.5-1.7x the font size). The decimal-merge rule was joining them
+        // into an invented decimal ("1" + "0" -> "1.0"). A real split-box
+        // dollar amount clusters near ~0.8-1.0x the font size, so a wide gap is
+        // not an integer/cents amount and must stay separate.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        // 7pt subscript digits: "1" at x=100.0 (w=3.5), "0" at x=114.5 (w=3.5).
+        // gap = 114.5 - (100.0 + 3.5) = 11.0pt -> 11.0 / 7.0 = 1.57x font size.
+        extractor.spans = vec![
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "1".to_string(),
+                bbox: Rect::new(100.0, 700.0, 3.5, 7.0),
+                font_name: "F1".to_string(),
+                font_size: 7.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "0".to_string(),
+                bbox: Rect::new(114.5, 700.0, 3.5, 7.0), // 11.0pt gap = 1.57x font
+                font_name: "F1".to_string(),
+                font_size: 7.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        // Widely-spaced subscript digits must NOT be joined into a decimal.
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "Widely-spaced subscript digits should not merge into a decimal value"
+        );
+        assert!(
+            !extractor.spans.iter().any(|s| s.text.contains('.')),
+            "No invented decimal point should appear between subscript digits"
+        );
+    }
+
+    #[test]
+    fn test_decimal_merge_just_under_ceiling_still_joins() {
+        // The ceiling that stops subscripts must not be so tight that it drops
+        // genuine split-box amounts. Real amounts cluster near ~0.8-1.0x the
+        // font size; this locks the ceiling by proving an amount at ~1.2x the
+        // font size (just under the 1.3x cap) still merges.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        // 12pt digits: "1234" at x=200.0 (w=24.0), "56" at x=238.4 (w=12.0).
+        // gap = 238.4 - (200.0 + 24.0) = 14.4pt -> 14.4 / 12.0 = 1.2x font size.
+        extractor.spans = vec![
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "1234".to_string(),
+                bbox: Rect::new(200.0, 700.0, 24.0, 12.0),
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "56".to_string(),
+                bbox: Rect::new(238.4, 700.0, 12.0, 12.0), // 14.4pt gap = 1.2x font
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert_eq!(extractor.spans.len(), 1, "Amount just under the ceiling should still merge");
+        assert_eq!(extractor.spans[0].text, "1234.56");
     }
 
     #[test]
