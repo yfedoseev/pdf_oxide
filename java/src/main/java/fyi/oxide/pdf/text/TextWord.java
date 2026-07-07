@@ -20,12 +20,14 @@ public final class TextWord {
     private final BBox bbox;
     private final float confidence;
     private final long sequence;
+    private final float rotationDegrees;
 
-    public TextWord(String text, BBox bbox, float confidence, long sequence) {
+    public TextWord(String text, BBox bbox, float confidence, long sequence, float rotationDegrees) {
         this.text = Objects.requireNonNull(text, "text");
         this.bbox = Objects.requireNonNull(bbox, "bbox");
         this.confidence = confidence;
         this.sequence = sequence;
+        this.rotationDegrees = rotationDegrees;
     }
 
     public String text() {
@@ -51,6 +53,17 @@ public final class TextWord {
         return sequence;
     }
 
+    /**
+     * Rotation of the word's glyph run in degrees, snapped to a quadrant
+     * ({@code 0} / {@code 90} / {@code 180} / {@code -90}). {@code 90}
+     * means the text reads bottom-to-top on an unrotated page — e.g. a
+     * landscape table typeset on a portrait page. {@code 0} for ordinary
+     * horizontal text.
+     */
+    public float rotationDegrees() {
+        return rotationDegrees;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -58,18 +71,19 @@ public final class TextWord {
         TextWord w = (TextWord) o;
         return Float.compare(w.confidence, confidence) == 0
                 && sequence == w.sequence
+                && Float.compare(w.rotationDegrees, rotationDegrees) == 0
                 && text.equals(w.text)
                 && bbox.equals(w.bbox);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(text, bbox, confidence, sequence);
+        return Objects.hash(text, bbox, confidence, sequence, rotationDegrees);
     }
 
     @Override
     public String toString() {
         return "TextWord[text=" + text + ", bbox=" + bbox + ", confidence=" + confidence + ", sequence=" + sequence
-                + "]";
+                + ", rotationDegrees=" + rotationDegrees + "]";
     }
 }

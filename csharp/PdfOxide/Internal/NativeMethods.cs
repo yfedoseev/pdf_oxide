@@ -5682,6 +5682,10 @@ namespace PdfOxide.Internal
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial float pdf_oxide_word_get_rotation(IntPtr words, int index, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial void pdf_oxide_word_list_free(IntPtr handle);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
@@ -5851,6 +5855,10 @@ namespace PdfOxide.Internal
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial void pdf_oxide_path_get_bbox(IntPtr paths, int index, out float x, out float y, out float w, out float h, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void pdf_oxide_path_get_rendered_bbox(IntPtr paths, int index, out float x, out float y, out float w, out float h, out int errorCode);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]

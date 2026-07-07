@@ -369,12 +369,18 @@ struct Char
 end
 
 """
-An extracted word with `text`, `bbox`, `font_name`, `font_size`, `bold`, `sequence`.
+An extracted word with `text`, `bbox`, `font_name`, `font_size`, `bold`, `sequence`,
+`rotation_degrees`.
 
 `sequence` is the content-stream emission (draw) order of the word's originating
 span: words with adjacent `sequence` values were drawn consecutively, which
 distinguishes genuinely consecutive draws from merely spatially-close ones,
 independent of reading order.
+
+`rotation_degrees` is the rotation of the word's glyph run in degrees, snapped
+to a quadrant (0 / 90 / 180 / -90); 90 means the text reads bottom-to-top on an
+unrotated page — a landscape table typeset on a portrait page — so callers can
+transform coordinates into the reading frame.
 """
 struct Word
     text::String
@@ -383,6 +389,7 @@ struct Word
     font_size::Float64
     bold::Bool
     sequence::Int64
+    rotation_degrees::Float64
 end
 
 """An extracted text line with `text`, `bbox`, `word_count`."""
@@ -568,7 +575,17 @@ function extract_words(d::PdfDocument, page::Integer)
                 qcode,
             )
             qcode[] != 0 && throw(PdfOxideError(qcode[], "extract_words"))
-            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq)
+            rcode = Ref{Int32}(0)
+            rot = ccall(
+                (:pdf_oxide_word_get_rotation, LIB),
+                Float32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                rcode,
+            )
+            rcode[] != 0 && throw(PdfOxideError(rcode[], "extract_words"))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq, Float64(rot))
         end
         return out
     finally
@@ -704,9 +721,17 @@ struct Annotation
     borderWidth::Float64
 end
 
-"""A vector path with `bbox` (Bbox), `strokeWidth`, `hasStroke`, `hasFill`, `operationCount`."""
+"""
+A vector path with `bbox` (Bbox), `renderedBbox` (Bbox), `strokeWidth`,
+`hasStroke`, `hasFill`, `operationCount`.
+
+`renderedBbox` is the rendered extents of the path: the geometric `bbox`
+inflated by the stroke (half the line width straddles each side of the path).
+Identical to `bbox` for unstroked paths.
+"""
 struct Path
     bbox::Bbox
+    renderedBbox::Bbox
     strokeWidth::Float64
     hasStroke::Bool
     hasFill::Bool
@@ -725,6 +750,7 @@ end
 for (jl_fn, c_fn) in (
     (:_bbox_annotation, :pdf_oxide_annotation_get_rect),
     (:_bbox_path, :pdf_oxide_path_get_bbox),
+    (:_rendered_bbox_path, :pdf_oxide_path_get_rendered_bbox),
     (:_bbox_search, :pdf_oxide_search_result_get_bbox),
 )
     @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
@@ -963,11 +989,12 @@ function extract_paths(d::PdfDocument, page::Integer)
         out = Vector{Path}(undef, n < 0 ? 0 : Int(n))
         for i = 0:(Int(n)-1)
             bb = _bbox_path(list, i, "extract_paths")
+            rb = _rendered_bbox_path(list, i, "extract_paths")
             sw = _f32_path_stroke_width(list, i, "extract_paths")
             hs = _bool_path_has_stroke(list, i, "extract_paths")
             hf = _bool_path_has_fill(list, i, "extract_paths")
             oc = _i32_path_op_count(list, i, "extract_paths")
-            out[i+1] = Path(bb, sw, hs, hf, oc)
+            out[i+1] = Path(bb, rb, sw, hs, hf, oc)
         end
         return out
     finally
@@ -5540,7 +5567,17 @@ function _words_from_list(list::Ptr{Cvoid}, op::String)
                 qcode,
             )
             qcode[] != 0 && throw(PdfOxideError(qcode[], op))
-            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq)
+            rcode = Ref{Int32}(0)
+            rot = ccall(
+                (:pdf_oxide_word_get_rotation, LIB),
+                Float32,
+                (Ptr{Cvoid}, Int32, Ref{Int32}),
+                list,
+                Int32(i),
+                rcode,
+            )
+            rcode[] != 0 && throw(PdfOxideError(rcode[], op))
+            out[i+1] = Word(txt, bb, font, Float64(fs), bold, seq, Float64(rot))
         end
         return out
     finally

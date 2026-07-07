@@ -119,7 +119,7 @@ pub extern "system" fn Java_fyi_oxide_pdf_PdfPage_nativeRotation<'local>(
 
 /// `nativeWords` — extract words for a page as a Java
 /// `ArrayList<TextWord>`. Each word is constructed via the Java
-/// `TextWord(String, BBox, float)` constructor + `BBox(double,
+/// `TextWord(String, BBox, float, long, float)` constructor + `BBox(double,
 /// double, double, double)` constructor.
 #[no_mangle]
 pub extern "system" fn Java_fyi_oxide_pdf_PdfPage_nativeWords<'local>(
@@ -157,7 +157,7 @@ fn build_text_word_list<'local>(
     let textword_ctor = env.get_method_id(
         &textword_class,
         &JNIString::from("<init>"),
-        jni_sig!("(Ljava/lang/String;Lfyi/oxide/pdf/geometry/BBox;FJ)V"),
+        jni_sig!("(Ljava/lang/String;Lfyi/oxide/pdf/geometry/BBox;FJF)V"),
     )?;
     let bbox_class = env.find_class(&JNIString::from("fyi/oxide/pdf/geometry/BBox"))?;
     let bbox_ctor =
@@ -202,6 +202,9 @@ fn build_text_word_list<'local>(
                     jni::sys::jvalue { f: 1.0_f32 },
                     jni::sys::jvalue {
                         j: w.sequence as i64,
+                    },
+                    jni::sys::jvalue {
+                        f: w.rotation_degrees,
                     },
                 ],
             )?

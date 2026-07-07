@@ -326,6 +326,7 @@ extern "C" {
   extern float pdf_oxide_word_get_font_size(const void* words, int32_t index, int* error_code);
   extern bool pdf_oxide_word_is_bold(const void* words, int32_t index, int* error_code);
   extern int64_t pdf_oxide_word_get_sequence(const void* words, int32_t index, int* error_code);
+  extern float pdf_oxide_word_get_rotation(const void* words, int32_t index, int* error_code);
   extern void pdf_oxide_word_list_free(void* handle);
 
   extern void* pdf_document_extract_text_lines(void* handle, int32_t page_index, int* error_code);
@@ -511,6 +512,7 @@ extern "C" {
   extern int32_t pdf_oxide_path_count(const void* paths);
   extern void pdf_oxide_path_get_bbox(const void* paths, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
   extern int32_t pdf_oxide_path_get_operation_count(const void* paths, int32_t index, int* error_code);
+  extern void pdf_oxide_path_get_rendered_bbox(const void* paths, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
   extern float pdf_oxide_path_get_stroke_width(const void* paths, int32_t index, int* error_code);
   extern bool pdf_oxide_path_has_fill(const void* paths, int32_t index, int* error_code);
   extern bool pdf_oxide_path_has_stroke(const void* paths, int32_t index, int* error_code);
@@ -1813,6 +1815,7 @@ Napi::Value ExtractWords(const Napi::CallbackInfo& info) {
     word.Set("fontSize", Napi::Number::New(env, pdf_oxide_word_get_font_size(words, i, &errorCode)));
     word.Set("isBold", Napi::Boolean::New(env, pdf_oxide_word_is_bold(words, i, &errorCode)));
     word.Set("sequence", Napi::Number::New(env, static_cast<double>(pdf_oxide_word_get_sequence(words, i, &errorCode))));
+    word.Set("rotationDegrees", Napi::Number::New(env, pdf_oxide_word_get_rotation(words, i, &errorCode)));
     if (text) free_string(text);
     if (fontName) free_string(fontName);
     result.Set(i, word);
@@ -3234,6 +3237,12 @@ Napi::Value ExtractPaths(const Napi::CallbackInfo& info) {
     path.Set("y", Napi::Number::New(env, py));
     path.Set("width", Napi::Number::New(env, pw));
     path.Set("height", Napi::Number::New(env, ph));
+    float rx, ry, rw, rh;
+    pdf_oxide_path_get_rendered_bbox(paths, i, &rx, &ry, &rw, &rh, &errorCode);
+    path.Set("renderedX", Napi::Number::New(env, rx));
+    path.Set("renderedY", Napi::Number::New(env, ry));
+    path.Set("renderedWidth", Napi::Number::New(env, rw));
+    path.Set("renderedHeight", Napi::Number::New(env, rh));
     path.Set("strokeWidth", Napi::Number::New(env, pdf_oxide_path_get_stroke_width(paths, i, &errorCode)));
     path.Set("hasStroke", Napi::Boolean::New(env, pdf_oxide_path_has_stroke(paths, i, &errorCode)));
     path.Set("hasFill", Napi::Boolean::New(env, pdf_oxide_path_has_fill(paths, i, &errorCode)));
@@ -3326,6 +3335,7 @@ Napi::Value ExtractWordsInRect(const Napi::CallbackInfo& info) {
     word.Set("width", Napi::Number::New(env, ww));
     word.Set("height", Napi::Number::New(env, wh));
     word.Set("sequence", Napi::Number::New(env, static_cast<double>(pdf_oxide_word_get_sequence(words, i, &errorCode))));
+    word.Set("rotationDegrees", Napi::Number::New(env, pdf_oxide_word_get_rotation(words, i, &errorCode)));
     if (text) free_string(text);
     result.Set(i, word);
   }

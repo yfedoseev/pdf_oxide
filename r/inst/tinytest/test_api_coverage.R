@@ -55,6 +55,9 @@ expect_true(all(c("x", "y", "width", "height") %in% names(bb)))
 expect_true(is.numeric(bb$width))
 expect_true("sequence" %in% names(words[[1]]))
 expect_true(is.numeric(words[[1]]$sequence))
+expect_true("rotation_degrees" %in% names(words[[1]]))
+expect_true(is.numeric(words[[1]]$rotation_degrees))
+expect_true(words[[1]]$rotation_degrees %in% c(0, 90, 180, -90))
 chars <- pdf_extract_chars(doc, 0)                      # pdf_extract_chars
 expect_true(length(chars) > 0)
 expect_true(is.integer(chars[[1]]$character) && chars[[1]]$character > 0)
@@ -74,6 +77,34 @@ annots <- pdf_page_annotations(doc, 0)                 # pdf_page_annotations (m
 expect_true(is.list(annots))
 paths <- pdf_extract_paths(doc, 0)                     # pdf_extract_paths (may be empty)
 expect_true(is.list(paths))
+
+# rendered_bbox: a stroked horizontal rule (geometric height 0, stroke width 6)
+# plus an unstroked filled rect — the two cases pdf_oxide_path_get_rendered_bbox
+# distinguishes.
+pb <- pdf_builder_create()
+ppg <- pdf_builder_page(pb, 595, 842)
+pdf_page_stroke_line(ppg, 72, 400, 300, 400, 6, 0, 0, 0)
+pdf_page_filled_rect(ppg, 72, 500, 100, 50, 0.5, 0.5, 0.5)
+pdf_page_done(ppg)
+pdoc <- pdf_open_from_bytes(pdf_builder_build(pb))
+ppaths <- pdf_extract_paths(pdoc, 0)
+expect_true(length(ppaths) > 0)
+rbb <- ppaths[[1]]$rendered_bbox
+expect_true(all(c("x", "y", "width", "height") %in% names(rbb)))
+saw_inflated <- FALSE
+for (pth in ppaths) {
+  gb <- pth$bbox; rb <- pth$rendered_bbox
+  expect_true(rb$x <= gb$x + 1e-3 && rb$y <= gb$y + 1e-3 &&
+              rb$x + rb$width >= gb$x + gb$width - 1e-3 &&
+              rb$y + rb$height >= gb$y + gb$height - 1e-3)
+  if (pth$has_stroke && rb$height > gb$height + 1e-3) saw_inflated <- TRUE
+  if (!pth$has_stroke)
+    expect_equal(c(rb$x, rb$y, rb$width, rb$height),
+                 c(gb$x, gb$y, gb$width, gb$height))
+}
+expect_true(saw_inflated)  # the 6pt-stroked rule is taller than its geometry
+pdf_close(pdoc)
+pdf_builder_close(pb)
 
 hits <- pdf_search(doc, 0, "Alpha", FALSE)             # pdf_search (non-empty)
 expect_true(length(hits) > 0)

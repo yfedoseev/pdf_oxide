@@ -87,6 +87,8 @@ class PdfPageTest {
             assertThat(words.get(0).bbox()).isNotNull();
             // Content-stream emission order is exposed and non-negative.
             assertThat(words.get(0).sequence()).isGreaterThanOrEqualTo(0L);
+            // Glyph-run rotation is quadrant-snapped; horizontal fixture text is 0.
+            assertThat(words.get(0).rotationDegrees()).isEqualTo(0.0f);
         }
     }
 

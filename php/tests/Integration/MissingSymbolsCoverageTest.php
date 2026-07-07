@@ -14,8 +14,9 @@ use PdfOxide\FFI\FunctionBindings;
 /**
  * API-coverage smoke tests for C-ABI symbols that previously had no PHP
  * binding: pdf_oxide_set_max_ops_per_stream,
- * pdf_oxide_set_preserve_unmapped_glyphs, and
- * pdf_render_page_with_options_ex.
+ * pdf_oxide_set_preserve_unmapped_glyphs, pdf_render_page_with_options_ex,
+ * pdf_oxide_word_get_sequence, pdf_oxide_word_get_rotation,
+ * and pdf_oxide_path_get_rendered_bbox.
  *
  * Closes the binding-coverage gap; each test only asserts the symbol is
  * invokable (and, where there is no error channel, returns a prior int).
@@ -74,6 +75,72 @@ final class MissingSymbolsCoverageTest extends IntegrationTestCase
             // Render may be unavailable in this build (feature-gated);
             // accept the binding error as coverage of the symbol.
             $this->assertInstanceOf(\Throwable::class, $e);
+        } finally {
+            $bindings->pdfDocumentFree($handle);
+        }
+    }
+
+    /** Word accessors: sequence is a draw-order int, rotation is quadrant-snapped degrees. */
+    public function testWordSequenceAndRotationAccessors(): void
+    {
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfDocumentOpen($this->fixture('multi_column_table.pdf'));
+        $this->assertNotNull($handle);
+
+        try {
+            $words = $bindings->pdfDocumentExtractWords($handle, 0);
+            try {
+                $count = $bindings->pdfOxideWordCount($words);
+                $this->assertGreaterThan(0, $count);
+
+                $sequence = $bindings->pdfOxideWordGetSequence($words, 0);
+                $this->assertGreaterThanOrEqual(0, $sequence);
+
+                // Rotation is snapped to a quadrant; an
+                // ordinary horizontal-text fixture reads at 0 degrees.
+                $rotation = $bindings->pdfOxideWordGetRotation($words, 0);
+                $this->assertContains($rotation, [0.0, 90.0, 180.0, -90.0]);
+            } finally {
+                $bindings->pdfOxideWordListFree($words);
+            }
+        } finally {
+            $bindings->pdfDocumentFree($handle);
+        }
+    }
+
+    /** Rendered bbox is the geometric bbox inflated by the stroke. */
+    public function testPathRenderedBboxContainsGeometricBbox(): void
+    {
+        $bindings = new FunctionBindings();
+        $handle = $bindings->pdfDocumentOpen($this->fixture('multi_column_table.pdf'));
+        $this->assertNotNull($handle);
+
+        try {
+            $paths = $bindings->pdfDocumentExtractPaths($handle, 0);
+            try {
+                $count = $bindings->pdfOxidePathCount($paths);
+                if ($count === 0) {
+                    // No vector paths on the fixture page: cover the
+                    // symbol via its out-of-range error channel instead.
+                    $this->expectException(\Throwable::class);
+                    $bindings->pdfOxidePathGetRenderedBbox($paths, 0);
+                    return;
+                }
+
+                for ($i = 0; $i < $count; $i++) {
+                    $bbox = $bindings->pdfOxidePathGetBbox($paths, $i);
+                    $rendered = $bindings->pdfOxidePathGetRenderedBbox($paths, $i);
+
+                    // Stroke inflation never shrinks the extents.
+                    $epsilon = 1e-4;
+                    $this->assertLessThanOrEqual($bbox['x'] + $epsilon, $rendered['x']);
+                    $this->assertLessThanOrEqual($bbox['y'] + $epsilon, $rendered['y']);
+                    $this->assertGreaterThanOrEqual($bbox['width'] - $epsilon, $rendered['width']);
+                    $this->assertGreaterThanOrEqual($bbox['height'] - $epsilon, $rendered['height']);
+                }
+            } finally {
+                $bindings->pdfOxidePathListFree($paths);
+            }
         } finally {
             $bindings->pdfDocumentFree($handle);
         }

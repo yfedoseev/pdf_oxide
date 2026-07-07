@@ -68,6 +68,7 @@ final class ApiCoverageTests: XCTestCase {
         _ = words[0].fontSize
         _ = words[0].bold
         _ = words[0].sequence
+        XCTAssertEqual(words[0].rotationDegrees, 0)  // horizontal text on an unrotated page
 
         let chars = try doc.extractChars(0)  // extractChars
         XCTAssertFalse(chars.isEmpty)
@@ -120,6 +121,9 @@ final class ApiCoverageTests: XCTestCase {
         for path in paths {
             _ = path.bbox; _ = path.strokeWidth; _ = path.hasStroke
             _ = path.hasFill; _ = path.operationCount
+            // Rendered extents include the stroke, so they never undershoot bbox.
+            XCTAssertGreaterThanOrEqual(path.renderedBbox.width, path.bbox.width)
+            XCTAssertGreaterThanOrEqual(path.renderedBbox.height, path.bbox.height)
         }
         XCTAssertGreaterThanOrEqual(paths.count, 0)
     }
