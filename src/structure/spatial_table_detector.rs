@@ -3586,8 +3586,10 @@ fn detect_tables_from_horizontal_rules(
             // vinculums from an aligned multi-step derivation pass the
             // family check above, but the text spilling past the bars
             // gives them away — when a third of the band's text mass lies
-            // outside the rules, they don't bound anything.
-            if outside_width / (outside_width + inside_width) > 0.3 {
+            // outside the rules, they don't bound anything. (Division-free
+            // so a band of zero-width spans compares 0 > 0 instead of
+            // taking a NaN branch.)
+            if outside_width > (outside_width + inside_width) * 0.3 {
                 continue;
             }
 
