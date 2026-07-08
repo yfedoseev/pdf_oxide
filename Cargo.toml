@@ -210,7 +210,7 @@ sha1 = { version = "0.11", optional = true }          # SHA-1 for legacy signatu
 # module use sha2 0.10 types specifically where rsa::pss / ecdsa crate generics
 # require it, without changing the rest of the codebase. See issue #420.
 sha2_v10 = { package = "sha2", version = "0.10", optional = true }
-p256 = { version = "0.13", optional = true }                       # ECDSA P-256 signature verification
+p256 = { version = "0.14", optional = true }                       # ECDSA P-256 signature verification
 p384 = { version = "0.14", optional = true }                       # ECDSA P-384 signature verification
 
 # Parallel extraction
