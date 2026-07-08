@@ -362,6 +362,89 @@ pub(crate) fn detect_visual_order_run(chars_with_x: &[(char, f32)]) -> RunOrder 
     RunOrder::Ambiguous
 }
 
+/// Single decision point for "given this [`RunOrder`] verdict (from
+/// [`detect_visual_order_run`]), should this flushed RTL run be reversed
+/// to logical order?" — shared by every `Tj`/`TJ` buffer-flush site
+/// (`flush_tj_buffer`, `flush_tj_span_buffer`, `cluster_to_span` in
+/// `extractors/text.rs`).
+///
+/// Before this existed, each flush site independently re-implemented the
+/// identical three-way `match` on the verdict — and one site
+/// (`flush_tj_buffer`, the default `WordBoundaryMode::Tiebreaker` path)
+/// never called the geometric detector at all, only its coarse fallback.
+/// That fallback (`accumulated_width > 0.0`, a sum of *only positive*
+/// glyph advance widths — TJ kerning offsets never subtract from it) is
+/// true for nearly every non-empty RTL buffer, so that site was
+/// unconditionally reversing every RTL run it flushed rather than
+/// detecting direction at all (issue #826: an already-logical-order OCR
+/// word got wrongly flipped, and the flipped-but-still-pure-Hebrew word
+/// then had its span order *also* reversed by
+/// `document::PdfDocument::reverse_rtl_visual_order_runs`, compounding
+/// into a full mirror image of the correct line).
+///
+/// Callers remain responsible for deciding whether they have usable
+/// per-character geometry to hand `detect_visual_order_run` (that gating
+/// differs slightly per site — e.g. `cluster_to_span` tolerates a
+/// `chars_with_x` shorter than the decoded text on ligature expansion)
+/// and for computing `coarse_visual_order_heuristic`, the best coarse
+/// direction signal available (e.g. "buffer's net horizontal advance is
+/// positive" / "last glyph's x > first glyph's x") for the genuinely
+/// [`RunOrder::Ambiguous`] case (short runs, sparse geometry).
+///
+/// `is_invisible_render_mode` — was this run drawn with text render mode
+/// `3`/`7` (ISO 32000-1 §9.3.6, "neither fill nor stroke" — the mode
+/// OCR-sandwich text layers use so the recognized text is searchable but
+/// the original scan stays the only visible thing)? Both `verdict` and
+/// `coarse_visual_order_heuristic` are built on the same premise —
+/// glyphs placed at *ascending* x are visual order, *descending* x are
+/// logical order — which only holds when the producer has
+/// rendering-correctness pressure to mirror already-logical RTL content
+/// so it *looks* right on the page. Invisible text has no such pressure:
+/// a competent OCR engine (the modern default — Tesseract's LSTM model,
+/// cloud OCR APIs) outputs correct per-word logical Unicode but has no
+/// reason to also mirror the invisible glyph *positions*, so it places
+/// them at plain ascending x — geometrically identical to genuinely
+/// visual-order content. Neither `verdict` nor the coarse fallback can
+/// tell the two apart in that case (issue #826: this was exactly why
+/// wiring the geometric detector into every flush site alone didn't fix
+/// the bug — an already-correct OCR word was still being flipped). When
+/// `true`, skip both signals entirely and trust the extracted content
+/// order as-is — the modern-OCR prior plus this crate's own stated
+/// design principle (`detect_visual_order_run`'s doc: "the cost of an
+/// unwarranted reversal is higher than the cost of a missed reversal")
+/// both favor not reversing when the signal is this unreliable.
+/// Cross-word reading order for invisible OCR lines is still corrected
+/// separately, by the span-position-based reading-order sort and
+/// `document::PdfDocument::reverse_rtl_visual_order_runs` Pass 0.5, which
+/// this function has no bearing on.
+///
+/// Known accepted trade-off: an invisible OCR layer from a genuinely
+/// non-language-aware/legacy engine that emits *visual*-order Unicode
+/// will no longer get auto-reversed — today it coincidentally does, for
+/// the same ascending-x-is-uninformative reason #826 mis-fires. This is
+/// a deliberate choice favoring the now-dominant case.
+pub(crate) fn apply_rtl_verdict(
+    text: &str,
+    verdict: RunOrder,
+    coarse_visual_order_heuristic: bool,
+    is_invisible_render_mode: bool,
+) -> String {
+    if is_invisible_render_mode {
+        return text.to_string();
+    }
+    match verdict {
+        RunOrder::Visual => reverse_rtl_keep_numbers(text),
+        RunOrder::Logical => text.to_string(),
+        RunOrder::Ambiguous => {
+            if coarse_visual_order_heuristic {
+                reverse_rtl_keep_numbers(text)
+            } else {
+                text.to_string()
+            }
+        },
+    }
+}
+
 /// Unicode bidi-isolation markers (UAX #9 §2.4).
 ///
 /// These four code points isolate a directional run from the
