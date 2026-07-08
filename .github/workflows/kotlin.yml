@@ -78,7 +78,7 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@06832c7b30a0129d7fb559bcc6e43d26f6374244 # v4
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v4
 
       # Install the Java binding to the local Maven repo so the facade resolves
       # `fyi.oxide:pdf-oxide`. Skip the `dev` profile (it would rebuild the Rust
