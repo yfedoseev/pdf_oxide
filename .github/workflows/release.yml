@@ -2102,7 +2102,7 @@ jobs:
           java-version: '17'
 
       - name: Set up sbt
-        uses: sbt/setup-sbt@234370af1319038bf8dc432f8a7e4b83078a1781 # v1
+        uses: sbt/setup-sbt@66fb4376e81982c7d92a4074170846fff88e2e30 # v1
 
       - name: Build & install Java binding to local Maven repo
         working-directory: java
