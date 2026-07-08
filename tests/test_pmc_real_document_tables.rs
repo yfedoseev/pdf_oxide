@@ -31,7 +31,7 @@ fn html_for(fixture: &str) -> Option<String> {
         return None;
     }
     let bytes = std::fs::read(&path).expect("read fixture");
-    let mut doc = PdfDocument::from_bytes(bytes).expect("parse fixture");
+    let doc = PdfDocument::from_bytes(bytes).expect("parse fixture");
     let opts = ConversionOptions {
         extract_tables: true,
         ..Default::default()

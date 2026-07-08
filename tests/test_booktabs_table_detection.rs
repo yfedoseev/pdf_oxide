@@ -94,8 +94,10 @@ fn booktabs_table_survives_unrelated_decorative_speck() {
     // the text-alignment fallback cannot mask a loss in the rule-based
     // path: the fallback rides on ideal synthetic alignment that real
     // academic tables don't have.
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(booktabs_fixture_pdf_with_decorations(true)).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -116,8 +118,10 @@ fn booktabs_table_detected_by_line_pipelines_alone() {
     // The clean three-line table must be found by the rule-based pipelines
     // themselves (horizontal-rule-bounded fallback), independent of the
     // text-alignment fallback.
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(booktabs_fixture_pdf()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -127,7 +131,7 @@ fn booktabs_table_detected_by_line_pipelines_alone() {
 
 #[test]
 fn booktabs_three_line_table_renders_as_html_table() {
-    let mut doc = PdfDocument::from_bytes(booktabs_fixture_pdf()).expect("parse fixture");
+    let doc = PdfDocument::from_bytes(booktabs_fixture_pdf()).expect("parse fixture");
     let html = doc
         .to_html_all(&pdf_oxide::converters::ConversionOptions::default())
         .expect("to_html_all");
@@ -221,8 +225,10 @@ fn scattered_fraction_bars_pdf() -> Vec<u8> {
 fn scattered_fraction_bars_do_not_form_a_table() {
     // Line-pipelines-only, as extract_text uses: the fallback must not
     // group unrelated fraction bars into a fake table.
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(scattered_fraction_bars_pdf()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -370,8 +376,10 @@ fn pmc_dash_border_page_two_tables() -> Vec<u8> {
 
 #[test]
 fn booktabs_table_survives_dash_bordered_box_on_page() {
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(pmc_dash_border_page_one_table()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -395,8 +403,10 @@ fn booktabs_table_survives_dash_bordered_box_on_page() {
 
 #[test]
 fn stacked_booktabs_tables_survive_dash_bordered_box_on_page() {
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(pmc_dash_border_page_two_tables()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -509,8 +519,10 @@ fn aligned_derivation_bars_pdf() -> Vec<u8> {
 
 #[test]
 fn aligned_derivation_bars_do_not_form_a_table() {
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(aligned_derivation_bars_pdf()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -586,8 +598,10 @@ fn framed_code_listing_pdf() -> Vec<u8> {
 
 #[test]
 fn framed_code_listing_is_not_a_table() {
-    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
-    config.text_fallback = false;
+    let config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig {
+        text_fallback: false,
+        ..Default::default()
+    };
     let doc = PdfDocument::from_bytes(framed_code_listing_pdf()).expect("parse");
     let tables = doc
         .extract_tables_with_config(0, config)
@@ -616,7 +630,7 @@ fn real_zine_code_listings_are_not_tables() {
         eprintln!("[zine] fixture missing, skipping: {p}");
         return;
     }
-    let mut doc = PdfDocument::from_bytes(std::fs::read(p).expect("read")).expect("parse");
+    let doc = PdfDocument::from_bytes(std::fs::read(p).expect("read")).expect("parse");
     let html = doc
         .to_html_all(&pdf_oxide::converters::ConversionOptions {
             extract_tables: true,
