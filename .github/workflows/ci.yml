@@ -891,11 +891,12 @@ jobs:
         with:
           # go.mod's `go 1.21` directive keeps us compatible with older
           # consumers; CI builds with the newest patched toolchain (>=1.25
-          # required by govulncheck v1.3+). Pinned to 1.26.4 because the
-          # setup-go `stable` alias lagged at 1.26.3, which govulncheck flags
-          # for GO-2026-5037 (crypto/x509) and GO-2026-5039 (net/textproto),
-          # both fixed in go1.26.4. Bump as new patch releases land.
-          go-version: '1.26.4'
+          # required by govulncheck v1.3+). Pinned to 1.26.5 because the
+          # setup-go `stable` alias lagged behind it, which govulncheck flags
+          # for GO-2026-5037 (crypto/x509), GO-2026-5039 (net/textproto), and
+          # GO-2026-5856 (crypto/tls ECH privacy leak), all fixed in
+          # go1.26.5. Bump as new patch releases land.
+          go-version: '1.26.5'
 
       # Download the pre-built native lib (extended features: barcodes,
       # rendering, signatures, tsa-client, system-fonts). Artifact preserves
