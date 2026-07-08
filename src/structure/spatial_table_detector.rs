@@ -3593,6 +3593,34 @@ fn detect_tables_from_horizontal_rules(
                 continue;
             }
 
+            // Letter-spaced monospace guard: framed code and console
+            // listings (zines, technical reports) draw each glyph on a
+            // terminal-font grid, so the band's "words" are mostly single
+            // characters whose aligned x positions look exactly like
+            // column boundaries — identifiers shatter into single letters
+            // (`s e g f a u l t`), addresses into single digits
+            // (`0 0 : 1 4`). A real table's cells are words and numbers:
+            // one-third single LETTERS or one-half single characters of
+            // any kind is spread-out text, not a grid. (The digit
+            // threshold is the looser of the two so genuine single-digit
+            // table columns, which sit among multi-char label cells, stay
+            // under it.)
+            let word_count = region_spans.len();
+            let mut single_any = 0usize;
+            let mut single_alpha = 0usize;
+            for rs in &region_spans {
+                let mut chars = rs.text.trim().chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    single_any += 1;
+                    if c.is_alphabetic() {
+                        single_alpha += 1;
+                    }
+                }
+            }
+            if word_count > 0 && (single_alpha * 3 >= word_count || single_any * 2 >= word_count) {
+                continue;
+            }
+
             let mut detected = detect_tables_from_spans(&region_spans, config);
             tables.append(&mut detected);
         }

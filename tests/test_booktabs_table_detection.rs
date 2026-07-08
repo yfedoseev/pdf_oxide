@@ -543,3 +543,103 @@ fn aligned_derivation_bars_preserve_reading_order() {
         "derivation steps must read top-to-bottom, got {positions:?} in: {text}"
     );
 }
+
+/// A framed code listing in the zine idiom: two full-width horizontal
+/// rules with letter-spaced monospace source between them (glyphs of each
+/// identifier drawn far enough apart that every letter is its own word).
+/// The per-letter x-gaps look like column boundaries, but a region whose
+/// words are mostly single letters is spread-out TEXT, not a table.
+fn framed_code_listing_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"0 J 0 j 0.4 w\n");
+    content.extend_from_slice(b"100 700 m 500 700 l S\n");
+    content.extend_from_slice(b"100 560 m 500 560 l S\n");
+    content.extend_from_slice(b"BT /F1 9 Tf\n");
+    // Five code lines on a strict monospace grid: every character cell is
+    // 11pt wide, each glyph its own Tj, so the letters align in columns
+    // across lines exactly like a real terminal-font listing.
+    let lines: [(&str, i32); 5] = [
+        ("1 void segfault_handler(int sig)", 680),
+        ("2 {  ucontext_t *ctx =", 655),
+        ("3    (ucontext_t *) ptr;", 630),
+        ("4    restore(ctx, sig);", 605),
+        ("5 }", 580),
+    ];
+    for (line, y) in lines {
+        for (i, ch) in line.chars().enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let x = 105.0 + 11.0 * i as f32;
+            let esc = match ch {
+                '(' => "\\(".to_string(),
+                ')' => "\\)".to_string(),
+                '\\' => "\\\\".to_string(),
+                c => c.to_string(),
+            };
+            content.extend_from_slice(format!("1 0 0 1 {x:.1} {y} Tm ({esc}) Tj\n").as_bytes());
+        }
+    }
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
+}
+
+#[test]
+fn framed_code_listing_is_not_a_table() {
+    let mut config = pdf_oxide::structure::spatial_table_detector::TableDetectionConfig::default();
+    config.text_fallback = false;
+    let doc = PdfDocument::from_bytes(framed_code_listing_pdf()).expect("parse");
+    let tables = doc
+        .extract_tables_with_config(0, config)
+        .expect("extract tables");
+    assert!(
+        tables.is_empty(),
+        "letter-spaced code between rules must not become a table, got {} table(s): {:?}",
+        tables.len(),
+        tables
+            .iter()
+            .map(|t| t.rows.iter().map(|r| r.cells.len()).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn real_zine_code_listings_are_not_tables() {
+    // Opt-in real-document guard (fetch:
+    // `curl -sL -o tests/fixtures/real/pocorgtfo05.pdf https://www.alchemistowl.org/pocorgtfo/pocorgtfo05.pdf`).
+    // The zine frames its code/console listings with horizontal rules; on
+    // this page set exactly two genuine tables exist (a hex diagram and a
+    // hexdump). Letter-spaced source code and `lspci` console output must
+    // not be added as tables.
+    let p = "tests/fixtures/real/pocorgtfo05.pdf";
+    if !std::path::Path::new(p).exists() {
+        eprintln!("[zine] fixture missing, skipping: {p}");
+        return;
+    }
+    let mut doc = PdfDocument::from_bytes(std::fs::read(p).expect("read")).expect("parse");
+    let html = doc
+        .to_html_all(&pdf_oxide::converters::ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        })
+        .expect("html");
+    let tables: Vec<&str> = {
+        let mut v = Vec::new();
+        let mut rest = html.as_str();
+        while let Some(i) = rest.find("<table") {
+            let Some(j) = rest[i..].find("</table>") else {
+                break;
+            };
+            v.push(&rest[i..i + j]);
+            rest = &rest[i + j..];
+        }
+        v
+    };
+    assert!(
+        !tables
+            .iter()
+            .any(|t| t.contains("root@clanton") || t.contains("segfault")),
+        "console/code listings must not render as tables ({} tables found)",
+        tables.len()
+    );
+}

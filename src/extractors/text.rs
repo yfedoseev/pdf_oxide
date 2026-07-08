@@ -4694,9 +4694,19 @@ impl<'doc> TextExtractor<'doc> {
             // split-box amount has nothing between its boxes. The gap band
             // alone cannot make this call — an index pair and a real
             // split-box amount can sit at the same gap-to-font-size ratio.
+            // A genuine split-box amount prints its integer and cents at
+            // the SAME size; a digit run markedly smaller than its
+            // neighbour is super/subscript context (the exponent of a
+            // scientific-notation value next to the following value's
+            // mantissa), and fusing those fabricates a decimal.
+            let decimal_sizes_match = {
+                let (a, b) = (current.font_size, span.font_size);
+                a > 0.0 && b > 0.0 && (a.min(b) / a.max(b)) >= 0.85
+            };
             let min_decimal_gap = current.font_size * 0.4;
             let decimal_merge = same_line
                 && same_mcid
+                && decimal_sizes_match
                 && gap > min_decimal_gap
                 && gap < current.font_size * 2.0
                 && !current.text.is_empty()
@@ -16564,6 +16574,39 @@ mod profile_based_space_tests {
         assert!(
             !extractor.spans.iter().any(|s| s.text.contains("1.0")),
             "digits separated by a drawn comma must not merge into a decimal, got {:?}",
+            extractor
+                .spans
+                .iter()
+                .map(|s| s.text.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_no_decimal_merge_across_font_sizes() {
+        // Scientific notation in table rows: the exponent digit of one
+        // value ("10^-4" drawn as "10" + superscript "4") and the mantissa
+        // digit of the NEXT value ("3 ...") are both pure-digit runs a
+        // split-box-sized gap apart, and were fused into a fabricated
+        // decimal ("4 . 10-4 3 . 10-4" -> "4 . 10-4.3 . 10-4"). A genuine
+        // split-box amount prints both halves at the SAME size; an
+        // exponent is markedly smaller than the neighbouring mantissa, so
+        // a size mismatch disqualifies the pair.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        extractor.spans = vec![
+            // Exponent "4" of the previous value: 7pt.
+            digit_test_span("4", Rect::new(200.0, 700.0, 4.0, 7.0), 7.0),
+            // Mantissa "3" of the next value: 12pt, 8pt away (0.67-1.14x
+            // either font size -- inside the merge band for both).
+            digit_test_span("3", Rect::new(212.0, 700.0, 6.5, 12.0), 12.0),
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert!(
+            !extractor.spans.iter().any(|s| s.text.contains('.')),
+            "digit runs at mismatched font sizes must not merge into a decimal, got {:?}",
             extractor
                 .spans
                 .iter()

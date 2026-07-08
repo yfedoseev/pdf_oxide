@@ -14511,38 +14511,64 @@ impl PdfDocument {
             }
             false
         };
-        let mut visited = vec![false; nb];
+        // Kahn's algorithm over the `before` relation. The previous
+        // iterative DFS re-pushed every unvisited predecessor each time a
+        // node was expanded (no on-stack marking), which is exponential in
+        // stack growth on block graphs with heavy fan-in — a dense
+        // equation page produced tens of gigabytes of stack and an OOM
+        // kill. Kahn's is O(V^2) for the edge scan and O(V+E) after,
+        // visits each block exactly once, and terminates unconditionally;
+        // ready blocks are drained in reading order (top-left first) for
+        // a stable result, matching the old seed order.
         let mut result_blocks: Vec<usize> = Vec::with_capacity(nb);
-        // Seed in reading order (top-left first) for a stable result.
-        let mut seeds: Vec<usize> = (0..nb).collect();
-        seeds.sort_by(|&a, &b| {
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+        let mut indegree: Vec<usize> = vec![0; nb];
+        for a in 0..nb {
+            for b in 0..nb {
+                if a != b && before(&blocks[a], &blocks[b]) {
+                    // a must come before b.
+                    preds[a].push(b);
+                    indegree[b] += 1;
+                }
+            }
+        }
+        let seed_order = |a: usize, b: usize| {
             safe_float_cmp(blocks[b].y_hi, blocks[a].y_hi)
                 .then_with(|| safe_float_cmp(blocks[a].x0, blocks[b].x0))
-        });
-        // Iterative DFS to avoid recursion limits on pathological pages.
-        for &s in &seeds {
-            if visited[s] {
+        };
+        // Kept sorted in REVERSE reading order so pop() takes the
+        // top-left-most ready block.
+        let mut ready: Vec<usize> = (0..nb).filter(|&i| indegree[i] == 0).collect();
+        ready.sort_by(|&a, &b| seed_order(b, a));
+        let mut emitted = vec![false; nb];
+        while let Some(bi) = ready.pop() {
+            // `ready` is kept sorted with the NEXT block last (reverse
+            // reading order), so pop() takes the top-left-most.
+            if emitted[bi] {
                 continue;
             }
-            let mut stack = vec![(s, false)];
-            while let Some((bi, processed)) = stack.pop() {
-                if processed {
-                    if !visited[bi] {
-                        visited[bi] = true;
-                        result_blocks.push(bi);
-                    }
-                    continue;
-                }
-                if visited[bi] {
-                    continue;
-                }
-                stack.push((bi, true));
-                for (k, blk) in blocks.iter().enumerate() {
-                    if k != bi && !visited[k] && before(blk, &blocks[bi]) {
-                        stack.push((k, false));
-                    }
+            emitted[bi] = true;
+            result_blocks.push(bi);
+            let mut newly_ready = false;
+            for &succ in &preds[bi] {
+                indegree[succ] -= 1;
+                if indegree[succ] == 0 {
+                    ready.push(succ);
+                    newly_ready = true;
                 }
             }
+            if newly_ready {
+                ready.sort_by(|&a, &b| seed_order(b, a));
+            }
+        }
+        // The `before` relation is acyclic by construction (edges strictly
+        // decrease y within a band or strictly increase x across columns),
+        // but guard against float pathologies leaving blocks unemitted:
+        // append any remainder in reading order rather than dropping text.
+        if result_blocks.len() < nb {
+            let mut rest: Vec<usize> = (0..nb).filter(|&i| !emitted[i]).collect();
+            rest.sort_by(|&a, &b| seed_order(a, b));
+            result_blocks.extend(rest);
         }
 
         // --- Emit: each block's spans in reading order (y desc, x asc). ---
