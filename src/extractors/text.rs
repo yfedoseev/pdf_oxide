@@ -1851,6 +1851,14 @@ struct TjBuffer {
     /// ratio so it is text/CTM-scale-independent and directly comparable to a
     /// font-size fraction by the sub/superscript rejoin.
     text_rise: f32,
+    /// Text render mode (`Tr`, ISO 32000-1 §9.3.6), captured from the
+    /// graphics state when the buffer started. `3`/`7` (invisible — neither
+    /// filled nor stroked) means this run has no rendering-correctness
+    /// pressure: an OCR-sandwich producer has no visual reason to mirror
+    /// already-logical RTL glyph positions the way a *visible*-text
+    /// producer would, so the geometric visual/logical detector's ascending-
+    /// x signal is uninformative here (#826) — see `bidi::apply_rtl_verdict`.
+    render_mode: u8,
 }
 
 /// Snap a run's display rotation (from the composed `CTM × T_m` rotation block,
@@ -1946,6 +1954,7 @@ impl TjBuffer {
             } else {
                 0.0
             },
+            render_mode: state.render_mode,
         }
     }
 
@@ -7010,22 +7019,43 @@ impl<'doc> TextExtractor<'doc> {
             .take()
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // RTL text correction: if text contains RTL characters and spans left-to-right
-        // on the page, the characters are in visual LTR order. Reverse to logical order.
+        // RTL text correction (#826): use the confidence-gated geometric
+        // detector (#537) when `char_widths` gives us per-character user-space
+        // x-positions, falling back to the coarse "buffer's net horizontal
+        // advance is positive" heuristic only for genuinely ambiguous/short
+        // runs. Mirrors `flush_tj_span_buffer`'s handling — this used to be
+        // the one flush site still on the pre-#537 `accumulated_width > 0.0`
+        // check, which (since `accumulated_width` only ever sums *positive*
+        // glyph widths — TJ kerning offsets never subtract from it) is true
+        // for nearly every non-empty RTL buffer and so was unconditionally
+        // reversing every RTL run regardless of its actual source order.
         let mut text = std::mem::take(&mut buffer.unicode);
         if text.len() > 1 {
             let has_rtl = text
                 .chars()
                 .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
             if has_rtl {
-                // In the tiebreaker path, characters are appended left-to-right in content
-                // stream order. For RTL scripts displayed right-to-left, this means the
-                // leftmost visual character (last logical character) is first in the buffer.
-                // Reverse to get logical reading order.
-                // Only reverse if user_pos_x indicates LTR placement (positive width).
-                if buffer.accumulated_width > 0.0 {
-                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                }
+                let chars: Vec<char> = text.chars().collect();
+                let verdict = if chars.len() == buffer.char_widths.len()
+                    && !buffer.char_widths.is_empty()
+                {
+                    let mut chars_with_x: Vec<(char, f32)> = Vec::with_capacity(chars.len());
+                    let mut cursor_text_space = 0.0_f32;
+                    for (i, c) in chars.iter().enumerate() {
+                        let user_x = buffer.user_pos_x + cursor_text_space * buffer.user_h_scale;
+                        chars_with_x.push((*c, user_x));
+                        cursor_text_space += buffer.char_widths[i];
+                    }
+                    crate::text::bidi::detect_visual_order_run(&chars_with_x)
+                } else {
+                    crate::text::bidi::RunOrder::Ambiguous
+                };
+                text = crate::text::bidi::apply_rtl_verdict(
+                    &text,
+                    verdict,
+                    buffer.accumulated_width > 0.0,
+                    matches!(buffer.render_mode, 3 | 7),
+                );
             }
         }
 
@@ -7506,34 +7536,25 @@ impl<'doc> TextExtractor<'doc> {
                     }
                 }
                 let verdict = crate::text::bidi::detect_visual_order_run(&chars_with_x);
-                match verdict {
-                    crate::text::bidi::RunOrder::Visual => {
-                        // Confidence-gated visual-order detection — reverse.
-                        unicode_text = crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
-                    },
-                    crate::text::bidi::RunOrder::Logical => {
-                        // Confidence-gated logical-order — leave alone.
-                        // The pdfium `hebrew_mirrored.pdf` test fixture
-                        // and similar lands here.
-                    },
-                    crate::text::bidi::RunOrder::Ambiguous => {
-                        // Short cluster or mixed signal — fall back to
-                        // the pre-v0.3.54 simple heuristic so existing
-                        // 2-3-char RTL runs keep working.
-                        let first_x = {
-                            let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
-                            ctm.transform_point(p.x, p.y).x
-                        };
-                        let last_x = {
-                            let p = text_matrix.transform_point(last.x_position, 0.0);
-                            ctm.transform_point(p.x, p.y).x
-                        };
-                        if last_x > first_x {
-                            unicode_text =
-                                crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
-                        }
-                    },
-                }
+                // Pre-v0.3.54 simple heuristic — used only as the
+                // `Ambiguous` fallback (short cluster or mixed signal) so
+                // existing 2-3-char RTL runs keep working; the pdfium
+                // `hebrew_mirrored.pdf` fixture and similar land on
+                // `Logical` above and are left alone regardless.
+                let first_x = {
+                    let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
+                    ctm.transform_point(p.x, p.y).x
+                };
+                let last_x = {
+                    let p = text_matrix.transform_point(last.x_position, 0.0);
+                    ctm.transform_point(p.x, p.y).x
+                };
+                unicode_text = crate::text::bidi::apply_rtl_verdict(
+                    &unicode_text,
+                    verdict,
+                    last_x > first_x,
+                    matches!(state.render_mode, 3 | 7),
+                );
             }
         }
 
@@ -8379,27 +8400,21 @@ impl<'doc> TextExtractor<'doc> {
                     .take()
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // #537: RTL visual-order detection for the Tj-span
-                // path. This was the gap on the Magic Palace Eilat Hebrew
-                // PDF — the Tj-span buffer flush had no RTL correction at
-                // all, so Hebrew came out in content-stream (visual)
-                // order regardless of what the geometric signals said.
-                // Mirrors the existing logic in `flush_tj_buffer`
-                // `cluster_to_span`: detect RTL content, use the geometric
-                // detector when `char_widths` give us per-char x; fall back
-                // to the `accumulated_width > 0` simple check (text drawn
-                // left-to-right in user space → visual order → reverse).
+                // #537/#826: RTL visual-order detection for the Tj-span
+                // path, via the shared `apply_rtl_verdict` decision point
+                // (also used by `flush_tj_buffer` and `cluster_to_span`) —
+                // geometric detector when `char_widths` give us per-char x,
+                // falling back to the coarse `accumulated_width > 0`
+                // heuristic only when ambiguous.
                 let mut text = std::mem::take(&mut buffer.unicode);
                 if text.len() > 1 {
                     let has_rtl = text
                         .chars()
                         .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
                     if has_rtl {
-                        // Try the geometric detector first when char_widths
-                        // give us per-character X positions. char_widths
-                        // contains text-space relative widths; reconstruct
-                        // absolute user-space x by accumulating, scaling by
-                        // user_h_scale and offsetting by user_pos_x.
+                        // char_widths contains text-space relative widths;
+                        // reconstruct absolute user-space x by accumulating,
+                        // scaling by user_h_scale and offsetting by user_pos_x.
                         let chars: Vec<char> = text.chars().collect();
                         let verdict = if chars.len() == buffer.char_widths.len()
                             && !buffer.char_widths.is_empty()
@@ -8417,23 +8432,12 @@ impl<'doc> TextExtractor<'doc> {
                         } else {
                             crate::text::bidi::RunOrder::Ambiguous
                         };
-                        match verdict {
-                            crate::text::bidi::RunOrder::Visual => {
-                                text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                            },
-                            crate::text::bidi::RunOrder::Logical => {
-                                // Detected logical order — leave alone.
-                            },
-                            crate::text::bidi::RunOrder::Ambiguous => {
-                                // Fall back to the simple `accumulated_width
-                                // > 0` heuristic used elsewhere — text drawn
-                                // left-to-right in text space implies visual
-                                // order for RTL scripts.
-                                if buffer.accumulated_width > 0.0 {
-                                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                                }
-                            },
-                        }
+                        text = crate::text::bidi::apply_rtl_verdict(
+                            &text,
+                            verdict,
+                            buffer.accumulated_width > 0.0,
+                            matches!(buffer.render_mode, 3 | 7),
+                        );
                     }
                 }
 
