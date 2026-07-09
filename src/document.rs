@@ -6139,6 +6139,30 @@ impl PdfDocument {
                             if !hangul_midword_wrap && !text.ends_with('\n') {
                                 text.push('\n');
                             }
+                        } else if y_diff > 1.0
+                            && delta_x <= 0.5
+                            && gap < -fs
+                            && !prev.rtl_draw_logical
+                            && !span.rtl_draw_logical
+                            && !crate::text::bidi::looks_rtl(&prev.text)
+                            && !crate::text::bidi::looks_rtl(&span.text)
+                        {
+                            // Backtracking span with a real baseline offset,
+                            // under the soft-wrap thresholds above: displayed
+                            // math draws a fraction's denominator AFTER the
+                            // relation sign that follows the numerator, so
+                            // the next span starts at-or-left-of the previous
+                            // span's ORIGIN with an overlap far beyond
+                            // kerning (a denominator sits ~2 em back at a
+                            // ~0.3 em baseline offset; stacked column cells
+                            // land at delta_x ≈ 0 a row-pitch down). Bare
+                            // concatenation fused these into tokens like
+                            // "=dt" — break the line instead. Same-baseline
+                            // kerned runs (y_diff ≈ 0) and forward-advancing
+                            // subscripts (gap > -1 em) never reach here.
+                            if !hangul_midword_wrap && !text.ends_with('\n') {
+                                text.push('\n');
+                            }
                         } else if prev.font_name != span.font_name
                             && span_end_x > prev_end_x + 0.5
                             && !text.ends_with(' ')
