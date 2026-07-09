@@ -186,3 +186,30 @@ fn remove_headers_removes_word_plus_page_number() {
         );
     }
 }
+
+#[test]
+fn remove_headers_with_text_and_pagenum_keeps_top_line_of_text() {
+    let sentences = [
+        "here—how, bowed down by the weight of the subject which you have laid upon my",
+        "than gravel, no very great harm was done. The only charge I could bring against the",
+        "white wings, a deprecating, silvery, kindly gentleman, who regretted in a low voice as he",
+        "skittles presumably of an evening. An unending stream of gold and silver, I thought,",
+        "flushed crimson; had been emptied; had been filled. And thus by degrees was lit",
+    ];
+
+    let bytes = build_pdf_with_page_extras(5, |i| {
+        format!("BT /F1 10 Tf 1 0 0 1 300 760 Tm (Page {}) Tj ET\nBT /F1 10 Tf 1 0 0 1 300 725 Tm ({}) Tj ET\n", i + 1, sentences[i])
+    });
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+    doc.remove_headers(0.5).unwrap();
+
+    for page in 0..5 {
+        let text = doc.extract_text(page).unwrap();
+        assert!(text.contains(sentences[page]), "page {page}: body wrongly removed: {text:?}");
+        let page_number = format!("{}", page + 1);
+        assert!(
+            !text.contains(&page_number),
+            "page {page}: page number {page_number:?} should have been removed: {text:?}"
+        );
+    }
+}
