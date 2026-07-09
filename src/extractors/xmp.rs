@@ -201,7 +201,7 @@ impl XmpExtractor {
 
         // Get stream data
         let xml_bytes = match &metadata_resolved {
-            Object::Stream { data: _, .. } => {
+            Object::Stream { .. } => {
                 // XMP metadata streams are typically not filtered (or use FlateDecode)
                 // Try to decode the stream
                 let decoded = metadata_resolved.decode_stream_data()?;

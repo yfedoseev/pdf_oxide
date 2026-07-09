@@ -787,11 +787,7 @@ fn parse_bfchar_line(line: &str) -> Vec<(u32, String)> {
                 } else if dst_hex.len() <= 6 {
                     // 5-6 hex digits: direct supplementary Unicode code point (e.g., 020BB7 = U+20BB7)
                     let dst_code = u32::from_str_radix(&dst_hex, 16).ok()?;
-                    if let Some(ch) = char::from_u32(dst_code) {
-                        ch.to_string()
-                    } else {
-                        return None;
-                    }
+                    char::from_u32(dst_code)?.to_string()
                 } else if dst_hex.len() == 8 {
                     let dst_code = u32::from_str_radix(&dst_hex, 16).ok()?;
                     if let Some(decoded) = decode_utf16_surrogate_pair(dst_code) {

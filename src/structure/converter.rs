@@ -63,7 +63,7 @@ impl StructureConverter {
                     let nested_structure = self.convert_struct_elem(nested)?;
                     children.push(ContentElement::Structure(nested_structure));
                 },
-                StructChild::MarkedContentRef { mcid, page: _, .. } => {
+                StructChild::MarkedContentRef { mcid, .. } => {
                     // Lookup content by MCID
                     if let Some(content_elements) = self.mcid_map.get(mcid) {
                         children.extend(content_elements.clone());

@@ -323,15 +323,11 @@ fn walk_name_tree(
     let dict = node.as_dict()?;
 
     // Leaf: `/Names` is a flat [key1 val1 key2 val2 …] array.
-    if let Some(names) = dict.get("Names").and_then(|n| {
-        deref_obj(n, resolve).and_then(|d| {
-            if d.as_array().is_some() {
-                Some(d)
-            } else {
-                None
-            }
-        })
-    }) {
+    if let Some(names) = dict
+        .get("Names")
+        .and_then(|n| deref_obj(n, resolve))
+        .filter(|d| d.as_array().is_some())
+    {
         let arr = names.as_array().expect("checked array above");
         let mut i = 0;
         while i + 1 < arr.len() {
@@ -351,13 +347,7 @@ fn walk_name_tree(
     if let Some(kids) = dict
         .get("Kids")
         .and_then(|k| deref_obj(k, resolve))
-        .and_then(|k| {
-            if k.as_array().is_some() {
-                Some(k)
-            } else {
-                None
-            }
-        })
+        .filter(|k| k.as_array().is_some())
     {
         for kid in kids.as_array().expect("checked array above") {
             let Some(kid_node) = deref_obj(kid, resolve) else {

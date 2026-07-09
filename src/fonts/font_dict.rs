@@ -5144,11 +5144,9 @@ pub(crate) fn glyph_name_to_unicode_string(glyph_name: &str) -> Option<String> {
     if glyph_name.contains('_') {
         let mut result = String::new();
         for part in glyph_name.split('_') {
-            if let Some(ch) = glyph_name_to_unicode(part) {
-                result.push(ch);
-            } else {
-                return None; // If any component is unknown, fail entirely
-            }
+            // If any component is unknown, fail entirely.
+            let ch = glyph_name_to_unicode(part)?;
+            result.push(ch);
         }
         if !result.is_empty() {
             return Some(result);

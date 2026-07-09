@@ -1221,25 +1221,20 @@ fn find_matching_et(data: &[u8], start: usize) -> Option<usize> {
     let len = data.len();
     // Use memchr to find 'E' candidates
     loop {
-        match memchr::memchr(b'E', &data[offset..]) {
-            None => return None,
-            Some(rel) => {
-                let pos = offset + rel;
-                offset = pos + 1;
-                if pos + 1 < len && data[pos + 1] == b'T' {
-                    let before_ok = pos == 0
-                        || data[pos - 1].is_ascii_whitespace()
-                        || matches!(data[pos - 1], b')' | b'>' | b']' | b'}' | b'/' | b'%');
-                    let after_ok = pos + 2 >= len || {
-                        let next = data[pos + 2];
-                        next.is_ascii_whitespace()
-                            || matches!(next, b'(' | b'<' | b'[' | b'/' | b'%')
-                    };
-                    if before_ok && after_ok {
-                        return Some(pos + 2);
-                    }
-                }
-            },
+        let rel = memchr::memchr(b'E', &data[offset..])?;
+        let pos = offset + rel;
+        offset = pos + 1;
+        if pos + 1 < len && data[pos + 1] == b'T' {
+            let before_ok = pos == 0
+                || data[pos - 1].is_ascii_whitespace()
+                || matches!(data[pos - 1], b')' | b'>' | b']' | b'}' | b'/' | b'%');
+            let after_ok = pos + 2 >= len || {
+                let next = data[pos + 2];
+                next.is_ascii_whitespace() || matches!(next, b'(' | b'<' | b'[' | b'/' | b'%')
+            };
+            if before_ok && after_ok {
+                return Some(pos + 2);
+            }
         }
     }
 }

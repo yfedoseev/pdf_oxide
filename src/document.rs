@@ -1200,7 +1200,7 @@ impl PdfDocument {
         // Some PDFs store /O, /U, /V, /R, /P as indirect references (e.g., `7 0 R`).
         let encrypt_obj = if let Some(dict) = encrypt_obj.as_dict() {
             let mut resolved_dict = dict.clone();
-            for (_key, value) in resolved_dict.iter_mut() {
+            for value in resolved_dict.values_mut() {
                 if let Object::Reference(obj_ref) = value {
                     match self.load_object(*obj_ref) {
                         Ok(resolved) => *value = resolved,
@@ -3010,7 +3010,7 @@ impl PdfDocument {
                 }
             },
             Object::Dictionary(dict) => {
-                for (_, value) in dict.iter_mut() {
+                for value in dict.values_mut() {
                     Self::decrypt_strings_in_object(handler, value, obj_num, gen_num);
                 }
             },
@@ -3018,7 +3018,7 @@ impl PdfDocument {
                 // Stream *data* is decrypted separately in
                 // `decode_stream_with_encryption`. Its dict may still
                 // contain encrypted strings (e.g., /Metadata).
-                for (_, value) in dict.iter_mut() {
+                for value in dict.values_mut() {
                     Self::decrypt_strings_in_object(handler, value, obj_num, gen_num);
                 }
             },
@@ -9170,8 +9170,11 @@ impl PdfDocument {
         // Create a temporary text extractor for this AP stream
         let mut extractor = TextExtractor::new();
 
-        // Load fonts from the AP/N stream's own /Resources
-        if let Some(resources) = n_dict.get("Resources") {
+        // Load fonts from the AP/N stream's own /Resources. No resources on
+        // the AP stream — try the annotation's /DR or parent page resources
+        // — means we can't decode fonts, so bail.
+        {
+            let resources = n_dict.get("Resources")?;
             let res_obj = if let Some(r) = resources.as_reference() {
                 self.load_object(r)
                     .ok()
@@ -9182,10 +9185,6 @@ impl PdfDocument {
             extractor.set_resources(res_obj.clone());
             extractor.set_document(self);
             let _ = self.load_fonts(&res_obj, &mut extractor);
-        } else {
-            // No resources on the AP stream — try the annotation's /DR or parent page resources
-            // For now, skip if no resources (can't decode fonts)
-            return None;
         }
 
         // Extract text spans from the AP stream
@@ -21934,10 +21933,9 @@ impl PdfDocument {
                 for (i, val) in array.iter().take(6).enumerate() {
                     let num = if let Some(f) = val.as_real() {
                         f as f32
-                    } else if let Some(i_val) = val.as_integer() {
-                        i_val as f32
                     } else {
-                        return None;
+                        let i_val = val.as_integer()?;
+                        i_val as f32
                     };
                     values[i] = num;
                 }

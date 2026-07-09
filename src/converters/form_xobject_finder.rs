@@ -222,20 +222,20 @@ fn get_page_xobjects(
 ) -> Option<HashMap<String, Object>> {
     let page = doc.get_page(page_idx).ok()?;
     let page_dict = page.as_dict()?;
-    let resources = match page_dict.get("Resources") {
-        Some(r) => match r.as_reference() {
+    let resources = {
+        let r = page_dict.get("Resources")?;
+        match r.as_reference() {
             Some(rref) => doc.load_object(rref).ok()?,
             None => r.clone(),
-        },
-        None => return None,
+        }
     };
     let res_dict = resources.as_dict()?;
-    let xobjects = match res_dict.get("XObject") {
-        Some(x) => match x.as_reference() {
+    let xobjects = {
+        let x = res_dict.get("XObject")?;
+        match x.as_reference() {
             Some(xref) => doc.load_object(xref).ok()?,
             None => x.clone(),
-        },
-        None => return None,
+        }
     };
     let dict = xobjects.as_dict()?;
     Some(dict.clone())

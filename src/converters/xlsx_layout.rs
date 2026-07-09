@@ -321,7 +321,7 @@ fn merge_hyphenated_spans(spans: &mut Vec<crate::layout::text_block::TextSpan>) 
             .map(|c| c.is_ascii_lowercase())
             .unwrap_or(false);
         if curr_ends_hyphen && same_size && next_starts_lower {
-            let merged_text = format!("{}{}", &cur.text[..cur.text.len() - 1], &next.text);
+            let merged_text = format!("{}{}", &cur.text[..cur.text.len() - 1], next.text);
             cur.text = merged_text;
             cur.bbox.width += next.bbox.width;
         } else {
