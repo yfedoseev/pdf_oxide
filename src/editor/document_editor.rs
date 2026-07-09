@@ -3151,7 +3151,7 @@ impl DocumentEditor {
                                                             .iter()
                                                             .map(|(id, _, _, _)| *id),
                                                     );
-                                                    for (_name, font_ref) in fdict.iter() {
+                                                    for font_ref in fdict.values() {
                                                         if let Some(ref_obj) =
                                                             font_ref.as_reference()
                                                         {
@@ -3221,7 +3221,7 @@ impl DocumentEditor {
                                                     _ => None,
                                                 };
                                                 if let Some(xobj_dict) = xobject_dict {
-                                                    for (_name, xobj_ref) in xobj_dict.iter() {
+                                                    for xobj_ref in xobj_dict.values() {
                                                         if let Some(ref_obj) =
                                                             xobj_ref.as_reference()
                                                         {
@@ -3282,7 +3282,7 @@ impl DocumentEditor {
                                                     _ => None,
                                                 };
                                                 if let Some(gsd) = gs_dict {
-                                                    for (_name, gs_ref) in gsd.iter() {
+                                                    for gs_ref in gsd.values() {
                                                         if let Some(ref_obj) = gs_ref.as_reference()
                                                         {
                                                             if !written_ids.contains(&ref_obj.id) {

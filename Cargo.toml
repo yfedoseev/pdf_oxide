@@ -151,7 +151,7 @@ brotli = "8"                                                                   #
 ttf-parser = "0.25" # TrueType font parser for embedded font cmap tables
 subsetter = "0.2"   # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
 # EmbeddedFont to shrink embedded fonts to only the glyphs actually used.
-taffy = { version = "0.11", default-features = false, features = [
+taffy = { version = "0.12", default-features = false, features = [
     "std",
     "taffy_tree",
     "block_layout",
@@ -210,8 +210,8 @@ sha1 = { version = "0.11", optional = true }          # SHA-1 for legacy signatu
 # module use sha2 0.10 types specifically where rsa::pss / ecdsa crate generics
 # require it, without changing the rest of the codebase. See issue #420.
 sha2_v10 = { package = "sha2", version = "0.10", optional = true }
-p256 = { version = "0.13", optional = true }                       # ECDSA P-256 signature verification
-p384 = { version = "0.13", optional = true }                       # ECDSA P-384 signature verification
+p256 = { version = "0.14", optional = true }                       # ECDSA P-256 signature verification
+p384 = { version = "0.14", optional = true }                       # ECDSA P-384 signature verification
 
 # Parallel extraction
 rayon = { version = "1.12", optional = true }
