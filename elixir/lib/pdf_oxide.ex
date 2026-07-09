@@ -59,8 +59,12 @@ defmodule PdfOxide do
   end
 
   defmodule Word do
-    @moduledoc "An extracted word with its layout/style metadata."
-    defstruct [:text, :bbox, :font_name, :font_size, :bold, :sequence]
+    @moduledoc """
+    An extracted word with its layout/style metadata. `rotation_degrees` is the word's
+    glyph-run rotation in degrees, snapped to a quadrant (0 / 90 / 180 / -90);
+    90 means the text reads bottom-to-top on an unrotated page.
+    """
+    defstruct [:text, :bbox, :font_name, :font_size, :bold, :sequence, :rotation_degrees]
   end
 
   defmodule TextLine do
@@ -92,8 +96,12 @@ defmodule PdfOxide do
   end
 
   defmodule Path do
-    @moduledoc "An extracted vector path (its bbox and stroke/fill style)."
-    defstruct [:bbox, :stroke_width, :has_stroke, :has_fill, :operation_count]
+    @moduledoc """
+    An extracted vector path (its bbox and stroke/fill style). `rendered_bbox`
+    is the path's extents inflated by its stroke; identical to `bbox` for
+    unstroked paths.
+    """
+    defstruct [:bbox, :rendered_bbox, :stroke_width, :has_stroke, :has_fill, :operation_count]
   end
 
   defmodule FormField do
@@ -344,14 +352,15 @@ defmodule PdfOxide do
   def extract_words(%Document{ref: ref}, page) do
     with {:ok, list} <- Native.doc_extract_words(ref, page) do
       {:ok,
-       Enum.map(list, fn {text, x, y, w, h, font, size, bold, sequence} ->
+       Enum.map(list, fn {text, x, y, w, h, font, size, bold, sequence, rotation} ->
          %Word{
            text: text,
            bbox: %Bbox{x: x, y: y, width: w, height: h},
            font_name: font,
            font_size: size,
            bold: bold,
-           sequence: sequence
+           sequence: sequence,
+           rotation_degrees: rotation
          }
        end)}
     end
@@ -457,9 +466,11 @@ defmodule PdfOxide do
   def extract_paths(%Document{ref: ref}, page) do
     with {:ok, list} <- Native.doc_extract_paths(ref, page) do
       {:ok,
-       Enum.map(list, fn {x, y, w, h, stroke_width, has_stroke, has_fill, operation_count} ->
+       Enum.map(list, fn {x, y, w, h, rx, ry, rw, rh, stroke_width, has_stroke, has_fill,
+                          operation_count} ->
          %Path{
            bbox: %Bbox{x: x, y: y, width: w, height: h},
+           rendered_bbox: %Bbox{x: rx, y: ry, width: rw, height: rh},
            stroke_width: stroke_width,
            has_stroke: has_stroke,
            has_fill: has_fill,
@@ -1754,14 +1765,15 @@ defmodule PdfOxide do
   def extract_words_in_rect(%Document{ref: ref}, page, x, y, w, h) do
     with {:ok, list} <- Native.doc_extract_words_in_rect(ref, page, x / 1, y / 1, w / 1, h / 1) do
       {:ok,
-       Enum.map(list, fn {text, bx, by, bw, bh, font, size, bold, sequence} ->
+       Enum.map(list, fn {text, bx, by, bw, bh, font, size, bold, sequence, rotation} ->
          %Word{
            text: text,
            bbox: %Bbox{x: bx, y: by, width: bw, height: bh},
            font_name: font,
            font_size: size,
            bold: bold,
-           sequence: sequence
+           sequence: sequence,
+           rotation_degrees: rotation
          }
        end)}
     end

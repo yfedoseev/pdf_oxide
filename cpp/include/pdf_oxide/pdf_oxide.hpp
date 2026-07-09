@@ -95,6 +95,11 @@ struct Word {
     /// consecutively share adjacent sequence values, distinguishing consecutive
     /// draws from merely-spatially-close ones, independent of reading order.
     std::int64_t sequence;
+    /// Rotation of the word's glyph run in degrees, snapped to a quadrant
+    /// (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+    /// unrotated page, so callers can transform coordinates into the reading
+    /// frame.
+    float rotation_degrees;
 };
 
 /// A single extracted text line.
@@ -149,6 +154,10 @@ struct Annotation {
 /// A single vector graphics path.
 struct Path {
     Bbox bbox;
+    /// Rendered extents of the path: the geometric bbox inflated by the stroke
+    /// (half the line width straddles each side of the path). Identical to
+    /// `bbox` for unstroked paths.
+    Bbox rendered_bbox;
     float stroke_width;
     bool has_stroke;
     bool has_fill;
@@ -454,6 +463,7 @@ class Document {
                 w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
                 w.bold = pdf_oxide_word_is_bold(list, i, &code);
                 w.sequence = pdf_oxide_word_get_sequence(list, i, &code);
+                w.rotation_degrees = pdf_oxide_word_get_rotation(list, i, &code);
                 out.push_back(std::move(w));
             }
         } catch (...) {
@@ -666,6 +676,10 @@ class Document {
                 pdf_oxide_path_get_bbox(list, i, &b.x, &b.y, &b.width, &b.height,
                                         &code);
                 p.bbox = b;
+                Bbox rb{0, 0, 0, 0};
+                pdf_oxide_path_get_rendered_bbox(list, i, &rb.x, &rb.y, &rb.width,
+                                                 &rb.height, &code);
+                p.rendered_bbox = rb;
                 p.stroke_width = pdf_oxide_path_get_stroke_width(list, i, &code);
                 p.has_stroke = pdf_oxide_path_has_stroke(list, i, &code);
                 p.has_fill = pdf_oxide_path_has_fill(list, i, &code);
@@ -1572,6 +1586,7 @@ class Document {
                 w.font_size = pdf_oxide_word_get_font_size(list, i, &code);
                 w.bold = pdf_oxide_word_is_bold(list, i, &code);
                 w.sequence = pdf_oxide_word_get_sequence(list, i, &code);
+                w.rotation_degrees = pdf_oxide_word_get_rotation(list, i, &code);
                 out.push_back(std::move(w));
             }
         } catch (...) {

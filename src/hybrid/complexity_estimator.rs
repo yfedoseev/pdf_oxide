@@ -293,6 +293,7 @@ mod tests {
             is_italic: false,
             mcid: None,
             sequence: 0,
+            rotation_degrees: 0.0,
         }
     }
 

@@ -19,8 +19,11 @@ group = "fyi.oxide"
 version = "0.3.73"
 
 repositories {
+    // mavenLocal first so a freshly `mvn install`-ed Java artifact (dev/CI)
+    // wins over the released one of the same version — the Kotlin binding
+    // wraps the Java classes, which advance in lockstep with the JNI bridge.
+    mavenLocal()
     mavenCentral()
-    mavenLocal() // resolve the locally-installed fyi.oxide:pdf-oxide during dev/CI
 }
 
 // Static analysis. detekt 1.23.x runs on its own bundled Kotlin analyzer

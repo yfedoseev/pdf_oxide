@@ -243,7 +243,7 @@ impl TextSpan {
                         mcid: self.mcid,
                         origin_x: char_x,
                         origin_y: self.bbox.y,
-                        rotation_degrees: 0.0,
+                        rotation_degrees: self.rotation_degrees,
                         advance_width: w,
                         rendered_advance: w,
                         ascent: 0.95 * self.font_size,
@@ -277,7 +277,7 @@ impl TextSpan {
                         mcid: self.mcid,
                         origin_x: char_x,
                         origin_y: self.bbox.y,
-                        rotation_degrees: 0.0,
+                        rotation_degrees: self.rotation_degrees,
                         advance_width: w,
                         rendered_advance: w,
                         ascent: 0.95 * self.font_size,
@@ -308,7 +308,7 @@ impl TextSpan {
                     mcid: self.mcid,
                     origin_x: self.bbox.x + (i as f32) * char_width,
                     origin_y: self.bbox.y,
-                    rotation_degrees: 0.0,
+                    rotation_degrees: self.rotation_degrees,
                     advance_width: char_width,
                     rendered_advance: char_width,
                     ascent: 0.95 * self.font_size,
@@ -682,6 +682,15 @@ pub struct TextBlock {
     /// word-assembly call sites that build a block from a single span
     /// set it explicitly from that span's `sequence`.
     pub sequence: usize,
+    /// Rotation of the block's glyph run in degrees, snapped to a quadrant
+    /// (`0` / `90` / `180` / `-90`), from the composed text-rendering
+    /// matrix (ISO 32000-1:2008 §9.4.4). `90` means the text reads
+    /// bottom-to-top on an unrotated page — a landscape table typeset on a
+    /// portrait page. Lets consumers transform coordinates into the
+    /// reading frame instead of guessing from bbox aspect.
+    /// Derived in `from_chars` from the constituent chars.
+    #[serde(skip_serializing_if = "is_zero_f32", default)]
+    pub rotation_degrees: f32,
 }
 
 impl TextBlock {
@@ -727,6 +736,15 @@ impl TextBlock {
             .and_then(|c| c.mcid)
             .filter(|&first_mcid| chars.iter().all(|c| c.mcid == Some(first_mcid)));
 
+        // A word's glyphs share one text-rendering matrix in practice; take
+        // the rotation all chars agree on, and fall back to upright when a
+        // block mixes rotations (no single frame describes it).
+        let rotation_degrees = chars
+            .first()
+            .map(|c| c.rotation_degrees)
+            .filter(|&r| chars.iter().all(|c| c.rotation_degrees == r))
+            .unwrap_or(0.0);
+
         Self {
             chars,
             bbox,
@@ -737,6 +755,7 @@ impl TextBlock {
             is_italic,
             mcid,
             sequence: 0,
+            rotation_degrees,
         }
     }
 

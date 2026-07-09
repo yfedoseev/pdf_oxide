@@ -1,14 +1,20 @@
 # frozen_string_literal: true
 
-# API-coverage spec for the extended C-ABI surface: three symbols
+# API-coverage spec for the extended C-ABI surface: symbols
 # that previously had no Ruby binding.
 #
 #   pdf_oxide_set_max_ops_per_stream        — global int toggle, no err channel
 #   pdf_oxide_set_preserve_unmapped_glyphs  — global int toggle, no err channel
 #   pdf_render_page_with_options_ex         — render + OCG layer filtering
+# pdf_oxide_word_get_rotation — word glyph-run rotation
+# pdf_oxide_path_get_rendered_bbox — stroke-inflated path bbox
 #
 # Simple int toggles assert invokable (and that the prior value round-trips).
 # The render entry needs a real document, so it asserts return-or-error.
+# The word/path accessors have no list constructor exposed in Ruby yet
+# (extract_words / extract_paths are placeholder-typed), so they assert
+# the documented null-handle contract: sentinel value + ERR_INVALID_ARG,
+# which exercises the real symbol and its argument signature end-to-end.
 
 require 'spec_helper'
 
@@ -57,5 +63,33 @@ RSpec.describe 'C-ABI coverage: extended symbols' do
     rescue PdfOxide::Error => e
       expect(e).to be_a(PdfOxide::Error)
     end
+  end
+
+  it 'binds pdf_oxide_word_get_rotation (null-handle contract)' do
+    expect(PdfOxide::Bindings).to respond_to(:pdf_oxide_word_get_rotation)
+
+    # float pdf_oxide_word_get_rotation(words, index, err) returns 0.0 and
+    # sets ERR_INVALID_ARG (1) for a null word-list handle. A wrong arity
+    # or return type here fails hard instead of reading register garbage.
+    err = ::FFI::MemoryPointer.new(:int32)
+    value = PdfOxide::Bindings.pdf_oxide_word_get_rotation(::FFI::Pointer::NULL, 0, err)
+    expect(value).to eq(0.0)
+    expect(err.read_int32).to eq(1) # ERR_INVALID_ARG
+  end
+
+  it 'binds pdf_oxide_path_get_rendered_bbox (null-handle contract)' do
+    expect(PdfOxide::Bindings).to respond_to(:pdf_oxide_path_get_rendered_bbox)
+
+    # void pdf_oxide_path_get_rendered_bbox(paths, index, x, y, w, h, err)
+    # sets ERR_INVALID_ARG (1) and leaves the out-params untouched for a
+    # null path-list handle.
+    x = ::FFI::MemoryPointer.new(:float)
+    y = ::FFI::MemoryPointer.new(:float)
+    w = ::FFI::MemoryPointer.new(:float)
+    h = ::FFI::MemoryPointer.new(:float)
+    err = ::FFI::MemoryPointer.new(:int32)
+    PdfOxide::Bindings.pdf_oxide_path_get_rendered_bbox(::FFI::Pointer::NULL, 0, x, y, w, h, err)
+    expect(err.read_int32).to eq(1) # ERR_INVALID_ARG
+    expect([x, y, w, h].map(&:read_float)).to all(eq(0.0)) # untouched zero-init buffers
   end
 end

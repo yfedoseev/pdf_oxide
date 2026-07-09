@@ -1450,6 +1450,13 @@ module PdfOxide
       attach_function :pdf_oxide_path_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_path_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_path_get_operation_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # void pdf_oxide_path_get_rendered_bbox(const void *paths, int32_t index,
+      #                                       float *x, float *y, float *w, float *h, int *error_code)
+      # Stroke-inflated path extents (geometric bbox + half the stroke width on each side);
+      # identical to pdf_oxide_path_get_bbox for unstroked paths.
+      attach_function :pdf_oxide_path_get_rendered_bbox,
+                      %i[pointer int32 pointer pointer pointer pointer pointer], :void,
+                      blocking: false
       attach_function :pdf_oxide_path_get_stroke_width, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_path_has_fill, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_path_has_stroke, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
@@ -1465,6 +1472,10 @@ module PdfOxide
       attach_function :pdf_oxide_word_get_bbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_get_font_name, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_word_get_font_size, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # float pdf_oxide_word_get_rotation(const void *words, int32_t index, int *error_code)
+      # Glyph-run rotation in degrees, quadrant-snapped (0 / 90 / 180 / -90); 90 = text reads
+      # bottom-to-top on an unrotated page. 0.0 + error code on null/out-of-range.
+      attach_function :pdf_oxide_word_get_rotation, %i[pointer int32 pointer], :float, blocking: false
       # int64_t pdf_oxide_word_get_sequence(const void *words, int32_t index, int *error_code)
       # Content-stream emission order of the word's originating span; -1 on null/out-of-range.
       attach_function :pdf_oxide_word_get_sequence, %i[pointer int32 pointer], :int64, blocking: false

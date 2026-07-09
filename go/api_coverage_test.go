@@ -96,6 +96,72 @@ func TestExtractWords(t *testing.T) {
 		if w.Sequence < 0 {
 			t.Errorf("expected non-negative word Sequence, got %d for %q", w.Sequence, w.Text)
 		}
+		switch w.RotationDegrees {
+		case 0, 90, 180, -90:
+		default:
+			t.Errorf("expected quadrant-snapped RotationDegrees (0/90/180/-90), got %v for %q", w.RotationDegrees, w.Text)
+		}
+	}
+}
+
+func TestExtractPathsRenderedBBox(t *testing.T) {
+	// A stroked horizontal rule (geometric height 0, stroke width 6) plus an
+	// unstroked filled rect — the two cases pdf_oxide_path_get_rendered_bbox
+	// distinguishes.
+	b, err := NewDocumentBuilder()
+	if err != nil {
+		t.Skipf("NewDocumentBuilder unavailable: %v", err)
+	}
+	defer b.Close()
+	p, err := b.A4Page()
+	if err != nil {
+		t.Fatalf("A4Page: %v", err)
+	}
+	if _, err := p.
+		StrokeLine(72, 400, 300, 400, 6, 0, 0, 0).
+		FilledRect(72, 500, 100, 50, 0.5, 0.5, 0.5).
+		Done(); err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	data, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tmp := filepath.Join(t.TempDir(), "paths.pdf")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		t.Fatalf("write tmp: %v", err)
+	}
+	doc, err := Open(tmp)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer doc.Close()
+
+	paths, err := doc.ExtractPaths(0)
+	if err != nil {
+		t.Fatalf("ExtractPaths: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected non-empty path list")
+	}
+	const eps = 1e-3
+	sawInflated := false
+	for i, pth := range paths {
+		if pth.RenderedX > pth.X+eps || pth.RenderedY > pth.Y+eps ||
+			pth.RenderedX+pth.RenderedW < pth.X+pth.W-eps || pth.RenderedY+pth.RenderedH < pth.Y+pth.H-eps {
+			t.Errorf("path %d: rendered bbox (%v,%v,%v,%v) does not contain bbox (%v,%v,%v,%v)",
+				i, pth.RenderedX, pth.RenderedY, pth.RenderedW, pth.RenderedH, pth.X, pth.Y, pth.W, pth.H)
+		}
+		if pth.HasStroke && pth.RenderedH > pth.H+eps {
+			sawInflated = true
+		}
+		if !pth.HasStroke && (pth.RenderedX != pth.X || pth.RenderedY != pth.Y || pth.RenderedW != pth.W || pth.RenderedH != pth.H) {
+			t.Errorf("path %d: unstroked path must have rendered bbox identical to bbox, got (%v,%v,%v,%v) vs (%v,%v,%v,%v)",
+				i, pth.RenderedX, pth.RenderedY, pth.RenderedW, pth.RenderedH, pth.X, pth.Y, pth.W, pth.H)
+		}
+	}
+	if !sawInflated {
+		t.Errorf("expected the 6pt-stroked rule's rendered bbox to be taller than its geometric bbox: %+v", paths)
 	}
 }
 

@@ -470,12 +470,14 @@ static ERL_NIF_TERM doc_extract_words(ErlNifEnv *env, int argc, const ERL_NIF_TE
         float size = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
         int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
-        ERL_NIF_TERM item = enif_make_tuple(env, 9, text,
+        float rotation = pdf_oxide_word_get_rotation(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 10, text,
                                             enif_make_double(env, x), enif_make_double(env, y),
                                             enif_make_double(env, w), enif_make_double(env, h),
                                             font, enif_make_double(env, size),
                                             enif_make_atom(env, bold ? "true" : "false"),
-                                            enif_make_int64(env, sequence));
+                                            enif_make_int64(env, sequence),
+                                            enif_make_double(env, rotation));
         items = enif_make_list_cell(env, item, items);
     }
     pdf_oxide_word_list_free(list);
@@ -647,13 +649,17 @@ static ERL_NIF_TERM doc_extract_paths(ErlNifEnv *env, int argc, const ERL_NIF_TE
         int32_t c = 0;
         float x = 0, y = 0, w = 0, h = 0;
         pdf_oxide_path_get_bbox(list, i, &x, &y, &w, &h, &c);
+        float rx = 0, ry = 0, rw = 0, rh = 0;
+        pdf_oxide_path_get_rendered_bbox(list, i, &rx, &ry, &rw, &rh, &c);
         float sw = pdf_oxide_path_get_stroke_width(list, i, &c);
         bool stroke = pdf_oxide_path_has_stroke(list, i, &c);
         bool fill = pdf_oxide_path_has_fill(list, i, &c);
         int32_t ops = pdf_oxide_path_get_operation_count(list, i, &c);
-        ERL_NIF_TERM item = enif_make_tuple(env, 8,
+        ERL_NIF_TERM item = enif_make_tuple(env, 12,
                                             enif_make_double(env, x), enif_make_double(env, y),
                                             enif_make_double(env, w), enif_make_double(env, h),
+                                            enif_make_double(env, rx), enif_make_double(env, ry),
+                                            enif_make_double(env, rw), enif_make_double(env, rh),
                                             enif_make_double(env, sw),
                                             enif_make_atom(env, stroke ? "true" : "false"),
                                             enif_make_atom(env, fill ? "true" : "false"),
@@ -3797,12 +3803,14 @@ static ERL_NIF_TERM doc_extract_words_in_rect(ErlNifEnv *env, int argc, const ER
         float size = pdf_oxide_word_get_font_size(list, i, &c);
         bool bold = pdf_oxide_word_is_bold(list, i, &c);
         int64_t sequence = pdf_oxide_word_get_sequence(list, i, &c);
-        ERL_NIF_TERM item = enif_make_tuple(env, 9, text,
+        float rotation = pdf_oxide_word_get_rotation(list, i, &c);
+        ERL_NIF_TERM item = enif_make_tuple(env, 10, text,
                                             enif_make_double(env, bx), enif_make_double(env, by),
                                             enif_make_double(env, bw), enif_make_double(env, bh),
                                             font, enif_make_double(env, size),
                                             enif_make_atom(env, bold ? "true" : "false"),
-                                            enif_make_int64(env, sequence));
+                                            enif_make_int64(env, sequence),
+                                            enif_make_double(env, rotation));
         items = enif_make_list_cell(env, item, items);
     }
     pdf_oxide_word_list_free(list);

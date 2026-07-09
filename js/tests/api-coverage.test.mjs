@@ -81,6 +81,76 @@ test('extractWords returns non-empty array with text field', { skip }, () => {
   }
 });
 
+test('extractWords exposes quadrant-snapped rotationDegrees', { skip }, () => {
+  const { dir, cleanup } = tempDir();
+  try {
+    const path = savePdf(dir, 'rot', 'ROTTOKEN horizontal words');
+    const doc = PdfDocument.open(path);
+    const words = doc.extractWords(0);
+    assert.ok(Array.isArray(words) && words.length > 0, 'expected words array');
+    for (const w of words) {
+      assert.equal(typeof w.rotationDegrees, 'number');
+      assert.ok(
+        [0, 90, 180, -90].includes(w.rotationDegrees),
+        `expected quadrant-snapped rotation, got: ${w.rotationDegrees}`
+      );
+    }
+    // Horizontal markdown text reads left-to-right: rotation is 0.
+    assert.ok(
+      words.every((w) => w.rotationDegrees === 0),
+      `expected 0 for horizontal text, got: ${JSON.stringify(words.map((w) => w.rotationDegrees))}`
+    );
+    doc.close();
+  } finally {
+    cleanup();
+  }
+});
+
+test('extractPaths exposes stroke-inflated rendered bbox', { skip: !DocumentBuilder }, () => {
+  const { dir, cleanup } = tempDir();
+  try {
+    const path = join(dir, 'paths.pdf');
+    const bytes = DocumentBuilder.create()
+      .a4Page()
+      .strokeRect(100, 500, 200, 100, { width: 8 })
+      .done()
+      .build();
+    writeFileSync(path, bytes);
+
+    const doc = PdfDocument.open(path);
+    const paths = doc.extractPaths(0);
+    assert.ok(Array.isArray(paths) && paths.length > 0, 'expected paths array');
+    for (const p of paths) {
+      assert.equal(typeof p.renderedX, 'number');
+      assert.equal(typeof p.renderedY, 'number');
+      assert.equal(typeof p.renderedWidth, 'number');
+      assert.equal(typeof p.renderedHeight, 'number');
+      // The rendered bbox always contains the geometric bbox.
+      assert.ok(p.renderedX <= p.x, `renderedX ${p.renderedX} > x ${p.x}`);
+      assert.ok(p.renderedY <= p.y, `renderedY ${p.renderedY} > y ${p.y}`);
+      assert.ok(p.renderedWidth >= p.width, `renderedWidth ${p.renderedWidth} < width ${p.width}`);
+      assert.ok(
+        p.renderedHeight >= p.height,
+        `renderedHeight ${p.renderedHeight} < height ${p.height}`
+      );
+    }
+    // The 8pt-stroked rectangle is inflated by half the line width per side.
+    const stroked = paths.find((p) => p.hasStroke && p.strokeWidth === 8);
+    assert.ok(stroked, `no 8pt-stroked path in: ${JSON.stringify(paths)}`);
+    assert.ok(
+      Math.abs(stroked.renderedWidth - (stroked.width + 8)) < 0.5,
+      `expected width inflated by 8, geometric=${stroked.width} rendered=${stroked.renderedWidth}`
+    );
+    assert.ok(
+      Math.abs(stroked.renderedHeight - (stroked.height + 8)) < 0.5,
+      `expected height inflated by 8, geometric=${stroked.height} rendered=${stroked.renderedHeight}`
+    );
+    doc.close();
+  } finally {
+    cleanup();
+  }
+});
+
 test('extractTextLines returns non-empty array with text field', { skip }, () => {
   const { dir, cleanup } = tempDir();
   try {

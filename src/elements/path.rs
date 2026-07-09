@@ -162,16 +162,99 @@ impl PathContent {
                 && matches!(self.operations[2], PathOperation::ClosePath))
     }
 
+    /// Rendered extents of this path: the geometric [`bbox`](Self::bbox)
+    /// inflated by the stroke (ISO 32000-1:2008 §8.4.3.2 — half the line
+    /// width straddles each side of the path).
+    ///
+    /// Print-era producers draw a table's vertical rule as a ~1 pt
+    /// horizontal segment stroked as wide as the table is tall, so the
+    /// geometric bbox (1×0 pt) bears no resemblance to the bar the reader
+    /// sees. Classifiers that reason about what is *rendered*
+    /// (line orientation, table primitives, region hit-testing) should use
+    /// this; consumers that need the raw path geometry (corner tests, SVG
+    /// path data, editing) keep `bbox`.
+    ///
+    /// For a single straight segment the inflation is exact: half the
+    /// stroke width perpendicular to the segment, plus the cap extension
+    /// along it (`Butt` caps add nothing axially; `Round`/`Square` add half
+    /// the width per end, §8.4.3.3). For any other shape the bbox is
+    /// inflated by half the width on all four sides — a conservative
+    /// superset that is exact for axis-aligned stroked outlines.
+    ///
+    /// Unstroked paths return `bbox` unchanged.
+    pub fn rendered_bbox(&self) -> Rect {
+        if !self.has_stroke() {
+            return self.bbox;
+        }
+        let half = self.stroke_width * 0.5;
+
+        if let [PathOperation::MoveTo(x0, y0), PathOperation::LineTo(x1, y1), ..] =
+            self.operations.as_slice()
+        {
+            if self.is_straight_line() {
+                let (dx, dy) = (x1 - x0, y1 - y0);
+                let len = dx.hypot(dy);
+                // A zero-length butt-capped segment paints nothing
+                // (§8.4.3.3), so its rendered extent is its degenerate
+                // geometry; Round/Square caps paint a dot and fall through
+                // to the all-sides outset below.
+                if len <= f32::EPSILON && self.line_cap == LineCap::Butt {
+                    return self.bbox;
+                }
+                if len > f32::EPSILON {
+                    // Perpendicular unit vector scaled to the half-width,
+                    // plus the axial cap extension.
+                    let (px, py) = ((dy / len * half).abs(), (dx / len * half).abs());
+                    let (cx, cy) = if self.line_cap == LineCap::Butt {
+                        (0.0, 0.0)
+                    } else {
+                        ((dx / len * half).abs(), (dy / len * half).abs())
+                    };
+                    return Rect::new(
+                        self.bbox.x - px - cx,
+                        self.bbox.y - py - cy,
+                        self.bbox.width + 2.0 * (px + cx),
+                        self.bbox.height + 2.0 * (py + cy),
+                    );
+                }
+            }
+        }
+
+        Rect::new(
+            self.bbox.x - half,
+            self.bbox.y - half,
+            self.bbox.width + 2.0 * half,
+            self.bbox.height + 2.0 * half,
+        )
+    }
+
     /// Check if this path is a horizontal line within a tolerance (v0.3.16).
+    ///
+    /// `tolerance` bounds the *geometric* minor extent as before (a nearly
+    /// axis-aligned segment or sliver rectangle). Orientation is then
+    /// confirmed on the [`rendered_bbox`](Self::rendered_bbox): a 1 pt
+    /// segment stroked 430 pt wide renders as a vertical bar and must not
+    /// classify as a horizontal line just because its raw geometry is a
+    /// horizontal speck.
     pub fn is_horizontal_line(&self, tolerance: f32) -> bool {
-        (self.is_straight_line() && self.bbox.height.abs() < tolerance)
-            || (self.is_rectangle() && self.bbox.height.abs() < tolerance)
+        if !self.is_straight_line() && !self.is_rectangle() {
+            return false;
+        }
+        let rendered = self.rendered_bbox();
+        self.bbox.height.abs() < tolerance && rendered.width.abs() >= rendered.height.abs()
     }
 
     /// Check if this path is a vertical line within a tolerance (v0.3.16).
+    ///
+    /// Same contract as [`is_horizontal_line`](Self::is_horizontal_line):
+    /// geometric thinness within `tolerance`, orientation confirmed on the
+    /// rendered extents.
     pub fn is_vertical_line(&self, tolerance: f32) -> bool {
-        (self.is_straight_line() && self.bbox.width.abs() < tolerance)
-            || (self.is_rectangle() && self.bbox.width.abs() < tolerance)
+        if !self.is_straight_line() && !self.is_rectangle() {
+            return false;
+        }
+        let rendered = self.rendered_bbox();
+        self.bbox.width.abs() < tolerance && rendered.height.abs() >= rendered.width.abs()
     }
 
     /// Check if this path's bounding box is nearly touching another (v0.3.16).
@@ -228,16 +311,43 @@ impl PathContent {
 
     /// Check if this path is "box-like" or "line-like" based on its dimensions (v0.3.16).
     /// This is a fuzzy heuristic for table detection.
+    ///
+    /// Line length is judged on the [`rendered_bbox`](Self::rendered_bbox)
+    /// while thinness stays geometric, so a table rule encoded as a short
+    /// segment with a table-height stroke width — a 1×0 pt geometric speck
+    /// rendering as a 1×430 pt bar — is recognized as the ruling it draws
+    ///, and an ordinary rule with a thick stroke keeps
+    /// classifying as a line exactly as before.
+    ///
+    /// Thresholds (inherited from the v0.3.16 heuristic): a ruling must
+    /// run more than 5 pt — half an em at 10 pt body text — so tick marks
+    /// and list bullets don't qualify; it must be under 2 pt across, twice
+    /// the heaviest common ruling weight (typical PDF rules are 0.5–1 pt)
+    /// while safely below any filled cell; and a box must stay under
+    /// 1000 pt per side, which exceeds a US-Letter page (612×792), so only
+    /// full-page frames and margin decorations are excluded.
     pub fn is_table_primitive(&self) -> bool {
-        let w = self.bbox.width.abs();
-        let h = self.bbox.height.abs();
+        let rendered = self.rendered_bbox();
 
-        // Very thin horizontal or vertical line
-        if (w > 5.0 && h < 2.0) || (h > 5.0 && w < 2.0) {
+        // Very thin horizontal or vertical line: extends > 5.0 along its
+        // rendered axis, geometrically thinner than 2.0 across it, and
+        // rendered at least 2:1 elongated — a zero-length segment with a
+        // fat round/square cap (dot leaders, bullets) renders as a square
+        // blob, not a ruling, and must not seed line clusters.
+        if (rendered.width.abs() > 5.0
+            && self.bbox.height.abs() < 2.0
+            && rendered.width.abs() >= 2.0 * rendered.height.abs())
+            || (rendered.height.abs() > 5.0
+                && self.bbox.width.abs() < 2.0
+                && rendered.height.abs() >= 2.0 * rendered.width.abs())
+        {
             return true;
         }
 
-        // Rectangular-ish box (not too small, not too large)
+        // Rectangular-ish box (not too small, not too large) — geometric,
+        // as before.
+        let w = self.bbox.width.abs();
+        let h = self.bbox.height.abs();
         if w > 5.0 && h > 5.0 && w < 1000.0 && h < 1000.0 {
             return true;
         }

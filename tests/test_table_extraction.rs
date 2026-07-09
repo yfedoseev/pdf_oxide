@@ -20,6 +20,7 @@ fn mock_text_block(text: &str, mcid: u32) -> TextBlock {
         is_bold: false,
         mcid: Some(mcid),
         sequence: 0,
+        rotation_degrees: 0.0,
     }
 }
 

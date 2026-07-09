@@ -2342,4 +2342,165 @@ class FunctionBindings
             unset($cStrings);
         }
     }
+
+
+    // ========== Word Extraction Functions ==========
+
+    /**
+     * Extract words from a page.
+     *
+     * @param CData $handle The document handle
+     * @param int $pageIndex Zero-based page index
+     * @return CData Word list handle (free with {@see pdfOxideWordListFree})
+     */
+    public function pdfDocumentExtractWords(CData $handle, int $pageIndex): CData
+    {
+        $errorCode = $this->ffi->new('int32_t');
+        $words = $this->ffi->pdf_document_extract_words($handle, $pageIndex, FFI::addr($errorCode));
+        ErrorHandler::check((int) $errorCode->cdata, 'pdf_document_extract_words', ['page' => $pageIndex]);
+        return $words;
+    }
+
+    /**
+     * Get the number of words in a word list.
+     */
+    public function pdfOxideWordCount(CData $words): int
+    {
+        return (int) $this->ffi->pdf_oxide_word_count($words);
+    }
+
+    /**
+     * Content-stream emission order of the word's originating span (draw
+     * order during the Tj/TJ walk), independent of reading order.
+     */
+    public function pdfOxideWordGetSequence(CData $words, int $index): int
+    {
+        $errorCode = $this->ffi->new('int32_t');
+        $sequence = $this->ffi->pdf_oxide_word_get_sequence($words, $index, FFI::addr($errorCode));
+        ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_word_get_sequence');
+        return (int) $sequence;
+    }
+
+    /**
+     * Rotation of the word's glyph run in degrees, snapped to a quadrant
+     * (0 / 90 / 180 / -90). 90 means the text reads bottom-to-top on an
+     * unrotated page.
+     */
+    public function pdfOxideWordGetRotation(CData $words, int $index): float
+    {
+        $errorCode = $this->ffi->new('int32_t');
+        $rotation = $this->ffi->pdf_oxide_word_get_rotation($words, $index, FFI::addr($errorCode));
+        ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_word_get_rotation');
+        return (float) $rotation;
+    }
+
+    /**
+     * Free a word list handle.
+     */
+    public function pdfOxideWordListFree(CData $words): void
+    {
+        $this->ffi->pdf_oxide_word_list_free($words);
+    }
+
+
+    // ========== Path Extraction Functions ==========
+
+    /**
+     * Extract vector paths from a page.
+     *
+     * @param CData $handle The document handle
+     * @param int $pageIndex Zero-based page index
+     * @return CData Path list handle (free with {@see pdfOxidePathListFree})
+     */
+    public function pdfDocumentExtractPaths(CData $handle, int $pageIndex): CData
+    {
+        $errorCode = $this->ffi->new('int32_t');
+        $paths = $this->ffi->pdf_document_extract_paths($handle, $pageIndex, FFI::addr($errorCode));
+        ErrorHandler::check((int) $errorCode->cdata, 'pdf_document_extract_paths', ['page' => $pageIndex]);
+        return $paths;
+    }
+
+    /**
+     * Get the number of paths in a path list.
+     */
+    public function pdfOxidePathCount(CData $paths): int
+    {
+        return (int) $this->ffi->pdf_oxide_path_count($paths);
+    }
+
+    /**
+     * Get the geometric bounding box of a path by index.
+     */
+    public function pdfOxidePathGetBbox(CData $paths, int $index): array
+    {
+        $x = $this->ffi->new('float');
+        $y = $this->ffi->new('float');
+        $width = $this->ffi->new('float');
+        $height = $this->ffi->new('float');
+        $errorCode = $this->ffi->new('int32_t');
+
+        try {
+            $this->ffi->pdf_oxide_path_get_bbox(
+                $paths,
+                $index,
+                FFI::addr($x),
+                FFI::addr($y),
+                FFI::addr($width),
+                FFI::addr($height),
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_path_get_bbox');
+            return [
+                'x' => $x->cdata,
+                'y' => $y->cdata,
+                'width' => $width->cdata,
+                'height' => $height->cdata,
+            ];
+        } finally {
+            unset($x, $y, $width, $height, $errorCode);
+        }
+    }
+
+    /**
+     * Get the rendered bounding box of a path by index: the geometric bbox
+     * inflated by the stroke (half the line width on each side). Identical
+     * to {@see pdfOxidePathGetBbox} for unstroked paths.
+     */
+    public function pdfOxidePathGetRenderedBbox(CData $paths, int $index): array
+    {
+        $x = $this->ffi->new('float');
+        $y = $this->ffi->new('float');
+        $width = $this->ffi->new('float');
+        $height = $this->ffi->new('float');
+        $errorCode = $this->ffi->new('int32_t');
+
+        try {
+            $this->ffi->pdf_oxide_path_get_rendered_bbox(
+                $paths,
+                $index,
+                FFI::addr($x),
+                FFI::addr($y),
+                FFI::addr($width),
+                FFI::addr($height),
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check((int) $errorCode->cdata, 'pdf_oxide_path_get_rendered_bbox');
+            return [
+                'x' => $x->cdata,
+                'y' => $y->cdata,
+                'width' => $width->cdata,
+                'height' => $height->cdata,
+            ];
+        } finally {
+            unset($x, $y, $width, $height, $errorCode);
+        }
+    }
+
+    /**
+     * Free a path list handle.
+     */
+    public function pdfOxidePathListFree(CData $paths): void
+    {
+        $this->ffi->pdf_oxide_path_list_free($paths);
+    }
 }

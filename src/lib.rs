@@ -423,6 +423,42 @@ pub(crate) mod utils {
         }
     }
 
+    /// Dominant text-matrix rotation of a page's spans, if any.
+    ///
+    /// Returns the snapped rotation (`90` / `180` / `-90`) shared by at
+    /// least half of the page's non-whitespace spans, or `None` when the
+    /// page is predominantly upright (or empty). The half-or-more majority
+    /// mirrors the existing vertical-CJK (tategaki) vote: at most one
+    /// rotation group can dominate, and a marginal stamp or figure label
+    /// can never hijack the page frame. Rotations are grouped with the same
+    /// 0.5° tolerance `order_rotated_blocks` uses, so free-angle (skewed)
+    /// text never forms a quadrant group.
+    pub(crate) fn dominant_rotation(spans: &[crate::layout::TextSpan]) -> Option<f32> {
+        let mut groups: Vec<(f32, usize)> = Vec::new();
+        let mut total = 0usize;
+        for s in spans {
+            if s.text.trim().is_empty() {
+                continue;
+            }
+            total += 1;
+            if s.rotation_degrees == 0.0 {
+                continue;
+            }
+            match groups
+                .iter_mut()
+                .find(|(k, _)| (*k - s.rotation_degrees).abs() < 0.5)
+            {
+                Some(g) => g.1 += 1,
+                None => groups.push((s.rotation_degrees, 1)),
+            }
+        }
+        groups
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .filter(|&(_, n)| n * 2 >= total && total > 0)
+            .map(|(deg, _)| deg)
+    }
+
     /// Right-to-left variant of [`row_aware_span_cmp`] (issues #656/#657).
     ///
     /// Identical row banding (lines top-to-bottom), but orders spans

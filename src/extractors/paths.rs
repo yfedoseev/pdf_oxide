@@ -629,7 +629,13 @@ impl PathExtractor {
         // Set stroke properties
         if stroke {
             path.stroke_color = self.current_stroke_color;
-            path.stroke_width = self.current_line_width;
+            // The `w` operand is in user space while the path coordinates
+            // above were CTM-transformed (§8.4.3.2: the line width is
+            // transformed like all other geometry). Store the effective
+            // rendered width — `sqrt(|det|)` is the standard uniform-scale
+            // approximation renderers use — so `stroke_width` and `bbox`
+            // share one coordinate space.
+            path.stroke_width = self.current_line_width * self.ctm.stroke_scale();
             path.line_cap = self.current_line_cap;
             path.line_join = self.current_line_join;
         } else {

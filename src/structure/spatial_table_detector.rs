@@ -1561,6 +1561,12 @@ fn group_lines_into_clusters(
     if lines.is_empty() {
         return Vec::new();
     }
+    // All clustering geometry below works on RENDERED extents: a table rule
+    // encoded as a 1 pt segment with a table-height stroke width must
+    // cluster with (and span) the rules its drawn bar actually touches, not
+    // the ones near its geometric speck. Computed once — pure
+    // arithmetic per path.
+    let rendered: Vec<crate::geometry::Rect> = lines.iter().map(|p| p.rendered_bbox()).collect();
     let mut uf = UnionFind::new(lines.len());
     let mut valid_indices: Vec<usize> = lines
         .iter()
@@ -1570,12 +1576,12 @@ fn group_lines_into_clusters(
         .collect();
 
     // Optimization: Sort by X-coordinate to enable sweep-line early exit (O(n log n))
-    valid_indices.sort_by(|&a, &b| crate::utils::safe_float_cmp(lines[a].bbox.x, lines[b].bbox.x));
+    valid_indices.sort_by(|&a, &b| crate::utils::safe_float_cmp(rendered[a].x, rendered[b].x));
 
     const EXPANSION: f32 = 3.0;
     for i in 0..valid_indices.len() {
         let idx_a = valid_indices[i];
-        let bbox_a = &lines[idx_a].bbox;
+        let bbox_a = &rendered[idx_a];
         let expanded_a = crate::geometry::Rect::new(
             bbox_a.x - EXPANSION,
             bbox_a.y - EXPANSION,
@@ -1585,7 +1591,7 @@ fn group_lines_into_clusters(
 
         for j in (i + 1)..valid_indices.len() {
             let idx_b = valid_indices[j];
-            let bbox_b = &lines[idx_b].bbox;
+            let bbox_b = &rendered[idx_b];
 
             // Optimization: If the next path's X-start is beyond our search threshold,
             // no subsequent paths in the sorted list can possibly intersect.
@@ -1608,7 +1614,7 @@ fn group_lines_into_clusters(
     let mut cluster_map: HashMap<usize, LineCluster> = HashMap::new();
     for i in valid_indices {
         let root = uf.find(i);
-        let bbox = lines[i].bbox;
+        let bbox = rendered[i];
         cluster_map
             .entry(root)
             .and_modify(|c| c.add(i, bbox))
@@ -1633,9 +1639,9 @@ fn group_lines_into_clusters(
         let mut v_ranges: Vec<(usize, f32, f32)> = Vec::new(); // (line_idx, y_min, y_max)
         for &idx in &cluster.lines {
             let path = &lines[idx];
-            if path.is_vertical_line(LINE_AXIS_TOL) && path.bbox.height.abs() > 5.0 {
-                let y_min = path.bbox.y;
-                let y_max = path.bbox.y + path.bbox.height;
+            if path.is_vertical_line(LINE_AXIS_TOL) && rendered[idx].height.abs() > 5.0 {
+                let y_min = rendered[idx].y;
+                let y_max = rendered[idx].y + rendered[idx].height;
                 let (y_min, y_max) = if y_min <= y_max {
                     (y_min, y_max)
                 } else {
@@ -1676,7 +1682,7 @@ fn group_lines_into_clusters(
         // Split: assign each line in the cluster to the band it best fits.
         let mut sub_clusters: Vec<Vec<usize>> = vec![Vec::new(); bands.len()];
         for &idx in &cluster.lines {
-            let bbox = &lines[idx].bbox;
+            let bbox = &rendered[idx];
             let line_y_mid = bbox.y + bbox.height * 0.5;
             // Find the band whose range contains (or is closest to) the line's midpoint.
             let mut best_band = 0;
@@ -1700,10 +1706,10 @@ fn group_lines_into_clusters(
             if sub.is_empty() {
                 continue;
             }
-            let first_bbox = lines[sub[0]].bbox;
+            let first_bbox = rendered[sub[0]];
             let mut lc = LineCluster::new(sub[0], first_bbox);
             for &idx in &sub[1..] {
-                lc.add(idx, lines[idx].bbox);
+                lc.add(idx, rendered[idx]);
             }
             result.push(lc);
         }
@@ -1814,7 +1820,9 @@ fn detect_tables_in_cluster(
     let mut v_xs: Vec<f32> = Vec::new();
     for &idx in &cluster.lines {
         let path = &all_lines[idx];
-        let bbox = &path.bbox;
+        // Rendered extents: a stroke-width-encoded rule's center and length
+        // come from the drawn bar, not the geometric speck.
+        let bbox = path.rendered_bbox();
         if path.is_horizontal_line(LINE_AXIS_TOL) && bbox.width > MIN_LINE_LENGTH {
             h_ys.push(bbox.center().y);
         }
@@ -1945,9 +1953,10 @@ fn detect_tables_in_cluster(
                     let row_bottom = grid.rows[r].y_min;
                     let has_separator = cluster.lines.iter().any(|&idx| {
                         let path = &all_lines[idx];
+                        let rendered = path.rendered_bbox();
                         path.is_horizontal_line(LINE_AXIS_TOL)
-                            && path.bbox.width > table_width * 0.8
-                            && (path.bbox.center().y - row_bottom).abs() < config.row_tolerance
+                            && rendered.width > table_width * 0.8
+                            && (rendered.center().y - row_bottom).abs() < config.row_tolerance
                     });
                     if has_separator {
                         header_rows_detected = r + 1;
@@ -2024,10 +2033,14 @@ fn detect_merged_cells_visually(
                 let y_max = grid.rows[r].y_max;
                 let has_separator = cluster.lines.iter().any(|&idx| {
                     let path = &all_lines[idx];
+                    // Rendered extents: a stroke-width-encoded column rule
+                    // crosses every row its drawn bar spans, not just the
+                    // band around its geometric midline.
+                    let rendered = path.rendered_bbox();
                     path.is_vertical_line(LINE_TOLERANCE)
-                        && (path.bbox.center().x - separator_x).abs() < LINE_TOLERANCE
-                        && path.bbox.y < y_max
-                        && (path.bbox.y + path.bbox.height) > y_min
+                        && (rendered.center().x - separator_x).abs() < LINE_TOLERANCE
+                        && rendered.y < y_max
+                        && (rendered.y + rendered.height) > y_min
                 });
                 if !has_separator || (cell_text_width > total_cell_width + 2.0) {
                     colspan += 1;
@@ -2060,10 +2073,15 @@ fn detect_merged_cells_visually(
                 let x_max = grid.columns[c + current_colspan as usize - 1].x_max;
                 let has_separator = cluster.lines.iter().any(|&idx| {
                     let path = &all_lines[idx];
+                    // Rendered extents, mirroring the colspan check above: a
+                    // row rule encoded as a short vertical segment with a
+                    // table-width stroke spans every column its drawn bar
+                    // crosses.
+                    let rendered = path.rendered_bbox();
                     path.is_horizontal_line(LINE_TOLERANCE)
-                        && (path.bbox.center().y - separator_y).abs() < LINE_TOLERANCE
-                        && path.bbox.x < x_max
-                        && (path.bbox.x + path.bbox.width) > x_min
+                        && (rendered.center().y - separator_y).abs() < LINE_TOLERANCE
+                        && rendered.x < x_max
+                        && (rendered.x + rendered.width) > x_min
                 });
                 if !has_separator {
                     rowspan += 1;
@@ -2141,16 +2159,21 @@ fn extract_edges(lines: &[crate::elements::PathContent]) -> (Vec<Edge>, Vec<Edge
     for path in lines {
         let bbox = &path.bbox;
         if path.is_horizontal_line(LINE_AXIS_TOL) {
+            // Rendered extents so a stroke-width-encoded rule contributes
+            // the edge its drawn bar covers, not its geometric speck
+            // Identical to `bbox` for ordinary thin rules.
+            let rendered = path.rendered_bbox();
             h_edges.push(Edge {
-                coord: bbox.center().y,
-                start: bbox.left(),
-                end: bbox.right(),
+                coord: rendered.center().y,
+                start: rendered.left(),
+                end: rendered.right(),
             });
         } else if path.is_vertical_line(LINE_AXIS_TOL) {
+            let rendered = path.rendered_bbox();
             v_edges.push(Edge {
-                coord: bbox.center().x,
-                start: bbox.top(),
-                end: bbox.bottom(),
+                coord: rendered.center().x,
+                start: rendered.top(),
+                end: rendered.bottom(),
             });
         } else if path.is_rectangle() {
             // Decompose rectangle into 4 edges.
@@ -3381,6 +3404,52 @@ fn merge_vertically_adjacent_tables(tables: &mut Vec<Table>) {
     *tables = merged;
 }
 
+/// True when the page carries vertical-ruling evidence that should route
+/// table detection through the grid pipelines instead of the
+/// horizontal-rule-bounded fallback.
+///
+/// A vertical line counts as RULING evidence only when its drawn bar
+/// crosses at least TWO of the horizontal rules: a ruling vertical bounds
+/// cells BETWEEN row rules, so it spans from one rule to another (a
+/// stroke-width-encoded column bar crosses every row rule of its table).
+/// Anything that crosses fewer says nothing about how the page's tables
+/// are ruled: an isolated heavy-stroked speck (tick mark, list dash)
+/// crosses nothing, and the short dash segments of a decorative dashed
+/// BOX border cross at most the one rule their box happens to overlap.
+/// Both were disabling the horizontal-rule fallback page-wide, which is
+/// precisely what scattered booktabs tables on pages carrying a
+/// dash-bordered affiliation box. Rectangles (decomposed into edges) keep
+/// their pre-existing veto.
+fn has_vertical_ruling_evidence(lines: &[crate::elements::PathContent], h_edges: &[Edge]) -> bool {
+    const LINE_AXIS_TOL: f32 = 2.0;
+    lines.iter().any(|path| {
+        if path.is_horizontal_line(LINE_AXIS_TOL) {
+            return false;
+        }
+        if path.is_vertical_line(LINE_AXIS_TOL) {
+            let r = path.rendered_bbox();
+            // Count DISTINCT rule levels crossed, not raw edges: one dashed
+            // rule is several collinear edges at the same y, and a border
+            // "joint" speck sitting on it would otherwise read as crossing
+            // two rules while touching only one.
+            let mut crossed_ys: Vec<f32> = h_edges
+                .iter()
+                .filter(|h| {
+                    r.y <= h.coord
+                        && (r.y + r.height) >= h.coord
+                        && (r.x + r.width) >= h.start
+                        && r.x <= h.end
+                })
+                .map(|h| h.coord)
+                .collect();
+            crossed_ys.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            crossed_ys.dedup_by(|a, b| (*a - *b).abs() <= LINE_AXIS_TOL);
+            return crossed_ys.len() >= 2;
+        }
+        path.is_rectangle()
+    })
+}
+
 /// Detect tables in regions bounded by horizontal rules (H-lines) when no vertical
 /// lines are present.  Groups H-edges by Y-position to find horizontal table
 /// boundaries, then runs text-edge detection on the spans within each bounded
@@ -3392,6 +3461,13 @@ fn detect_tables_from_horizontal_rules(
 ) -> Vec<Table> {
     const MIN_RULE_WIDTH: f32 = 100.0;
     const Y_SNAP: f32 = 4.0;
+    // A table's boundary rules line up: booktabs top/sub-header/bottom
+    // rules share their x-range to within a point (overlap/union ≈ 1.0),
+    // while unrelated wide strokes — displayed-equation fraction bars,
+    // decorative borders — share at most a common left margin
+    // (overlap/union ≲ 0.8 even when x-starts coincide, since widths
+    // differ). 0.85 splits the two populations with margin on both sides.
+    const X_COHERENCE: f32 = 0.85;
 
     // Keep only wide H-edges.
     let wide: Vec<&Edge> = h_edges
@@ -3402,76 +3478,188 @@ fn detect_tables_from_horizontal_rules(
         return Vec::new();
     }
 
-    // Cluster H-edges by Y-coordinate (snap within Y_SNAP).
-    let mut y_coords: Vec<f32> = Vec::new();
-    for e in &wide {
-        let merged = y_coords
-            .iter_mut()
-            .find(|y| (e.coord - **y).abs() <= Y_SNAP);
-        if merged.is_none() {
-            y_coords.push(e.coord);
-        }
-    }
-    y_coords.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a)); // descending (top first in PDF coords)
-
-    if y_coords.len() < 2 {
-        return Vec::new();
-    }
-
-    // For each cluster, compute the X-range (union of edges in that cluster).
-    let x_range_for_y = |target_y: f32| -> (f32, f32) {
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-        for e in &wide {
-            if (e.coord - target_y).abs() <= Y_SNAP {
-                if e.start < min_x {
-                    min_x = e.start;
-                }
-                if e.end > max_x {
-                    max_x = e.end;
-                }
+    // Group the wide edges into x-range-coherent FAMILIES and window
+    // within each family, so only rules that could bound the same table
+    // ever pair up. This fixes two failure shapes in one move: a page of
+    // scattered fraction bars never forms a family (no fake table from
+    // unrelated equation rules), and a decorative dashed border whose
+    // y-position interleaves a real table's rules lands in its own family
+    // instead of splitting the table's rules apart in the adjacent-pair
+    // walk (which silently dropped the table on real dash-boxed pages).
+    let mut uf = UnionFind::new(wide.len());
+    for i in 0..wide.len() {
+        for j in (i + 1)..wide.len() {
+            let (a, b) = (wide[i], wide[j]);
+            let overlap = a.end.min(b.end) - a.start.max(b.start);
+            let union = a.end.max(b.end) - a.start.min(b.start);
+            if union > 0.0 && overlap / union >= X_COHERENCE {
+                uf.union(i, j);
             }
         }
-        (min_x, max_x)
-    };
+    }
+    let mut families: HashMap<usize, Vec<&Edge>> = HashMap::new();
+    for (i, e) in wide.iter().enumerate() {
+        families.entry(uf.find(i)).or_default().push(e);
+    }
+    // Deterministic family order (HashMap iteration is randomized).
+    let mut families: Vec<Vec<&Edge>> = families.into_values().collect();
+    families.sort_by(|a, b| crate::utils::safe_float_cmp(a[0].coord, b[0].coord));
 
     let mut tables = Vec::new();
 
-    // Consider adjacent Y-pairs as potential table regions.
-    for pair in y_coords.windows(2) {
-        let y_top = pair[0];
-        let y_bot = pair[1];
-        // Both H-lines must span significant width and overlap in X.
-        let (x1_start, x1_end) = x_range_for_y(y_top);
-        let (x2_start, x2_end) = x_range_for_y(y_bot);
-        let x_overlap_start = x1_start.max(x2_start);
-        let x_overlap_end = x1_end.min(x2_end);
-        if x_overlap_end - x_overlap_start < MIN_RULE_WIDTH {
+    for family in &families {
+        // Cluster this family's edges by Y-coordinate (snap within Y_SNAP).
+        let mut y_coords: Vec<f32> = Vec::new();
+        for e in family {
+            let merged = y_coords
+                .iter_mut()
+                .find(|y| (e.coord - **y).abs() <= Y_SNAP);
+            if merged.is_none() {
+                y_coords.push(e.coord);
+            }
+        }
+        y_coords.sort_by(|a, b| crate::utils::safe_float_cmp(*b, *a)); // descending (top first in PDF coords)
+
+        if y_coords.len() < 2 {
             continue;
         }
 
-        // Collect spans within this Y-range and X-range (with small padding).
-        let pad = 2.0;
-        let region_spans: Vec<TextSpan> = spans
-            .iter()
-            .filter(|s| {
+        // For each cluster, compute the X-range (union of the FAMILY's
+        // edges in that cluster).
+        let x_range_for_y = |target_y: f32| -> (f32, f32) {
+            let mut min_x = f32::MAX;
+            let mut max_x = f32::MIN;
+            for e in family {
+                if (e.coord - target_y).abs() <= Y_SNAP {
+                    if e.start < min_x {
+                        min_x = e.start;
+                    }
+                    if e.end > max_x {
+                        max_x = e.end;
+                    }
+                }
+            }
+            (min_x, max_x)
+        };
+
+        // Consider adjacent Y-pairs within the family as potential table regions.
+        for pair in y_coords.windows(2) {
+            let y_top = pair[0];
+            let y_bot = pair[1];
+            // Both H-lines must span significant width and overlap in X.
+            let (x1_start, x1_end) = x_range_for_y(y_top);
+            let (x2_start, x2_end) = x_range_for_y(y_bot);
+            let x_overlap_start = x1_start.max(x2_start);
+            let x_overlap_end = x1_end.min(x2_end);
+            if x_overlap_end - x_overlap_start < MIN_RULE_WIDTH {
+                continue;
+            }
+
+            // Collect spans within this Y-range and X-range (with small padding).
+            let pad = 2.0;
+            let mut region_spans: Vec<TextSpan> = Vec::new();
+            let mut outside_width = 0.0f32;
+            let mut inside_width = 0.0f32;
+            for s in spans {
                 let cy = s.bbox.center().y;
+                if cy > y_top + pad || cy < y_bot - pad {
+                    continue;
+                }
                 let cx = s.bbox.center().x;
-                cy <= y_top + pad
-                    && cy >= y_bot - pad
-                    && cx >= x_overlap_start - pad
-                    && cx <= x_overlap_end + pad
-            })
-            .cloned()
-            .collect();
+                if cx >= x_overlap_start - pad && cx <= x_overlap_end + pad {
+                    inside_width += s.bbox.width.max(0.0);
+                    region_spans.push(s.clone());
+                } else {
+                    outside_width += s.bbox.width.max(0.0);
+                }
+            }
 
-        if region_spans.is_empty() {
-            continue;
+            if region_spans.is_empty() {
+                continue;
+            }
+
+            // A pair of rules bounds a table only if the band's text is
+            // horizontally CONTAINED by the rules: a table's boundary
+            // rules span the rows they rule, while a fraction bar floats
+            // inside surrounding math that continues to its left and
+            // right (relation symbols, equation numbers). X-range-coherent
+            // vinculums from an aligned multi-step derivation pass the
+            // family check above, but the text spilling past the bars
+            // gives them away — when a third of the band's text mass lies
+            // outside the rules, they don't bound anything. (Division-free
+            // so a band of zero-width spans compares 0 > 0 instead of
+            // taking a NaN branch.)
+            if outside_width > (outside_width + inside_width) * 0.3 {
+                continue;
+            }
+
+            // Letter-spaced monospace guard: framed code and console
+            // listings (zines, technical reports) draw each glyph on a
+            // terminal-font grid, so the band's "words" are mostly single
+            // characters whose aligned x positions look exactly like
+            // column boundaries — identifiers shatter into single letters
+            // (`s e g f a u l t`), addresses into single digits
+            // (`0 0 : 1 4`). A real table's cells are words and numbers:
+            // one-third single LETTERS or one-half single characters of
+            // any kind is spread-out text, not a grid. (The digit
+            // threshold is the looser of the two so genuine single-digit
+            // table columns, which sit among multi-char label cells, stay
+            // under it.)
+            let word_count = region_spans.len();
+            let mut single_any = 0usize;
+            let mut single_alpha = 0usize;
+            for rs in &region_spans {
+                let mut chars = rs.text.trim().chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    single_any += 1;
+                    if c.is_alphabetic() {
+                        single_alpha += 1;
+                    }
+                }
+            }
+            if word_count > 0 && (single_alpha * 3 >= word_count || single_any * 2 >= word_count) {
+                continue;
+            }
+
+            let mut detected = detect_tables_from_spans(&region_spans, config);
+            tables.append(&mut detected);
         }
-
-        let mut detected = detect_tables_from_spans(&region_spans, config);
-        tables.append(&mut detected);
     }
+
+    // Two families can bracket the same text — a dash-bordered decorative
+    // box drawn around (or through) a ruled table gives both the box's
+    // border family and the table's rule family a region over the same
+    // rows, and each detects its own copy. Keep the TIGHTER detection when
+    // two overlap: the looser region also swallows neighbouring lines
+    // (footnotes, captions) as junk rows.
+    let mut keep: Vec<bool> = vec![true; tables.len()];
+    for i in 0..tables.len() {
+        for j in (i + 1)..tables.len() {
+            if !keep[i] || !keep[j] {
+                continue;
+            }
+            let (Some(a), Some(b)) = (tables[i].bbox, tables[j].bbox) else {
+                continue;
+            };
+            let ov_w = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+            let ov_h = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+            if ov_w <= 0.0 || ov_h <= 0.0 {
+                continue;
+            }
+            let ov_area = ov_w * ov_h;
+            let min_area = (a.width * a.height).min(b.width * b.height);
+            if min_area > 0.0 && ov_area / min_area > 0.5 {
+                // Overlapping duplicates: drop the larger (looser) one.
+                if a.width * a.height >= b.width * b.height {
+                    keep[i] = false;
+                } else {
+                    keep[j] = false;
+                }
+            }
+        }
+    }
+    let mut it = keep.iter();
+    tables.retain(|_| *it.next().unwrap_or(&true));
 
     tables
 }
@@ -3516,8 +3704,8 @@ pub fn detect_tables_with_lines(
     // When intersection and cluster pipelines found nothing, try H-rule bounded detection:
     // use horizontal lines as table region boundaries with text-edge column detection.
     if final_tables.is_empty() {
-        let (mut h_edges, v_edges) = extract_edges(lines);
-        if !h_edges.is_empty() && v_edges.is_empty() {
+        let (mut h_edges, _) = extract_edges(lines);
+        if !h_edges.is_empty() && !has_vertical_ruling_evidence(lines, &h_edges) {
             snap_and_merge(&mut h_edges);
             final_tables = detect_tables_from_horizontal_rules(spans, &h_edges, config);
             // A logical table ruled between row *bands* (a rule under the

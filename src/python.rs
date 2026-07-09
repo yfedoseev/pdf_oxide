@@ -4257,6 +4257,12 @@ impl PyWord {
     fn sequence(&self) -> usize {
         self.inner.sequence
     }
+    /// Rotation of the word's glyph run in degrees, snapped to a quadrant
+    /// (0 / 90 / 180 / -90) — see `Word.rotation_degrees`.
+    #[getter]
+    fn rotation_degrees(&self) -> f32 {
+        self.inner.rotation_degrees
+    }
 }
 
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "TextLine", skip_from_py_object)]
@@ -4300,6 +4306,9 @@ impl PyTextLine {
 fn path_to_py_dict(py: Python<'_>, path: &crate::elements::PathContent) -> PyResult<Py<PyAny>> {
     let d = pyo3::types::PyDict::new(py);
     d.set_item("bbox", (path.bbox.x, path.bbox.y, path.bbox.width, path.bbox.height))?;
+    // Stroke-inflated extents — what the reader sees.
+    let rendered = path.rendered_bbox();
+    d.set_item("rendered_bbox", (rendered.x, rendered.y, rendered.width, rendered.height))?;
     d.set_item("stroke_width", path.stroke_width)?;
     if let Some(ref c) = path.stroke_color {
         d.set_item("stroke_color", (c.r, c.g, c.b))?;

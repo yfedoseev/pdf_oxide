@@ -280,6 +280,7 @@ extern char* pdf_oxide_word_get_font_name(const void* words, int32_t index, int*
 extern float pdf_oxide_word_get_font_size(const void* words, int32_t index, int* error_code);
 extern bool pdf_oxide_word_is_bold(const void* words, int32_t index, int* error_code);
 extern int64_t pdf_oxide_word_get_sequence(const void* words, int32_t index, int* error_code);
+extern float pdf_oxide_word_get_rotation(const void* words, int32_t index, int* error_code);
 extern void pdf_oxide_word_list_free(void* handle);
 
 extern void* pdf_document_extract_text_lines(void* handle, int32_t page_index, int* error_code);
@@ -388,6 +389,7 @@ extern void pdf_pdf_x_results_free(void* results);
 extern void* pdf_document_extract_paths(void* handle, int32_t page_index, int* error_code);
 extern int32_t pdf_oxide_path_count(const void* paths);
 extern void pdf_oxide_path_get_bbox(const void* paths, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
+extern void pdf_oxide_path_get_rendered_bbox(const void* paths, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
 extern float pdf_oxide_path_get_stroke_width(const void* paths, int32_t index, int* error_code);
 extern bool pdf_oxide_path_has_stroke(const void* paths, int32_t index, int* error_code);
 extern bool pdf_oxide_path_has_fill(const void* paths, int32_t index, int* error_code);
@@ -2135,6 +2137,12 @@ type Word struct {
 	// originating span was drawn during the Tj/TJ walk). Adjacent values mean
 	// the words were drawn consecutively, independent of reading order.
 	Sequence int64
+	// RotationDegrees is the rotation of the word's glyph run in degrees,
+	// snapped to a quadrant (0 / 90 / 180 / -90). 90 means the text reads
+	// bottom-to-top on an unrotated page — a landscape table typeset on a
+	// portrait page — so callers can transform coordinates into the reading
+	// frame.
+	RotationDegrees float32
 }
 
 // ExtractWords extracts words with bounding boxes from a page
@@ -2162,10 +2170,11 @@ func (doc *PdfDocument) ExtractWords(pageIndex int) ([]Word, error) {
 		C.free_string(cFont)
 		words = append(words, Word{
 			Text: text, X: float32(x), Y: float32(y), Width: float32(w), Height: float32(h),
-			FontName: font,
-			FontSize: float32(C.pdf_oxide_word_get_font_size(handle, C.int32_t(i), &errorCode)),
-			IsBold:   bool(C.pdf_oxide_word_is_bold(handle, C.int32_t(i), &errorCode)),
-			Sequence: int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
+			FontName:        font,
+			FontSize:        float32(C.pdf_oxide_word_get_font_size(handle, C.int32_t(i), &errorCode)),
+			IsBold:          bool(C.pdf_oxide_word_is_bold(handle, C.int32_t(i), &errorCode)),
+			Sequence:        int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
+			RotationDegrees: float32(C.pdf_oxide_word_get_rotation(handle, C.int32_t(i), &errorCode)),
 		})
 	}
 	return words, nil
@@ -3208,11 +3217,17 @@ func (doc *PdfDocument) ExtractChars(pageIndex int) ([]Char, error) {
 
 // Path represents a vector path/shape
 type Path struct {
-	X, Y, W, H     float32
-	StrokeWidth    float32
-	HasStroke      bool
-	HasFill        bool
-	OperationCount int
+	X, Y, W, H float32
+	// RenderedX/Y/W/H are the rendered extents of the path: the geometric
+	// bbox inflated by the stroke (half the line width straddles each side
+	// of the path), reporting the mark the reader sees — e.g. a thin table
+	// rule stroked as wide as the table is tall. Identical to
+	// X/Y/W/H for unstroked paths.
+	RenderedX, RenderedY, RenderedW, RenderedH float32
+	StrokeWidth                                float32
+	HasStroke                                  bool
+	HasFill                                    bool
+	OperationCount                             int
 }
 
 // ExtractPaths extracts vector paths from a page
@@ -3232,8 +3247,11 @@ func (doc *PdfDocument) ExtractPaths(pageIndex int) ([]Path, error) {
 	for i := 0; i < count; i++ {
 		var x, y, w, h C.float
 		C.pdf_oxide_path_get_bbox(handle, C.int32_t(i), &x, &y, &w, &h, &errorCode)
+		var rx, ry, rw, rh C.float
+		C.pdf_oxide_path_get_rendered_bbox(handle, C.int32_t(i), &rx, &ry, &rw, &rh, &errorCode)
 		paths = append(paths, Path{
 			X: float32(x), Y: float32(y), W: float32(w), H: float32(h),
+			RenderedX: float32(rx), RenderedY: float32(ry), RenderedW: float32(rw), RenderedH: float32(rh),
 			StrokeWidth:    float32(C.pdf_oxide_path_get_stroke_width(handle, C.int32_t(i), &errorCode)),
 			HasStroke:      bool(C.pdf_oxide_path_has_stroke(handle, C.int32_t(i), &errorCode)),
 			HasFill:        bool(C.pdf_oxide_path_has_fill(handle, C.int32_t(i), &errorCode)),
@@ -3443,7 +3461,8 @@ func (doc *PdfDocument) ExtractWordsInRect(pageIndex int, x, y, w, h float32) ([
 		C.free_string(cText)
 		words = append(words, Word{
 			Text: text, X: float32(bx), Y: float32(by), Width: float32(bw), Height: float32(bh),
-			Sequence: int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
+			Sequence:        int64(C.pdf_oxide_word_get_sequence(handle, C.int32_t(i), &errorCode)),
+			RotationDegrees: float32(C.pdf_oxide_word_get_rotation(handle, C.int32_t(i), &errorCode)),
 		})
 	}
 	return words, nil

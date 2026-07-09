@@ -100,14 +100,16 @@ pub(crate) fn find_music_regions(doc: &PdfDocument, page_idx: usize) -> Vec<Rect
     }
     let mut hlines: Vec<HLine> = Vec::new();
     for p in &paths {
-        // Use the path bbox: a horizontal staff line has height ≤ 1 pt
-        // and width > 50 pt. Works whether the source emits a
-        // MoveTo+LineTo pair or a degenerate rect.
-        if p.bbox.height <= 1.0 && p.bbox.width > 50.0 {
+        // Geometric thinness (a staff line has height ≤ 1 pt) with the
+        // length taken from the RENDERED extents so stroke-width-encoded
+        // lines qualify too. Works whether the source emits
+        // a MoveTo+LineTo pair or a degenerate rect.
+        let rendered = p.rendered_bbox();
+        if p.bbox.height <= 1.0 && rendered.width > 50.0 {
             hlines.push(HLine {
-                x_min: p.bbox.x,
-                x_max: p.bbox.x + p.bbox.width,
-                y: p.bbox.y + p.bbox.height * 0.5,
+                x_min: rendered.x,
+                x_max: rendered.x + rendered.width,
+                y: rendered.y + rendered.height * 0.5,
             });
         }
     }

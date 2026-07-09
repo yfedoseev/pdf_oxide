@@ -297,8 +297,10 @@ SEXP r_doc_extract_words(SEXP ext, SEXP page) {
         bool bold = pdf_oxide_word_is_bold(list, i, &code);
         code = 0;
         int64_t seq = pdf_oxide_word_get_sequence(list, i, &code);
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
+        code = 0;
+        float rot = pdf_oxide_word_get_rotation(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 7));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 7));
         SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
         SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));        SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
         SET_VECTOR_ELT(rec, 1, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
@@ -307,6 +309,7 @@ SEXP r_doc_extract_words(SEXP ext, SEXP page) {
         SET_VECTOR_ELT(rec, 3, Rf_ScalarReal(fs));              SET_STRING_ELT(nms, 3, Rf_mkChar("font_size"));
         SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(bold));         SET_STRING_ELT(nms, 4, Rf_mkChar("bold"));
         SET_VECTOR_ELT(rec, 5, Rf_ScalarReal((double)seq));     SET_STRING_ELT(nms, 5, Rf_mkChar("sequence"));
+        SET_VECTOR_ELT(rec, 6, Rf_ScalarReal(rot));             SET_STRING_ELT(nms, 6, Rf_mkChar("rotation_degrees"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
         UNPROTECT(4);
@@ -486,7 +489,7 @@ SEXP r_doc_embedded_images(SEXP ext, SEXP page) {
         SET_VECTOR_ELT(rec, 5, raw);                            SET_STRING_ELT(nms, 5, Rf_mkChar("data"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
-        UNPROTECT(4);
+        UNPROTECT(5); /* raw, rec, nms, fstr, csstr */
     }
     pdf_oxide_image_list_free(list);
     UNPROTECT(1);
@@ -534,7 +537,7 @@ SEXP r_doc_page_annotations(SEXP ext, SEXP page) {
         SET_VECTOR_ELT(rec, 5, Rf_ScalarReal(bw));              SET_STRING_ELT(nms, 5, Rf_mkChar("border_width"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
-        UNPROTECT(5);
+        UNPROTECT(6); /* rec, nms, tstr, ststr, cstr, astr */
     }
     pdf_oxide_annotation_list_free(list);
     UNPROTECT(1);
@@ -554,6 +557,10 @@ SEXP r_doc_extract_paths(SEXP ext, SEXP page) {
         code = 0;
         pdf_oxide_path_get_bbox(list, i, &x, &y, &w, &h, &code);
         if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
+        float rx = 0, ry = 0, rw = 0, rh = 0;
+        code = 0;
+        pdf_oxide_path_get_rendered_bbox(list, i, &rx, &ry, &rw, &rh, &code);
+        if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
         code = 0;
         float sw = pdf_oxide_path_get_stroke_width(list, i, &code);
         if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
@@ -564,16 +571,17 @@ SEXP r_doc_extract_paths(SEXP ext, SEXP page) {
         code = 0;
         int32_t opc = pdf_oxide_path_get_operation_count(list, i, &code);
         if (code != 0) { pdf_oxide_path_list_free(list); pdfox_raise(code, "extract_paths"); }
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 5));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 5));
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 6));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 6));
         SET_VECTOR_ELT(rec, 0, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 0, Rf_mkChar("bbox"));
         SET_VECTOR_ELT(rec, 1, Rf_ScalarReal(sw));              SET_STRING_ELT(nms, 1, Rf_mkChar("stroke_width"));
         SET_VECTOR_ELT(rec, 2, Rf_ScalarLogical(stroke));       SET_STRING_ELT(nms, 2, Rf_mkChar("has_stroke"));
         SET_VECTOR_ELT(rec, 3, Rf_ScalarLogical(fill));         SET_STRING_ELT(nms, 3, Rf_mkChar("has_fill"));
         SET_VECTOR_ELT(rec, 4, Rf_ScalarInteger(opc));          SET_STRING_ELT(nms, 4, Rf_mkChar("operation_count"));
+        SET_VECTOR_ELT(rec, 5, make_bbox(rx, ry, rw, rh));      SET_STRING_ELT(nms, 5, Rf_mkChar("rendered_bbox"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
-        UNPROTECT(3);
+        UNPROTECT(2); /* rec, nms — make_bbox self-balances */
     }
     pdf_oxide_path_list_free(list);
     UNPROTECT(1);
@@ -2984,12 +2992,15 @@ SEXP r_doc_extract_words_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, SE
         if (code != 0) { free_string(txt); pdf_oxide_word_list_free(list); pdfox_raise(code, "extract_words_in_rect"); }
         code = 0;
         int64_t seq = pdf_oxide_word_get_sequence(list, i, &code);
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        code = 0;
+        float rot = pdf_oxide_word_get_rotation(list, i, &code);
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 4));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
         SEXP txtstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
         SET_VECTOR_ELT(rec, 0, Rf_ScalarString(txtstr));  SET_STRING_ELT(nms, 0, Rf_mkChar("text"));
         SET_VECTOR_ELT(rec, 1, make_bbox(bx, by, bw, bh)); SET_STRING_ELT(nms, 1, Rf_mkChar("bbox"));
         SET_VECTOR_ELT(rec, 2, Rf_ScalarReal((double)seq)); SET_STRING_ELT(nms, 2, Rf_mkChar("sequence"));
+        SET_VECTOR_ELT(rec, 3, Rf_ScalarReal(rot));         SET_STRING_ELT(nms, 3, Rf_mkChar("rotation_degrees"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
         UNPROTECT(3);
@@ -3119,7 +3130,7 @@ SEXP r_doc_extract_images_in_rect(SEXP ext, SEXP page, SEXP x, SEXP y, SEXP w, S
         SET_VECTOR_ELT(rec, 5, rawd);                   SET_STRING_ELT(nms, 5, Rf_mkChar("data"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
-        UNPROTECT(4);
+        UNPROTECT(5); /* rawd, rec, nms, fstr, csstr */
     }
     pdf_oxide_image_list_free(list);
     UNPROTECT(1);
@@ -3229,7 +3240,7 @@ SEXP r_doc_get_form_fields(SEXP ext) {
         SET_VECTOR_ELT(rec, 4, Rf_ScalarLogical(req));  SET_STRING_ELT(nms, 4, Rf_mkChar("required"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
-        UNPROTECT(4);
+        UNPROTECT(5); /* rec, nms, nstr, tstr, vstr */
     }
     pdf_oxide_form_field_list_free(list);
     UNPROTECT(1);

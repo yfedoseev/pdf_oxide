@@ -18,9 +18,9 @@ var page = 0;
 // Words with position data
 var words = doc.ExtractWords(page);
 Console.WriteLine($"\n--- Words (page {page + 1}) ---");
-foreach (var (text, x, y, width, height, sequence) in words.Take(20))
+foreach (var (text, x, y, width, height, sequence, rotationDegrees) in words.Take(20))
 {
-    Console.WriteLine($"{"\"" + text + "\"",-20} x={x,-7:F1} y={y,-7:F1} w={width,-7:F1} h={height,-7:F1} seq={sequence}");
+    Console.WriteLine($"{"\"" + text + "\"",-20} x={x,-7:F1} y={y,-7:F1} w={width,-7:F1} h={height,-7:F1} seq={sequence} rot={rotationDegrees}");
 }
 if (words.Length > 20)
     Console.WriteLine($"... ({words.Length - 20} more words)");

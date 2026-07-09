@@ -5267,8 +5267,84 @@ impl PdfDocument {
         if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
             return Ok(vertical);
         }
+        // Dominant text-matrix rotation (a landscape table typeset on a
+        // portrait page): the row-major assembler groups lines
+        // in the portrait frame and interleaves every rotated row. Assemble
+        // such pages in their rotated reading frame instead.
+        let base_spans = match self.map_dominant_rotation_into_reading_frame(page_index, base_spans)
+        {
+            Ok(mapped) => mapped,
+            Err(original) => original,
+        };
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// Map a dominant-rotation page's spans into their rotated reading
+    /// frame so the standard horizontal assembler applies.
+    ///
+    /// Returns `Ok(mapped)` when the page is unrotated (`/Rotate 0` — on
+    /// rotated pages `postprocess_spans` already handles content rotation,
+    ///) and at least half its non-whitespace spans share one
+    /// quadrant text rotation; the mapped spans are horizontal in the
+    /// frame a reader turns the page into, with `rotation_degrees` cleared
+    /// so downstream passes treat them as the upright text they now are.
+    /// Returns `Err(spans)` — the input unchanged — on every other page,
+    /// keeping output byte-identical there.
+    ///
+    /// Only used for plain-text assembly, where no coordinates leak to the
+    /// caller; coordinate-bearing APIs (`extract_words`) reorder in the
+    /// rotated frame but report true page-space bboxes instead (see
+    /// `crate::pipeline::page_reading_order`).
+    fn map_dominant_rotation_into_reading_frame(
+        &self,
+        page_index: usize,
+        spans: Vec<crate::layout::TextSpan>,
+    ) -> std::result::Result<Vec<crate::layout::TextSpan>, Vec<crate::layout::TextSpan>> {
+        if self.get_page_rotation(page_index).unwrap_or(0) != 0 {
+            return Err(spans);
+        }
+        let Some(deg) = crate::utils::dominant_rotation(&spans) else {
+            return Err(spans);
+        };
+        // Same quadrant mapping as the word path: 90° text reads upright
+        // under a /Rotate-90-style display transform, -90° under 270,
+        // 180° under 180. Mirrored / free-angle runs have no frame.
+        let rot = if (deg - 90.0).abs() < 0.5 {
+            90
+        } else if (deg - 180.0).abs() < 0.5 {
+            180
+        } else if (deg + 90.0).abs() < 0.5 {
+            270
+        } else {
+            return Err(spans);
+        };
+        log::debug!(
+            "page {page_index}: dominant text rotation {deg}° — assembling text in rotated frame"
+        );
+        let (llx, lly, urx, ury) = self
+            .get_page_media_box(page_index)
+            .unwrap_or((0.0, 0.0, 612.0, 792.0));
+        let (w, h) = (urx - llx, ury - lly);
+        let mut spans = spans;
+        // Rotated spans store TEXT-LOCAL extents (origin + advance-along-
+        // the-run as `width` + font size as `height`): rotate the ORIGIN
+        // as a point and keep the extents, which already describe the run
+        // in its own upright frame (same convention as
+        // `order_rotated_blocks`).
+        for s in &mut spans {
+            let (rx, ry) = (s.bbox.x - llx, s.bbox.y - lly);
+            let (mx, my) = match rot {
+                90 => (ry, w - rx),
+                180 => (w - rx, h - ry),
+                270 => (h - ry, rx),
+                _ => (rx, ry),
+            };
+            s.bbox.x = llx + mx;
+            s.bbox.y = lly + my;
+            s.rotation_degrees = 0.0;
+        }
+        Ok(spans)
     }
 
     /// Assemble page text from the page's native spans **plus** caller-supplied
@@ -11075,7 +11151,9 @@ impl PdfDocument {
     /// grouped by rotation (first-seen group order preserved); within a group
     /// each span's origin is rotated back into an upright frame and the standard
     /// row-aware comparator (top→bottom, left→right) is applied there.
-    fn order_rotated_blocks(spans: Vec<crate::layout::TextSpan>) -> Vec<crate::layout::TextSpan> {
+    pub(crate) fn order_rotated_blocks(
+        spans: Vec<crate::layout::TextSpan>,
+    ) -> Vec<crate::layout::TextSpan> {
         let mut groups: Vec<(f32, Vec<crate::layout::TextSpan>)> = Vec::new();
         for s in spans {
             let key = s.rotation_degrees;
@@ -14457,38 +14535,64 @@ impl PdfDocument {
             }
             false
         };
-        let mut visited = vec![false; nb];
+        // Kahn's algorithm over the `before` relation. The previous
+        // iterative DFS re-pushed every unvisited predecessor each time a
+        // node was expanded (no on-stack marking), which is exponential in
+        // stack growth on block graphs with heavy fan-in — a dense
+        // equation page produced tens of gigabytes of stack and an OOM
+        // kill. Kahn's is O(V^2) for the edge scan and O(V+E) after,
+        // visits each block exactly once, and terminates unconditionally;
+        // ready blocks are drained in reading order (top-left first) for
+        // a stable result, matching the old seed order.
         let mut result_blocks: Vec<usize> = Vec::with_capacity(nb);
-        // Seed in reading order (top-left first) for a stable result.
-        let mut seeds: Vec<usize> = (0..nb).collect();
-        seeds.sort_by(|&a, &b| {
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+        let mut indegree: Vec<usize> = vec![0; nb];
+        for a in 0..nb {
+            for b in 0..nb {
+                if a != b && before(&blocks[a], &blocks[b]) {
+                    // a must come before b.
+                    preds[a].push(b);
+                    indegree[b] += 1;
+                }
+            }
+        }
+        let seed_order = |a: usize, b: usize| {
             safe_float_cmp(blocks[b].y_hi, blocks[a].y_hi)
                 .then_with(|| safe_float_cmp(blocks[a].x0, blocks[b].x0))
-        });
-        // Iterative DFS to avoid recursion limits on pathological pages.
-        for &s in &seeds {
-            if visited[s] {
+        };
+        // Kept sorted in REVERSE reading order so pop() takes the
+        // top-left-most ready block.
+        let mut ready: Vec<usize> = (0..nb).filter(|&i| indegree[i] == 0).collect();
+        ready.sort_by(|&a, &b| seed_order(b, a));
+        let mut emitted = vec![false; nb];
+        while let Some(bi) = ready.pop() {
+            // `ready` is kept sorted with the NEXT block last (reverse
+            // reading order), so pop() takes the top-left-most.
+            if emitted[bi] {
                 continue;
             }
-            let mut stack = vec![(s, false)];
-            while let Some((bi, processed)) = stack.pop() {
-                if processed {
-                    if !visited[bi] {
-                        visited[bi] = true;
-                        result_blocks.push(bi);
-                    }
-                    continue;
-                }
-                if visited[bi] {
-                    continue;
-                }
-                stack.push((bi, true));
-                for (k, blk) in blocks.iter().enumerate() {
-                    if k != bi && !visited[k] && before(blk, &blocks[bi]) {
-                        stack.push((k, false));
-                    }
+            emitted[bi] = true;
+            result_blocks.push(bi);
+            let mut newly_ready = false;
+            for &succ in &preds[bi] {
+                indegree[succ] -= 1;
+                if indegree[succ] == 0 {
+                    ready.push(succ);
+                    newly_ready = true;
                 }
             }
+            if newly_ready {
+                ready.sort_by(|&a, &b| seed_order(b, a));
+            }
+        }
+        // The `before` relation is acyclic by construction (edges strictly
+        // decrease y within a band or strictly increase x across columns),
+        // but guard against float pathologies leaving blocks unemitted:
+        // append any remainder in reading order rather than dropping text.
+        if result_blocks.len() < nb {
+            let mut rest: Vec<usize> = (0..nb).filter(|&i| !emitted[i]).collect();
+            rest.sort_by(|&a, &b| seed_order(a, b));
+            result_blocks.extend(rest);
         }
 
         // --- Emit: each block's spans in reading order (y desc, x asc). ---
@@ -17517,10 +17621,14 @@ impl PdfDocument {
     ) -> Result<Vec<crate::elements::PathContent>> {
         let paths = self.extract_paths(page_index)?;
 
-        // Filter paths by region intersection
+        // Filter paths by region intersection against RENDERED extents: a
+        // region query answers "what does the reader see here", so a rule
+        // whose drawn bar crosses the region must match even when its
+        // geometric bbox is a distant speck. Identical to the
+        // geometric test for unstroked paths.
         Ok(paths
             .into_iter()
-            .filter(|path| path.bbox.intersects(&region))
+            .filter(|path| path.rendered_bbox().intersects(&region))
             .collect())
     }
 
@@ -17653,9 +17761,10 @@ impl PdfDocument {
         region: crate::geometry::Rect,
     ) -> Result<Vec<crate::elements::PathContent>> {
         let rects = self.extract_rects(page_index)?;
+        // Rendered extents, matching `extract_paths_in_rect`.
         Ok(rects
             .into_iter()
-            .filter(|p| p.bbox.intersects(&region))
+            .filter(|p| p.rendered_bbox().intersects(&region))
             .collect())
     }
 
@@ -17666,9 +17775,12 @@ impl PdfDocument {
         region: crate::geometry::Rect,
     ) -> Result<Vec<crate::elements::PathContent>> {
         let lines = self.extract_lines(page_index)?;
+        // Rendered extents, matching `extract_paths_in_rect`: a
+        // stroke-width-encoded rule must match region queries over its drawn
+        // bar, not only over its geometric speck.
         Ok(lines
             .into_iter()
-            .filter(|p| p.bbox.intersects(&region))
+            .filter(|p| p.rendered_bbox().intersects(&region))
             .collect())
     }
 
@@ -18993,13 +19105,21 @@ impl PdfDocument {
             let fallback_spans: &[crate::layout::TextSpan] = {
                 let v_lines: Vec<_> = paths.iter().filter(|p| p.is_vertical_line(2.0)).collect();
                 if !v_lines.is_empty() {
+                    // Rendered extents: a stroke-width-encoded column rule's
+                    // drawn bar spans the table height while its geometric
+                    // bbox is a ~0pt speck at the midline —
+                    // banding on the speck would filter out the table's own
+                    // spans.
                     let vline_y_min = v_lines
                         .iter()
-                        .map(|p| p.bbox.y)
+                        .map(|p| p.rendered_bbox().y)
                         .fold(f32::INFINITY, f32::min);
                     let vline_y_max = v_lines
                         .iter()
-                        .map(|p| p.bbox.y + p.bbox.height)
+                        .map(|p| {
+                            let r = p.rendered_bbox();
+                            r.y + r.height
+                        })
                         .fold(f32::NEG_INFINITY, f32::max);
                     // Small margin to include spans whose centres just touch the frame.
                     const V_MARGIN: f32 = 5.0;
