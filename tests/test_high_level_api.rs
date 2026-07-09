@@ -667,4 +667,58 @@ mod document_builder_rich_text_regression {
             "italic run not oblique"
         );
     }
+
+    /// `rich_paragraph` lays out each run's own word-wrap independently and
+    /// then advances `cursor_x` by exactly the emitted text's width — no
+    /// separator between one run ending and the next beginning. A run
+    /// boundary that falls mid-line therefore draws the next run flush
+    /// against the previous one, with zero gap: "Text Run 1" + "Text Run 2"
+    /// extracts as "Text Run 1Text Run 2". Trying to work around it by
+    /// adding a leading/trailing space to a run's own text does not help —
+    /// `split_whitespace()` strips it before word-wrapping ever sees it.
+    #[test]
+    fn rich_paragraph_inserts_space_between_runs() {
+        let mut b = DocumentBuilder::new();
+        {
+            let p = b
+                .page(PageSize::Letter)
+                .at(72.0, 700.0)
+                .font("Helvetica", 14.0);
+            p.rich_paragraph(&[TextRun::bold("Text Run 1"), TextRun::normal("Text Run 2")])
+                .done();
+        }
+        let bytes = b.build().expect("build");
+        let doc = pdf_oxide::document::PdfDocument::from_bytes(bytes).expect("load");
+        let text = doc.extract_text(0).expect("extract text");
+        assert!(
+            text.contains("Text Run 1 Text Run 2"),
+            "consecutive runs must be separated by a space, got: {text:?}"
+        );
+        assert!(
+            !text.contains("Text Run 1Text Run 2"),
+            "runs must not be concatenated with no separator, got: {text:?}"
+        );
+    }
+
+    /// A run boundary that itself triggers a line wrap (the next run starts
+    /// a fresh line, not mid-line) must not get a spurious leading space —
+    /// the wrap already provides the visual/logical separation.
+    #[test]
+    fn rich_paragraph_does_not_add_space_across_a_line_wrap() {
+        let mut b = DocumentBuilder::new();
+        {
+            let long_run = "word ".repeat(30);
+            let p = b
+                .page(PageSize::Letter)
+                .at(72.0, 700.0)
+                .font("Helvetica", 14.0);
+            p.rich_paragraph(&[TextRun::normal(long_run.trim()), TextRun::bold("TAIL")])
+                .done();
+        }
+        let bytes = b.build().expect("build");
+        let mut pdf = pdf_oxide::api::Pdf::from_bytes(bytes).expect("load");
+        let chars = pdf.extract_chars(0).expect("extract chars");
+        let flat: String = chars.iter().map(|c| c.char).collect();
+        assert!(flat.contains("TAIL"), "second run must still be present, got: {flat:?}");
+    }
 }
