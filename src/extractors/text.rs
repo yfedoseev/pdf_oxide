@@ -1851,6 +1851,14 @@ struct TjBuffer {
     /// ratio so it is text/CTM-scale-independent and directly comparable to a
     /// font-size fraction by the sub/superscript rejoin.
     text_rise: f32,
+    /// Text render mode (`Tr`, ISO 32000-1 §9.3.6), captured from the
+    /// graphics state when the buffer started. `3`/`7` (invisible — neither
+    /// filled nor stroked) means this run has no rendering-correctness
+    /// pressure: an OCR-sandwich producer has no visual reason to mirror
+    /// already-logical RTL glyph positions the way a *visible*-text
+    /// producer would, so the geometric visual/logical detector's ascending-
+    /// x signal is uninformative here (#826) — see `bidi::apply_rtl_verdict`.
+    render_mode: u8,
 }
 
 /// Snap a run's display rotation (from the composed `CTM × T_m` rotation block,
@@ -1946,6 +1954,7 @@ impl TjBuffer {
             } else {
                 0.0
             },
+            render_mode: state.render_mode,
         }
     }
 
@@ -4762,11 +4771,20 @@ impl<'doc> TextExtractor<'doc> {
             // gaps was being mangled into "201.3", losing the year token from
             // word-F1 scoring. Real "$123 _ 45" split-box layouts always have
             // a gap > ~half the font size; tight letter spacing is < 0.1 em.
+            //
+            // The gap also needs an upper ceiling. In scientific and math
+            // PDFs, subscript index pairs like `P_{1,0}` draw the two subscript
+            // digits in a smaller font (~7pt) spaced ~1.5-1.7x the font size
+            // apart; too loose a ceiling lets the rule fire and invent a
+            // decimal ("1" + "0" -> "1.0"). Genuine split-box amounts cluster
+            // near ~0.8-1.0x the font size, so a 1.3x ceiling separates real
+            // integer/cents boxes from widely-spaced subscripts.
             let min_decimal_gap = current.font_size * 0.4;
+            let max_decimal_gap = current.font_size * 1.3;
             let decimal_merge = same_line
                 && same_mcid
                 && gap > min_decimal_gap
-                && gap < current.font_size * 2.0
+                && gap < max_decimal_gap
                 && !current.text.is_empty()
                 && !span.text.is_empty()
                 && current.text.chars().all(|c| c.is_ascii_digit())
@@ -7132,22 +7150,43 @@ impl<'doc> TextExtractor<'doc> {
             .take()
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // RTL text correction: if text contains RTL characters and spans left-to-right
-        // on the page, the characters are in visual LTR order. Reverse to logical order.
+        // RTL text correction (#826): use the confidence-gated geometric
+        // detector (#537) when `char_widths` gives us per-character user-space
+        // x-positions, falling back to the coarse "buffer's net horizontal
+        // advance is positive" heuristic only for genuinely ambiguous/short
+        // runs. Mirrors `flush_tj_span_buffer`'s handling — this used to be
+        // the one flush site still on the pre-#537 `accumulated_width > 0.0`
+        // check, which (since `accumulated_width` only ever sums *positive*
+        // glyph widths — TJ kerning offsets never subtract from it) is true
+        // for nearly every non-empty RTL buffer and so was unconditionally
+        // reversing every RTL run regardless of its actual source order.
         let mut text = std::mem::take(&mut buffer.unicode);
         if text.len() > 1 {
             let has_rtl = text
                 .chars()
                 .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
             if has_rtl {
-                // In the tiebreaker path, characters are appended left-to-right in content
-                // stream order. For RTL scripts displayed right-to-left, this means the
-                // leftmost visual character (last logical character) is first in the buffer.
-                // Reverse to get logical reading order.
-                // Only reverse if user_pos_x indicates LTR placement (positive width).
-                if buffer.accumulated_width > 0.0 {
-                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                }
+                let chars: Vec<char> = text.chars().collect();
+                let verdict = if chars.len() == buffer.char_widths.len()
+                    && !buffer.char_widths.is_empty()
+                {
+                    let mut chars_with_x: Vec<(char, f32)> = Vec::with_capacity(chars.len());
+                    let mut cursor_text_space = 0.0_f32;
+                    for (i, c) in chars.iter().enumerate() {
+                        let user_x = buffer.user_pos_x + cursor_text_space * buffer.user_h_scale;
+                        chars_with_x.push((*c, user_x));
+                        cursor_text_space += buffer.char_widths[i];
+                    }
+                    crate::text::bidi::detect_visual_order_run(&chars_with_x)
+                } else {
+                    crate::text::bidi::RunOrder::Ambiguous
+                };
+                text = crate::text::bidi::apply_rtl_verdict(
+                    &text,
+                    verdict,
+                    buffer.accumulated_width > 0.0,
+                    matches!(buffer.render_mode, 3 | 7),
+                );
             }
         }
 
@@ -7628,34 +7667,25 @@ impl<'doc> TextExtractor<'doc> {
                     }
                 }
                 let verdict = crate::text::bidi::detect_visual_order_run(&chars_with_x);
-                match verdict {
-                    crate::text::bidi::RunOrder::Visual => {
-                        // Confidence-gated visual-order detection — reverse.
-                        unicode_text = crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
-                    },
-                    crate::text::bidi::RunOrder::Logical => {
-                        // Confidence-gated logical-order — leave alone.
-                        // The pdfium `hebrew_mirrored.pdf` test fixture
-                        // and similar lands here.
-                    },
-                    crate::text::bidi::RunOrder::Ambiguous => {
-                        // Short cluster or mixed signal — fall back to
-                        // the pre-v0.3.54 simple heuristic so existing
-                        // 2-3-char RTL runs keep working.
-                        let first_x = {
-                            let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
-                            ctm.transform_point(p.x, p.y).x
-                        };
-                        let last_x = {
-                            let p = text_matrix.transform_point(last.x_position, 0.0);
-                            ctm.transform_point(p.x, p.y).x
-                        };
-                        if last_x > first_x {
-                            unicode_text =
-                                crate::text::bidi::reverse_rtl_keep_numbers(&unicode_text);
-                        }
-                    },
-                }
+                // Pre-v0.3.54 simple heuristic — used only as the
+                // `Ambiguous` fallback (short cluster or mixed signal) so
+                // existing 2-3-char RTL runs keep working; the pdfium
+                // `hebrew_mirrored.pdf` fixture and similar land on
+                // `Logical` above and are left alone regardless.
+                let first_x = {
+                    let p = text_matrix.transform_point(cluster[0].x_position, 0.0);
+                    ctm.transform_point(p.x, p.y).x
+                };
+                let last_x = {
+                    let p = text_matrix.transform_point(last.x_position, 0.0);
+                    ctm.transform_point(p.x, p.y).x
+                };
+                unicode_text = crate::text::bidi::apply_rtl_verdict(
+                    &unicode_text,
+                    verdict,
+                    last_x > first_x,
+                    matches!(state.render_mode, 3 | 7),
+                );
             }
         }
 
@@ -8501,27 +8531,21 @@ impl<'doc> TextExtractor<'doc> {
                     .take()
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // #537: RTL visual-order detection for the Tj-span
-                // path. This was the gap on the Magic Palace Eilat Hebrew
-                // PDF — the Tj-span buffer flush had no RTL correction at
-                // all, so Hebrew came out in content-stream (visual)
-                // order regardless of what the geometric signals said.
-                // Mirrors the existing logic in `flush_tj_buffer`
-                // `cluster_to_span`: detect RTL content, use the geometric
-                // detector when `char_widths` give us per-char x; fall back
-                // to the `accumulated_width > 0` simple check (text drawn
-                // left-to-right in user space → visual order → reverse).
+                // #537/#826: RTL visual-order detection for the Tj-span
+                // path, via the shared `apply_rtl_verdict` decision point
+                // (also used by `flush_tj_buffer` and `cluster_to_span`) —
+                // geometric detector when `char_widths` give us per-char x,
+                // falling back to the coarse `accumulated_width > 0`
+                // heuristic only when ambiguous.
                 let mut text = std::mem::take(&mut buffer.unicode);
                 if text.len() > 1 {
                     let has_rtl = text
                         .chars()
                         .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32));
                     if has_rtl {
-                        // Try the geometric detector first when char_widths
-                        // give us per-character X positions. char_widths
-                        // contains text-space relative widths; reconstruct
-                        // absolute user-space x by accumulating, scaling by
-                        // user_h_scale and offsetting by user_pos_x.
+                        // char_widths contains text-space relative widths;
+                        // reconstruct absolute user-space x by accumulating,
+                        // scaling by user_h_scale and offsetting by user_pos_x.
                         let chars: Vec<char> = text.chars().collect();
                         let verdict = if chars.len() == buffer.char_widths.len()
                             && !buffer.char_widths.is_empty()
@@ -8539,23 +8563,12 @@ impl<'doc> TextExtractor<'doc> {
                         } else {
                             crate::text::bidi::RunOrder::Ambiguous
                         };
-                        match verdict {
-                            crate::text::bidi::RunOrder::Visual => {
-                                text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                            },
-                            crate::text::bidi::RunOrder::Logical => {
-                                // Detected logical order — leave alone.
-                            },
-                            crate::text::bidi::RunOrder::Ambiguous => {
-                                // Fall back to the simple `accumulated_width
-                                // > 0` heuristic used elsewhere — text drawn
-                                // left-to-right in text space implies visual
-                                // order for RTL scripts.
-                                if buffer.accumulated_width > 0.0 {
-                                    text = crate::text::bidi::reverse_rtl_keep_numbers(&text);
-                                }
-                            },
-                        }
+                        text = crate::text::bidi::apply_rtl_verdict(
+                            &text,
+                            verdict,
+                            buffer.accumulated_width > 0.0,
+                            matches!(buffer.render_mode, 3 | 7),
+                        );
                     }
                 }
 
@@ -16512,6 +16525,162 @@ mod profile_based_space_tests {
             2,
             "3-digit decimal part should not trigger decimal merge"
         );
+    }
+
+    #[test]
+    fn test_no_decimal_merge_for_wide_subscript_digits() {
+        // Subscript index pairs (e.g. `P_{1,0}` in scientific PDFs) draw the
+        // two subscript digits in a smaller font (~7pt) spaced far apart
+        // (~1.5-1.7x the font size). The decimal-merge rule was joining them
+        // into an invented decimal ("1" + "0" -> "1.0"). A real split-box
+        // dollar amount clusters near ~0.8-1.0x the font size, so a wide gap is
+        // not an integer/cents amount and must stay separate.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        // 7pt subscript digits: "1" at x=100.0 (w=3.5), "0" at x=114.5 (w=3.5).
+        // gap = 114.5 - (100.0 + 3.5) = 11.0pt -> 11.0 / 7.0 = 1.57x font size.
+        extractor.spans = vec![
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "1".to_string(),
+                bbox: Rect::new(100.0, 700.0, 3.5, 7.0),
+                font_name: "F1".to_string(),
+                font_size: 7.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "0".to_string(),
+                bbox: Rect::new(114.5, 700.0, 3.5, 7.0), // 11.0pt gap = 1.57x font
+                font_name: "F1".to_string(),
+                font_size: 7.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        // Widely-spaced subscript digits must NOT be joined into a decimal.
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "Widely-spaced subscript digits should not merge into a decimal value"
+        );
+        assert!(
+            !extractor.spans.iter().any(|s| s.text.contains('.')),
+            "No invented decimal point should appear between subscript digits"
+        );
+    }
+
+    #[test]
+    fn test_decimal_merge_just_under_ceiling_still_joins() {
+        // The ceiling that stops subscripts must not be so tight that it drops
+        // genuine split-box amounts. Real amounts cluster near ~0.8-1.0x the
+        // font size; this locks the ceiling by proving an amount at ~1.2x the
+        // font size (just under the 1.3x cap) still merges.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        // 12pt digits: "1234" at x=200.0 (w=24.0), "56" at x=238.4 (w=12.0).
+        // gap = 238.4 - (200.0 + 24.0) = 14.4pt -> 14.4 / 12.0 = 1.2x font size.
+        extractor.spans = vec![
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "1234".to_string(),
+                bbox: Rect::new(200.0, 700.0, 24.0, 12.0),
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "56".to_string(),
+                bbox: Rect::new(238.4, 700.0, 12.0, 12.0), // 14.4pt gap = 1.2x font
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert_eq!(extractor.spans.len(), 1, "Amount just under the ceiling should still merge");
+        assert_eq!(extractor.spans[0].text, "1234.56");
     }
 
     #[test]
