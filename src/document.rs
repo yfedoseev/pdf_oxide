@@ -473,7 +473,7 @@ pub struct PdfDocument {
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
-    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, (usize, bool)>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -14791,7 +14791,7 @@ impl PdfDocument {
     /// the page, and keeps entries that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::collections::HashMap<String, usize>> {
+    ) -> Result<std::collections::HashMap<String, (usize, bool)>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
@@ -14894,14 +14894,14 @@ impl PdfDocument {
             }
         }
         let threshold = (page_count as f32 * 0.5).ceil() as usize;
-        let signatures: std::collections::HashMap<String, usize> = occurrences
+        let signatures: std::collections::HashMap<String, (usize, bool)> = occurrences
             .into_iter()
-            .filter(|(sig, (count, _))| {
-                let variants = literal_variants.get(sig).map(|s| s.len()).unwrap_or(0);
+            .filter_map(|(sig, (count, _))| {
+                let variants = literal_variants.get(&sig).map(|s| s.len()).unwrap_or(0);
                 // Varying-literal path (page numbers / dates): the digits change per
                 // page. Recurs on >=50% of body pages.
-                if *count >= threshold.max(2) && variants >= 2 {
-                    return true;
+                if count >= threshold.max(2) && variants >= 2 {
+                    return Some((sig, true));
                 }
                 // Item 6B (M5): CONSTANT-literal pagination/citation (DOI, volume/
                 // article, journal URL + digit). The literal never changes, so the
@@ -14909,23 +14909,23 @@ impl PdfDocument {
                 // recurrence AND the narrow citation/URL shape gate, so substantive
                 // repeated content (facility names, titles) is never suppressed.
                 let strict = (page_count as f32 * 0.6).ceil() as usize;
-                if *count >= strict.max(2)
+                if count >= strict.max(2)
                     && variants < 2
                     && literal_variants
-                        .get(sig)
+                        .get(&sig)
                         .and_then(|s| s.iter().next())
                         .is_some_and(|lit| Self::looks_like_stable_pagination(lit))
                 {
-                    return true;
+                    return Some((sig, false));
                 }
-                false
+                None
             })
-            .map(|(sig, _)| {
+            .map(|(sig, is_varying)| {
                 // Use the earliest page the signature appeared on — which
                 // may be a body-content-skipped cover page that `occurrences`
                 // didn't count toward the threshold but `first_seen_any` did.
                 let first = first_seen_any.get(&sig).copied().unwrap_or(0);
-                (sig, first)
+                (sig, (first, is_varying))
             })
             .collect();
         *self.running_artifact_signatures.lock_or_recover() = Some(signatures.clone());
@@ -15009,13 +15009,20 @@ impl PdfDocument {
                 continue;
             }
             let sig = Self::normalize_artifact_signature(trimmed);
-            if let Some(&first_seen_on) = signatures.get(&sig) {
-                // Keep the first appearance — it's usually the document
-                // cover-page title that got classified as chrome only
-                // because later pages repeat it as a running header (B3).
-                if page_index == first_seen_on {
+            if let Some(&(first_seen_on, is_varying)) = signatures.get(&sig) {
+                // is_varying=false: constant-literal string that already passed
+                // the strict looks_like_stable_pagination gate (DOI/volume/
+                // journal-URL citations) — never an arbitrary repeated title.
+                // Skip the first occurrence: it may be a title page
+                // that later pages happen to echo as a running citation (B3),
+                // so only strip it from second occurrence onward
+                if page_index == first_seen_on && !is_varying {
                     continue;
                 }
+                // is_varying=true: page numbers/dates, where the literal text
+                // changes per page. Such a signature can't be a one-off
+                // heading by definition, so every occurrence — including the
+                // first — is real pagination chrome to remove.
                 s.artifact_type = Some(crate::extractors::text::ArtifactType::Pagination(
                     crate::extractors::text::PaginationSubtype::Other,
                 ));
