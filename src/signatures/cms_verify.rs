@@ -474,7 +474,7 @@ mod tests {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
         let sk = SigningKey::from_slice(&[1u8; 32]).expect("valid test key");
         let vk = *sk.verifying_key();
-        let pub_key_bytes = vk.to_encoded_point(false).as_bytes().to_vec();
+        let pub_key_bytes = vk.to_sec1_point(false).as_bytes().to_vec();
         let msg = b"round-trip test";
         let sig: Signature = sk.sign(msg);
         let sig_der = sig.to_der();
@@ -498,7 +498,7 @@ mod tests {
         use p384::ecdsa::{signature::Signer, Signature, SigningKey};
         let sk = SigningKey::from_slice(&[2u8; 48]).expect("valid test key");
         let vk = *sk.verifying_key();
-        let pub_key_bytes = vk.to_encoded_point(false).as_bytes().to_vec();
+        let pub_key_bytes = vk.to_sec1_point(false).as_bytes().to_vec();
         let msg = b"round-trip test";
         let sig: Signature = sk.sign(msg);
         let sig_der = sig.to_der();
