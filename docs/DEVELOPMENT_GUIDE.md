@@ -39,10 +39,20 @@ git clone <repository-url>
 cd pdf_oxide
 
 # Verify setup
-cargo check --all-features
+cargo check
 cargo test
 cargo clippy --all-targets
 ```
+
+> **Never use `--all-features`** on a command that compiles the crate
+> (`build`/`check`/`test`/`doc`) — `fips` and the default-on
+> `legacy-crypto` are mutually exclusive by design (`compile_error!`;
+> FIPS 140-3 forbids the MD5 `legacy-crypto` pulls in) and `--all-features`
+> enables both at once. Test FIPS-gated code separately:
+> `cargo test --no-default-features --features fips,icc`. See
+> [CONTRIBUTING.md](../CONTRIBUTING.md#4-test-your-changes) for details.
+> (`cargo-deny` is the one exception — it only reads `Cargo.toml`
+> metadata and never compiles, so `--all-features` is safe there.)
 
 ### Daily Development
 
@@ -50,7 +60,7 @@ cargo clippy --all-targets
 # Quick checks before committing
 cargo fmt
 cargo clippy --all-targets -- -D warnings
-cargo test --all-features
+cargo test
 ```
 
 ## Project Structure
@@ -312,7 +322,7 @@ Run automated checks:
 ```bash
 cargo fmt
 cargo clippy --all-targets -- -D warnings
-cargo test --all-features
+cargo test
 ```
 
 Or use: `/review`
@@ -408,8 +418,8 @@ mod tests {
 ### Running Tests
 
 ```bash
-# All tests
-cargo test --all-features
+# All tests (default features — `--all-features` fails, see note above)
+cargo test
 
 # Specific module
 cargo test object
@@ -631,10 +641,10 @@ Run with: `cargo test --doc`
 
 ```bash
 # Build docs
-cargo doc --no-deps --all-features
+cargo doc --no-deps
 
 # Open in browser
-cargo doc --no-deps --all-features --open
+cargo doc --no-deps --open
 ```
 
 ## Git Workflow
