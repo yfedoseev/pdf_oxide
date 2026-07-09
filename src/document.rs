@@ -6822,10 +6822,41 @@ impl PdfDocument {
         // the same run, cancelling out and leaking visual-order text —
         // letter-spaced Hebrew running heads were the visible symptom.
         if spans.len() >= 4 {
+            use crate::text::rtl_detector::is_rtl_diacritic;
+            // A span counts as a genuine single-glyph OCR piece only when it
+            // holds at most one BASE RTL letter (mirrors `extractors/text.rs`'s
+            // `is_rtl_glyph_piece`, which this run-membership test should have
+            // matched from the start) — not merely "≤2 characters total".
+            // A run of ordinary two-letter spans (a routine font kerning-pair
+            // or subsetting-run boundary in any digitally-authored Hebrew/
+            // Arabic PDF) also satisfies "≤2 chars", so the old gate merged
+            // and reversed already-correct text on non-OCR documents. A
+            // base+combining-mark pair (one glyph, two Unicode scalars) still
+            // passes here, since the mark doesn't count as a second base.
+            let is_single_base_rtl_or_space = |s: &TextSpan| -> bool {
+                let mut bases = 0usize;
+                for c in s.text.chars() {
+                    if c.is_whitespace() {
+                        continue;
+                    }
+                    let cp = c as u32;
+                    if is_rtl_diacritic(cp) {
+                        continue;
+                    }
+                    if c.is_alphabetic() && !is_rtl_text(cp) {
+                        return false;
+                    }
+                    bases += 1;
+                    if bases > 1 {
+                        return false;
+                    }
+                }
+                true
+            };
             let mut i = 0;
             while i < spans.len() {
-                let is_short_rtl = spans[i].text.chars().count() <= 2
-                    && spans[i].text.chars().any(|c| is_rtl_text(c as u32));
+                let is_short_rtl = spans[i].text.chars().any(|c| is_rtl_text(c as u32))
+                    && is_single_base_rtl_or_space(&spans[i]);
                 if !is_short_rtl {
                     i += 1;
                     continue;
@@ -6835,12 +6866,7 @@ impl PdfDocument {
                 let mut j = i + 1;
                 while j < spans.len() {
                     let y_same = (spans[j].bbox.y - y).abs() < 2.0;
-                    let is_short = spans[j].text.chars().count() <= 2;
-                    let has_rtl_or_space = spans[j]
-                        .text
-                        .chars()
-                        .all(|c| is_rtl_text(c as u32) || c == ' ');
-                    if y_same && is_short && has_rtl_or_space {
+                    if y_same && is_single_base_rtl_or_space(&spans[j]) {
                         j += 1;
                     } else {
                         break;
