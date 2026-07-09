@@ -356,6 +356,64 @@ fn looks_like_prose_paragraph(table: &Table) -> bool {
         }
     }
 
+    // Punctuation-independent fallback: a wrapped-prose row whose column
+    // break fell mid-clause carries no sentence terminator at all (a title
+    // caption, a clause with no `.`/`!`/`?`), so the checks above miss it.
+    // Real data-cell values are atomic (numbers, codes, capitalised labels)
+    // and essentially never start with a lowercase letter; running-sentence
+    // fragments frequently do ("text with", "a smaller", "on"). This mirrors
+    // `looks_like_prose_table`'s per-cell signal in document.rs, but applies
+    // PER ROW with no minimum cell count — that function's ≥10-cell floor
+    // (needed there to avoid over-rejecting small genuine tables under a
+    // table-wide ratio) is exactly what lets a small (2–3 row) fabricated
+    // table slip through untested. A 2-cell floor plus a majority-of-row
+    // requirement keeps ordinary short data rows (a units column, a coded
+    // abbreviation) safe: those cells are numeric/capitalised, not lowercase
+    // clause fragments, so they rarely cross the 50% bar even at n=2.
+    for row in &table.rows {
+        let cells: Vec<&str> = row
+            .cells
+            .iter()
+            .map(|c| c.text.trim())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        let lower_starts = cells
+            .iter()
+            .filter(|c| c.chars().next().is_some_and(char::is_lowercase))
+            .count();
+        if lower_starts as f32 / cells.len() as f32 > 0.5 {
+            return true;
+        }
+    }
+
+    // Vertically-stacked single-character lines: a rotated axis label or
+    // figure legend, drawn one glyph per line so its bbox flattens into the
+    // page's normal (unrotated) column grid, reads as a cell whose text is
+    // mostly 1-character lines joined by `\n` (e.g. "k\nc\no\nc\nE-Box" for a
+    // vertically-drawn "clock"-style label). A genuine multi-line data cell
+    // wraps at WORD boundaries — its lines hold whole words, not lone
+    // letters — so this shape is essentially unique to misread rotated text.
+    for row in &table.rows {
+        for cell in &row.cells {
+            let lines: Vec<&str> = cell
+                .text
+                .split('\n')
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            if lines.len() < 3 {
+                continue;
+            }
+            let single_char_lines = lines.iter().filter(|l| l.chars().count() == 1).count();
+            if single_char_lines as f32 / lines.len() as f32 > 0.5 {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
