@@ -811,7 +811,20 @@ pub fn classify_from_signals(
             } else {
                 0.85
             };
-            return (PageKind::Scanned, conf, ReasonCode::NoTextLayerPresent);
+            // A full-bleed background image with a real, usable text
+            // layer (a slide headline, a deck cover) is not "no text
+            // layer" — the text is there, mapped correctly, and
+            // extractable; it just doesn't cover enough of the page to
+            // outweigh the scan-dominant image coverage. Report the
+            // honest reason (coverage too low) rather than claiming no
+            // text layer exists at all, which would tell a caller who
+            // inspects `reason` there is nothing to extract.
+            let reason = if usable_text {
+                ReasonCode::TextLayerBelowThreshold
+            } else {
+                ReasonCode::NoTextLayerPresent
+            };
+            return (PageKind::Scanned, conf, reason);
         }
     }
 
