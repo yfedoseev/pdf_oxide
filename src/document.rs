@@ -16236,12 +16236,28 @@ impl PdfDocument {
                     let delta_x = word.bbox.x - prev.bbox.x;
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                    let is_math_backtrack = y_diff > 1.0
-                        && delta_x <= 0.5
-                        && gap < -font_size
-                        && !crate::text::bidi::looks_rtl(&prev.text)
+                    let not_rtl = !crate::text::bidi::looks_rtl(&prev.text)
                         && !crate::text::bidi::looks_rtl(&word.text);
-                    if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 && !is_math_backtrack {
+                    let is_math_backtrack =
+                        y_diff > 1.0 && delta_x <= 0.5 && gap < -font_size && not_rtl;
+                    // A LINE WRAP can land at nearly the same y as the line
+                    // above it (some producers emit sub-1pt baseline drift
+                    // between consecutive lines, so `y_diff > 1.0` above
+                    // doesn't always hold), but it always resets x back
+                    // toward the page's left margin — an order of magnitude
+                    // further than any real same-line construct (ordinary
+                    // kerning is near 0; the math backtrack above is ~1-2em).
+                    // A multi-em backtrack this large can only be two
+                    // different lines, never a genuine adjacency — reject it
+                    // regardless of y_diff, or a wrapped line's tail gets
+                    // fused onto its own next line's head (e.g. "of whom" +
+                    // "tered with books" → "whomteredwithbooks").
+                    let is_line_wrap_reset = delta_x < -5.0 * font_size && not_rtl;
+                    if y_diff <= line_h * 0.5
+                        && gap <= font_size * 0.15
+                        && !is_math_backtrack
+                        && !is_line_wrap_reset
+                    {
                         // Incremental merge — O(k) per merge, O(total_chars) overall.
                         // Avoids the O(n²) clone+from_chars pattern that caused
                         // catastrophic slowdown on TOC dot-leader pages.

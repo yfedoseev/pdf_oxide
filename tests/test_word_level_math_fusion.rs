@@ -28,6 +28,15 @@
 //! `extract_tables` API additionally got the same real-grid/prose filter the
 //! internal path already had, since it had none at all.
 //!
+//! A third, related shape found during corpus validation: the same
+//! unbounded-`gap` merge also fires across an ordinary line wrap when the
+//! producer emits two consecutive lines at nearly the same y (some PDF
+//! generators have sub-1pt baseline drift between lines), since the
+//! backtrack guard's `y_diff > 1.0` check doesn't catch it. Guarded
+//! separately by rejecting any merge whose `delta_x` backs up more than 5
+//! font-sizes regardless of `y_diff` — no genuine same-line construct
+//! backtracks that far.
+//!
 //! Verified empirically against real documents (not committed — this repo's
 //! fixture policy keeps third-party PDFs out of the tree; fetch instructions
 //! are in each opt-in test below): a displayed-math-heavy arXiv page, a
@@ -120,6 +129,35 @@ fn backtracking_price_and_quantity_split() {
     assert!(
         !fused,
         "backtracking price/quantity pair must split into separate words, got: {:?}",
+        words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+}
+
+/// A line wrap whose two lines happen to sit at nearly the same y (some
+/// producers emit sub-1pt baseline drift between consecutive lines — the
+/// `y_diff > 1.0` half of the math-backtrack guard doesn't catch this) must
+/// still not fuse the wrapped line's tail onto the next line's head. The
+/// line's end (far right) and the next line's start (far left, ~35 em back)
+/// is an order of magnitude beyond any genuine same-line construct (ordinary
+/// kerning is near 0; a fraction backtrack is ~1-2 em) and can only be two
+/// different lines. Reproduces a real `main` regression: "of whom" (end of
+/// one line) fusing onto "tered with books" (start of the next) into
+/// "whomteredwithbooks".
+#[test]
+fn line_wrap_with_near_zero_y_delta_does_not_fuse() {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"BT\n");
+    content.extend_from_slice(b"/F1 10 Tf 1 0 0 1 361.08 600.76 Tm (of whom) Tj\n");
+    content.extend_from_slice(b"/F1 10 Tf 1 0 0 1 36.48 600.08 Tm (tered with books) Tj\n");
+    content.extend_from_slice(b"ET");
+    let pdf = build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]");
+    let doc = PdfDocument::from_bytes(pdf).expect("parse");
+    let words = doc.extract_words(0).expect("words");
+    let fused = words.iter().any(|w| w.text.contains("whomtered"));
+    assert!(
+        !fused,
+        "a wrapped line must not fuse onto the next line's start even when \
+         y_diff is under 1pt, got: {:?}",
         words.iter().map(|w| &w.text).collect::<Vec<_>>()
     );
 }
