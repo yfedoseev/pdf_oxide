@@ -698,6 +698,37 @@ pub struct PageClassification {
     pub signals: PageSignals,
 }
 
+/// Whether `text` is CJK/Hangul-dominant: a majority of its non-whitespace
+/// characters fall in the Han, Hiragana, Katakana, or Hangul Unicode
+/// blocks. These scripts don't use inter-word spaces, so glyph-adjacency
+/// word clustering naturally produces short (often 1-2 character) tokens —
+/// a `frag`/`avg_word_len` signal calibrated for space-separated Latin
+/// text misreads that as fragmentation. Used to skip the Latin-specific
+/// checks in [`text_quality_gate`] for such text; script-agnostic signals
+/// (garbled/repeat ratio) still apply normally.
+#[must_use]
+pub fn is_cjk_dominant_text(text: &str) -> bool {
+    let mut total = 0usize;
+    let mut cjk = 0usize;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            continue;
+        }
+        total += 1;
+        let cp = c as u32;
+        if (0x4E00..=0x9FFF).contains(&cp)   // CJK Unified Ideographs
+            || (0x3400..=0x4DBF).contains(&cp) // CJK Extension A
+            || (0x3040..=0x309F).contains(&cp) // Hiragana
+            || (0x30A0..=0x30FF).contains(&cp) // Katakana
+            || (0xAC00..=0xD7A3).contains(&cp)
+        // Hangul Syllables
+        {
+            cjk += 1;
+        }
+    }
+    total > 0 && (cjk as f32 / total as f32) > 0.5
+}
+
 /// T0.5 enriched text-quality gate (research §3a).
 /// Pure: operates on the native-extracted text only. Returns the
 /// degrading [`ReasonCode`] if the "born-digital" text is unusable, or
@@ -741,8 +772,15 @@ pub fn text_quality_gate(text: &str) -> Option<ReasonCode> {
     if words.len() >= 8 {
         let frag =
             words.iter().filter(|w| w.chars().count() <= 2).count() as f32 / words.len() as f32;
+        // CJK/Hangul text has no inter-word spaces, so glyph-adjacency
+        // clustering naturally produces short tokens — `frag` and
+        // `avg_word_len` below are calibrated for space-separated Latin
+        // text and would otherwise misread ordinary dense CJK prose as
+        // fragmented. The repeat-ratio check (script-agnostic) still
+        // applies normally.
+        let cjk_dominant = is_cjk_dominant_text(text);
         // Critical hard-trigger (broken CMap splitting every glyph).
-        if frag > 0.80 {
+        if frag > 0.80 && !cjk_dominant {
             return Some(ReasonCode::GlyphMappingMissing);
         }
         // Consecutive-repeat / 2-column scramble: long runs of the
@@ -756,7 +794,7 @@ pub fn text_quality_gate(text: &str) -> Option<ReasonCode> {
         let repeat_ratio = repeats as f32 / words.len() as f32;
         let avg_word_len =
             words.iter().map(|w| w.chars().count()).sum::<usize>() as f32 / words.len() as f32;
-        if repeat_ratio > 0.30 || (frag > 0.55 && avg_word_len < 2.5) {
+        if repeat_ratio > 0.30 || (frag > 0.55 && avg_word_len < 2.5 && !cjk_dominant) {
             return Some(ReasonCode::TextLayerBelowThreshold);
         }
     }
@@ -811,7 +849,20 @@ pub fn classify_from_signals(
             } else {
                 0.85
             };
-            return (PageKind::Scanned, conf, ReasonCode::NoTextLayerPresent);
+            // A full-bleed background image with a real, usable text
+            // layer (a slide headline, a deck cover) is not "no text
+            // layer" — the text is there, mapped correctly, and
+            // extractable; it just doesn't cover enough of the page to
+            // outweigh the scan-dominant image coverage. Report the
+            // honest reason (coverage too low) rather than claiming no
+            // text layer exists at all, which would tell a caller who
+            // inspects `reason` there is nothing to extract.
+            let reason = if usable_text {
+                ReasonCode::TextLayerBelowThreshold
+            } else {
+                ReasonCode::NoTextLayerPresent
+            };
+            return (PageKind::Scanned, conf, reason);
         }
     }
 
@@ -1911,6 +1962,24 @@ mod tests {
         // Consecutive-repeat / 2-column scramble.
         let scramble = "alpha alpha beta beta gamma gamma delta delta epsilon epsilon zeta zeta";
         assert_eq!(text_quality_gate(scramble), Some(ReasonCode::TextLayerBelowThreshold));
+    }
+
+    #[test]
+    fn quality_gate_does_not_flag_dense_cjk_prose_as_fragmented() {
+        // Real Japanese sentence about cats (no inter-word spaces — this
+        // script never has them). Naturally clusters into short 1-3
+        // character "words" once split at whatever boundary a caller
+        // uses; that must not read as glyph-per-span CMap breakage the
+        // way it legitimately would for Latin text.
+        let ja = "ネコ 猫 は 狭義 に は 食肉目 ネコ科 ネコ属 に 分類 される \
+                  リビア ヤマネコ が 家畜 化 された イエネコ に 対する 通称 である";
+        assert_eq!(
+            text_quality_gate(ja),
+            None,
+            "dense CJK prose must not trigger the text-quality gate"
+        );
+        assert!(is_cjk_dominant_text(ja));
+        assert!(!is_cjk_dominant_text("The quick brown fox jumps over the lazy dog."));
     }
 
     #[test]
