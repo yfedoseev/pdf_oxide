@@ -16240,6 +16240,24 @@ impl PdfDocument {
         // Merge condition: same line (y_diff ≤ 0.5 × max line height) AND
         // horizontal gap ≤ 0.15 × font_size (same threshold as should_insert_space).
         // Skip merge when the current word index is a split boundary.
+        //
+        // `gap` has no lower bound above, so a word that BACKTRACKS far behind
+        // the previous word's origin also satisfies `gap ≤ 0.15 × font_size`
+        // (a large negative number is always ≤ a small positive one). Displayed
+        // math draws a fraction's denominator AFTER the relation sign that
+        // follows the numerator (`dx/dt = …` → the `=` is emitted, then `dt`
+        // starts ~2em further left at a small baseline offset) — this is the
+        // exact geometry `assemble_text_from_spans`'s backtrack branch breaks
+        // the line on, just reached here through word bboxes instead of span
+        // bboxes. Left unguarded, this loop fuses the pair into `"=dt"`, and
+        // because the merge is incremental (`prev` grows to the union bbox),
+        // a chain of such backtracks collapses into one word spanning an
+        // entire equation — the far worse case reported against `main`.
+        // Mirror the emitter's guard: a word that starts at-or-left of the
+        // previous word's ORIGIN (not just its end), with a real baseline
+        // offset and an overlap far beyond ordinary kerning, is a backtrack,
+        // not a same-line neighbour — never merge across it. Gated off for
+        // RTL text, whose leftward flow is ordinary reading order.
         let mut merged: Vec<Word> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
         for (idx, word) in words.into_iter().enumerate() {
@@ -16248,9 +16266,31 @@ impl PdfDocument {
                 if let Some(prev) = merged.last_mut() {
                     let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
                     let y_diff = (word.bbox.y - prev.bbox.y).abs();
+                    let delta_x = word.bbox.x - prev.bbox.x;
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                    if y_diff <= line_h * 0.5 && gap <= font_size * 0.15 {
+                    let not_rtl = !crate::text::bidi::looks_rtl(&prev.text)
+                        && !crate::text::bidi::looks_rtl(&word.text);
+                    let is_math_backtrack =
+                        y_diff > 1.0 && delta_x <= 0.5 && gap < -font_size && not_rtl;
+                    // A LINE WRAP can land at nearly the same y as the line
+                    // above it (some producers emit sub-1pt baseline drift
+                    // between consecutive lines, so `y_diff > 1.0` above
+                    // doesn't always hold), but it always resets x back
+                    // toward the page's left margin — an order of magnitude
+                    // further than any real same-line construct (ordinary
+                    // kerning is near 0; the math backtrack above is ~1-2em).
+                    // A multi-em backtrack this large can only be two
+                    // different lines, never a genuine adjacency — reject it
+                    // regardless of y_diff, or a wrapped line's tail gets
+                    // fused onto its own next line's head (e.g. "of whom" +
+                    // "tered with books" → "whomteredwithbooks").
+                    let is_line_wrap_reset = delta_x < -5.0 * font_size && not_rtl;
+                    if y_diff <= line_h * 0.5
+                        && gap <= font_size * 0.15
+                        && !is_math_backtrack
+                        && !is_line_wrap_reset
+                    {
                         // Incremental merge — O(k) per merge, O(total_chars) overall.
                         // Avoids the O(n²) clone+from_chars pattern that caused
                         // catastrophic slowdown on TOC dot-leader pages.
@@ -17247,7 +17287,15 @@ impl PdfDocument {
             })
             .collect();
 
-        Ok(detect_tables_with_lines(&spans, &lines, &config))
+        // Same prose-rejection filter `extract_page_tables` applies to the
+        // extract_text/to_markdown/to_html path — this public API called
+        // `detect_tables_with_lines` directly with no post-filter at all, so
+        // it was already able to fabricate/garble tables on any prose-shaped
+        // spatial candidate, independent of anything else in this function.
+        Ok(detect_tables_with_lines(&spans, &lines, &config)
+            .into_iter()
+            .filter(|t| t.is_real_grid() && !looks_like_prose_table(t))
+            .collect())
     }
 
     /// Process paths from a Form XObject.
