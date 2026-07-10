@@ -1526,6 +1526,18 @@ impl PdfDocument {
             let frag =
                 words.iter().filter(|w| w.chars().count() <= 2).count() as f32 / words.len() as f32;
             let rep = words.windows(2).filter(|w| w[0] == w[1]).count() as f32 / words.len() as f32;
+            // CJK/Hangul text has no inter-word spaces, so glyph-adjacency
+            // clustering naturally produces short (often 1-2 character)
+            // tokens — `frag` here is calibrated for space-separated Latin
+            // text and would otherwise read ordinary dense CJK prose as
+            // fragmented (this ratio directly gates `usable_text` in
+            // `classify_from_signals`). The repeat ratio is script-agnostic
+            // and stays as computed.
+            let frag = if crate::extractors::auto::is_cjk_dominant_text(&word_text) {
+                0.0
+            } else {
+                frag
+            };
             (frag, rep)
         };
 

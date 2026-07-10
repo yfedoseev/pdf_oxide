@@ -25,6 +25,18 @@
 //!    same raw text — routes a real text page to OCR. Both places now
 //!    build their word list from `extract_words` (the same glyph/span
 //!    clustering `extract_text` relies on) instead of raw span punctuation.
+//!
+//! Switching to `extract_words` clustering (cause 2's fix) surfaced a third
+//! issue during corpus validation: CJK/Hangul scripts have no inter-word
+//! spaces, so glyph-adjacency clustering naturally produces short (often
+//! 1-3 character) "words" — real, correct text, not fragmentation. The
+//! `frag`/`avg_word_len` checks (in both `text_quality_gate` and the
+//! `fragmented_word_ratio` feeding `classify_from_signals`) are calibrated
+//! for space-separated Latin text and misread this as a broken CMap,
+//! routing ordinary Japanese/Chinese/Korean pages to `Scanned`. Both now
+//! skip that specific check for CJK-dominant text via
+//! `is_cjk_dominant_text` (script-agnostic signals — garbled ratio,
+//! consecutive-repeat — still apply normally).
 
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::extractors::auto::{PageKind, ReasonCode};
@@ -84,6 +96,28 @@ fn split_span_words_do_not_trigger_scanned_misclassification() {
         cls.kind,
         cls.reason,
         words.iter().map(|w| &w.text).collect::<Vec<_>>()
+    );
+}
+
+/// Opt-in real-document guard for the CJK false-positive: an ordinary
+/// Japanese Wikipedia article (about cats), no images, no garbling. Not
+/// fetched automatically per this repo's fixture policy — place a copy at
+/// the path below to run this locally; it skips cleanly when absent.
+#[test]
+fn real_japanese_article_is_not_misclassified_scanned() {
+    let p = "tests/fixtures/real/wiki_cat_ja.pdf";
+    if !std::path::Path::new(p).exists() {
+        eprintln!("[classification] CJK fixture missing, skipping: {p}");
+        return;
+    }
+    let doc = PdfDocument::from_bytes(std::fs::read(p).expect("read")).expect("parse");
+    let cls = doc.classify_page(0).expect("classify_page");
+    assert!(
+        matches!(cls.kind, PageKind::TextLayer),
+        "ordinary CJK prose (no inter-word spaces, naturally short glyph-clustered \
+         tokens) must not be misclassified Scanned, got {:?} (reason {:?})",
+        cls.kind,
+        cls.reason
     );
 }
 
