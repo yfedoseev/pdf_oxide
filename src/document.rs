@@ -1501,13 +1501,43 @@ impl PdfDocument {
             })
             .count();
         let garbled_ratio = bad as f32 / total as f32;
-        let words: Vec<&str> = text.split_whitespace().collect();
+        // Word-boundary signals (fragmentation, consecutive-repeat) need
+        // real words, not one token per span. Each span above is a raw
+        // content-stream text-showing run; in math typesetting every atom
+        // ((, ∞, ), a subscript, an operator) is its own span, so joining
+        // spans with a forced space makes every span boundary look like a
+        // word boundary and inflates the fragmented-word ratio on ordinary
+        // dense LaTeX pages until the text-quality gate mistakes them for
+        // scans. `extract_words` already does the real glyph/span
+        // clustering (adaptive gap thresholds, same-line merge, backtrack
+        // guard) that `extract_text` relies on — reuse its output here
+        // instead of re-deriving word boundaries from span punctuation.
+        let word_text: String = self
+            .extract_words(page)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|w| w.text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let words: Vec<&str> = word_text.split_whitespace().collect();
         let (fragmented_word_ratio, consecutive_repeat_ratio) = if words.is_empty() {
             (0.0, 0.0)
         } else {
             let frag =
                 words.iter().filter(|w| w.chars().count() <= 2).count() as f32 / words.len() as f32;
             let rep = words.windows(2).filter(|w| w[0] == w[1]).count() as f32 / words.len() as f32;
+            // CJK/Hangul text has no inter-word spaces, so glyph-adjacency
+            // clustering naturally produces short (often 1-2 character)
+            // tokens — `frag` here is calibrated for space-separated Latin
+            // text and would otherwise read ordinary dense CJK prose as
+            // fragmented (this ratio directly gates `usable_text` in
+            // `classify_from_signals`). The repeat ratio is script-agnostic
+            // and stays as computed.
+            let frag = if crate::extractors::auto::is_cjk_dominant_text(&word_text) {
+                0.0
+            } else {
+                frag
+            };
             (frag, rep)
         };
 
@@ -1652,7 +1682,10 @@ impl PdfDocument {
             producer_prior,
             page_is_empty,
         };
-        let gate = crate::extractors::auto::text_quality_gate(&text);
+        // `text_quality_gate` does its own word-splitting internally; feed
+        // it the same word-clustered text as `fragmented_word_ratio` above
+        // (not the raw span-joined `text`), for the same reason.
+        let gate = crate::extractors::auto::text_quality_gate(&word_text);
         Ok((signals, gate))
     }
 
