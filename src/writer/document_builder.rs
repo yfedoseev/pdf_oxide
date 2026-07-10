@@ -1207,7 +1207,7 @@ impl<'a> FluentPageBuilder<'a> {
         let page_width = self.builder.pages[self.page_index].width;
         let max_right = page_width - right_margin;
 
-        for run in runs {
+        for (run_idx, run) in runs.iter().enumerate() {
             let font_name = match run.style {
                 TextRunStyle::Bold => bold_font_name(&self.text_config.font),
                 TextRunStyle::Italic => italic_font_name(&self.text_config.font),
@@ -1217,6 +1217,38 @@ impl<'a> FluentPageBuilder<'a> {
                 TextRunStyle::Color { r, g, b } => Some(crate::layout::Color { r, g, b }),
                 _ => None,
             };
+
+            // Each run lays out its own words independently and then
+            // advances `cursor_x` by exactly the emitted text's width — no
+            // separator is otherwise inserted between one run ending and
+            // the next beginning. A run boundary that falls mid-line would
+            // draw flush against the previous run with zero gap ("Text Run
+            // 1" + "Text Run 2" → "Text Run 1Text Run 2"). Advance past a
+            // single space before laying out this run's words, but only
+            // when continuing an existing line — a run that starts a fresh
+            // page/line (cursor_x back at the margin, from wrapping or
+            // being the paragraph's first run) needs no separator, the line
+            // break already provides it. Any leading/trailing whitespace on
+            // the run's own text is still discarded by `split_whitespace`
+            // below (unchanged) — spacing between runs is guaranteed here
+            // instead of relying on the caller to pad it correctly.
+            if run_idx > 0 && (self.cursor_x - left_margin).abs() > 0.01 {
+                let space_w = self.text_layout.font_manager().text_width(
+                    " ",
+                    &font_name,
+                    self.text_config.size,
+                );
+                if self.cursor_x + space_w <= max_right {
+                    self.cursor_x += space_w;
+                } else {
+                    let line_height = self.text_config.size * self.text_config.line_height;
+                    if self.cursor_y - line_height < 72.0 {
+                        self.new_page_same_size_inplace();
+                    }
+                    self.cursor_y -= line_height;
+                    self.cursor_x = left_margin;
+                }
+            }
 
             // Wrap run text to available line width
             let words: Vec<&str> = run.text.split_whitespace().collect();
