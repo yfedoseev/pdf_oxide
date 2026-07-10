@@ -150,6 +150,20 @@ cargo test --features ml
 cargo watch -x test
 ```
 
+> **Don't use `cargo test --all-features`** — it fails to build. The
+> `fips` feature and the default-on `legacy-crypto` feature are
+> mutually exclusive (FIPS 140-3 forbids the MD5 that `legacy-crypto`
+> pulls in) and enforced with a `compile_error!`. This applies to any
+> command that compiles the crate (`build`, `check`, `test`, `doc`),
+> not just `test`. If your change touches FIPS-gated code, verify it
+> separately with:
+> ```bash
+> cargo test --no-default-features --features fips,icc
+> ```
+> CI's own feature-matrix job (`cargo hack --each-feature`) excludes
+> `fips` from the powerset for the same reason and covers it with a
+> dedicated job instead — that's the pattern to follow locally too.
+
 ### 5. Format and Lint
 
 ```bash

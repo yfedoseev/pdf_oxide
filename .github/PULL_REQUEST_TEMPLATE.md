@@ -35,7 +35,7 @@ Fixes #
 
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] All new and existing tests pass locally
-- [ ] I have run `cargo test --all-features`
+- [ ] I have run `cargo test` (see [CONTRIBUTING.md](../CONTRIBUTING.md#4-test-your-changes) — `--all-features` fails to build: `fips` and `legacy-crypto` are mutually exclusive by design)
 - [ ] I have run `cargo clippy -- -D warnings`
 - [ ] I have run `cargo fmt`
 
