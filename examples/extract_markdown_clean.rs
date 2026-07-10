@@ -1,3 +1,6 @@
+//! Open PDF, remove headers/footers, print markdown to stdout.
+//!
+//! Usage: cargo run --example extract_markdown_clean -- <file.pdf>
 use pdf_oxide::converters::ConversionOptions;
 use pdf_oxide::{Error, PdfDocument};
 
