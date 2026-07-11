@@ -473,7 +473,8 @@ pub struct PdfDocument {
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
-    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    running_artifact_signatures:
+        Mutex<Option<std::collections::HashMap<String, (usize, bool, bool)>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -14818,13 +14819,54 @@ impl PdfDocument {
         l.contains("www.") && (l.contains(".org") || l.contains(".com") || l.contains(".net"))
     }
 
+    /// Parse the ordered sequence of digit-run values in `text`, e.g.
+    /// "2 of 3" -> [2, 3], "ACM . 84" -> [84], "1a Consolidated" -> [1].
+    fn digit_run_values(text: &str) -> Vec<u64> {
+        let mut values = Vec::new();
+        let mut current = String::new();
+        for c in text.chars() {
+            if c.is_ascii_digit() {
+                current.push(c);
+            } else if !current.is_empty() {
+                if let Ok(v) = current.parse::<u64>() {
+                    values.push(v);
+                }
+                current.clear();
+            }
+        }
+        if !current.is_empty() {
+            if let Ok(v) = current.parse::<u64>() {
+                values.push(v);
+            }
+        }
+        values
+    }
+
+    /// Does any digit-run position in this signature's per-page value
+    /// series strictly increase with page order? A genuine folio's number
+    /// tracks page position (gaps for image-only pages are fine — the next
+    /// observed value just has to exceed the last one seen). Substantive
+    /// content that merely recurs with an incidental changing digit (a form
+    /// line-item label renumbered per schedule page, a section heading
+    /// number) won't show this trend.
+    fn is_sequential_signature(series: &[Vec<(usize, u64)>]) -> bool {
+        series.iter().any(|run| {
+            if run.len() < 2 {
+                return false;
+            }
+            let mut sorted = run.clone();
+            sorted.sort_by_key(|&(page_index, _)| page_index);
+            sorted.windows(2).all(|w| w[0].1 < w[1].1)
+        })
+    }
+
     /// Ensure running-artifact signatures are computed (once) and return a
     /// clone for matching. The computation scans every page's raw spans,
     /// collects normalized text that appears in the top or bottom 12% of
     /// the page, and keeps entries that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::collections::HashMap<String, usize>> {
+    ) -> Result<std::collections::HashMap<String, (usize, bool, bool)>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
@@ -14856,6 +14898,10 @@ impl PdfDocument {
             String,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
+        // Per-signature, per-digit-run-position series of (page_index, value)
+        // — feeds `is_sequential_signature` below.
+        let mut digit_run_series: std::collections::HashMap<String, Vec<Vec<(usize, u64)>>> =
+            std::collections::HashMap::new();
         for pi in 0..page_count {
             let spans = match self.extract_spans_raw(pi) {
                 Ok(s) => s,
@@ -14913,6 +14959,14 @@ impl PdfDocument {
                     .entry(sig.clone())
                     .or_default()
                     .insert(literal.clone());
+                let values = Self::digit_run_values(literal);
+                let series = digit_run_series.entry(sig.clone()).or_default();
+                if series.len() < values.len() {
+                    series.resize_with(values.len(), Vec::new);
+                }
+                for (i, v) in values.into_iter().enumerate() {
+                    series[i].push((pi, v));
+                }
             }
             if !has_body_content {
                 continue;
@@ -14927,14 +14981,14 @@ impl PdfDocument {
             }
         }
         let threshold = (page_count as f32 * 0.5).ceil() as usize;
-        let signatures: std::collections::HashMap<String, usize> = occurrences
+        let signatures: std::collections::HashMap<String, (usize, bool, bool)> = occurrences
             .into_iter()
-            .filter(|(sig, (count, _))| {
-                let variants = literal_variants.get(sig).map(|s| s.len()).unwrap_or(0);
+            .filter_map(|(sig, (count, _))| {
+                let variants = literal_variants.get(&sig).map(|s| s.len()).unwrap_or(0);
                 // Varying-literal path (page numbers / dates): the digits change per
                 // page. Recurs on >=50% of body pages.
-                if *count >= threshold.max(2) && variants >= 2 {
-                    return true;
+                if count >= threshold.max(2) && variants >= 2 {
+                    return Some((sig, true));
                 }
                 // Item 6B (M5): CONSTANT-literal pagination/citation (DOI, volume/
                 // article, journal URL + digit). The literal never changes, so the
@@ -14942,23 +14996,32 @@ impl PdfDocument {
                 // recurrence AND the narrow citation/URL shape gate, so substantive
                 // repeated content (facility names, titles) is never suppressed.
                 let strict = (page_count as f32 * 0.6).ceil() as usize;
-                if *count >= strict.max(2)
+                if count >= strict.max(2)
                     && variants < 2
                     && literal_variants
-                        .get(sig)
+                        .get(&sig)
                         .and_then(|s| s.iter().next())
                         .is_some_and(|lit| Self::looks_like_stable_pagination(lit))
                 {
-                    return true;
+                    return Some((sig, false));
                 }
-                false
+                None
             })
-            .map(|(sig, _)| {
+            .map(|(sig, is_varying)| {
                 // Use the earliest page the signature appeared on — which
                 // may be a body-content-skipped cover page that `occurrences`
                 // didn't count toward the threshold but `first_seen_any` did.
                 let first = first_seen_any.get(&sig).copied().unwrap_or(0);
-                (sig, first)
+                // Only varying signatures are candidates for losing the
+                // first-occurrence exemption, and only when their digit
+                // actually tracks page order (a genuine folio) rather than
+                // merely changing (substantive content with an incidental
+                // renumbered digit).
+                let is_sequential = is_varying
+                    && digit_run_series
+                        .get(&sig)
+                        .is_some_and(|series| Self::is_sequential_signature(series));
+                (sig, (first, is_varying, is_sequential))
             })
             .collect();
         *self.running_artifact_signatures.lock_or_recover() = Some(signatures.clone());
@@ -15042,11 +15105,16 @@ impl PdfDocument {
                 continue;
             }
             let sig = Self::normalize_artifact_signature(trimmed);
-            if let Some(&first_seen_on) = signatures.get(&sig) {
-                // Keep the first appearance — it's usually the document
-                // cover-page title that got classified as chrome only
-                // because later pages repeat it as a running header (B3).
-                if page_index == first_seen_on {
+            if let Some(&(first_seen_on, is_varying, is_sequential)) = signatures.get(&sig) {
+                // Only un-exempt the first occurrence when the signature is
+                // both varying AND its digit sequentially tracks page order
+                // (is_sequential) — a genuine folio like "page 1" / "ACM . 84".
+                // A varying-but-non-sequential signature (a form line-item
+                // label renumbered per schedule page, a numbered section
+                // heading) keeps the exemption: it may be a title/heading
+                // that later pages happen to echo, so only strip it from
+                // second occurrence onward.
+                if page_index == first_seen_on && !(is_varying && is_sequential) {
                     continue;
                 }
                 s.artifact_type = Some(crate::extractors::text::ArtifactType::Pagination(
@@ -25631,6 +25699,52 @@ mod tests {
                 "{no:?} must NOT be classified as furniture"
             );
         }
+    }
+
+    #[test]
+    fn test_digit_run_values() {
+        assert_eq!(PdfDocument::digit_run_values("ACM . 84"), vec![84]);
+        assert_eq!(PdfDocument::digit_run_values("2 of 3"), vec![2, 3]);
+        assert_eq!(PdfDocument::digit_run_values("1a Consolidated return"), vec![1]);
+        assert_eq!(
+            PdfDocument::digit_run_values("1a Consolidated return  (attach Form 851)"),
+            vec![1, 851]
+        );
+        assert_eq!(PdfDocument::digit_run_values("no digits here"), Vec::<u64>::new());
+        assert_eq!(PdfDocument::digit_run_values(""), Vec::<u64>::new());
+        // Run at the very start and very end of the string.
+        assert_eq!(PdfDocument::digit_run_values("42"), vec![42]);
+        assert_eq!(PdfDocument::digit_run_values("p42"), vec![42]);
+        assert_eq!(PdfDocument::digit_run_values("42p"), vec![42]);
+    }
+
+    #[test]
+    fn test_is_sequential_signature() {
+        // A genuine folio: strictly increases with page order.
+        assert!(PdfDocument::is_sequential_signature(&[vec![(0, 84), (2, 86), (4, 88)]]));
+        // Gaps are fine — the sequence just has to keep climbing.
+        assert!(PdfDocument::is_sequential_signature(&[vec![(0, 1), (5, 2), (9, 3)]]));
+        // Page order input is not required, sorted by page index first
+        assert!(PdfDocument::is_sequential_signature(&[vec![(2, 3), (0, 1), (1, 2)]]));
+        // Multi-run literal ("issue 2, page 1"): sequential on SECOND run only
+        // (the "issue 2" stays constant while "page 1" issue number climbs)
+        assert!(PdfDocument::is_sequential_signature(&[
+            vec![(0, 3), (1, 3), (2, 3)],
+            vec![(0, 1), (1, 2), (2, 3)],
+        ]));
+
+        // A tie anywhere breaks strict monotonicity — e.g. a form
+        // line-item label whose leading digit never changes.
+        assert!(!PdfDocument::is_sequential_signature(&[vec![(0, 1), (1, 1), (2, 1)]]));
+        // A jump-then-repeat (section heading spanning multiple pages
+        // then jumping) is not a folio pattern either.
+        assert!(!PdfDocument::is_sequential_signature(&[vec![(0, 4), (1, 4), (2, 6)]]));
+        // Rises then falls (851, 926, 851) — an attached-form number that
+        // varies without tracking page order, not a folio.
+        assert!(!PdfDocument::is_sequential_signature(&[vec![(0, 851), (1, 926), (2, 851)]]));
+        // Fewer than 2 points can't establish a trend.
+        assert!(!PdfDocument::is_sequential_signature(&[vec![(0, 1)]]));
+        assert!(!PdfDocument::is_sequential_signature(&[]));
     }
 
     // ========================================================================
