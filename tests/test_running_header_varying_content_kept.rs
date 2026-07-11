@@ -115,13 +115,15 @@ fn header_line(header: &str) -> String {
 
 #[test]
 fn varying_line_item_label_kept_on_first_page() {
-    // Recurs on every page with a different leading digit each time
-    // ("1a", "2a", "3a"), so its normalised signature is classified as
-    // varying — but it's a form line-item label, not a folio.
+    // Recurs on every page: the "1a" line-item label is constant, but the
+    // attached-form number in the same line changes non-monotonically
+    // (851, 926, 851) — a schedule renumbering pattern, not a folio. The
+    // signature is classified as varying (literal text differs) but its
+    // digit runs never trend with page order, so it must be kept.
     let labels = [
         "1a Consolidated return  (attach Form 851)",
-        "2a Consolidated return  (attach Form 851)",
-        "3a Consolidated return  (attach Form 851)",
+        "1a Consolidated return  (attach Form 926)",
+        "1a Consolidated return  (attach Form 851)",
     ];
     let bytes = build_pdf_with_page_extras(3, |i| header_line(labels[i]));
     let doc = PdfDocument::from_bytes(bytes).unwrap();
@@ -138,10 +140,11 @@ fn varying_line_item_label_kept_on_first_page() {
 
 #[test]
 fn numbered_section_heading_kept_on_first_page() {
-    // Recurs on every page with a different leading number each time
-    // ("4.", "5.", "6."), so its normalised signature is classified as
-    // varying — but the number is a section ordinal, not a page number.
-    let headings = ["4. Discussion", "5. Discussion", "6. Discussion"];
+    // Recurs across pages with a non-monotonic leading number (4, 4, 6 —
+    // two pages within section 4, then a jump to section 6), so its
+    // normalised signature is classified as varying but the number never
+    // strictly tracks page order the way a folio would.
+    let headings = ["4. Discussion", "4. Discussion", "6. Discussion"];
     let bytes = build_pdf_with_page_extras(3, |i| header_line(headings[i]));
     let doc = PdfDocument::from_bytes(bytes).unwrap();
 
@@ -152,5 +155,33 @@ fn numbered_section_heading_kept_on_first_page() {
         "numbered section heading '4. Discussion' is substantive content, \
          not a folio, and must survive on the page it first appears on; \
          got {p0:?}"
+    );
+}
+
+#[test]
+fn sequential_branded_folio_stripped_from_first_page() {
+    // Motivating real case (1965-nelson.pdf): a branded running folio like
+    // "ACM . 84" whose number strictly increases with page order — a
+    // genuine folio, even though it's shaped just like the false-positive
+    // cases above (brand text + digit). Page 1 has no folio at all (e.g.
+    // a full-page image), so the sequence must tolerate the gap and still
+    // recognise 84 -> 86 as sequential.
+    let folios = ["ACM . 84", "", "ACM . 86"];
+    let bytes = build_pdf_with_page_extras(3, |i| {
+        if folios[i].is_empty() {
+            String::new()
+        } else {
+            header_line(folios[i])
+        }
+    });
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+
+    let p0 = doc.extract_text(0).unwrap();
+    assert!(p0.contains("Body text placeholder"), "page 0 body missing: {p0:?}");
+    assert!(
+        !p0.contains("ACM"),
+        "a folio number that strictly tracks page order (84, 86) is real \
+         pagination chrome and must be stripped even on its first \
+         occurrence; got {p0:?}"
     );
 }
