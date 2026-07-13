@@ -32,7 +32,7 @@ All notable changes to PDFOxide are documented here.
 - Consolidated the July 2026 Dependabot cargo + github-actions updates (#835).
 - Added tests that `remove_footers` preserves body content (#800).
 - Fixed the broken `--all-features` test commands in the PR template and dev guide (#838).
-- Bumped `office_oxide` to 0.1.4.
+- Bumped `office_oxide` to 0.1.6.
 
 ### Contributors
 
