@@ -26,11 +26,12 @@ fn main() {
             continue;
         }
         let end = s.bbox.x + s.bbox.width;
-        let gap = spans
-            .get(i + 1)
-            .map(|n| n.bbox.x - end)
-            .unwrap_or(f32::NAN);
-        let em = if s.font_size > 0.0 { gap / s.font_size } else { 0.0 };
+        let gap = spans.get(i + 1).map(|n| n.bbox.x - end).unwrap_or(f32::NAN);
+        let em = if s.font_size > 0.0 {
+            gap / s.font_size
+        } else {
+            0.0
+        };
         println!(
             "  [{:<24}] x={:8.3} end={:8.3} fs={:.2} font={} -> gap={:6.3} ({:.3}em)",
             format!("{:?}", s.text),
