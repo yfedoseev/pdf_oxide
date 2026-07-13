@@ -7660,6 +7660,47 @@ impl PdfDocument {
         gap > space_threshold
     }
 
+    /// Stacked two-line column/table-header cell detector, applied ONLY on the
+    /// structure-tree (tagged-content) assembly path — never the main flow.
+    ///
+    /// A tagged table can draw a header cell as two stacked rows ("Comparison"
+    /// over "rate"). When the structure-tree assembler linearizes the cell's
+    /// spans it sees them as consecutive, horizontally OVERLAPPING (negative
+    /// gap) spans whose baseline drop stayed just under `same_line_threshold`,
+    /// so it treats them as one line and — because the gap is negative —
+    /// `should_insert_space` returns false and they fuse ("Comparisonrate").
+    /// A negative gap combined with a genuine baseline shift is two stacked
+    /// tokens, never intra-word kerning (which shares a baseline), so a space
+    /// is warranted.
+    ///
+    /// This deliberately lives OUTSIDE `should_insert_space`: the main flow
+    /// (untagged PDFs, e.g. LaTeX math) already routes backtracking
+    /// baseline-shifted runs — a fraction's numerator over its denominator —
+    /// through dedicated newline branches before the space decision, and adding
+    /// this rule there fragments equations. Scoping it to the tagged path keeps
+    /// those inputs byte-identical while fixing stacked header cells.
+    fn stacked_cell_needs_space(prev: &TextSpan, current: &TextSpan) -> bool {
+        let font_size = prev.font_size.max(current.font_size).max(1.0);
+        let y_diff = (prev.bbox.y - current.bbox.y).abs();
+        let gap = current.bbox.x - (prev.bbox.x + prev.bbox.width);
+        // Under the caller's same-line band (else the caller line-breaks), a
+        // real baseline shift (> 0.5 em) with horizontal overlap (negative gap)
+        // is a stacked cell. Both sides must be alphanumeric word content, not
+        // punctuation/symbol runs.
+        gap < -0.5
+            && y_diff > font_size * 0.5
+            && prev
+                .text
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric())
+            && current
+                .text
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric())
+    }
+
     /// Detect a span whose text is `N.M` (all-digit groups around one dot) and whose
     /// bbox.width is >40% larger than char_widths imply. This pattern occurs in
     /// sailing-score / competition-table PDFs where two adjacent columns (e.g. Q8=1,
@@ -9860,7 +9901,9 @@ impl PdfDocument {
                                 y_diff,
                                 content.in_table && prev_in_table,
                             );
-                        } else if Self::should_insert_space(prev, span) {
+                        } else if Self::should_insert_space(prev, span)
+                            || Self::stacked_cell_needs_space(prev, span)
+                        {
                             text.push(' ');
                         }
                     }
@@ -11000,7 +11043,9 @@ impl PdfDocument {
                                     content.in_table && prev_in_table,
                                 );
                             }
-                        } else if Self::should_insert_space(prev, span) {
+                        } else if Self::should_insert_space(prev, span)
+                            || Self::stacked_cell_needs_space(prev, span)
+                        {
                             text.push(' ');
                         }
                     }
@@ -24629,6 +24674,39 @@ mod tests {
         // spans without a separator and `3.80%` + `4.41%` came out as
         // `3.80%4.41%`. Large gap = different column = still a space.
         assert!(PdfDocument::should_insert_space(&prev, &current));
+    }
+
+    /// Stacked two-line column/table-header cell: `Comparison` drawn over
+    /// `rate` at a baseline drop that stays just under `same_line_threshold`,
+    /// so the caller treats them as one line and defers here. The two spans
+    /// horizontally OVERLAP (negative gap), which the positive-gap test would
+    /// reject — fusing them into `Comparisonrate`. A negative gap combined with
+    /// a real baseline shift is two stacked tokens (never intra-word kerning,
+    /// which shares a baseline), so a space must be inserted.
+    #[test]
+    fn test_stacked_cell_needs_space_overlapping_rows() {
+        // fs=12 → same_line_threshold = max(14.4, 3.6) = 14.4; y_diff = 8 stays
+        // under it (one line), gap = 20 - 60 = -40 (overlap).
+        let upper = make_test_span("Comparison", 0.0, 108.0, 60.0, 12.0);
+        let lower = make_test_span("rate", 20.0, 100.0, 25.0, 12.0);
+        assert!(
+            PdfDocument::stacked_cell_needs_space(&upper, &lower),
+            "stacked overlapping cells with a baseline shift must be separated by a space"
+        );
+    }
+
+    /// Guard: two spans on the SAME baseline that overlap by a couple points
+    /// (real intra-word kerning, e.g. `eigen`+`value` split by a font's tight
+    /// side-bearings) must NOT be flagged — the baseline shift is what
+    /// distinguishes a stacked cell from kerning.
+    #[test]
+    fn test_stacked_cell_same_baseline_overlap_is_kerning() {
+        let prev = make_test_span("eigen", 0.0, 100.0, 30.0, 12.0);
+        let current = make_test_span("value", 28.0, 100.0, 30.0, 12.0);
+        assert!(
+            !PdfDocument::stacked_cell_needs_space(&prev, &current),
+            "same-baseline overlap is intra-word kerning, not a word boundary"
+        );
     }
 
     /// Two glyphs of the same complex Brahmic script with an intra-word
