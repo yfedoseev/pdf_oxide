@@ -4720,10 +4720,21 @@ impl<'doc> TextExtractor<'doc> {
                 (Some(p), Some(c)) => is_cjk_char(p) != is_cjk_char(c),
                 _ => false,
             };
+            // Drop-caps / single-letter emphasis sit TIGHT against their word
+            // (gap ~0, often overlapping). A gap in word-space territory
+            // (≥~0.15em) across a font change is a genuine token boundary —
+            // typically a word followed by a single-letter math variable in a
+            // math-italic run (`solution` → `U`). Gluing those drops the space
+            // poppler/PDFium keep. The 0.12em ceiling is the valley between
+            // drop-cap kerning (~0) and a word space (≥~0.2em). (Previously
+            // 0.25em, which is itself a full word space: the v0.3.75
+            // advance-fold made per-glyph advance accurate enough that these
+            // ~0.24em gaps — formerly inflated above 0.25em by the advance
+            // undershoot — dropped under the ceiling and began gluing.)
             let cross_font_word_glue = !is_same_font
                 && same_line
                 && gap > -1.0
-                && gap < font_size_ref * 0.25
+                && gap < font_size_ref * 0.12
                 && !current.text.is_empty()
                 && !span.text.is_empty()
                 && !crosses_cjk_boundary
