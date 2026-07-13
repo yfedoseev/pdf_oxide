@@ -7550,6 +7550,19 @@ impl<'doc> TextExtractor<'doc> {
                         // current buffer keeps accumulating, so apply
                         // the offset unconditionally here as well.
                         self.advance_position_for_offset(*offset)?;
+                        // Fold the same displacement into the buffer's
+                        // advance record. Historically only the text matrix
+                        // moved, so these kerning/word-space offsets were
+                        // dropped from `char_widths`/`accumulated_width` —
+                        // leaving the span's reconstructed per-glyph positions
+                        // drifting behind the true render (poppler/PDFium/
+                        // pymupdf all fold the offset into the advance). On
+                        // justified body text drawn as one continuous buffer,
+                        // the many small post-space offsets accumulate into a
+                        // multi-point undershoot. Folding keeps
+                        // `sum(char_widths) == accumulated_width == matrix
+                        // advance` by construction.
+                        self.fold_offset_into_buffer(&mut buffer, *offset);
                     }
                 },
             }
@@ -8631,6 +8644,30 @@ impl<'doc> TextExtractor<'doc> {
         self.state_stack.current_mut().advance_text_matrix(tx);
 
         Ok(())
+    }
+
+    /// Fold a sub-threshold TJ offset into the active buffer's advance record
+    /// so its `char_widths`/`accumulated_width` track the text-matrix position.
+    ///
+    /// The displacement is computed identically to `advance_position_for_offset`
+    /// (text space, before the `user_h_scale` applied at flush) so it lands in
+    /// the same units as the per-glyph advances pushed during string append.
+    /// The offset conventionally belongs to the *preceding* glyph (it adjusts
+    /// spacing after it), so it is added to the last recorded advance; if no
+    /// glyph has been recorded yet the matrix move alone already positions the
+    /// next buffer, so there is nothing to fold.
+    fn fold_offset_into_buffer(&self, buffer: &mut TjBuffer, offset: f32) {
+        let Some(last) = buffer.char_widths.last_mut() else {
+            return;
+        };
+        let state = self.state_stack.current();
+        let adv = if state.text_wmode == 0 {
+            -offset / 1000.0 * state.font_size * state.horizontal_scaling / 100.0
+        } else {
+            -offset / 1000.0 * state.font_size
+        };
+        *last += adv;
+        buffer.accumulated_width += adv;
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
