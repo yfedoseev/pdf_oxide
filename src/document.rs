@@ -22277,9 +22277,23 @@ impl PdfDocument {
                 // prefix is meaningless to consumers — strip it for dedup.
                 let base = font_arc.base_font.as_str();
                 let canonical = base.split_once('+').map(|(_, rest)| rest).unwrap_or(base);
-                by_name
-                    .entry(canonical.to_string())
-                    .or_insert_with(|| data.as_ref().clone());
+                // When several subsets share a base name, `get_font_set()` yields
+                // them in HashMap order, so `or_insert` kept a NONDETERMINISTIC
+                // one - the returned bytes changed run to run for the same PDF.
+                // Keep the LARGEST subset (most glyph coverage), with a byte
+                // comparison to break ties, so the choice is total-order stable.
+                match by_name.entry(canonical.to_string()) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(data.as_ref().clone());
+                    },
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let cand = data.as_ref();
+                        let cur = o.get();
+                        if (cand.len(), cand.as_slice()) > (cur.len(), cur.as_slice()) {
+                            *o.get_mut() = cand.clone();
+                        }
+                    },
+                }
             }
         }
 
@@ -22486,6 +22500,14 @@ impl PdfDocument {
                 let entry = by_name
                     .entry(canonical.to_string())
                     .or_insert_with(|| (data.as_ref().clone(), HashMap::new(), HashMap::new()));
+                // Deterministic subset choice: keep the largest font program
+                // (tie-broken by bytes) instead of whichever HashMap order
+                // surfaced first. The Unicode/width maps accumulate across all
+                // subsets below regardless, so coverage is never reduced.
+                let cand = data.as_ref();
+                if (cand.len(), cand.as_slice()) > (entry.0.len(), entry.0.as_slice()) {
+                    entry.0 = cand.clone();
+                }
                 for (cp, gid) in uni_to_gid {
                     entry.1.entry(cp).or_insert(gid);
                 }
