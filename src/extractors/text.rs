@@ -17158,4 +17158,72 @@ mod profile_based_space_tests {
         // Dominant-font swap: the longer run (regular weight) should win.
         assert_eq!(extractor.spans[0].font_weight, FontWeight::Normal);
     }
+
+    /// The advance-fold folds a sub-threshold TJ offset into the run's stored
+    /// advance using the exact ISO 32000-1 §9.4.4 displacement
+    /// (`-Tj/1000 * Tfs * Th`), keeping `char_widths.last` and
+    /// `accumulated_width` in lockstep so the reconstructed geometry equals the
+    /// text-matrix position. An empty buffer is a no-op (the next glyph
+    /// re-anchors to the matrix).
+    #[test]
+    fn test_fold_offset_into_buffer_matches_spec_displacement() {
+        let mut extractor = TextExtractor::new();
+        {
+            let st = extractor.state_stack.current_mut();
+            st.font_size = 10.0;
+            st.horizontal_scaling = 100.0; // Th = 1.0
+        }
+        let mut buffer = TjBuffer::new(extractor.state_stack.current(), None, None);
+        buffer.char_widths.push(5.0);
+        buffer.accumulated_width = 5.0;
+
+        // -120 TJ units => -(-120)/1000 * 10 * (100/100) = 1.2 (text space).
+        extractor.fold_offset_into_buffer(&mut buffer, -120.0);
+        let expected = 1.2_f32;
+        assert!((buffer.char_widths.last().unwrap() - (5.0 + expected)).abs() < 1e-4);
+        assert!((buffer.accumulated_width - (5.0 + expected)).abs() < 1e-4);
+        // Invariant: sum(char_widths) == accumulated_width by construction.
+        let sum: f32 = buffer.char_widths.iter().sum();
+        assert!((sum - buffer.accumulated_width).abs() < 1e-4);
+
+        // Empty buffer: nothing to fold into, must not panic or fabricate width.
+        let mut empty = TjBuffer::new(extractor.state_stack.current(), None, None);
+        extractor.fold_offset_into_buffer(&mut empty, -120.0);
+        assert!(empty.char_widths.is_empty());
+        assert_eq!(empty.accumulated_width, 0.0);
+    }
+
+    /// The cross-font glue ceiling (0.12em) must NOT glue a real word followed
+    /// by a single-letter variable set in a different font run across a
+    /// word-space gap (roman `solution` -> math-italic `U`, gap ~0.24em). This
+    /// is the mirror of the drop-cap case above (gap ~0): a word space is a
+    /// genuine boundary poppler/PDFium keep, so the two spans stay separate.
+    #[test]
+    fn test_cross_font_word_variable_not_glued() {
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::default();
+        // fs 10; "solution" ends at x=112, "U" starts at x=114.4 => gap 2.4pt = 0.24em.
+        extractor.spans = vec![
+            TextSpan {
+                text: "solution".to_string(),
+                bbox: Rect::new(72.0, 700.0, 40.0, 10.0),
+                font_name: "NimbusRomNo9L-Regu".to_string(),
+                font_size: 10.0,
+                ..TextSpan::default()
+            },
+            TextSpan {
+                text: "U".to_string(),
+                bbox: Rect::new(114.4, 700.0, 7.0, 10.0),
+                font_name: "NimbusRomNo9L-Ital".to_string(),
+                font_size: 10.0,
+                ..TextSpan::default()
+            },
+        ];
+        extractor.merge_adjacent_spans();
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "a 0.24em word-space gap across a font change must NOT glue (drop-cap glue is for ~0 gaps)"
+        );
+    }
 }
