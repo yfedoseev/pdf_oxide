@@ -4,7 +4,7 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
-## [0.3.74] - 2026-07-12
+## [0.3.74] - 2026-07-13
 
 > Scientific and print-era PDF extraction fixes — displayed-math tokens no longer fuse into single words, dense LaTeX pages stop being misrouted to OCR, subscript indices stay subscripts, stroke-drawn table rules and 90°-rotated pages read correctly, and scanned Hebrew/Arabic OCR layers extract in logical order.
 
@@ -18,7 +18,8 @@ All notable changes to PDFOxide are documented here.
 - **90°-rotated pages extracted in portrait order and words carried no rotation metadata (#813)** — landscape tables typeset on portrait pages (text-matrix rotation, no `/Rotate` key) came out as interleaved word salad: the reading-order pipeline re-sorted spans with portrait-frame comparators, the plain-text assembler grouped lines in the portrait frame, and `rotation_degrees` was dropped at both `TextSpan::to_chars` and word assembly. A dominant-rotation vote (half-or-more of the page's non-whitespace spans sharing one quadrant rotation, mirroring the tategaki vote) now orders the whole page in its rotated reading frame — coordinates are restored afterwards, so callers keep true page space — and minority rotated runs (margin stamps, figure labels) are ordered upright per rotation group and appended after the horizontal flow, matching the span path's existing firewall. Runs sharing a ±90° rotation no longer span-merge across rotated lines. `rotation_degrees` now flows span → char → `Word` and is exposed on `Word` (Rust/serde), `PyWord`, the WASM word JSON, and `pdf_oxide_word_get_rotation` (C FFI), and surfaced on the word type of the go, ruby, php, swift, csharp, dart, elixir, zig, julia, r, objc, cpp, and node bindings, plus the JVM `TextWord` (Java, inherited by the Kotlin/Scala/Clojure wrappers).
 - **Scanned Hebrew/Arabic OCR text layers extracted reversed — every word both letter- and word-order-reversed (#826)** — scanned RTL PDFs whose invisible OCR text layer emits one TJ array per recognized word (the standard OCR-sandwich shape, e.g. Tesseract-style producers) had two compounding bugs in the Tj/TJ buffer-flush path. `flush_tj_buffer` (the default `WordBoundaryMode::Tiebreaker` path) never received the confidence-gated geometric direction detector, so it still used the old `accumulated_width > 0.0` heuristic — true for nearly every non-empty RTL buffer — and reversed unconditionally instead of detecting direction; all three flush sites now route through one shared decision point (`bidi::apply_rtl_verdict`). And because already-logical invisible-OCR text and genuinely visual-order text have identical geometric signatures, text render mode is now threaded through so invisible runs (`Tr` 3/7) skip the geometric heuristics entirely and trust extraction order as-is.
 - **`FluentPageBuilder::rich_paragraph` drew consecutive `TextRun`s flush together — `TextRun::bold("Text Run 1") + TextRun::normal("Text Run 2")` extracted as `Text Run 1Text Run 2` (#837)** — each run word-wraps and emits its own text, then advances `cursor_x` by exactly the emitted width, with nothing separating one run's end from the next's start, so a run boundary falling mid-line drew the next run against the previous one. Consecutive runs on the same line are now separated.
-- **Stacked two-line column/table-header cells fused into one token — `Comparison` over `rate` extracted as `Comparisonrate` (#847)** — when the structure-tree (tagged-content) assembler linearizes a header cell drawn as two stacked rows, the rows arrive as consecutive spans that horizontally *overlap* (negative gap) at a baseline drop sitting just under the same-line threshold, so the assembler treats them as one line and defers to the space decision — which, seeing a negative gap, returned no space and glued them. A negative gap combined with a genuine baseline shift is two stacked tokens, never intra-word kerning (which shares a baseline), so a separator is now inserted. Scoped to the tagged/structure-tree path so main-flow inputs (e.g. LaTeX math fraction stacks, already handled by dedicated line-break branches) stay byte-identical; a 419-PDF sweep confirmed the change is isolated to tagged tables/forms with only glyph-preserving spacing gains. This is the first half of #847; the remaining case — words positioned with sub-space gaps and *no* space glyph (condensed headings, running footers) — is tracked as follow-up.
+- **Stacked two-line column/table-header cells fused into one token — `Comparison` over `rate` extracted as `Comparisonrate` (#847)** — when the structure-tree (tagged-content) assembler linearizes a header cell drawn as two stacked rows, the rows arrive as consecutive spans that horizontally *overlap* (negative gap) at a baseline drop sitting just under the same-line threshold, so the assembler treats them as one line and defers to the space decision — which, seeing a negative gap, returned no space and glued them. A negative gap combined with a genuine baseline shift is two stacked tokens, never intra-word kerning (which shares a baseline), so a separator is now inserted. Scoped to the tagged/structure-tree path so main-flow inputs (e.g. LaTeX math fraction stacks, already handled by dedicated line-break branches) stay byte-identical; a 419-PDF sweep confirmed the change is isolated to tagged tables/forms with only glyph-preserving spacing gains.
+- **Condensed headings and tracked runs typeset with no space glyph fused adjacent words — `conformance test plans` → `conformancetestplans` (#847)** — a bold heading or a running header whose word separation is pure `Td`/`TJ` positioning (no `0x20` glyph) opens inter-word gaps of only ~0.18 em, below the intra-word kerning guard (0.75× the space-glyph advance), so the words glued. A fixed magnitude can't separate a 0.18 em word gap from ~0.15 em kerning — but within one line the intra-word glyph gaps cluster near zero while the inter-word gaps form a distinct larger cluster. A per-line bimodal split of the gap distribution now pins the word boundary *regardless of absolute magnitude*, rescuing the narrow gap. It only ever adds a space, only when the suppression came from the geometric kerning guard (a new `SpaceSource::IntraWordKerning` marker) — never the semantic no-space rules, so complex-script text (Devanagari, Bengali, …), CJK, ligatures, and RTL are untouched. 419-PDF sweep: isolated to condensed headings/tracked text with glyph-preserving spacing gains, no over-segmentation. The residual case — words positioned with *even narrower* ~0.10 em gaps (some running footers) that are geometrically indistinguishable from kerning — is left as-is, matching every other extractor.
 
 ### Security
 
@@ -31,7 +32,21 @@ All notable changes to PDFOxide are documented here.
 - Added tests that `remove_footers` preserves body content (#800).
 - Fixed the broken `--all-features` test commands in the PR template and dev guide (#838).
 
-_Thanks to @tobocop2 for reporting **and** fixing the fragmented-word, stroke-encoded table-rule, rotated-page (#811, #812, #813), subscript-decimal (#816), and displayed-math fusion (#830, #836) bugs, and for reporting the born-digital misclassification (#840); to @RubberDuckShobe (#837), @palmoni5 (#826), and @Goldziher (#847) for their reports; and to @ultrasaurus for the footer-preservation tests (#800)._
+### Contributors
+
+Community fixes merged this release:
+
+- **@tobocop2** — reported **and** submitted the fixes for the fragmented-word, stroke-encoded table-rule, and rotated-page bugs (#811, #812, #813 → #814), the subscript-decimal bug (#816 → #817), and the displayed-math relation-sign fusion (#830 → #831); also reported the word-layer math fusion (#836) and the born-digital misclassification (#840). A standout contribution across the whole release.
+- **@ultrasaurus** (Sarah Allen) — contributed the `remove_footers` content-preservation tests (#800).
+
+Issues reported by:
+
+- **@tobocop2** — #811, #812, #813, #816, #830, #836, #840
+- **@RubberDuckShobe** — #837 (`rich_paragraph` run spacing)
+- **@palmoni5** — #826 (Hebrew OCR-sandwich reversal)
+- **@Goldziher** (Na'aman Hirschfeld) — #847 (word fusion on positioned runs)
+
+Thank you all — reporters and fixers alike.
 
 ## [0.3.73] - 2026-07-06
 

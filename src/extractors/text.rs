@@ -90,6 +90,13 @@ pub enum SpaceSource {
     /// Confidence: varies (default when no rule matches)
     NoSpace,
 
+    /// No space: suppressed specifically by the intra-word kerning guard
+    /// (a lowercase↔lowercase gap below 0.75× the space-glyph advance). Kept
+    /// distinct from `NoSpace` so the #847 per-line bimodal rescue can override
+    /// ONLY this purely-geometric suppression, never the semantic ones
+    /// (complex-script, CJK, ligature) that also return no-space.
+    IntraWordKerning,
+
     /// Space triggered by WordBoundaryDetector analysis
     /// Confidence: 0.85 (combines TJ offset, geometric, and CJK signals per PDF Spec 9.4.4)
     WordBoundaryAnalysis,
@@ -1476,7 +1483,7 @@ fn should_insert_space(
                     log::debug!(
                         "intra-word kerning guard: suppressing space between '{pc}' and '{nc}' (gap={gap_pt:.2}pt < {thr:.2}pt, threshold = 0.75× space-glyph width)"
                     );
-                    return SpaceDecision::no_space(SpaceSource::NoSpace, 0.9);
+                    return SpaceDecision::no_space(SpaceSource::IntraWordKerning, 0.9);
                 }
             }
         }
@@ -4438,6 +4445,93 @@ impl<'doc> TextExtractor<'doc> {
         }
     }
 
+    /// Per-line bimodal word-gap thresholds for the narrow-space rescue (#847).
+    ///
+    /// The fixed intra-word kerning guard in `should_insert_space`
+    /// (0.75× the space-glyph advance) suppresses genuine but *narrow* word
+    /// gaps on condensed/tracked lines — a bold heading or a running footer
+    /// typeset with NO space glyph, whose inter-word gaps are ~0.18 em, just
+    /// under the guard. A fixed magnitude cannot separate a 0.18 em word gap
+    /// from ~0.15 em intra-word kerning. But within one line the intra-word
+    /// glyph gaps cluster near zero (tight/slightly-overlapping side-bearings)
+    /// while the inter-word gaps form a distinct larger cluster: a clean
+    /// bimodal split that pins the word boundary *regardless of absolute
+    /// magnitude*.
+    ///
+    /// This walks the content-order span list, groups it into baseline runs,
+    /// and for each run whose inter-span gaps are clearly bimodal returns the
+    /// gap value separating the two clusters (indexed per span). Spans on
+    /// unimodal or too-short lines get `None` and keep the default guard. The
+    /// merge loop uses a returned threshold only to *rescue* a suppressed word
+    /// gap — it never removes a space the default logic already inserts.
+    fn bimodal_line_gap_thresholds(spans: &[TextSpan]) -> Vec<Option<f32>> {
+        let n = spans.len();
+        let mut out = vec![None; n];
+        let mut i = 0;
+        while i < n {
+            // Extend a run of consecutive same-baseline spans.
+            let mut j = i;
+            while j + 1 < n && (spans[j].bbox.y - spans[j + 1].bbox.y).abs() < 1.0 {
+                j += 1;
+            }
+            if j > i {
+                let fs = spans[i..=j]
+                    .iter()
+                    .map(|s| s.font_size)
+                    .fold(0.0f32, f32::max)
+                    .max(1.0);
+                // ALL consecutive gaps (intra-word gaps are near-zero or
+                // slightly negative, so they must be kept, not filtered).
+                let gaps: Vec<f32> = (i..j)
+                    .map(|k| spans[k + 1].bbox.x - (spans[k].bbox.x + spans[k].bbox.width))
+                    .collect();
+                if let Some(split) = Self::bimodal_gap_split(&gaps, fs) {
+                    for slot in out.iter_mut().take(j + 1).skip(i) {
+                        *slot = Some(split);
+                    }
+                }
+            }
+            i = j + 1;
+        }
+        out
+    }
+
+    /// Given the consecutive inter-span gaps of one baseline run, return the
+    /// threshold separating an intra-word cluster from an inter-word cluster
+    /// when the distribution is clearly bimodal, else `None`. `fs` is the
+    /// run's font size; all bounds are expressed as em fractions so headings
+    /// and body calibrate independently.
+    fn bimodal_gap_split(gaps: &[f32], fs: f32) -> Option<f32> {
+        if gaps.len() < 3 {
+            return None;
+        }
+        let mut sorted = gaps.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Widest jump between consecutive sorted gaps = candidate cluster border.
+        let mut best_jump = 0.0f32;
+        let mut lo = 0.0f32;
+        let mut hi = 0.0f32;
+        for w in sorted.windows(2) {
+            let jump = w[1] - w[0];
+            if jump > best_jump {
+                best_jump = jump;
+                lo = w[0];
+                hi = w[1];
+            }
+        }
+        // Bimodal iff: the low side is intra-word sized (< 0.10 em — kerning,
+        // touching side-bearings, or overlap), the high side is at least a
+        // narrow word gap (>= 0.12 em), and the jump between them is a real
+        // separation (>= 0.08 em) rather than a smooth spread. These reject a
+        // single-word line (all gaps low) and a normally-spaced line (all gaps
+        // already above the default guard, so no rescue is needed anyway).
+        if lo < fs * 0.10 && hi >= fs * 0.12 && best_jump >= fs * 0.08 {
+            Some((lo + hi) * 0.5)
+        } else {
+            None
+        }
+    }
+
     /// This matches the behavior of industry-standard PDF tools.
     fn merge_adjacent_spans(&mut self) {
         if self.spans.is_empty() {
@@ -4459,10 +4553,14 @@ impl<'doc> TextExtractor<'doc> {
             .filter(|s| !s.text.trim().is_empty())
             .map(|s| s.bbox)
             .collect();
+        // #847 M2: per-line bimodal word-gap thresholds, indexed to `spans`,
+        // used below to rescue a narrow word gap the fixed kerning guard
+        // suppressed. Computed before the fold consumes the list.
+        let line_thresholds = Self::bimodal_line_gap_thresholds(&spans);
         let mut merged = Vec::with_capacity(old_len);
         let mut current_span: Option<TextSpan> = None;
 
-        for span in spans {
+        for (span_idx, span) in spans.into_iter().enumerate() {
             if current_span.is_none() {
                 // First span — move, no clone needed
                 current_span = Some(span);
@@ -4791,6 +4889,29 @@ impl<'doc> TextExtractor<'doc> {
                         current.font_size,
                         span.font_size,
                     );
+
+                    // #847 M2: narrow-word-gap rescue. The fixed intra-word
+                    // kerning guard suppresses genuine word gaps on condensed/
+                    // tracked lines with no space glyph (bold headings, running
+                    // footers). When this line's own gap distribution is clearly
+                    // bimodal and this gap sits in the inter-word cluster, honor
+                    // the boundary. Only ever ADDS a space (never removes one),
+                    // and ONLY when the suppression came from the purely-
+                    // geometric intra-word kerning guard — never the semantic
+                    // no-space rules (complex-script/Brahmic, CJK, ligature),
+                    // else Bengali/Devanagari syllables shatter into fragments.
+                    // RTL is excluded too — the ReversedChars guard below owns
+                    // that decision.
+                    if space_decision.source == SpaceSource::IntraWordKerning
+                        && !self.saw_reversed_chars
+                    {
+                        if let Some(thr) = line_thresholds.get(span_idx).copied().flatten() {
+                            if gap > thr {
+                                space_decision =
+                                    SpaceDecision::insert(SpaceSource::GeometricGap, 0.9);
+                            }
+                        }
+                    }
 
                     // ReversedChars Arabic word-shatter guard (ISO 32000-1
                     // §14.8.2.3.3). On a page that draws RTL glyphs individually
@@ -8915,6 +9036,38 @@ mod tests {
     use super::*;
     use crate::fonts::{Encoding, LazyCMap};
     use std::sync::Arc;
+
+    /// #847 M2: a condensed bold heading typeset with no space glyph — the
+    /// intra-word glyph gaps cluster near zero (tight/overlapping side-bearings)
+    /// while inter-word gaps sit at ~0.18 em. The split must land between the
+    /// clusters so a gap of ~0.18 em reads as a word boundary.
+    #[test]
+    fn test_bimodal_gap_split_heading() {
+        // fs = 20.5; intra-word ~0/negative, inter-word ~3.7pt (0.18 em).
+        let gaps = [-0.5, -0.7, -0.3, 3.72, 3.70, 3.68, -0.4, 3.71];
+        let split = TextExtractor::bimodal_gap_split(&gaps, 20.5);
+        let split = split.expect("clearly bimodal line must yield a split");
+        assert!(
+            split > 0.0 && split < 3.5,
+            "split {split} must separate the ~0 and ~3.7pt clusters"
+        );
+    }
+
+    /// A normally-spaced line (all gaps already a full word-space) is NOT
+    /// bimodal — there is no narrow-gap rescue to perform, so `None`.
+    #[test]
+    fn test_bimodal_gap_split_uniform_word_spacing_none() {
+        let gaps = [6.0, 6.1, 5.9, 6.05, 5.95];
+        assert!(TextExtractor::bimodal_gap_split(&gaps, 12.0).is_none());
+    }
+
+    /// A single word (all gaps intra-word, near zero) has no inter-word
+    /// cluster — must return `None`, never fabricate a boundary.
+    #[test]
+    fn test_bimodal_gap_split_single_word_none() {
+        let gaps = [-0.5, -0.7, -0.3, 0.1, -0.4];
+        assert!(TextExtractor::bimodal_gap_split(&gaps, 20.5).is_none());
+    }
 
     #[test]
     fn test_snap_run_rotation() {
