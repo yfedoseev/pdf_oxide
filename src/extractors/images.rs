@@ -415,6 +415,22 @@ impl PdfImage {
     pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
         match &self.data {
             ImageData::Jpeg(jpeg_data) => {
+                if self.color_space.components() == 4 {
+                    // 4-component (DeviceCMYK / ICCBased N=4) JPEGs must go
+                    // through the Adobe-aware CMYK path. image::load_from_memory
+                    // routes them through zune-jpeg's own CMYK->RGB, which does
+                    // not honor the APP14 inversion and yields near-black output
+                    // (see decode_cmyk_jpeg_to_rgb_with_profile).
+                    let transform = self.build_icc_transform();
+                    let rgb = decode_cmyk_jpeg_to_rgb_with_profile(jpeg_data, transform.as_ref())?;
+                    return image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                        self.width,
+                        self.height,
+                        rgb,
+                    )
+                    .ok_or_else(|| Error::Decode("Invalid CMYK image dimensions".to_string()))
+                    .map(image::DynamicImage::ImageRgb8);
+                }
                 log::debug!(
                     "Decoding JPEG data ({} bytes), starts with: {:02X?}",
                     jpeg_data.len(),
@@ -1476,25 +1492,30 @@ pub fn decode_cmyk_jpeg_to_rgb(jpeg_data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decode a DeviceCMYK JPEG to raw 8-bpc CMYK samples (W*H*4 bytes,
-/// channel order C, M, Y, K). Output is straight CMYK: 0 = no ink, 255 =
-/// full coverage.
+/// channel order C, M, Y, K). Output is the raw DCT sample plane treated
+/// as straight CMYK ink (0 = no ink, 255 = full coverage), matching how
+/// poppler / Ghostscript render DCTDecode CMYK streams inside a PDF.
 ///
-/// Handling depends on the Adobe APP14 marker (if present):
+/// `jpeg-decoder` 0.3 applies Adobe's `255 - x` inversion to EVERY
+/// 4-component JPEG that carries an Adobe APP14 marker
+/// (`color_convert_line_cmyk` for `transform = 0`; `color_convert_line_ycck`
+/// for `transform = 2`). PDF renderers do not do that inversion - they use
+/// the raw DCT samples as the CMYK ink. So whenever an Adobe marker is
+/// present, pdf_oxide must undo the decoder's inversion with a second
+/// `255 - x` to recover the raw samples:
 ///
-/// - `color_transform = 0` (plain CMYK, Photoshop default) or no APP14 —
-///   `jpeg-decoder` 0.3's `color_convert_line_cmyk` already inverts the
-///   Adobe-stored bytes back to straight CMYK. No further work needed.
-/// - `color_transform = 2` (YCCK, Adobe Illustrator default) —
-///   `jpeg-decoder` runs `color_convert_line_ycck` which converts YCbCr
-///   to RGB and applies `255 - K`. For Adobe YCCK the YCbCr was derived
-///   from `(255-C, 255-M, 255-Y)` so the decoder's output bytes are the
-///   *inverted* CMYK form. Apply `255 - x` to all four channels to
-///   recover straight CMYK.
+/// - `color_transform = 0` (plain CMYK, Photoshop / Distiller default) -
+///   undo the decoder's `color_convert_line_cmyk` inversion.
+/// - `color_transform = 2` (YCCK, Adobe Illustrator default) - the decoder
+///   ran YCbCr->RGB plus `255 - K`; the same `255 - x` on all four channels
+///   recovers the raw CMYK plane.
+/// - no APP14 marker - the samples are used as-is (non-Adobe convention),
+///   left unchanged to avoid disturbing non-Adobe JPEG handling.
 ///
-/// The dependency contract for plain CMYK (transform=0) is pinned by
-/// `tests/test_jpeg_decoder_cmyk_contract.rs`; the YCCK fixture path is
+/// The jpeg-decoder inversion contract is pinned by
+/// `tests/test_jpeg_decoder_cmyk_contract.rs`; the Adobe decode path is
 /// covered by `tests/test_cmyk_jpeg_adobe_inversion.rs`. If a future
-/// jpeg-decoder release changes either behaviour, those tests fire
+/// jpeg-decoder release changes its inversion behaviour, those tests fire
 /// before real fixtures regress.
 ///
 /// Used by the separation pipeline to route CMYK image channels directly
@@ -1523,7 +1544,10 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
 
     let mut raw = cmyk;
     raw.truncate(expected);
-    if scan_app14_color_transform(jpeg_data) == Some(2) {
+    // An Adobe APP14 marker (transform 0 = CMYK, 2 = YCCK) means jpeg-decoder
+    // has already applied a `255 - x` inversion; undo it to recover the raw
+    // DCT samples poppler uses as straight CMYK ink.
+    if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
         for b in raw.iter_mut() {
             *b = 255 - *b;
         }
@@ -1537,9 +1561,10 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
 /// colour space (or when the document's `OutputIntents` supplied a
 /// default CMYK profile).
 ///
-/// APP14 handling matches `decode_cmyk_jpeg_to_raw_cmyk`: plain CMYK
-/// passes through, YCCK is inverted on all four channels to recover
-/// straight CMYK before the colour-space conversion.
+/// APP14 handling matches `decode_cmyk_jpeg_to_raw_cmyk`: when an Adobe
+/// marker is present (CMYK transform 0 or YCCK transform 2), jpeg-decoder's
+/// `255 - x` inversion is undone to recover the raw DCT samples poppler
+/// treats as straight CMYK; without a marker the samples pass through.
 pub fn decode_cmyk_jpeg_to_rgb_with_profile(
     jpeg_data: &[u8],
     transform: Option<&crate::color::Transform>,
@@ -1562,11 +1587,16 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
         )));
     }
 
-    let straight_cmyk: Vec<u8> = if scan_app14_color_transform(jpeg_data) == Some(2) {
-        cmyk[..expected].iter().map(|b| 255 - *b).collect()
-    } else {
-        cmyk[..expected].to_vec()
-    };
+    // Undo jpeg-decoder's Adobe `255 - x` inversion (applied for any APP14
+    // CMYK transform 0 or YCCK transform 2) to recover the raw DCT samples,
+    // which poppler / Ghostscript render as straight CMYK ink. No marker ->
+    // pass through unchanged.
+    let straight_cmyk: Vec<u8> =
+        if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
+            cmyk[..expected].iter().map(|b| 255 - *b).collect()
+        } else {
+            cmyk[..expected].to_vec()
+        };
 
     if let Some(t) = transform {
         return Ok(t.convert_cmyk_buffer(&straight_cmyk));

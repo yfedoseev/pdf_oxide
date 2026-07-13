@@ -550,16 +550,24 @@ fn devicen_image_routes_each_channel_to_its_named_plate() {
     );
 }
 
-/// Encode an 8×8 CMYK pixel buffer as a JPEG via `jpeg-encoder`'s
-/// `ColorType::Cmyk` path, which inverts the samples and writes the
-/// Adobe APP14 marker with `color_transform = 0`.  Round-tripping through
-/// `decode_cmyk_jpeg_to_raw_cmyk` should restore the original samples.
-fn encode_cmyk_jpeg(cmyk: &[u8], width: u16, height: u16) -> Vec<u8> {
+/// Encode an 8x8 CMYK image as a JPEG whose RAW DCT sample plane equals
+/// `raw_cmyk` per channel (straight CMYK: 0 = no ink, 255 = full ink - the
+/// convention real Distiller / Quark PDFs write and poppler / Ghostscript
+/// decode).
+///
+/// `jpeg-encoder`'s `ColorType::Cmyk` path inverts on encode (stores
+/// `255 - input` in the entropy stream) and writes an Adobe APP14
+/// `color_transform = 0` marker, so we feed it the per-channel complement to
+/// land the intended raw samples in the stream. On the read side jpeg-decoder
+/// applies its own `255 - x` for the Adobe marker, which
+/// `decode_cmyk_jpeg_to_raw_cmyk` undoes, yielding `raw_cmyk` back.
+fn encode_cmyk_jpeg(raw_cmyk: &[u8], width: u16, height: u16) -> Vec<u8> {
     use jpeg_encoder::{ColorType, Encoder};
+    let inverted: Vec<u8> = raw_cmyk.iter().map(|b| 255 - *b).collect();
     let mut out = Vec::new();
     let encoder = Encoder::new(&mut out, 95);
     encoder
-        .encode(cmyk, width, height, ColorType::Cmyk)
+        .encode(&inverted, width, height, ColorType::Cmyk)
         .expect("encode CMYK JPEG");
     out
 }
@@ -600,13 +608,17 @@ fn build_pdf_with_cmyk_jpeg(jpeg: &[u8], width: u32, height: u32) -> Vec<u8> {
     finalize_pdf(buf, offsets)
 }
 
-/// CMYK JPEG with Adobe APP14 marker (color_transform = 0): the JPEG file
-/// stores `255 - sample` per channel, and the renderer must invert on
-/// decode (per `decode_cmyk_jpeg_to_raw_cmyk`). Without the inversion,
-/// a pure-cyan input image would render with M / Y / K instead of C.
+/// CMYK JPEG with an Adobe APP14 marker (color_transform = 0). jpeg-decoder
+/// applies a `255 - x` inversion to every Adobe-marked CMYK JPEG; poppler /
+/// Ghostscript instead treat the raw DCT samples as straight CMYK ink, so
+/// `decode_cmyk_jpeg_to_raw_cmyk` undoes that inversion. This test builds a
+/// straight-CMYK pure-cyan image (raw DCT samples C=255, M=Y=K=0 - the
+/// real-world Distiller / Quark convention) and checks it lands on the Cyan
+/// plate. Without the inversion-undo the samples would read M = Y = K high
+/// and Cyan low - the near-black failure mode this test guards against.
 #[test]
 fn cmyk_jpeg_app14_inversion_round_trips_to_correct_plate() {
-    // 8×8 pure-cyan CMYK image: C=255, M=Y=K=0 everywhere.
+    // 8x8 pure-cyan straight-CMYK image: raw DCT samples C=255, M=Y=K=0.
     let mut cmyk = Vec::with_capacity(8 * 8 * 4);
     for _ in 0..(8 * 8) {
         cmyk.extend_from_slice(&[255, 0, 0, 0]);
@@ -620,9 +632,9 @@ fn cmyk_jpeg_app14_inversion_round_trips_to_correct_plate() {
     let yellow_v = sample(plate(&plates, "Yellow"), 50, 50);
     let black_v = sample(plate(&plates, "Black"), 50, 50);
 
-    // After APP14 inversion the Cyan plate should be high (lossy JPEG keeps
-    // it ≳ 200). Without inversion the bytes would read M = Y = K ≈ 255 and
-    // Cyan ≈ 0 — exactly the failure mode this test guards against.
+    // The Cyan plate should be high (lossy JPEG keeps it >= 200). Without the
+    // inversion-undo the bytes would read M = Y = K ~ 255 and Cyan ~ 0 -
+    // exactly the failure mode this test guards against.
     assert!(
         cyan_v > 200,
         "Cyan plate after APP14 inversion; got {cyan_v} (M={magenta_v} Y={yellow_v} K={black_v})"
