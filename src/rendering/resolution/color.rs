@@ -483,6 +483,13 @@ impl ColorResolver {
         let alt_cs_name = alt_cs_obj.as_name();
 
         let altspace_values: Vec<f32> = match func_type {
+            0 | 3 => match evaluate_tint_function(ctx, &func_resolved, components[0], 0) {
+                Some(v) => v,
+                // Outside the supported envelope (multi-dimensional Type 0,
+                // exotic bit depths, malformed Domain, over-deep nesting):
+                // keep the long-standing fallback rather than guess.
+                None => return Ok(invert_tint_fallback(components, alpha)),
+            },
             2 => evaluate_type2(func_dict, components[0]),
             4 => evaluate_type4(&func_resolved, components)?,
             _ => return Ok(invert_tint_fallback(components, alpha)),
@@ -786,6 +793,161 @@ fn evaluate_type4(func_obj: &Object, components: &[f32]) -> Result<Vec<f32>> {
     let inputs: Vec<f64> = components.iter().map(|&v| v as f64).collect();
     let out = crate::functions::evaluate_type4_clamped(&bytes, &inputs, &domain, &range)?;
     Ok(out.into_iter().map(|v| v as f32).collect())
+}
+
+/// Evaluate a single-input tint-transform function of Type 0, 2, 3 or 4
+/// (SS 7.10). Used for the Separation / 1-input DeviceN path; `depth` caps
+/// Type 3 nesting so a self-referential /Functions array cannot recurse
+/// unboundedly. Returns `None` for anything outside the supported envelope so
+/// the caller can apply its established fallback instead of guessing.
+fn evaluate_tint_function(
+    ctx: &ResolutionContext,
+    func_resolved: &Object,
+    x: f32,
+    depth: usize,
+) -> Option<Vec<f32>> {
+    const MAX_TINT_DEPTH: usize = 4;
+    if depth >= MAX_TINT_DEPTH {
+        return None;
+    }
+    let dict = func_resolved.as_dict()?;
+    let func_type = dict.get("FunctionType").and_then(|o| o.as_integer())?;
+    match func_type {
+        0 => evaluate_type0_sampled(func_resolved, x),
+        2 => Some(evaluate_type2(dict, x)),
+        3 => evaluate_type3_stitching(ctx, dict, x, depth),
+        4 => evaluate_type4(func_resolved, &[x]).ok(),
+        _ => None,
+    }
+}
+
+/// Evaluate a Type 0 (sampled) function for ONE input (SS 7.10.2) - the common
+/// Separation tint-transform shape: 1-D `/Size`, 8- or 16-bit samples, linear
+/// interpolation between the two adjacent samples, outputs mapped through
+/// `/Range`. Returns `None` outside that envelope (multi-dimensional input,
+/// other bit depths, a non-default `/Encode`/`/Decode`, malformed `/Domain`,
+/// or a truncated / oversized sample stream).
+fn evaluate_type0_sampled(func_obj: &Object, x: f32) -> Option<Vec<f32>> {
+    let Object::Stream { dict, .. } = func_obj else {
+        return None;
+    };
+    let size = dict.get("Size").and_then(|o| o.as_array())?;
+    if size.len() != 1 {
+        return None; // 1-D input only
+    }
+    let n_samples = object_to_f64(size.first()?) as usize;
+    if n_samples == 0 {
+        return None;
+    }
+    let bps = dict
+        .get("BitsPerSample")
+        .and_then(|o| o.as_integer())
+        .unwrap_or(8);
+    if !(bps == 8 || bps == 16) {
+        return None;
+    }
+    // Non-default /Encode or /Decode changes the sample mapping; falling back
+    // beats silently evaluating with default semantics.
+    if dict.contains_key("Encode") || dict.contains_key("Decode") {
+        return None;
+    }
+    let range = dict.get("Range").and_then(|o| o.as_array())?;
+    let range = array_to_pairs(range);
+    let n_out = range.len();
+    if n_out == 0 {
+        return None;
+    }
+    let domain = dict
+        .get("Domain")
+        .and_then(|o| o.as_array())
+        .map(|a| array_to_pairs(a))
+        .unwrap_or_default();
+    let (d0, d1) = domain.first().map(|p| (p[0], p[1])).unwrap_or((0.0, 1.0));
+    if !(d0.is_finite() && d1.is_finite() && d0 <= d1) {
+        return None; // f64::clamp panics on NaN bounds or min > max
+    }
+    let raw = func_obj.decode_stream_data().ok()?;
+    let bytes_per = if bps == 8 { 1usize } else { 2 };
+    let needed = n_samples.checked_mul(n_out)?.checked_mul(bytes_per)?;
+    if raw.len() < needed {
+        return None;
+    }
+    let max = if bps == 8 { 255.0 } else { 65535.0 };
+    let t = (x as f64).clamp(d0, d1);
+    let span = d1 - d0;
+    let pos = if span <= f64::EPSILON {
+        0.0
+    } else {
+        (t - d0) / span * (n_samples - 1) as f64
+    };
+    let i = (pos.floor() as usize).min(n_samples - 1);
+    let j = (i + 1).min(n_samples - 1);
+    let frac = pos - i as f64;
+    let sample = |s: usize, k: usize| -> f64 {
+        let at = (s * n_out + k) * bytes_per;
+        let v = if bps == 8 {
+            raw[at] as f64
+        } else {
+            u16::from_be_bytes([raw[at], raw[at + 1]]) as f64
+        } / max;
+        let [r0, r1] = range[k];
+        r0 + v * (r1 - r0)
+    };
+    Some(
+        (0..n_out)
+            .map(|k| {
+                let a = sample(i, k);
+                let b = sample(j, k);
+                (a + frac * (b - a)) as f32
+            })
+            .collect(),
+    )
+}
+
+/// Evaluate a Type 3 (stitching) function for ONE input (SS 7.10.4): pick the
+/// sub-function whose domain slice contains `x`, remap through `/Encode`, and
+/// delegate (sub-functions may be Type 0/2/4 or nested Type 3, depth-capped).
+fn evaluate_type3_stitching(
+    ctx: &ResolutionContext,
+    dict: &std::collections::HashMap<String, Object>,
+    x: f32,
+    depth: usize,
+) -> Option<Vec<f32>> {
+    let domain = dict.get("Domain").and_then(|o| o.as_array())?;
+    let domain = array_to_pairs(domain);
+    let (d0, d1) = domain.first().map(|p| (p[0], p[1]))?;
+    if !(d0.is_finite() && d1.is_finite() && d0 <= d1) {
+        return None;
+    }
+    let bounds: Vec<f64> = dict
+        .get("Bounds")
+        .and_then(|o| o.as_array())
+        .map(|a| a.iter().map(object_to_f64).collect())
+        .unwrap_or_default();
+    let encode = dict
+        .get("Encode")
+        .and_then(|o| o.as_array())
+        .map(|a| array_to_pairs(a))
+        .unwrap_or_default();
+    let funcs = dict.get("Functions").and_then(|o| o.as_array())?;
+    if funcs.is_empty() {
+        return None;
+    }
+    let t = (x as f64).clamp(d0, d1);
+    let mut k = 0usize;
+    while k < bounds.len() && t >= bounds[k] {
+        k += 1;
+    }
+    let lo = if k == 0 { d0 } else { bounds[k - 1] };
+    let hi = if k == bounds.len() { d1 } else { bounds[k] };
+    let (e0, e1) = encode.get(k).map(|p| (p[0], p[1])).unwrap_or((0.0, 1.0));
+    let u = if (hi - lo).abs() <= f64::EPSILON {
+        e0
+    } else {
+        e0 + (t - lo) / (hi - lo) * (e1 - e0)
+    };
+    let sub = ctx.doc.resolve_object(funcs.get(k)?).ok()?;
+    evaluate_tint_function(ctx, &sub, u as f32, depth + 1)
 }
 
 /// Flatten a `[min1 max1 min2 max2 ...]` PDF array into `[[min, max], ...]`.
