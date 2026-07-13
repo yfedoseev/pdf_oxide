@@ -1162,6 +1162,30 @@ fn decimal_gap_has_ink(ink_boxes: &[Rect], left: &Rect, right: &Rect) -> bool {
     })
 }
 
+/// True when a *full intervening glyph* occupies the horizontal gap between
+/// `left` and `right` — e.g. a subscript drawn between a variable and the next
+/// symbol (`λᵢr…`), which inflates the `λ`→`r` gap though both share a
+/// baseline. Distinct from [`decimal_gap_has_ink`]: it requires an ink box to
+/// cover a substantial fraction (>= 35%) of the gap width, so a mere
+/// descender/ascender edge of an adjacent glyph clipping the gap band does NOT
+/// count. Used by the #847 narrow-word-gap rescue to suppress splitting a math
+/// sub/superscript from its base while still recovering ordinary prose word
+/// gaps (whose gaps are empty of intervening ink).
+fn gap_has_intervening_glyph(ink_boxes: &[Rect], left: &Rect, right: &Rect) -> bool {
+    let gap_start = left.x + left.width;
+    let gap_end = right.x;
+    let gap_w = gap_end - gap_start;
+    if gap_w <= 0.5 {
+        return false;
+    }
+    let band_bottom = left.y.min(right.y);
+    let band_top = (left.y + left.height).max(right.y + right.height);
+    ink_boxes.iter().any(|b| {
+        let overlap = (b.x + b.width).min(gap_end) - b.x.max(gap_start);
+        overlap > gap_w * 0.35 && b.y < band_top && b.y + b.height > band_bottom
+    })
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -4481,8 +4505,17 @@ impl<'doc> TextExtractor<'doc> {
                     .fold(0.0f32, f32::max)
                     .max(1.0);
                 // ALL consecutive gaps (intra-word gaps are near-zero or
-                // slightly negative, so they must be kept, not filtered).
+                // slightly negative, so they must be kept, not filtered) — but
+                // ONLY between glyphs sharing a baseline. A super/subscript sits
+                // at a baseline shift (~0.15 em) and its horizontal gap to the
+                // base is the same ~0.10 em magnitude as a condensed footer's
+                // word gap; including it would let the narrow-gap rescue split a
+                // math subscript from its variable (`λᵢ` → `λ i`), which the
+                // advance-aware extractors correctly do NOT do. Excluding
+                // baseline-shifted pairs keeps the footer word gap (same
+                // baseline) while leaving dense math untouched.
                 let gaps: Vec<f32> = (i..j)
+                    .filter(|&k| (spans[k].bbox.y - spans[k + 1].bbox.y).abs() < fs * 0.04)
                     .map(|k| spans[k + 1].bbox.x - (spans[k].bbox.x + spans[k].bbox.width))
                     .collect();
                 if let Some(split) = Self::bimodal_gap_split(&gaps, fs) {
@@ -4507,29 +4540,31 @@ impl<'doc> TextExtractor<'doc> {
         }
         let mut sorted = gaps.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        // Widest jump between consecutive sorted gaps = candidate cluster border.
-        let mut best_jump = 0.0f32;
-        let mut lo = 0.0f32;
-        let mut hi = 0.0f32;
+        // Return the LOWEST cluster border, not the widest jump: walking the
+        // sorted gaps from the bottom, the first jump that leaves the intra-word
+        // cluster for a real word gap. A qualifying border needs
+        //   * an intra-word-sized low side (< 0.10 em — kerning, tight
+        //     side-bearings, or overlap),
+        //   * a high side that is a real (if narrow) word gap (>= 0.09 em) —
+        //     reaching the ~0.10 em gaps of condensed running footers that
+        //     pymupdf/pdfplumber's fixed thresholds miss (an explicit positive
+        //     advance IS a word-boundary signal, ISO 32000-1 §9.4.4), and
+        //   * a real separation between them (>= 0.08 em), not a smooth spread.
+        // Taking the LOWEST such border handles a *multi-level* condensed line —
+        // tight intra-word gaps, a narrow ~0.10 em word gap, AND a wide real
+        // space glyph — splitting at every level above intra-word, matching the
+        // advance-aware extractors (pdfminer, poppler). A single-word line (all
+        // gaps low) yields no qualifying border and returns None. The caller
+        // feeds only SAME-BASELINE gaps, so a math subscript gap of the same
+        // magnitude (which sits at a baseline shift) never enters this
+        // distribution and is not split.
         for w in sorted.windows(2) {
-            let jump = w[1] - w[0];
-            if jump > best_jump {
-                best_jump = jump;
-                lo = w[0];
-                hi = w[1];
+            let (lo, hi) = (w[0], w[1]);
+            if lo < fs * 0.10 && hi >= fs * 0.09 && (hi - lo) >= fs * 0.08 {
+                return Some((lo + hi) * 0.5);
             }
         }
-        // Bimodal iff: the low side is intra-word sized (< 0.10 em — kerning,
-        // touching side-bearings, or overlap), the high side is at least a
-        // narrow word gap (>= 0.12 em), and the jump between them is a real
-        // separation (>= 0.08 em) rather than a smooth spread. These reject a
-        // single-word line (all gaps low) and a normally-spaced line (all gaps
-        // already above the default guard, so no rescue is needed anyway).
-        if lo < fs * 0.10 && hi >= fs * 0.12 && best_jump >= fs * 0.08 {
-            Some((lo + hi) * 0.5)
-        } else {
-            None
-        }
+        None
     }
 
     /// This matches the behavior of industry-standard PDF tools.
@@ -4913,9 +4948,36 @@ impl<'doc> TextExtractor<'doc> {
                     // else Bengali/Devanagari syllables shatter into fragments.
                     // RTL is excluded too — the ReversedChars guard below owns
                     // that decision.
+                    // Two guards keep the narrow-gap rescue off dense math, whose
+                    // sub/superscript gaps are the same ~0.10 em magnitude as a
+                    // condensed footer's word gap:
+                    //   * same-baseline: never rescue directly across a
+                    //     super/subscript baseline shift, and
+                    //   * empty-gap: never rescue when another glyph's ink sits
+                    //     inside the gap — a subscript drawn between a variable
+                    //     and the next symbol (`λᵢ r…`) inflates the `λ`→`r` gap
+                    //     though both share the baseline; the ink in the gap marks
+                    //     it as not-a-word-boundary. A genuine footer word gap is
+                    //     empty. (`λᵢ` must not become `λ i`.)
+                    let same_baseline = (current.bbox.y - span.bbox.y).abs()
+                        < current.font_size.max(span.font_size).max(1.0) * 0.04;
                     if space_decision.source == SpaceSource::IntraWordKerning
                         && !self.saw_reversed_chars
+                        && same_baseline
+                        && !gap_has_intervening_glyph(&ink_boxes, &current.bbox, &span.bbox)
                     {
+                        // Split only when the PER-LINE bimodal threshold fires.
+                        // A uniform per-pair advance floor (the way pdfminer/
+                        // poppler decide word boundaries) would catch a few more
+                        // footer instances this adaptive test misses, but a fixed
+                        // magnitude cannot tell a 0.10 em condensed word gap from
+                        // 0.10 em loose intra-word tracking, so it also splits
+                        // real words on loosely-set/scanned lines
+                        // (`walking` → `wa lking`) — exactly the over-splitting
+                        // pdfminer exhibits. The per-line bimodal only fires when
+                        // the intra-word cluster is genuinely tight, so it never
+                        // over-splits, at the cost of the handful of footer
+                        // instances whose gap distribution is not cleanly bimodal.
                         if let Some(thr) = line_thresholds.get(span_idx).copied().flatten() {
                             if gap > thr {
                                 space_decision =
@@ -9115,6 +9177,55 @@ mod tests {
     fn test_bimodal_gap_split_single_word_none() {
         let gaps = [-0.5, -0.7, -0.3, 0.1, -0.4];
         assert!(TextExtractor::bimodal_gap_split(&gaps, 20.5).is_none());
+    }
+
+    /// Multi-level condensed footer: near-zero/overlapping intra-word gaps, a
+    /// NARROW ~0.10 em word gap (1.14 pt @ 11 pt), AND a wide ~0.25 em real
+    /// space (2.75 pt) on one line. The split must land just above the
+    /// intra-word cluster — below the narrow gap — so BOTH the narrow word gap
+    /// and the wide space read as boundaries (recovering `All` / `rights` in
+    /// `© ISO 2021 - All rights…`, matching pdfminer/poppler).
+    #[test]
+    fn test_bimodal_gap_split_multilevel_footer() {
+        let gaps = [-0.1, -0.2, -0.15, 1.14, -0.1, -0.05, 2.75, -0.2];
+        let split = TextExtractor::bimodal_gap_split(&gaps, 11.0)
+            .expect("a multi-level line must yield a split");
+        assert!(
+            split > 0.0 && split < 1.14,
+            "split {split} must sit below the narrow 1.14pt word gap so both it and the wide space split"
+        );
+    }
+
+    /// The narrow-gap rescue's math guard: a full subscript glyph occupying the
+    /// gap between a variable and the next symbol must be detected (suppress the
+    /// split, `λᵢr` stays whole), while a mere descender/ascender edge clipping
+    /// the gap band must NOT (so ordinary prose word gaps are still recovered).
+    #[test]
+    fn test_gap_has_intervening_glyph() {
+        let r = |x, y, w, h| crate::geometry::Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
+        // `left` ends at x=10, `right` starts at x=24: a 14-unit gap on the
+        // baseline band [0, 10].
+        let left = r(0.0, 0.0, 10.0, 10.0);
+        let right = r(24.0, 0.0, 10.0, 10.0);
+        // A subscript glyph centred in the gap (x 13..21 = 8 units ≈ 57% of the
+        // 14-unit gap), shifted down but overlapping the band.
+        let subscript = r(13.0, -3.0, 8.0, 8.0);
+        assert!(
+            gap_has_intervening_glyph(&[left, right, subscript], &left, &right),
+            "a full subscript occupying the gap must be detected"
+        );
+        // A descender edge just clipping the gap (x 9..12 = only ~2 units into
+        // the 14-unit gap, < 35%) must NOT count.
+        let descender_edge = r(9.0, -4.0, 3.0, 6.0);
+        assert!(
+            !gap_has_intervening_glyph(&[left, right, descender_edge], &left, &right),
+            "a descender edge clipping the gap must not be treated as an intervening glyph"
+        );
     }
 
     #[test]
