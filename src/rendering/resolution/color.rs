@@ -466,6 +466,18 @@ impl ColorResolver {
             None => return Ok(invert_tint_fallback(components, alpha)),
         };
 
+        // The alternate colour space may itself be an indirect reference
+        // (e.g. `[/Separation /Spot 6 0 R 5 0 R]`) - resolve it before
+        // inspecting its shape, mirroring how `func_obj` is resolved just
+        // below. Otherwise `.as_name()` returns `None` on the unresolved
+        // `Reference` and the compound-array check also fails, so control
+        // falls through to the `first_as_gray` fallback for a colour space
+        // that is really `/DeviceRGB` or an indirect `[/ICCBased ...]`.
+        let alt_cs_resolved = match ctx.doc.resolve_object(alt_cs_obj) {
+            Ok(o) => o,
+            Err(_) => return Ok(invert_tint_fallback(components, alpha)),
+        };
+
         let func_resolved = match ctx.doc.resolve_object(func_obj) {
             Ok(o) => o,
             Err(_) => return Ok(invert_tint_fallback(components, alpha)),
@@ -480,7 +492,7 @@ impl ColorResolver {
             .and_then(|o| o.as_integer())
             .unwrap_or(-1);
 
-        let alt_cs_name = alt_cs_obj.as_name();
+        let alt_cs_name = alt_cs_resolved.as_name();
 
         let altspace_values: Vec<f32> = match func_type {
             2 => evaluate_type2(func_dict, components[0]),
@@ -517,8 +529,8 @@ impl ColorResolver {
                 // logical Spaced colour and recurse — this lets a
                 // Separation with an ICC alternate route through the ICC
                 // branch correctly.
-                if let Object::Array(_) = alt_cs_obj {
-                    self.resolve_spaced(alt_cs_obj, &altspace_values, ctx, alpha)
+                if let Object::Array(_) = alt_cs_resolved {
+                    self.resolve_spaced(&alt_cs_resolved, &altspace_values, ctx, alpha)
                 } else {
                     Ok(first_as_gray(&altspace_values, alpha))
                 }
