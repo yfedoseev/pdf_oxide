@@ -22280,8 +22280,14 @@ impl PdfDocument {
                 // When several subsets share a base name, `get_font_set()` yields
                 // them in HashMap order, so `or_insert` kept a NONDETERMINISTIC
                 // one - the returned bytes changed run to run for the same PDF.
-                // Keep the LARGEST subset (most glyph coverage), with a byte
-                // comparison to break ties, so the choice is total-order stable.
+                //
+                // Choose by a TOTAL ORDER instead: largest program, ties broken
+                // bytewise. Size is only a heuristic for "the richer subset" - a
+                // program's byte count also grows with hinting and auxiliary
+                // tables, so a larger subset is not necessarily a superset of a
+                // smaller one. What the total order does guarantee is the property
+                // callers actually depend on: the same PDF always yields the same
+                // bytes.
                 match by_name.entry(canonical.to_string()) {
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(data.as_ref().clone());
@@ -22500,10 +22506,21 @@ impl PdfDocument {
                 let entry = by_name
                     .entry(canonical.to_string())
                     .or_insert_with(|| (data.as_ref().clone(), HashMap::new(), HashMap::new()));
-                // Deterministic subset choice: keep the largest font program
-                // (tie-broken by bytes) instead of whichever HashMap order
-                // surfaced first. The Unicode/width maps accumulate across all
-                // subsets below regardless, so coverage is never reduced.
+                // Same total-order choice as `extract_embedded_fonts`: largest
+                // program, ties broken bytewise, rather than whichever HashMap
+                // order surfaced first. (Size is a heuristic for the richer
+                // subset, not a proof of superset - see the note there.)
+                //
+                // KNOWN GAP, deliberately left for a follow-up: the maps below
+                // still merge across ALL subsets while the emitted program is now
+                // a single chosen one, so a GID in the maps need not exist in the
+                // program we hand back. Worse, when two subsets disagree about a
+                // codepoint's GID - which subsets of one base font routinely do -
+                // `or_insert` keeps whichever arrived first, so the maps carry the
+                // very HashMap-order nondeterminism this fix removes from the
+                // program. Fixing it means binding the maps to the chosen subset
+                // instead of merging; that is a behaviour change (coverage may
+                // shrink where subsets are disjoint) and belongs in its own PR.
                 let cand = data.as_ref();
                 if (cand.len(), cand.as_slice()) > (entry.0.len(), entry.0.as_slice()) {
                     entry.0 = cand.clone();
@@ -23534,6 +23551,164 @@ mod tests {
 
     /// Build a minimal PDF with a `/Font` resource (needed for `Tf`/`Tj`
     /// to resolve glyph widths), used by the NaN-bbox regression test.
+    /// Build a one-page PDF embedding TWO subsets of the SAME base font -
+    /// `ABCDEF+Helvetica` and `GHIJKL+Helvetica` - whose font programs differ
+    /// in size. `big_in_f1` chooses which resource slot carries the larger
+    /// program, so a caller can show the choice does not depend on the order
+    /// the fonts are encountered.
+    ///
+    /// Returns `(pdf_bytes, small_program, big_program)`. The programs are not
+    /// real TrueType: `FontFile2` is decoded and stored verbatim, never parsed,
+    /// so distinguishable payloads keep the test on the dedup logic.
+    fn build_pdf_with_two_font_subsets(big_in_f1: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let small: Vec<u8> = b"SMALL-SUBSET-".iter().cycle().take(64).copied().collect();
+        let big: Vec<u8> = b"BIG-SUBSET-".iter().cycle().take(512).copied().collect();
+        let (f1_prog, f2_prog) = if big_in_f1 {
+            (big.clone(), small.clone())
+        } else {
+            (small.clone(), big.clone())
+        };
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offs: Vec<usize> = Vec::new();
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> >>\nendobj\n",
+        );
+
+        // /F1 = ABCDEF+Helvetica, /F2 = GHIJKL+Helvetica. Same canonical base
+        // name, so they must dedup to a single entry.
+        for (obj, prefix, desc_obj, file_obj, prog) in
+            [(4, "ABCDEF", 5, 6, &f1_prog), (7, "GHIJKL", 8, 9, &f2_prog)]
+        {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{obj} 0 obj\n<< /Type /Font /Subtype /TrueType /BaseFont /{prefix}+Helvetica \
+                     /FontDescriptor {desc_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{desc_obj} 0 obj\n<< /Type /FontDescriptor /FontName /{prefix}+Helvetica \
+                     /Flags 32 /FontFile2 {file_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{file_obj} 0 obj\n<< /Length {} /Length1 {} >>\nstream\n",
+                    prog.len(),
+                    prog.len()
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(prog);
+            pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        }
+
+        // Objects were emitted 1,2,3 then 4,5,6 then 7,8,9 - already in order.
+        let xref_off = pdf.len();
+        let total = offs.len() + 1;
+        pdf.extend_from_slice(format!("xref\n0 {total}\n").as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref_off}\n%%EOF\n")
+                .as_bytes(),
+        );
+
+        (pdf, small, big)
+    }
+
+    /// Two subsets of one base font must dedup to ONE entry, and that entry
+    /// must be the SAME bytes every time - the bug this fix exists for.
+    ///
+    /// `get_font_set()` hands the subsets back in `HashMap` order, and each
+    /// call builds a fresh map whose iteration order is independently seeded,
+    /// so the old `or_insert` returned a different subset from run to run for
+    /// one unchanged PDF. Extracting repeatedly makes that flake fatal rather
+    /// than occasional; swapping which resource slot holds the larger program
+    /// shows the choice is driven by the total order, not by encounter order.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic() {
+        for big_in_f1 in [true, false] {
+            let (pdf, small, big) = build_pdf_with_two_font_subsets(big_in_f1);
+            let mut previous: Option<Vec<u8>> = None;
+
+            for round in 0..64 {
+                let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+                let fonts = doc.extract_embedded_fonts().expect("extract fonts");
+
+                assert_eq!(
+                    fonts.len(),
+                    1,
+                    "the two subsets share a base name and must dedup to one entry \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                let (name, bytes) = &fonts[0];
+                assert_eq!(name, "Helvetica", "the subset prefix must be stripped");
+                assert_eq!(
+                    bytes, &big,
+                    "the LARGER subset must win regardless of which slot holds it \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                assert_ne!(bytes, &small);
+
+                if let Some(prev) = &previous {
+                    assert_eq!(
+                        prev, bytes,
+                        "repeated extraction of one unchanged PDF must be byte-identical \
+                         (big_in_f1={big_in_f1}, round={round})"
+                    );
+                }
+                previous = Some(bytes.clone());
+            }
+        }
+    }
+
+    /// The same guarantee on the variant that also returns the Unicode/width
+    /// maps: it carries its own copy of the subset choice, so it needs its own
+    /// guard against regressing back to `or_insert`.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic_with_maps() {
+        let (pdf, small, big) = build_pdf_with_two_font_subsets(true);
+        let mut previous: Option<Vec<u8>> = None;
+
+        for round in 0..64 {
+            let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+            let fonts = doc
+                .extract_embedded_fonts_with_unicode_maps_and_widths()
+                .expect("extract fonts with maps");
+
+            assert_eq!(fonts.len(), 1, "must dedup to one entry (round={round})");
+            let (name, bytes, _uni, _widths) = &fonts[0];
+            assert_eq!(name, "Helvetica");
+            assert_eq!(bytes, &big, "the LARGER subset must win (round={round})");
+            assert_ne!(bytes, &small);
+
+            if let Some(prev) = &previous {
+                assert_eq!(prev, bytes, "repeated extraction must be stable (round={round})");
+            }
+            previous = Some(bytes.clone());
+        }
+    }
+
     fn build_minimal_pdf_with_font(content: &[u8]) -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
 
