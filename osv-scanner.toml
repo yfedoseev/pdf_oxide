@@ -33,22 +33,12 @@ id = "RUSTSEC-2026-0173"
 # env_logger migrates off proc-macro-error2.
 ignoreUntil = 2026-09-23
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0194"
-# `quick-xml` < 0.41: quadratic-time duplicate-attribute check (DoS only, no
-# memory-safety/RCE). Our direct dependency is already quick-xml 0.41.0 (the
-# fixed version); the only affected instance is quick-xml 0.40.1 pulled
-# transitively by office_oxide 0.1.2, which is the latest 0.1.x and cannot move
-# to 0.41 until office_oxide releases against it. Re-evaluate when it does.
-ignoreUntil = 2026-09-30
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0195"
-# `quick-xml` < 0.41: unbounded namespace-declaration allocation in `NsReader`
-# (memory-exhaustion DoS only). Same situation as RUSTSEC-2026-0194 — fixed in
-# 0.41.0, which we already use directly; only the transitive 0.40.1 via
-# office_oxide 0.1.2 remains. Re-evaluate when office_oxide moves to 0.41.
-ignoreUntil = 2026-09-30
+# RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (quick-xml < 0.41 DoS advisories)
+# were previously ignored because office_oxide 0.1.2 pulled the vulnerable
+# quick-xml 0.40.1 transitively. As of the office_oxide 0.1.4 bump the whole
+# tree resolves to quick-xml 0.41.0 (the fixed version) — no vulnerable
+# instance remains — so both suppressions are removed. OSV-Scanner will now
+# re-flag them if a 0.40.x ever reappears in the lock.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
@@ -58,4 +48,15 @@ id = "RUSTSEC-2026-0192"
 # to read embedded-font `cmap` tables; the actively-maintained replacement
 # (`skrifa`, already a dependency for glyph outlines) requires a non-trivial
 # migration of the cmap path. Re-evaluate once that migration lands.
+ignoreUntil = 2026-09-30
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0206"
+# `rustybuzz` crate: "unmaintained" advisory (informational, not a CVE; no
+# memory-safety or RCE implication — the maintainer has stated the crate will
+# receive no further updates). Published 2026-07-11; there is no patched
+# version. Pulled transitively for text shaping on the (non-default) rendering
+# path only, never in the default extraction feature set. The named successor
+# (`harfrust`, the Harfbuzz project's actively-maintained replacement) requires
+# a non-trivial migration of the shaping path. Re-evaluate once that lands.
 ignoreUntil = 2026-09-30
