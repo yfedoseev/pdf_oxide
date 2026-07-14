@@ -6,8 +6,9 @@
 //! old matrix had a POSITIVE determinant while 0/90/180 all have a negative one
 //! (they carry the PDF y-up -> raster y-down flip) - so text rendered mirrored.
 //!
-//! Each rotation is pinned by WHERE A CORNER MARKER LANDS, which catches a mirror
-//! that a dimensions-only check (see `negative_rotate_rendering.rs`) cannot.
+//! Each rotation is pinned by WHERE A CORNER MARKER LANDS. That is deliberate: a
+//! mirrored page has exactly the RIGHT dimensions, so a width/height check cannot
+//! catch this class of bug - only the corner's quadrant can.
 
 #![cfg(feature = "rendering")]
 
