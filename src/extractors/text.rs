@@ -9087,15 +9087,6 @@ impl<'doc> TextExtractor<'doc> {
     }
 }
 
-/// Convert DeviceCMYK to DeviceRGB per ISO 32000-1:2008 §10.3.5:
-///
-///   R = 1 − min(1, C + K)
-///   G = 1 − min(1, M + K)
-///   B = 1 − min(1, Y + K)
-///
-/// Spec-mandated additive-clamp fallback for when no ICC profile drives
-/// the conversion. The multiplicative `(1-c)(1-k)` form is common in
-/// imaging libraries but is not what §10.3.5 specifies.
 impl<'doc> Default for TextExtractor<'doc> {
     fn default() -> Self {
         Self::new()
