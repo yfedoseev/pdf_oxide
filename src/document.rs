@@ -16981,11 +16981,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // Simple CMYK to RGB conversion
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -17000,10 +16996,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },
@@ -17564,10 +17557,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -17580,10 +17570,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },

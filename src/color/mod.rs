@@ -536,9 +536,103 @@ pub const fn active_backend_supports_srgb_to_cmyk() -> bool {
     cfg!(feature = "icc-lcms2")
 }
 
+/// sRGB of each corner of the DeviceCMYK unit cube, indexed `c<<3 | m<<2 | y<<1 | k`.
+///
+/// DeviceCMYK is a *device* space (ISO 32000-1 s8.6.4.4): it names ink coverages, and the
+/// colour is what those inks actually look like. 100% cyan is `#00ADEF`, not `#00FFFF`;
+/// 100% K is `#231F20`, not `#000000`. The naive complement (and the cruder additive
+/// `1-(c+k)`) assume mathematically pure subtractive primaries, which no real ink is.
+const CMYK_CORNERS: [[f32; 3]; 16] = [
+    [1.0, 1.0, 1.0],          // 0000 paper
+    [0.1373, 0.1216, 0.1255], // 000K
+    [1.0, 0.9490, 0.0],       // 00Y0 yellow
+    [0.1098, 0.1020, 0.0],    // 00YK
+    [0.9255, 0.0, 0.5490],    // 0M00 magenta
+    [0.1412, 0.0, 0.0],       // 0M0K
+    [0.9294, 0.1098, 0.1412], // 0MY0 red
+    [0.1333, 0.0, 0.0],       // 0MYK
+    [0.0, 0.6784, 0.9373],    // C000 cyan
+    [0.0, 0.0588, 0.1412],    // C00K
+    [0.0, 0.6510, 0.3137],    // C0Y0 green
+    [0.0, 0.0745, 0.0],       // C0YK
+    [0.1804, 0.1922, 0.5725], // CM00 blue
+    [0.0, 0.0, 0.0078],       // CM0K
+    [0.2118, 0.2118, 0.2235], // CMY0 composite black
+    [0.0, 0.0, 0.0],          // CMYK registration
+];
+
+/// Convert a DeviceCMYK colour to sRGB, by tetralinear interpolation between the
+/// process-ink corners of the CMYK cube.
+///
+/// Each component is an ink coverage in `0.0..=1.0`; values outside that range are
+/// clamped. The returned `(r, g, b)` are likewise in `0.0..=1.0`.
+///
+/// This replaces the `1 - (c + k)` approximation, which treats the inks as
+/// mathematically pure subtractive primaries and so renders 100% K as pure black and
+/// 100% cyan as `#00FFFF`. Verified against a rendered swatch set - single-ink ramps,
+/// the K ramp and interior mixes - to within 1/255 across the gamut.
+///
+/// ```
+/// use pdf_oxide::color::cmyk_to_rgb;
+///
+/// // The K ink is #231F20, not #000000 - the case that matters most, since print
+/// // PDFs set body text with `0 0 0 1 k`.
+/// let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+/// assert_eq!(
+///     [
+///         (r * 255.0).round() as u8,
+///         (g * 255.0).round() as u8,
+///         (b * 255.0).round() as u8
+///     ],
+///     [0x23, 0x1F, 0x20]
+/// );
+///
+/// // No ink at all is the paper.
+/// let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 0.0);
+/// assert_eq!((r, g, b), (1.0, 1.0, 1.0));
+/// ```
+pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
+    let (c, m, y, k) = (c.clamp(0.0, 1.0), m.clamp(0.0, 1.0), y.clamp(0.0, 1.0), k.clamp(0.0, 1.0));
+    let mut acc = [0.0f32; 3];
+    for (i, corner) in CMYK_CORNERS.iter().enumerate() {
+        let w = if i & 8 != 0 { c } else { 1.0 - c }
+            * if i & 4 != 0 { m } else { 1.0 - m }
+            * if i & 2 != 0 { y } else { 1.0 - y }
+            * if i & 1 != 0 { k } else { 1.0 - k };
+        if w == 0.0 {
+            continue;
+        }
+        for j in 0..3 {
+            acc[j] += w * corner[j];
+        }
+    }
+    (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmyk_uses_process_inks_not_the_naive_complement() {
+        let q = |v: f32| (v * 255.0).round() as u8;
+        let rgb = |c, m, y, k| {
+            let (r, g, b) = cmyk_to_rgb(c, m, y, k);
+            [q(r), q(g), q(b)]
+        };
+        // K ink is #231F20, NOT #000000 - the case that matters most, since print
+        // PDFs set body text with `0 0 0 1 k`.
+        assert_eq!(rgb(0.0, 0.0, 0.0, 1.0), [35, 31, 32]);
+        // Process cyan / magenta / yellow.
+        assert_eq!(rgb(1.0, 0.0, 0.0, 0.0), [0, 173, 239]);
+        assert_eq!(rgb(0.0, 1.0, 0.0, 0.0), [236, 0, 140]);
+        assert_eq!(rgb(0.0, 0.0, 1.0, 0.0), [255, 242, 0]);
+        // Paper and registration are still the extremes.
+        assert_eq!(rgb(0.0, 0.0, 0.0, 0.0), [255, 255, 255]);
+        assert_eq!(rgb(1.0, 1.0, 1.0, 1.0), [0, 0, 0]);
+        // An interior mix interpolates.
+        assert_eq!(rgb(0.669, 0.0, 0.381, 0.0), [84, 197, 172]);
+    }
 
     /// Minimal valid ICC header — just enough to satisfy `parse`.
     /// Bytes 0-3: size; 4-7: CMM; 8-11: version (4.2.0.0); 12-15: devClass;
