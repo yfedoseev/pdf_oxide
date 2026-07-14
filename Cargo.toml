@@ -60,7 +60,7 @@ manual_checked_ops = "allow"
 
 [package]
 name = "pdf_oxide"
-version = "0.3.73"
+version = "0.3.74"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
@@ -288,7 +288,7 @@ qrcode = { version = "0.14", optional = true }
 barcoders = { version = "2.0", optional = true, features = ["image"] }
 
 # Office document creation and export via office_oxide (always required)
-office_oxide = { version = "0.1.3", default-features = false }
+office_oxide = { version = "0.1.6", default-features = false }
 x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 cmpv2 = { version = "0.2", optional = true }
