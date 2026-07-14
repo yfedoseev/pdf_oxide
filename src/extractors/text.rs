@@ -90,6 +90,13 @@ pub enum SpaceSource {
     /// Confidence: varies (default when no rule matches)
     NoSpace,
 
+    /// No space: suppressed specifically by the intra-word kerning guard
+    /// (a lowercase↔lowercase gap below 0.75× the space-glyph advance). Kept
+    /// distinct from `NoSpace` so the #847 per-line bimodal rescue can override
+    /// ONLY this purely-geometric suppression, never the semantic ones
+    /// (complex-script, CJK, ligature) that also return no-space.
+    IntraWordKerning,
+
     /// Space triggered by WordBoundaryDetector analysis
     /// Confidence: 0.85 (combines TJ offset, geometric, and CJK signals per PDF Spec 9.4.4)
     WordBoundaryAnalysis,
@@ -1155,6 +1162,30 @@ fn decimal_gap_has_ink(ink_boxes: &[Rect], left: &Rect, right: &Rect) -> bool {
     })
 }
 
+/// True when a *full intervening glyph* occupies the horizontal gap between
+/// `left` and `right` — e.g. a subscript drawn between a variable and the next
+/// symbol (`λᵢr…`), which inflates the `λ`→`r` gap though both share a
+/// baseline. Distinct from [`decimal_gap_has_ink`]: it requires an ink box to
+/// cover a substantial fraction (>= 35%) of the gap width, so a mere
+/// descender/ascender edge of an adjacent glyph clipping the gap band does NOT
+/// count. Used by the #847 narrow-word-gap rescue to suppress splitting a math
+/// sub/superscript from its base while still recovering ordinary prose word
+/// gaps (whose gaps are empty of intervening ink).
+fn gap_has_intervening_glyph(ink_boxes: &[Rect], left: &Rect, right: &Rect) -> bool {
+    let gap_start = left.x + left.width;
+    let gap_end = right.x;
+    let gap_w = gap_end - gap_start;
+    if gap_w <= 0.5 {
+        return false;
+    }
+    let band_bottom = left.y.min(right.y);
+    let band_top = (left.y + left.height).max(right.y + right.height);
+    ink_boxes.iter().any(|b| {
+        let overlap = (b.x + b.width).min(gap_end) - b.x.max(gap_start);
+        overlap > gap_w * 0.35 && b.y < band_top && b.y + b.height > band_bottom
+    })
+}
+
 fn should_insert_space(
     preceding_text: &str,
     following_text: &str,
@@ -1476,7 +1507,7 @@ fn should_insert_space(
                     log::debug!(
                         "intra-word kerning guard: suppressing space between '{pc}' and '{nc}' (gap={gap_pt:.2}pt < {thr:.2}pt, threshold = 0.75× space-glyph width)"
                     );
-                    return SpaceDecision::no_space(SpaceSource::NoSpace, 0.9);
+                    return SpaceDecision::no_space(SpaceSource::IntraWordKerning, 0.9);
                 }
             }
         }
@@ -4438,6 +4469,104 @@ impl<'doc> TextExtractor<'doc> {
         }
     }
 
+    /// Per-line bimodal word-gap thresholds for the narrow-space rescue (#847).
+    ///
+    /// The fixed intra-word kerning guard in `should_insert_space`
+    /// (0.75× the space-glyph advance) suppresses genuine but *narrow* word
+    /// gaps on condensed/tracked lines — a bold heading or a running footer
+    /// typeset with NO space glyph, whose inter-word gaps are ~0.18 em, just
+    /// under the guard. A fixed magnitude cannot separate a 0.18 em word gap
+    /// from ~0.15 em intra-word kerning. But within one line the intra-word
+    /// glyph gaps cluster near zero (tight/slightly-overlapping side-bearings)
+    /// while the inter-word gaps form a distinct larger cluster: a clean
+    /// bimodal split that pins the word boundary *regardless of absolute
+    /// magnitude*.
+    ///
+    /// This walks the content-order span list, groups it into baseline runs,
+    /// and for each run whose inter-span gaps are clearly bimodal returns the
+    /// gap value separating the two clusters (indexed per span). Spans on
+    /// unimodal or too-short lines get `None` and keep the default guard. The
+    /// merge loop uses a returned threshold only to *rescue* a suppressed word
+    /// gap — it never removes a space the default logic already inserts.
+    fn bimodal_line_gap_thresholds(spans: &[TextSpan]) -> Vec<Option<f32>> {
+        let n = spans.len();
+        let mut out = vec![None; n];
+        let mut i = 0;
+        while i < n {
+            // Extend a run of consecutive same-baseline spans.
+            let mut j = i;
+            while j + 1 < n && (spans[j].bbox.y - spans[j + 1].bbox.y).abs() < 1.0 {
+                j += 1;
+            }
+            if j > i {
+                let fs = spans[i..=j]
+                    .iter()
+                    .map(|s| s.font_size)
+                    .fold(0.0f32, f32::max)
+                    .max(1.0);
+                // ALL consecutive gaps (intra-word gaps are near-zero or
+                // slightly negative, so they must be kept, not filtered) — but
+                // ONLY between glyphs sharing a baseline. A super/subscript sits
+                // at a baseline shift (~0.15 em) and its horizontal gap to the
+                // base is the same ~0.10 em magnitude as a condensed footer's
+                // word gap; including it would let the narrow-gap rescue split a
+                // math subscript from its variable (`λᵢ` → `λ i`), which the
+                // advance-aware extractors correctly do NOT do. Excluding
+                // baseline-shifted pairs keeps the footer word gap (same
+                // baseline) while leaving dense math untouched.
+                let gaps: Vec<f32> = (i..j)
+                    .filter(|&k| (spans[k].bbox.y - spans[k + 1].bbox.y).abs() < fs * 0.04)
+                    .map(|k| spans[k + 1].bbox.x - (spans[k].bbox.x + spans[k].bbox.width))
+                    .collect();
+                if let Some(split) = Self::bimodal_gap_split(&gaps, fs) {
+                    for slot in out.iter_mut().take(j + 1).skip(i) {
+                        *slot = Some(split);
+                    }
+                }
+            }
+            i = j + 1;
+        }
+        out
+    }
+
+    /// Given the consecutive inter-span gaps of one baseline run, return the
+    /// threshold separating an intra-word cluster from an inter-word cluster
+    /// when the distribution is clearly bimodal, else `None`. `fs` is the
+    /// run's font size; all bounds are expressed as em fractions so headings
+    /// and body calibrate independently.
+    fn bimodal_gap_split(gaps: &[f32], fs: f32) -> Option<f32> {
+        if gaps.len() < 3 {
+            return None;
+        }
+        let mut sorted = gaps.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Return the LOWEST cluster border, not the widest jump: walking the
+        // sorted gaps from the bottom, the first jump that leaves the intra-word
+        // cluster for a real word gap. A qualifying border needs
+        //   * an intra-word-sized low side (< 0.10 em — kerning, tight
+        //     side-bearings, or overlap),
+        //   * a high side that is a real (if narrow) word gap (>= 0.09 em) —
+        //     reaching the ~0.10 em gaps of condensed running footers that
+        //     pymupdf/pdfplumber's fixed thresholds miss (an explicit positive
+        //     advance IS a word-boundary signal, ISO 32000-1 §9.4.4), and
+        //   * a real separation between them (>= 0.08 em), not a smooth spread.
+        // Taking the LOWEST such border handles a *multi-level* condensed line —
+        // tight intra-word gaps, a narrow ~0.10 em word gap, AND a wide real
+        // space glyph — splitting at every level above intra-word, matching the
+        // advance-aware extractors (pdfminer, poppler). A single-word line (all
+        // gaps low) yields no qualifying border and returns None. The caller
+        // feeds only SAME-BASELINE gaps, so a math subscript gap of the same
+        // magnitude (which sits at a baseline shift) never enters this
+        // distribution and is not split.
+        for w in sorted.windows(2) {
+            let (lo, hi) = (w[0], w[1]);
+            if lo < fs * 0.10 && hi >= fs * 0.09 && (hi - lo) >= fs * 0.08 {
+                return Some((lo + hi) * 0.5);
+            }
+        }
+        None
+    }
+
     /// This matches the behavior of industry-standard PDF tools.
     fn merge_adjacent_spans(&mut self) {
         if self.spans.is_empty() {
@@ -4459,10 +4588,14 @@ impl<'doc> TextExtractor<'doc> {
             .filter(|s| !s.text.trim().is_empty())
             .map(|s| s.bbox)
             .collect();
+        // #847 M2: per-line bimodal word-gap thresholds, indexed to `spans`,
+        // used below to rescue a narrow word gap the fixed kerning guard
+        // suppressed. Computed before the fold consumes the list.
+        let line_thresholds = Self::bimodal_line_gap_thresholds(&spans);
         let mut merged = Vec::with_capacity(old_len);
         let mut current_span: Option<TextSpan> = None;
 
-        for span in spans {
+        for (span_idx, span) in spans.into_iter().enumerate() {
             if current_span.is_none() {
                 // First span — move, no clone needed
                 current_span = Some(span);
@@ -4622,10 +4755,21 @@ impl<'doc> TextExtractor<'doc> {
                 (Some(p), Some(c)) => is_cjk_char(p) != is_cjk_char(c),
                 _ => false,
             };
+            // Drop-caps / single-letter emphasis sit TIGHT against their word
+            // (gap ~0, often overlapping). A gap in word-space territory
+            // (≥~0.15em) across a font change is a genuine token boundary —
+            // typically a word followed by a single-letter math variable in a
+            // math-italic run (`solution` → `U`). Gluing those drops the space
+            // poppler/PDFium keep. The 0.12em ceiling is the valley between
+            // drop-cap kerning (~0) and a word space (≥~0.2em). (Previously
+            // 0.25em, which is itself a full word space: the v0.3.75
+            // advance-fold made per-glyph advance accurate enough that these
+            // ~0.24em gaps — formerly inflated above 0.25em by the advance
+            // undershoot — dropped under the ceiling and began gluing.)
             let cross_font_word_glue = !is_same_font
                 && same_line
                 && gap > -1.0
-                && gap < font_size_ref * 0.25
+                && gap < font_size_ref * 0.12
                 && !current.text.is_empty()
                 && !span.text.is_empty()
                 && !crosses_cjk_boundary
@@ -4791,6 +4935,56 @@ impl<'doc> TextExtractor<'doc> {
                         current.font_size,
                         span.font_size,
                     );
+
+                    // #847 M2: narrow-word-gap rescue. The fixed intra-word
+                    // kerning guard suppresses genuine word gaps on condensed/
+                    // tracked lines with no space glyph (bold headings, running
+                    // footers). When this line's own gap distribution is clearly
+                    // bimodal and this gap sits in the inter-word cluster, honor
+                    // the boundary. Only ever ADDS a space (never removes one),
+                    // and ONLY when the suppression came from the purely-
+                    // geometric intra-word kerning guard — never the semantic
+                    // no-space rules (complex-script/Brahmic, CJK, ligature),
+                    // else Bengali/Devanagari syllables shatter into fragments.
+                    // RTL is excluded too — the ReversedChars guard below owns
+                    // that decision.
+                    // Two guards keep the narrow-gap rescue off dense math, whose
+                    // sub/superscript gaps are the same ~0.10 em magnitude as a
+                    // condensed footer's word gap:
+                    //   * same-baseline: never rescue directly across a
+                    //     super/subscript baseline shift, and
+                    //   * empty-gap: never rescue when another glyph's ink sits
+                    //     inside the gap — a subscript drawn between a variable
+                    //     and the next symbol (`λᵢ r…`) inflates the `λ`→`r` gap
+                    //     though both share the baseline; the ink in the gap marks
+                    //     it as not-a-word-boundary. A genuine footer word gap is
+                    //     empty. (`λᵢ` must not become `λ i`.)
+                    let same_baseline = (current.bbox.y - span.bbox.y).abs()
+                        < current.font_size.max(span.font_size).max(1.0) * 0.04;
+                    if space_decision.source == SpaceSource::IntraWordKerning
+                        && !self.saw_reversed_chars
+                        && same_baseline
+                        && !gap_has_intervening_glyph(&ink_boxes, &current.bbox, &span.bbox)
+                    {
+                        // Split only when the PER-LINE bimodal threshold fires.
+                        // A uniform per-pair advance floor (the way pdfminer/
+                        // poppler decide word boundaries) would catch a few more
+                        // footer instances this adaptive test misses, but a fixed
+                        // magnitude cannot tell a 0.10 em condensed word gap from
+                        // 0.10 em loose intra-word tracking, so it also splits
+                        // real words on loosely-set/scanned lines
+                        // (`walking` → `wa lking`) — exactly the over-splitting
+                        // pdfminer exhibits. The per-line bimodal only fires when
+                        // the intra-word cluster is genuinely tight, so it never
+                        // over-splits, at the cost of the handful of footer
+                        // instances whose gap distribution is not cleanly bimodal.
+                        if let Some(thr) = line_thresholds.get(span_idx).copied().flatten() {
+                            if gap > thr {
+                                space_decision =
+                                    SpaceDecision::insert(SpaceSource::GeometricGap, 0.9);
+                            }
+                        }
+                    }
 
                     // ReversedChars Arabic word-shatter guard (ISO 32000-1
                     // §14.8.2.3.3). On a page that draws RTL glyphs individually
@@ -7429,6 +7623,19 @@ impl<'doc> TextExtractor<'doc> {
                         // current buffer keeps accumulating, so apply
                         // the offset unconditionally here as well.
                         self.advance_position_for_offset(*offset)?;
+                        // Fold the same displacement into the buffer's
+                        // advance record. Historically only the text matrix
+                        // moved, so these kerning/word-space offsets were
+                        // dropped from `char_widths`/`accumulated_width` —
+                        // leaving the span's reconstructed per-glyph positions
+                        // drifting behind the true render (poppler/PDFium/
+                        // pymupdf all fold the offset into the advance). On
+                        // justified body text drawn as one continuous buffer,
+                        // the many small post-space offsets accumulate into a
+                        // multi-point undershoot. Folding keeps
+                        // `sum(char_widths) == accumulated_width == matrix
+                        // advance` by construction.
+                        self.fold_offset_into_buffer(&mut buffer, *offset);
                     }
                 },
             }
@@ -8512,6 +8719,30 @@ impl<'doc> TextExtractor<'doc> {
         Ok(())
     }
 
+    /// Fold a sub-threshold TJ offset into the active buffer's advance record
+    /// so its `char_widths`/`accumulated_width` track the text-matrix position.
+    ///
+    /// The displacement is computed identically to `advance_position_for_offset`
+    /// (text space, before the `user_h_scale` applied at flush) so it lands in
+    /// the same units as the per-glyph advances pushed during string append.
+    /// The offset conventionally belongs to the *preceding* glyph (it adjusts
+    /// spacing after it), so it is added to the last recorded advance; if no
+    /// glyph has been recorded yet the matrix move alone already positions the
+    /// next buffer, so there is nothing to fold.
+    fn fold_offset_into_buffer(&self, buffer: &mut TjBuffer, offset: f32) {
+        let Some(last) = buffer.char_widths.last_mut() else {
+            return;
+        };
+        let state = self.state_stack.current();
+        let adv = if state.text_wmode == 0 {
+            -offset / 1000.0 * state.font_size * state.horizontal_scaling / 100.0
+        } else {
+            -offset / 1000.0 * state.font_size
+        };
+        *last += adv;
+        buffer.accumulated_width += adv;
+    }
+
     /// Flush accumulated Tj span buffer into a single TextSpan.
     ///
     /// This is similar to flush_tj_buffer but works with the tj_span_buffer field
@@ -8915,6 +9146,87 @@ mod tests {
     use super::*;
     use crate::fonts::{Encoding, LazyCMap};
     use std::sync::Arc;
+
+    /// #847 M2: a condensed bold heading typeset with no space glyph — the
+    /// intra-word glyph gaps cluster near zero (tight/overlapping side-bearings)
+    /// while inter-word gaps sit at ~0.18 em. The split must land between the
+    /// clusters so a gap of ~0.18 em reads as a word boundary.
+    #[test]
+    fn test_bimodal_gap_split_heading() {
+        // fs = 20.5; intra-word ~0/negative, inter-word ~3.7pt (0.18 em).
+        let gaps = [-0.5, -0.7, -0.3, 3.72, 3.70, 3.68, -0.4, 3.71];
+        let split = TextExtractor::bimodal_gap_split(&gaps, 20.5);
+        let split = split.expect("clearly bimodal line must yield a split");
+        assert!(
+            split > 0.0 && split < 3.5,
+            "split {split} must separate the ~0 and ~3.7pt clusters"
+        );
+    }
+
+    /// A normally-spaced line (all gaps already a full word-space) is NOT
+    /// bimodal — there is no narrow-gap rescue to perform, so `None`.
+    #[test]
+    fn test_bimodal_gap_split_uniform_word_spacing_none() {
+        let gaps = [6.0, 6.1, 5.9, 6.05, 5.95];
+        assert!(TextExtractor::bimodal_gap_split(&gaps, 12.0).is_none());
+    }
+
+    /// A single word (all gaps intra-word, near zero) has no inter-word
+    /// cluster — must return `None`, never fabricate a boundary.
+    #[test]
+    fn test_bimodal_gap_split_single_word_none() {
+        let gaps = [-0.5, -0.7, -0.3, 0.1, -0.4];
+        assert!(TextExtractor::bimodal_gap_split(&gaps, 20.5).is_none());
+    }
+
+    /// Multi-level condensed footer: near-zero/overlapping intra-word gaps, a
+    /// NARROW ~0.10 em word gap (1.14 pt @ 11 pt), AND a wide ~0.25 em real
+    /// space (2.75 pt) on one line. The split must land just above the
+    /// intra-word cluster — below the narrow gap — so BOTH the narrow word gap
+    /// and the wide space read as boundaries (recovering `All` / `rights` in
+    /// `© ISO 2021 - All rights…`, matching pdfminer/poppler).
+    #[test]
+    fn test_bimodal_gap_split_multilevel_footer() {
+        let gaps = [-0.1, -0.2, -0.15, 1.14, -0.1, -0.05, 2.75, -0.2];
+        let split = TextExtractor::bimodal_gap_split(&gaps, 11.0)
+            .expect("a multi-level line must yield a split");
+        assert!(
+            split > 0.0 && split < 1.14,
+            "split {split} must sit below the narrow 1.14pt word gap so both it and the wide space split"
+        );
+    }
+
+    /// The narrow-gap rescue's math guard: a full subscript glyph occupying the
+    /// gap between a variable and the next symbol must be detected (suppress the
+    /// split, `λᵢr` stays whole), while a mere descender/ascender edge clipping
+    /// the gap band must NOT (so ordinary prose word gaps are still recovered).
+    #[test]
+    fn test_gap_has_intervening_glyph() {
+        let r = |x, y, w, h| crate::geometry::Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
+        // `left` ends at x=10, `right` starts at x=24: a 14-unit gap on the
+        // baseline band [0, 10].
+        let left = r(0.0, 0.0, 10.0, 10.0);
+        let right = r(24.0, 0.0, 10.0, 10.0);
+        // A subscript glyph centred in the gap (x 13..21 = 8 units ≈ 57% of the
+        // 14-unit gap), shifted down but overlapping the band.
+        let subscript = r(13.0, -3.0, 8.0, 8.0);
+        assert!(
+            gap_has_intervening_glyph(&[left, right, subscript], &left, &right),
+            "a full subscript occupying the gap must be detected"
+        );
+        // A descender edge just clipping the gap (x 9..12 = only ~2 units into
+        // the 14-unit gap, < 35%) must NOT count.
+        let descender_edge = r(9.0, -4.0, 3.0, 6.0);
+        assert!(
+            !gap_has_intervening_glyph(&[left, right, descender_edge], &left, &right),
+            "a descender edge clipping the gap must not be treated as an intervening glyph"
+        );
+    }
 
     #[test]
     fn test_snap_run_rotation() {
@@ -16845,5 +17157,73 @@ mod profile_based_space_tests {
         assert_eq!(extractor.spans[0].text, "Sales");
         // Dominant-font swap: the longer run (regular weight) should win.
         assert_eq!(extractor.spans[0].font_weight, FontWeight::Normal);
+    }
+
+    /// The advance-fold folds a sub-threshold TJ offset into the run's stored
+    /// advance using the exact ISO 32000-1 §9.4.4 displacement
+    /// (`-Tj/1000 * Tfs * Th`), keeping `char_widths.last` and
+    /// `accumulated_width` in lockstep so the reconstructed geometry equals the
+    /// text-matrix position. An empty buffer is a no-op (the next glyph
+    /// re-anchors to the matrix).
+    #[test]
+    fn test_fold_offset_into_buffer_matches_spec_displacement() {
+        let mut extractor = TextExtractor::new();
+        {
+            let st = extractor.state_stack.current_mut();
+            st.font_size = 10.0;
+            st.horizontal_scaling = 100.0; // Th = 1.0
+        }
+        let mut buffer = TjBuffer::new(extractor.state_stack.current(), None, None);
+        buffer.char_widths.push(5.0);
+        buffer.accumulated_width = 5.0;
+
+        // -120 TJ units => -(-120)/1000 * 10 * (100/100) = 1.2 (text space).
+        extractor.fold_offset_into_buffer(&mut buffer, -120.0);
+        let expected = 1.2_f32;
+        assert!((buffer.char_widths.last().unwrap() - (5.0 + expected)).abs() < 1e-4);
+        assert!((buffer.accumulated_width - (5.0 + expected)).abs() < 1e-4);
+        // Invariant: sum(char_widths) == accumulated_width by construction.
+        let sum: f32 = buffer.char_widths.iter().sum();
+        assert!((sum - buffer.accumulated_width).abs() < 1e-4);
+
+        // Empty buffer: nothing to fold into, must not panic or fabricate width.
+        let mut empty = TjBuffer::new(extractor.state_stack.current(), None, None);
+        extractor.fold_offset_into_buffer(&mut empty, -120.0);
+        assert!(empty.char_widths.is_empty());
+        assert_eq!(empty.accumulated_width, 0.0);
+    }
+
+    /// The cross-font glue ceiling (0.12em) must NOT glue a real word followed
+    /// by a single-letter variable set in a different font run across a
+    /// word-space gap (roman `solution` -> math-italic `U`, gap ~0.24em). This
+    /// is the mirror of the drop-cap case above (gap ~0): a word space is a
+    /// genuine boundary poppler/PDFium keep, so the two spans stay separate.
+    #[test]
+    fn test_cross_font_word_variable_not_glued() {
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::default();
+        // fs 10; "solution" ends at x=112, "U" starts at x=114.4 => gap 2.4pt = 0.24em.
+        extractor.spans = vec![
+            TextSpan {
+                text: "solution".to_string(),
+                bbox: Rect::new(72.0, 700.0, 40.0, 10.0),
+                font_name: "NimbusRomNo9L-Regu".to_string(),
+                font_size: 10.0,
+                ..TextSpan::default()
+            },
+            TextSpan {
+                text: "U".to_string(),
+                bbox: Rect::new(114.4, 700.0, 7.0, 10.0),
+                font_name: "NimbusRomNo9L-Ital".to_string(),
+                font_size: 10.0,
+                ..TextSpan::default()
+            },
+        ];
+        extractor.merge_adjacent_spans();
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "a 0.24em word-space gap across a font change must NOT glue (drop-cap glue is for ~0 gaps)"
+        );
     }
 }
