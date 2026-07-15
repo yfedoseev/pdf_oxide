@@ -45,6 +45,19 @@ pub enum ReadingOrder {
     /// column fully (top-to-bottom) before moving to the next column.
     /// Best for newspapers, academic papers, and multi-column layouts.
     ColumnAware,
+    /// Logical-structure ordering from the document's `/StructTreeRoot`.
+    ///
+    /// For a Tagged PDF, ISO 32000-1:2008 §14.8.2.3 makes a pre-order traversal
+    /// of the structure hierarchy AUTHORITATIVE for reading order - it is the
+    /// producer's declared sequence, independent of glyph geometry, so it reads
+    /// tables and complex layouts correctly where a geometric XY-cut guesses.
+    ///
+    /// Spans are ordered by their marked-content id (`/MCID`) following that
+    /// traversal; any span without a matching MCID is appended in geometric
+    /// (`ColumnAware`) order. When the structure tree is absent or not
+    /// trustworthy for ordering (untagged, or `/Suspects true`), this falls back
+    /// to `ColumnAware` entirely, so it is always safe to request.
+    Structure,
 }
 
 /// In-memory reader used by `open()` and `from_bytes()`. Wrapping in an enum
@@ -15284,6 +15297,23 @@ impl PdfDocument {
         self.assemble_text_from_spans(page_index, spans, &options)
     }
 
+    /// Geometric `ColumnAware` (XY-cut) span ordering. Shared by the
+    /// `ColumnAware` and `Structure` reading-order branches (the latter uses it
+    /// as its baseline and its tiebreak for unstructured spans).
+    fn order_spans_column_aware(
+        &self,
+        spans: Vec<crate::layout::TextSpan>,
+        page_index: usize,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new().with_page(page_index as u32);
+        let ordered = strategy.apply(spans, &context)?;
+        Ok(ordered.into_iter().map(|o| o.span).collect())
+    }
+
     /// Extract text spans from a page using a specified reading order strategy.
     ///
     /// This method extracts text spans identically to [`extract_spans`](Self::extract_spans),
@@ -15328,13 +15358,74 @@ impl PdfDocument {
                 });
             },
             ReadingOrder::ColumnAware => {
-                use crate::pipeline::reading_order::{
-                    ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
-                };
-                let strategy = XYCutStrategy::new();
-                let context = ROContext::new().with_page(page_index as u32);
-                let ordered = strategy.apply(spans, &context)?;
-                spans = ordered.into_iter().map(|o| o.span).collect();
+                spans = self.order_spans_column_aware(spans, page_index)?;
+            },
+            ReadingOrder::Structure => {
+                // Geometric order is the baseline. The structure tree then fixes ONLY
+                // the spans it can fix unambiguously: TABLE cells.
+                //
+                // A geometric XY-cut reads a wide table column-major and drops cells;
+                // the structure tree's pre-order traversal gives the authoritative
+                // row-major order (§14.8.2.3). But applying that traversal to the WHOLE
+                // page also reorders flowing prose - where the tree's section order can
+                // legitimately differ from visual order (it de-prioritises page
+                // artifacts, for one) - which is a change, not an improvement. So table
+                // content is reordered IN PLACE by structure rank while every non-table
+                // span keeps its geometric position.
+                let mut ordered = self.order_spans_column_aware(spans, page_index)?;
+                if let Some(tree) = self.struct_tree_trustworthy() {
+                    // Populate the structure-content cache, then read it (it carries the
+                    // per-MCID `in_table` flag the mcid-order list does not).
+                    let _ = self.cached_mcid_order_for_page(&tree, page_index as u32);
+                    let content: Vec<crate::structure::OrderedContent> = self
+                        .structure_content_cache
+                        .lock_or_recover()
+                        .as_ref()
+                        .and_then(|c| c.get(&(page_index as u32)))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let page_scope = crate::structure::McidScope::Page(page_index as u32);
+                    // Structure rank for TABLE MCIDs only.
+                    let mut table_rank: HashMap<(crate::structure::McidScope, u32), usize> =
+                        HashMap::new();
+                    for (i, c) in content.iter().enumerate() {
+                        if let (true, Some(m)) = (c.in_table, c.mcid) {
+                            let scope = c.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                            table_rank.entry((scope, m)).or_insert(i);
+                        }
+                    }
+
+                    if !table_rank.is_empty() {
+                        let key_of = |s: &crate::layout::TextSpan| {
+                            s.mcid.and_then(|m| {
+                                let scope =
+                                    s.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                                table_rank
+                                    .get(&(scope, m))
+                                    .or_else(|| table_rank.get(&(page_scope.clone(), m)))
+                                    .copied()
+                            })
+                        };
+                        // The slots the table spans occupy in geometric order, and the
+                        // table spans themselves.
+                        let mut slots: Vec<usize> = Vec::new();
+                        let mut cells: Vec<(usize, crate::layout::TextSpan)> = Vec::new();
+                        for (idx, s) in ordered.iter().enumerate() {
+                            if let Some(r) = key_of(s) {
+                                slots.push(idx);
+                                cells.push((r, s.clone()));
+                            }
+                        }
+                        // Re-fill those exact slots with the cells in structure
+                        // (row-major) order. Non-table spans never move.
+                        cells.sort_by_key(|(r, _)| *r);
+                        for (slot, (_, cell)) in slots.into_iter().zip(cells) {
+                            ordered[slot] = cell;
+                        }
+                    }
+                }
+                spans = ordered;
             },
         }
 
