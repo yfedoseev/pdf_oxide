@@ -674,6 +674,21 @@ pub fn parse_color_space(obj: &crate::object::Object) -> Result<ColorSpace> {
     }
 }
 
+/// True when a 1-bit image's `/Decode` array is `[1 0]` (inverted) rather
+/// than the DeviceGray default `[0 1]`. ISO 32000-1:2008 8.9.5.2 Table 90:
+/// for a 1-bit component the default Decode maps sample 0 -> black, 1 ->
+/// white; `[1 0]` reverses that (0 -> white, 1 -> black). Absent, malformed,
+/// or non-inverted arrays are treated as the default (no inversion).
+fn decode_array_inverts_1bpc(decode: Option<&crate::object::Object>) -> bool {
+    let arr = match decode.and_then(|o| o.as_array()) {
+        Some(a) if a.len() == 2 => a,
+        _ => return false,
+    };
+    let as_num =
+        |o: &crate::object::Object| o.as_integer().map(|i| i as f64).or_else(|| o.as_real());
+    matches!((as_num(&arr[0]), as_num(&arr[1])), (Some(lo), Some(hi)) if lo > hi)
+}
+
 /// Extract an image from an XObject stream.
 pub fn extract_image_from_xobject(
     doc: Option<&crate::document::PdfDocument>,
@@ -929,6 +944,17 @@ pub fn extract_image_from_xobject(
         {
             if ccitt_params.rows.is_none() {
                 ccitt_params.rows = Some(height);
+            }
+            // ISO 32000-1 7.4.6 /BlackIs1 and 8.9.5.2 Table 90 /Decode both
+            // flip which sample bit means "black" for a 1-bit DeviceGray
+            // image, and they are independent, composable mechanisms: a
+            // producer that wants inverted polarity may set /BlackIs1 true
+            // *or* write /Decode [1 0] on the image XObject instead (both
+            // are seen in real-world scanned PDFs). Fold /Decode into the
+            // same inversion flag decompress_ccitt already honors so either
+            // one alone inverts and both together cancel out.
+            if decode_array_inverts_1bpc(dict.get("Decode")) {
+                ccitt_params.black_is_1 = !ccitt_params.black_is_1;
             }
             image.set_ccitt_params(ccitt_params);
         }
@@ -3190,5 +3216,135 @@ mod png_bytes_panic_safety_tests {
                 "reduction stays within 1 LSB of the high byte for hi={hi}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ccitt_decode_array_polarity_tests {
+    use super::*;
+    use crate::object::Object;
+    use std::collections::HashMap;
+
+    /// Pack an MSB-first "0"/"1" bit string into bytes, zero-padding the
+    /// final byte (same convention as the CCITT decoder's own hand-built
+    /// codestream tests in `src/decoders/ccitt.rs`).
+    fn pack_bits(bits: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut acc = 0u8;
+        let mut n = 0u8;
+        for ch in bits.chars() {
+            acc = (acc << 1) | (ch == '1') as u8;
+            n += 1;
+            if n == 8 {
+                bytes.push(acc);
+                acc = 0;
+                n = 0;
+            }
+        }
+        if n > 0 {
+            bytes.push(acc << (8 - n));
+        }
+        bytes
+    }
+
+    /// Hand-built CCITT G4 (T.6) codestream for an 8x3 bilevel image whose
+    /// *raw* decoded runs are black-majority: rows 0-1 solid black, row 2
+    /// black with a 2-pixel-wide white notch at columns 3-4. Every run uses
+    /// Horizontal mode ("001" + a Modified-Huffman white-run code + a
+    /// black-run code from ITU-T T.4 - the same tables `decode_row_g4`
+    /// reads), which is reference-line-independent, so each row's bits are
+    /// self-contained and can be verified without tracing 2D prediction:
+    ///   row 0/1: white-run 0 ("00110101"), black-run 8 ("000101")
+    ///   row 2:   white-run 0, black-run 3 ("10"); white-run 2 ("0111"),
+    ///            black-run 3
+    /// This mirrors the real corpus defect (govdocs 00339_005342 page 0):
+    /// some scanners emit a black-majority raw codestream and rely on the
+    /// image's /Decode [1 0] to restore the true white-majority page.
+    fn black_majority_g4_stream() -> Vec<u8> {
+        let row_all_black = format!("001{}{}", "00110101", "000101");
+        let row_notch = format!("001{}{}001{}{}", "00110101", "10", "0111", "10");
+        pack_bits(&format!("{row_all_black}{row_all_black}{row_notch}"))
+    }
+
+    /// Build a minimal CCITTFaxDecode image XObject (8x3, K=-1) wrapping
+    /// `black_majority_g4_stream`, with an optional `/Decode` override.
+    fn ccitt_xobject(decode: Option<[i64; 2]>) -> Object {
+        let mut decode_parms = HashMap::new();
+        decode_parms.insert("K".to_string(), Object::Integer(-1));
+        decode_parms.insert("Columns".to_string(), Object::Integer(8));
+        decode_parms.insert("Rows".to_string(), Object::Integer(3));
+
+        let mut dict = HashMap::new();
+        dict.insert("Subtype".to_string(), Object::Name("Image".to_string()));
+        dict.insert("Width".to_string(), Object::Integer(8));
+        dict.insert("Height".to_string(), Object::Integer(3));
+        dict.insert("BitsPerComponent".to_string(), Object::Integer(1));
+        dict.insert("ColorSpace".to_string(), Object::Name("DeviceGray".to_string()));
+        dict.insert("Filter".to_string(), Object::Name("CCITTFaxDecode".to_string()));
+        dict.insert("DecodeParms".to_string(), Object::Dictionary(decode_parms));
+        if let Some([lo, hi]) = decode {
+            dict.insert(
+                "Decode".to_string(),
+                Object::Array(vec![Object::Integer(lo), Object::Integer(hi)]),
+            );
+        }
+
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::from(black_majority_g4_stream()),
+        }
+    }
+
+    /// Decode `xobject` to a Luma8 image and count white (0xFF) vs black
+    /// (0x00) pixels.
+    fn white_black_counts(xobject: &Object) -> (u32, u32) {
+        let img = extract_image_from_xobject(None, xobject, None, None)
+            .expect("decode hand-built CCITT test image");
+        let luma = img
+            .to_dynamic_image()
+            .expect("decode CCITT test image pixels")
+            .into_luma8();
+        let white = luma.iter().filter(|&&v| v == 0xFF).count() as u32;
+        let black = luma.iter().filter(|&&v| v == 0x00).count() as u32;
+        (white, black)
+    }
+
+    /// Baseline: no `/Decode` override (implicit default `[0 1]`), no
+    /// `/BlackIs1`. The raw codestream is black-majority (22/24 px), so the
+    /// correctly-decoded image must stay black-majority - this un-inverted
+    /// case must keep working after the `/Decode` fix below.
+    #[test]
+    fn default_decode_keeps_raw_black_majority_polarity() {
+        let (white, black) = white_black_counts(&ccitt_xobject(None));
+        assert_eq!(white + black, 24);
+        assert!(
+            black > white,
+            "expected black-majority (raw, no /Decode override), got white={white} black={black}"
+        );
+    }
+
+    /// The corpus bug (govdocs 00339_005342 page 0): `/Decode [1 0]` on the
+    /// image XObject must invert CCITT polarity, turning this same
+    /// black-majority raw codestream into a white-majority image - a
+    /// mostly-white page with a small black mark - matching poppler.
+    /// Before the fix, `extract_image_from_xobject` never read `/Decode`
+    /// for the CCITT path, so this asserted black-majority (the bug).
+    #[test]
+    fn decode_1_0_inverts_to_white_majority() {
+        let (white, black) = white_black_counts(&ccitt_xobject(Some([1, 0])));
+        assert_eq!(white + black, 24);
+        assert!(
+            white > black,
+            "expected white-majority under /Decode [1 0], got white={white} black={black}"
+        );
+        assert_eq!(black, 2, "exactly the 2-pixel notch should render black (the 'mark')");
+    }
+
+    /// `/Decode [0 1]` written out explicitly is the non-inverted default
+    /// and must behave identically to an absent `/Decode` entry.
+    #[test]
+    fn decode_0_1_is_a_no_op() {
+        let (white, black) = white_black_counts(&ccitt_xobject(Some([0, 1])));
+        assert_eq!((white, black), white_black_counts(&ccitt_xobject(None)));
     }
 }
