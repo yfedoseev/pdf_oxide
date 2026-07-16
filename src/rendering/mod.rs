@@ -254,7 +254,11 @@ pub fn render_page_fit(
         return Err(crate::Error::InvalidPdf("fit width/height must be positive".into()));
     }
     let page_info = doc.get_page_info(page_num)?;
-    let rotation = page_info.rotation % 360;
+    // `%` is a remainder and preserves sign, so a legal negative /Rotate (e.g. -90,
+    // equivalent to 270 per ISO 32000-1 s7.7.3.3 Table 30) matched neither 90 nor
+    // 270 below and the page rendered unrotated. rem_euclid normalizes to 0..359,
+    // matching get_page_rotation's own `((raw % 360) + 360) % 360` convention.
+    let rotation = page_info.rotation.rem_euclid(360);
     let (page_w_pt, page_h_pt) = if rotation == 90 || rotation == 270 {
         (page_info.media_box.height.max(1.0), page_info.media_box.width.max(1.0))
     } else {

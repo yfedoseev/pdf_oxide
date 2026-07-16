@@ -4,10 +4,13 @@
 //! producers behind the overwhelming majority of CMYK JPEGs reaching
 //! prepress PDFs) store channel values inverted in the entropy stream:
 //! the byte 0 means "full ink", 255 means "no ink". `jpeg-decoder` 0.3
-//! undoes that convention internally in `color_convert_line_cmyk`, so its
-//! `Decoder::decode()` output is already straight CMYK (0 = no ink, 255 =
-//! full ink). pdf_oxide consumes those bytes directly without further
-//! inversion — see `decode_cmyk_jpeg_to_raw_cmyk` and
+//! undoes that convention internally in `color_convert_line_cmyk`, applying
+//! a `255 - x` inversion to its `Decoder::decode()` output. PDF renderers
+//! (poppler / Ghostscript) do NOT invert - they treat the raw DCT samples
+//! as straight CMYK ink - so pdf_oxide undoes jpeg-decoder's inversion with
+//! a second `255 - x` whenever an Adobe marker is present. This test pins
+//! the direction of jpeg-decoder's inversion that pdf_oxide relies on -
+//! see `decode_cmyk_jpeg_to_raw_cmyk` and
 //! `decode_cmyk_jpeg_to_rgb_with_profile` in `src/extractors/images.rs`.
 //!
 //! If a future jpeg-decoder release changes this contract (stops
