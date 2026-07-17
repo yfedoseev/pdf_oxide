@@ -14863,10 +14863,58 @@ impl PdfDocument {
         l.contains("www.") && (l.contains(".org") || l.contains(".com") || l.contains(".net"))
     }
 
+    /// A page is treated as vertical-writing (CJK tategaki, 縦書き) when a
+    /// majority of its non-empty text spans were rendered in WMode 1. The
+    /// writing mode comes from the PDF's own `/WMode` (captured on each span
+    /// via `GraphicsState::text_wmode`), so this is authoritative — a
+    /// horizontal page (WMode 0) is never misclassified, and its
+    /// running-header/footer detection is unchanged.
+    fn page_is_vertical(spans: &[crate::layout::TextSpan]) -> bool {
+        let mut vertical = 0usize;
+        let mut total = 0usize;
+        for s in spans {
+            if s.text.trim().is_empty() {
+                continue;
+            }
+            total += 1;
+            if s.wmode == 1 {
+                vertical += 1;
+            }
+        }
+        total > 0 && vertical * 2 > total
+    }
+
+    /// Is `bbox` inside the candidate running-header/footer band for a page of
+    /// the given dimensions? Horizontal pages use the top/bottom 12% strips.
+    /// Vertical-writing (tategaki) pages *additionally* use the left/right 12%
+    /// strips — the outer edge where CJK vertical folios and running heads
+    /// conventionally sit, rather than across the top/bottom edge. The side
+    /// strips are additive (the top/bottom test still applies), so this only
+    /// ever widens detection, never narrows it.
+    fn in_chrome_band(
+        bbox: &crate::geometry::Rect,
+        page_width: f32,
+        page_height: f32,
+        vertical: bool,
+    ) -> bool {
+        let vband = page_height * 0.12;
+        if bbox.y < vband || bbox.y + bbox.height > page_height - vband {
+            return true;
+        }
+        if vertical {
+            let hband = page_width * 0.12;
+            if bbox.x < hband || bbox.x + bbox.width > page_width - hband {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Ensure running-artifact signatures are computed (once) and return a
     /// clone for matching. The computation scans every page's raw spans,
-    /// collects normalized text that appears in the top or bottom 12% of
-    /// the page, and keeps entries that recur on >=50% of pages.
+    /// collects normalized text that appears in the top/bottom 12% band (and,
+    /// on vertical-writing pages, the left/right 12% band), and keeps entries
+    /// that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
     ) -> Result<std::collections::HashMap<String, usize>> {
@@ -14906,23 +14954,19 @@ impl PdfDocument {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let page_height = match self.get_page_media_box(pi) {
-                Ok((_, _, _, h)) if h > 0.0 => h,
+            let (page_width, page_height) = match self.get_page_media_box(pi) {
+                Ok((_, _, w, h)) if h > 0.0 => (w, h),
                 _ => continue,
             };
-            let band = page_height * 0.12;
-            // Require that the page has CONTENT outside the top/bottom
-            // bands before counting band spans as candidate artifacts.
-            // Otherwise, a page consisting only of a title near the top
-            // would have its own title classified as a "running header"
-            // across all pages.
+            let vertical = Self::page_is_vertical(&spans);
+            // Require that the page has CONTENT outside the chrome band(s)
+            // before counting band spans as candidate artifacts. Otherwise, a
+            // page consisting only of a title near the top would have its own
+            // title classified as a "running header" across all pages. (For
+            // horizontal pages this is identical to the prior top/bottom test.)
             let has_body_content = spans.iter().any(|s| {
-                let t = s.text.trim();
-                if t.is_empty() {
-                    return false;
-                }
-                let top_of_span = s.bbox.y + s.bbox.height;
-                top_of_span <= page_height - band && s.bbox.y >= band
+                !s.text.trim().is_empty()
+                    && !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
             });
             // Collect per-page unique signatures from the chrome bands.
             // Runs even when there's no body content so `first_seen_any`
@@ -14934,9 +14978,7 @@ impl PdfDocument {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let near_bottom = s.bbox.y < band;
-                let near_top = s.bbox.y + s.bbox.height > page_height - band;
-                if !(near_top || near_bottom) {
+                if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                     continue;
                 }
                 let sig = Self::normalize_artifact_signature(trimmed);
@@ -15033,14 +15075,14 @@ impl PdfDocument {
         page_index: usize,
         spans: &mut [crate::layout::TextSpan],
     ) -> Result<()> {
-        let (_, _, _, page_height) = match self.get_page_media_box(page_index) {
+        let (_, _, page_width, page_height) = match self.get_page_media_box(page_index) {
             Ok(mb) => mb,
             Err(_) => return Ok(()),
         };
         if page_height <= 0.0 {
             return Ok(());
         }
-        let band = page_height * 0.12;
+        let vertical = Self::page_is_vertical(spans);
         // Snapshot baselines of every non-blank span, so the bare-page-number
         // rule can require a candidate to stand ALONE on its line (#553): a
         // digit adjacent to other text — e.g. the "8" in "8th" — is content,
@@ -15057,9 +15099,7 @@ impl PdfDocument {
             if s.artifact_type.is_some() {
                 continue;
             }
-            let near_bottom = s.bbox.y < band;
-            let near_top = s.bbox.y + s.bbox.height > page_height - band;
-            if !(near_top || near_bottom) {
+            if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                 continue;
             }
             let trimmed = s.text.trim();
@@ -25714,6 +25754,68 @@ mod tests {
         let ordered = PdfDocument::order_mcid_spans(&spans);
         let texts: Vec<&str> = ordered.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["שלום", "World"], "mixed RTL+Latin must stay in raw order");
+    }
+
+    fn span_wmode(x: f32, y: f32, wmode: u8) -> TextSpan {
+        TextSpan {
+            text: "x".to_string(),
+            bbox: crate::geometry::Rect::new(x, y, 12.0, 12.0),
+            wmode,
+            ..TextSpan::default()
+        }
+    }
+
+    // A page is vertical-writing only when a majority of non-empty spans carry
+    // WMode 1 — authoritative, so horizontal pages are never misclassified.
+    #[test]
+    fn test_page_is_vertical() {
+        // Majority vertical.
+        let v = [
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 0),
+        ];
+        assert!(PdfDocument::page_is_vertical(&v));
+        // Majority horizontal.
+        let h = [
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 1),
+        ];
+        assert!(!PdfDocument::page_is_vertical(&h));
+        // Exact tie is not a majority — stay horizontal (conservative).
+        let tie = [span_wmode(0.0, 0.0, 1), span_wmode(0.0, 0.0, 0)];
+        assert!(!PdfDocument::page_is_vertical(&tie));
+        // Empty / blank-only.
+        assert!(!PdfDocument::page_is_vertical(&[]));
+        let mut blank = span_wmode(0.0, 0.0, 1);
+        blank.text = "   ".to_string();
+        assert!(!PdfDocument::page_is_vertical(std::slice::from_ref(&blank)));
+    }
+
+    // Horizontal pages use the top/bottom band; vertical pages ALSO use the
+    // left/right band. The side band is additive — it never removes the
+    // top/bottom membership a horizontal page relies on.
+    #[test]
+    fn test_in_chrome_band() {
+        let (w, h) = (612.0_f32, 792.0_f32); // vband=95.04, hband=73.44
+        let top = crate::geometry::Rect::new(300.0, 780.0, 12.0, 12.0);
+        let bottom = crate::geometry::Rect::new(300.0, 10.0, 12.0, 12.0);
+        let middle = crate::geometry::Rect::new(300.0, 400.0, 12.0, 12.0);
+        let left = crate::geometry::Rect::new(10.0, 400.0, 12.0, 12.0);
+        let right = crate::geometry::Rect::new(600.0, 400.0, 12.0, 12.0);
+
+        // Top/bottom are chrome in BOTH modes; middle is never chrome.
+        for vertical in [false, true] {
+            assert!(PdfDocument::in_chrome_band(&top, w, h, vertical));
+            assert!(PdfDocument::in_chrome_band(&bottom, w, h, vertical));
+            assert!(!PdfDocument::in_chrome_band(&middle, w, h, vertical));
+        }
+        // Side strips: chrome only when vertical.
+        assert!(!PdfDocument::in_chrome_band(&left, w, h, false));
+        assert!(!PdfDocument::in_chrome_band(&right, w, h, false));
+        assert!(PdfDocument::in_chrome_band(&left, w, h, true));
+        assert!(PdfDocument::in_chrome_band(&right, w, h, true));
     }
 
     // #553: bare page-number detection (applied only inside the margin band).
