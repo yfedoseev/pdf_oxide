@@ -73,9 +73,15 @@ jobs:
         # Fail hard if any package is missing after install (install.packages
         # only warns on a failed install). Uses the RSPM binary repo configured
         # above (no explicit repos= override, which would force source).
+        #
+        # `backports` is a hard Imports dependency of lintr. On the RSPM binary
+        # path it was intermittently not pulled in, leaving lintr installed but
+        # unloadable ("there is no package called 'backports'") in the Lint
+        # step. Install and hard-verify it explicitly so the failure surfaces
+        # here (as a missing-package error) rather than later at library(lintr).
         run: |
-          Rscript -e 'install.packages(c("tinytest", "lintr", "roxygen2", "rcmdcheck"))' \
-                  -e 'pkgs <- c("tinytest","lintr","roxygen2","rcmdcheck")' \
+          Rscript -e 'install.packages(c("backports", "tinytest", "lintr", "roxygen2", "rcmdcheck"))' \
+                  -e 'pkgs <- c("backports","tinytest","lintr","roxygen2","rcmdcheck")' \
                   -e 'miss <- pkgs[!pkgs %in% rownames(installed.packages())]' \
                   -e 'if (length(miss)) { cat("Failed to install:", miss, "\n"); quit(status=1) }'
 
