@@ -18033,13 +18033,17 @@ impl PdfDocument {
             });
 
         // Get rotation (optional, default 0).
-        // PDF spec §7.3.10: Rotate may also be an indirect reference.
+        // PDF spec Section 7.3.10: Rotate may also be an indirect reference.
+        // Some producers emit it as a real number (e.g. /Rotate 90.0), which
+        // the lexer parses as Object::Real - accept both, mirroring
+        // get_page_rotation's Integer/Real handling (~line 4171 above).
         let rotation = page_dict
             .get("Rotate")
             .map(|o| self.resolve_obj_ref(o))
             .as_ref()
             .and_then(|o| match o {
                 Object::Integer(i) => Some(*i as i32),
+                Object::Real(r) => Some(*r as i32),
                 _ => None,
             })
             .unwrap_or(0);
