@@ -3931,12 +3931,16 @@ impl<'doc> TextExtractor<'doc> {
             return;
         }
 
-        let mut deduplicated = Vec::with_capacity(self.chars.len());
+        let before = self.chars.len();
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
         let mut prev_char: Option<char> = None;
 
-        for ch in self.chars.iter() {
+        // Retained in place: the predicate only looks back at the previously
+        // KEPT glyph, which `retain`'s in-order visit preserves. Building a
+        // second Vec instead deep-cloned every glyph — and `TextChar` owns a
+        // `font_name` String, so that was one malloc per glyph, per page.
+        self.chars.retain(|ch| {
             let y_rounded = ch.bbox.y.round() as i32;
             let x = ch.bbox.x;
 
@@ -3963,7 +3967,6 @@ impl<'doc> TextExtractor<'doc> {
             };
 
             if !should_skip {
-                deduplicated.push(ch.clone());
                 prev_y_rounded = Some(y_rounded);
                 prev_x = Some(x);
                 prev_char = Some(ch.char);
@@ -3975,16 +3978,15 @@ impl<'doc> TextExtractor<'doc> {
                     ch.bbox.y
                 );
             }
-        }
+            !should_skip
+        });
 
         log::debug!(
             "Deduplicated {} overlapping characters ({} -> {} chars)",
-            self.chars.len() - deduplicated.len(),
-            self.chars.len(),
-            deduplicated.len()
+            before - self.chars.len(),
+            before,
+            self.chars.len()
         );
-
-        self.chars = deduplicated;
     }
 
     /// Snap super/subscript glyph spans onto the baseline of an
@@ -9393,6 +9395,7 @@ mod tests {
             byte_to_width_table: std::sync::OnceLock::new(),
             weight_memo: std::sync::OnceLock::new(),
             italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,

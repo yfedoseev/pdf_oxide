@@ -493,6 +493,10 @@ pub struct PdfDocument {
     /// would otherwise drop "University of Oklahoma 2009").
     running_artifact_signatures:
         Mutex<Option<std::sync::Arc<std::collections::HashMap<String, usize>>>>,
+    /// Document-wide article threads (`/Threads`), parsed once. Reading-order
+    /// resolution consults them per page, and parsing walks the whole page
+    /// tree — so without this the cost per page scaled with the document.
+    article_threads_cache: Mutex<Option<std::sync::Arc<Vec<crate::structure::ArticleThread>>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -1105,6 +1109,7 @@ impl PdfDocument {
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
             page_chars_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
+            article_threads_cache: Mutex::new(None),
             output_intent_cmyk_profile_cache: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
             warning_sink: crate::extractors::warnings::WarningSink::new(),
@@ -15067,6 +15072,20 @@ impl PdfDocument {
     /// collects normalized text that appears in the top/bottom 12% band (and,
     /// on vertical-writing pages, the left/right 12% band), and keeps entries
     /// that recur on >=50% of pages.
+    /// Article threads for this document, parsed once and shared.
+    /// [`crate::structure::parse_article_threads`] walks the entire page tree,
+    /// and reading-order resolution asks for them on every page.
+    pub(crate) fn cached_article_threads(
+        &self,
+    ) -> std::sync::Arc<Vec<crate::structure::ArticleThread>> {
+        if let Some(cached) = self.article_threads_cache.lock_or_recover().as_ref() {
+            return std::sync::Arc::clone(cached);
+        }
+        let threads = std::sync::Arc::new(crate::structure::parse_article_threads(self));
+        *self.article_threads_cache.lock_or_recover() = Some(std::sync::Arc::clone(&threads));
+        threads
+    }
+
     fn ensure_running_artifact_signatures(
         &self,
     ) -> Result<std::sync::Arc<std::collections::HashMap<String, usize>>> {
@@ -16692,9 +16711,18 @@ impl PdfDocument {
         // not a same-line neighbour — never merge across it. Gated off for
         // RTL text, whose leftward flow is ordinary reading order.
         let mut merged: Vec<Word> = Vec::with_capacity(words.len());
+        // RTL-ness of each entry in `merged`, carried alongside it. `looks_rtl`
+        // scans a whole string, and `prev` below GROWS by `push_str` on every
+        // merge — re-deriving it per iteration made a chain of k merges cost
+        // O(k^2) characters, the same blow-up the backtrack guard above exists
+        // to prevent. It is an `any()` over the chars, so
+        // `looks_rtl(a + b) == looks_rtl(a) || looks_rtl(b)`: maintain it
+        // incrementally instead.
+        let mut merged_rtl: Vec<bool> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
         for (idx, word) in words.into_iter().enumerate() {
             let cur_rotated = rotated_word_indices.contains(&idx);
+            let word_rtl = crate::text::bidi::looks_rtl(&word.text);
             if !cur_rotated && !prev_rotated && !split_boundary_word_indices.contains(&idx) {
                 if let Some(prev) = merged.last_mut() {
                     let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
@@ -16702,8 +16730,7 @@ impl PdfDocument {
                     let delta_x = word.bbox.x - prev.bbox.x;
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                    let not_rtl = !crate::text::bidi::looks_rtl(&prev.text)
-                        && !crate::text::bidi::looks_rtl(&word.text);
+                    let not_rtl = !merged_rtl.last().copied().unwrap_or(false) && !word_rtl;
                     let is_math_backtrack =
                         y_diff > 1.0 && delta_x <= 0.5 && gap < -font_size && not_rtl;
                     // A LINE WRAP can land at nearly the same y as the line
@@ -16743,11 +16770,15 @@ impl PdfDocument {
                         }
                         prev.text.push_str(&word.text);
                         prev.chars.extend(word.chars);
+                        if let Some(flag) = merged_rtl.last_mut() {
+                            *flag |= word_rtl;
+                        }
                         continue;
                     }
                 }
             }
             merged.push(word);
+            merged_rtl.push(word_rtl);
             prev_rotated = cur_rotated;
         }
 
@@ -17140,10 +17171,19 @@ impl PdfDocument {
     /// This returns the decoded content stream bytes for the specified page.
     /// The content stream contains PDF operators that define the page's appearance.
     pub fn get_page_content_data(&self, page_index: usize) -> Result<Vec<u8>> {
+        Ok((*self.cached_page_content(page_index)?).clone())
+    }
+
+    /// Shared, cached content-stream bytes for a page — the same data
+    /// [`Self::get_page_content_data`] returns, minus the copy. Extraction
+    /// only ever reads the bytes, and a single `extract_words` page touches
+    /// this twice (once for spans, once for chars), so handing back the `Arc`
+    /// avoids copying the decompressed stream on every call.
+    fn cached_page_content(&self, page_index: usize) -> Result<std::sync::Arc<Vec<u8>>> {
         {
             let mut cache = self.page_content_cache.lock_or_recover();
             if let Some(data) = cache.get(&page_index) {
-                return Ok(data.as_ref().clone());
+                return Ok(std::sync::Arc::clone(data));
             }
         }
 
@@ -17161,7 +17201,7 @@ impl PdfDocument {
         let contents_ref = match page_dict.get("Contents") {
             Some(Object::Null) | None => {
                 log::debug!("Page {} has no /Contents (blank page)", page_index);
-                return Ok(Vec::new());
+                return Ok(std::sync::Arc::new(Vec::new()));
             },
             Some(c) => c,
         };
@@ -17252,9 +17292,10 @@ impl PdfDocument {
             String::from_utf8_lossy(&content_data)
         );
 
+        let content_data = std::sync::Arc::new(content_data);
         self.page_content_cache
             .lock_or_recover()
-            .insert(page_index, std::sync::Arc::new(content_data.clone()));
+            .insert(page_index, std::sync::Arc::clone(&content_data));
 
         Ok(content_data)
     }
