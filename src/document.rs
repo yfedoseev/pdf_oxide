@@ -6535,7 +6535,12 @@ impl PdfDocument {
             return Ok(0);
         }
 
-        let mut occurrences: HashMap<String, HashSet<usize>> = HashMap::new();
+        // Each entry records the IN-ZONE occurrences of a repeated string as
+        // (page, bbox). Keeping the bbox (not just the page set) lets us both
+        // (a) erase only the header/footer occurrence and never an identically
+        // worded span elsewhere on the page, and (b) require the occurrences to
+        // share a position before treating the string as chrome.
+        let mut occurrences: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
 
         // Sanitize threshold to avoid min_occurrences becoming 0 for invalid inputs.
         let clamped_threshold = if threshold.is_finite() {
@@ -6545,9 +6550,6 @@ impl PdfDocument {
         };
         let raw_min = (page_count as f32 * clamped_threshold).ceil();
         let min_occurrences = if raw_min < 1.0 { 1 } else { raw_min as usize };
-
-        // Cache spans per page to avoid redundant extraction in Pass 2
-        let mut page_spans: HashMap<usize, Vec<crate::layout::TextSpan>> = HashMap::new();
 
         for page_idx in 0..page_count {
             let height = self.get_page_media_box(page_idx)?.3;
@@ -6566,26 +6568,49 @@ impl PdfDocument {
                 if is_in_zone {
                     let text = span.text.trim().to_string();
                     if text.len() > 3 && !text.chars().all(|c| c.is_numeric()) {
-                        occurrences.entry(text).or_default().insert(page_idx);
+                        occurrences
+                            .entry(text)
+                            .or_default()
+                            .push((page_idx, span.bbox));
                     }
                 }
             }
-            page_spans.insert(page_idx, spans);
         }
 
-        for (text, pages) in occurrences {
-            if pages.len() >= min_occurrences {
-                for page_idx in pages {
-                    // Reuse cached spans
-                    if let Some(spans) = page_spans.get(&page_idx) {
-                        for span in spans {
-                            if span.text.trim() == text {
-                                self.erase_region(page_idx, span.bbox)?;
-                                removed_count += 1;
-                            }
-                        }
-                    }
-                }
+        // Genuine running headers/footers are position-locked: the same string
+        // lands at the same x/y on every page. A form label or instruction that
+        // merely happens to recur — e.g. "Check if:", "(see instructions)",
+        // "Name(s) shown on return" on a multi-page tax form — drifts in x or y
+        // between pages. Requiring positional consistency separates "recurs
+        // because it is chrome" from "recurs because it is the same real label"
+        // without deleting content.
+        const POS_TOL_X: f32 = 40.0;
+        const POS_TOL_Y: f32 = 24.0;
+
+        for (_text, occs) in occurrences {
+            let distinct_pages: HashSet<usize> = occs.iter().map(|(p, _)| *p).collect();
+            if distinct_pages.len() < min_occurrences {
+                continue;
+            }
+
+            // Positional spread across every in-zone occurrence.
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for (_, bbox) in &occs {
+                min_x = min_x.min(bbox.x);
+                max_x = max_x.max(bbox.x);
+                min_y = min_y.min(bbox.y);
+                max_y = max_y.max(bbox.y);
+            }
+            if (max_x - min_x) > POS_TOL_X || (max_y - min_y) > POS_TOL_Y {
+                continue; // drifts between pages → real content, not chrome
+            }
+
+            // Erase only the header/footer occurrences that qualified — never a
+            // same-text span outside the band.
+            for (page_idx, bbox) in occs {
+                self.erase_region(page_idx, bbox)?;
+                removed_count += 1;
             }
         }
 
