@@ -507,9 +507,26 @@ impl PageRenderer {
             180 => Transform::from_translate(-media_box.x, -media_box.y)
                 .post_scale(-scale, scale)
                 .post_translate(media_box.width * scale, 0.0),
-            270 => Transform::from_translate(-media_box.x, -media_box.y).post_concat(
-                Transform::from_row(0.0, scale, -scale, 0.0, media_box.height * scale, 0.0),
-            ),
+            270 => {
+                // 270° CW: PDF (x,y) → screen_x = (H - y)*s, screen_y = (W - x)*s.
+                //
+                // The `y` row used to be `screen_y = x*s`, which put the page's
+                // TOP-LEFT corner at the top-left of the raster; under a 270° turn
+                // it belongs at the BOTTOM-left. That is not merely a wrong angle -
+                // it is a MIRROR: the old matrix has a POSITIVE determinant, while
+                // 0°/90°/180° all have a negative one (they carry the PDF y-up →
+                // raster y-down flip). Text came out reversed.
+                Transform::from_translate(-media_box.x, -media_box.y).post_concat(
+                    Transform::from_row(
+                        0.0,
+                        -scale,
+                        -scale,
+                        0.0,
+                        media_box.height * scale,
+                        media_box.width * scale,
+                    ),
+                )
+            },
             _ => {
                 // No rotation (0°)
                 Transform::from_translate(-media_box.x, -media_box.y)

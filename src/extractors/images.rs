@@ -415,6 +415,22 @@ impl PdfImage {
     pub fn to_dynamic_image(&self) -> Result<image::DynamicImage> {
         match &self.data {
             ImageData::Jpeg(jpeg_data) => {
+                if self.color_space.components() == 4 {
+                    // 4-component (DeviceCMYK / ICCBased N=4) JPEGs must go
+                    // through the Adobe-aware CMYK path. image::load_from_memory
+                    // routes them through zune-jpeg's own CMYK->RGB, which does
+                    // not honor the APP14 inversion and yields near-black output
+                    // (see decode_cmyk_jpeg_to_rgb_with_profile).
+                    let transform = self.build_icc_transform();
+                    let rgb = decode_cmyk_jpeg_to_rgb_with_profile(jpeg_data, transform.as_ref())?;
+                    return image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(
+                        self.width,
+                        self.height,
+                        rgb,
+                    )
+                    .ok_or_else(|| Error::Decode("Invalid CMYK image dimensions".to_string()))
+                    .map(image::DynamicImage::ImageRgb8);
+                }
                 log::debug!(
                     "Decoding JPEG data ({} bytes), starts with: {:02X?}",
                     jpeg_data.len(),
@@ -656,6 +672,21 @@ pub fn parse_color_space(obj: &crate::object::Object) -> Result<ColorSpace> {
         },
         _ => Err(Error::Image(format!("Invalid color space object: {:?}", obj))),
     }
+}
+
+/// True when a 1-bit image's `/Decode` array is `[1 0]` (inverted) rather
+/// than the DeviceGray default `[0 1]`. ISO 32000-1:2008 8.9.5.2 Table 90:
+/// for a 1-bit component the default Decode maps sample 0 -> black, 1 ->
+/// white; `[1 0]` reverses that (0 -> white, 1 -> black). Absent, malformed,
+/// or non-inverted arrays are treated as the default (no inversion).
+fn decode_array_inverts_1bpc(decode: Option<&crate::object::Object>) -> bool {
+    let arr = match decode.and_then(|o| o.as_array()) {
+        Some(a) if a.len() == 2 => a,
+        _ => return false,
+    };
+    let as_num =
+        |o: &crate::object::Object| o.as_integer().map(|i| i as f64).or_else(|| o.as_real());
+    matches!((as_num(&arr[0]), as_num(&arr[1])), (Some(lo), Some(hi)) if lo > hi)
 }
 
 /// Extract an image from an XObject stream.
@@ -913,6 +944,17 @@ pub fn extract_image_from_xobject(
         {
             if ccitt_params.rows.is_none() {
                 ccitt_params.rows = Some(height);
+            }
+            // ISO 32000-1 7.4.6 /BlackIs1 and 8.9.5.2 Table 90 /Decode both
+            // flip which sample bit means "black" for a 1-bit DeviceGray
+            // image, and they are independent, composable mechanisms: a
+            // producer that wants inverted polarity may set /BlackIs1 true
+            // *or* write /Decode [1 0] on the image XObject instead (both
+            // are seen in real-world scanned PDFs). Fold /Decode into the
+            // same inversion flag decompress_ccitt already honors so either
+            // one alone inverts and both together cancel out.
+            if decode_array_inverts_1bpc(dict.get("Decode")) {
+                ccitt_params.black_is_1 = !ccitt_params.black_is_1;
             }
             image.set_ccitt_params(ccitt_params);
         }
@@ -1476,25 +1518,30 @@ pub fn decode_cmyk_jpeg_to_rgb(jpeg_data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decode a DeviceCMYK JPEG to raw 8-bpc CMYK samples (W*H*4 bytes,
-/// channel order C, M, Y, K). Output is straight CMYK: 0 = no ink, 255 =
-/// full coverage.
+/// channel order C, M, Y, K). Output is the raw DCT sample plane treated
+/// as straight CMYK ink (0 = no ink, 255 = full coverage), matching how
+/// poppler / Ghostscript render DCTDecode CMYK streams inside a PDF.
 ///
-/// Handling depends on the Adobe APP14 marker (if present):
+/// `jpeg-decoder` 0.3 applies Adobe's `255 - x` inversion to EVERY
+/// 4-component JPEG that carries an Adobe APP14 marker
+/// (`color_convert_line_cmyk` for `transform = 0`; `color_convert_line_ycck`
+/// for `transform = 2`). PDF renderers do not do that inversion - they use
+/// the raw DCT samples as the CMYK ink. So whenever an Adobe marker is
+/// present, pdf_oxide must undo the decoder's inversion with a second
+/// `255 - x` to recover the raw samples:
 ///
-/// - `color_transform = 0` (plain CMYK, Photoshop default) or no APP14 —
-///   `jpeg-decoder` 0.3's `color_convert_line_cmyk` already inverts the
-///   Adobe-stored bytes back to straight CMYK. No further work needed.
-/// - `color_transform = 2` (YCCK, Adobe Illustrator default) —
-///   `jpeg-decoder` runs `color_convert_line_ycck` which converts YCbCr
-///   to RGB and applies `255 - K`. For Adobe YCCK the YCbCr was derived
-///   from `(255-C, 255-M, 255-Y)` so the decoder's output bytes are the
-///   *inverted* CMYK form. Apply `255 - x` to all four channels to
-///   recover straight CMYK.
+/// - `color_transform = 0` (plain CMYK, Photoshop / Distiller default) -
+///   undo the decoder's `color_convert_line_cmyk` inversion.
+/// - `color_transform = 2` (YCCK, Adobe Illustrator default) - the decoder
+///   ran YCbCr->RGB plus `255 - K`; the same `255 - x` on all four channels
+///   recovers the raw CMYK plane.
+/// - no APP14 marker - the samples are used as-is (non-Adobe convention),
+///   left unchanged to avoid disturbing non-Adobe JPEG handling.
 ///
-/// The dependency contract for plain CMYK (transform=0) is pinned by
-/// `tests/test_jpeg_decoder_cmyk_contract.rs`; the YCCK fixture path is
+/// The jpeg-decoder inversion contract is pinned by
+/// `tests/test_jpeg_decoder_cmyk_contract.rs`; the Adobe decode path is
 /// covered by `tests/test_cmyk_jpeg_adobe_inversion.rs`. If a future
-/// jpeg-decoder release changes either behaviour, those tests fire
+/// jpeg-decoder release changes its inversion behaviour, those tests fire
 /// before real fixtures regress.
 ///
 /// Used by the separation pipeline to route CMYK image channels directly
@@ -1523,7 +1570,10 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
 
     let mut raw = cmyk;
     raw.truncate(expected);
-    if scan_app14_color_transform(jpeg_data) == Some(2) {
+    // An Adobe APP14 marker (transform 0 = CMYK, 2 = YCCK) means jpeg-decoder
+    // has already applied a `255 - x` inversion; undo it to recover the raw
+    // DCT samples poppler uses as straight CMYK ink.
+    if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
         for b in raw.iter_mut() {
             *b = 255 - *b;
         }
@@ -1537,9 +1587,10 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
 /// colour space (or when the document's `OutputIntents` supplied a
 /// default CMYK profile).
 ///
-/// APP14 handling matches `decode_cmyk_jpeg_to_raw_cmyk`: plain CMYK
-/// passes through, YCCK is inverted on all four channels to recover
-/// straight CMYK before the colour-space conversion.
+/// APP14 handling matches `decode_cmyk_jpeg_to_raw_cmyk`: when an Adobe
+/// marker is present (CMYK transform 0 or YCCK transform 2), jpeg-decoder's
+/// `255 - x` inversion is undone to recover the raw DCT samples poppler
+/// treats as straight CMYK; without a marker the samples pass through.
 pub fn decode_cmyk_jpeg_to_rgb_with_profile(
     jpeg_data: &[u8],
     transform: Option<&crate::color::Transform>,
@@ -1562,11 +1613,16 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
         )));
     }
 
-    let straight_cmyk: Vec<u8> = if scan_app14_color_transform(jpeg_data) == Some(2) {
-        cmyk[..expected].iter().map(|b| 255 - *b).collect()
-    } else {
-        cmyk[..expected].to_vec()
-    };
+    // Undo jpeg-decoder's Adobe `255 - x` inversion (applied for any APP14
+    // CMYK transform 0 or YCCK transform 2) to recover the raw DCT samples,
+    // which poppler / Ghostscript render as straight CMYK ink. No marker ->
+    // pass through unchanged.
+    let straight_cmyk: Vec<u8> =
+        if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
+            cmyk[..expected].iter().map(|b| 255 - *b).collect()
+        } else {
+            cmyk[..expected].to_vec()
+        };
 
     if let Some(t) = transform {
         return Ok(t.convert_cmyk_buffer(&straight_cmyk));
@@ -3160,5 +3216,135 @@ mod png_bytes_panic_safety_tests {
                 "reduction stays within 1 LSB of the high byte for hi={hi}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ccitt_decode_array_polarity_tests {
+    use super::*;
+    use crate::object::Object;
+    use std::collections::HashMap;
+
+    /// Pack an MSB-first "0"/"1" bit string into bytes, zero-padding the
+    /// final byte (same convention as the CCITT decoder's own hand-built
+    /// codestream tests in `src/decoders/ccitt.rs`).
+    fn pack_bits(bits: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut acc = 0u8;
+        let mut n = 0u8;
+        for ch in bits.chars() {
+            acc = (acc << 1) | (ch == '1') as u8;
+            n += 1;
+            if n == 8 {
+                bytes.push(acc);
+                acc = 0;
+                n = 0;
+            }
+        }
+        if n > 0 {
+            bytes.push(acc << (8 - n));
+        }
+        bytes
+    }
+
+    /// Hand-built CCITT G4 (T.6) codestream for an 8x3 bilevel image whose
+    /// *raw* decoded runs are black-majority: rows 0-1 solid black, row 2
+    /// black with a 2-pixel-wide white notch at columns 3-4. Every run uses
+    /// Horizontal mode ("001" + a Modified-Huffman white-run code + a
+    /// black-run code from ITU-T T.4 - the same tables `decode_row_g4`
+    /// reads), which is reference-line-independent, so each row's bits are
+    /// self-contained and can be verified without tracing 2D prediction:
+    ///   row 0/1: white-run 0 ("00110101"), black-run 8 ("000101")
+    ///   row 2:   white-run 0, black-run 3 ("10"); white-run 2 ("0111"),
+    ///            black-run 3
+    /// This mirrors the real corpus defect (govdocs 00339_005342 page 0):
+    /// some scanners emit a black-majority raw codestream and rely on the
+    /// image's /Decode [1 0] to restore the true white-majority page.
+    fn black_majority_g4_stream() -> Vec<u8> {
+        let row_all_black = format!("001{}{}", "00110101", "000101");
+        let row_notch = format!("001{}{}001{}{}", "00110101", "10", "0111", "10");
+        pack_bits(&format!("{row_all_black}{row_all_black}{row_notch}"))
+    }
+
+    /// Build a minimal CCITTFaxDecode image XObject (8x3, K=-1) wrapping
+    /// `black_majority_g4_stream`, with an optional `/Decode` override.
+    fn ccitt_xobject(decode: Option<[i64; 2]>) -> Object {
+        let mut decode_parms = HashMap::new();
+        decode_parms.insert("K".to_string(), Object::Integer(-1));
+        decode_parms.insert("Columns".to_string(), Object::Integer(8));
+        decode_parms.insert("Rows".to_string(), Object::Integer(3));
+
+        let mut dict = HashMap::new();
+        dict.insert("Subtype".to_string(), Object::Name("Image".to_string()));
+        dict.insert("Width".to_string(), Object::Integer(8));
+        dict.insert("Height".to_string(), Object::Integer(3));
+        dict.insert("BitsPerComponent".to_string(), Object::Integer(1));
+        dict.insert("ColorSpace".to_string(), Object::Name("DeviceGray".to_string()));
+        dict.insert("Filter".to_string(), Object::Name("CCITTFaxDecode".to_string()));
+        dict.insert("DecodeParms".to_string(), Object::Dictionary(decode_parms));
+        if let Some([lo, hi]) = decode {
+            dict.insert(
+                "Decode".to_string(),
+                Object::Array(vec![Object::Integer(lo), Object::Integer(hi)]),
+            );
+        }
+
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::from(black_majority_g4_stream()),
+        }
+    }
+
+    /// Decode `xobject` to a Luma8 image and count white (0xFF) vs black
+    /// (0x00) pixels.
+    fn white_black_counts(xobject: &Object) -> (u32, u32) {
+        let img = extract_image_from_xobject(None, xobject, None, None)
+            .expect("decode hand-built CCITT test image");
+        let luma = img
+            .to_dynamic_image()
+            .expect("decode CCITT test image pixels")
+            .into_luma8();
+        let white = luma.iter().filter(|&&v| v == 0xFF).count() as u32;
+        let black = luma.iter().filter(|&&v| v == 0x00).count() as u32;
+        (white, black)
+    }
+
+    /// Baseline: no `/Decode` override (implicit default `[0 1]`), no
+    /// `/BlackIs1`. The raw codestream is black-majority (22/24 px), so the
+    /// correctly-decoded image must stay black-majority - this un-inverted
+    /// case must keep working after the `/Decode` fix below.
+    #[test]
+    fn default_decode_keeps_raw_black_majority_polarity() {
+        let (white, black) = white_black_counts(&ccitt_xobject(None));
+        assert_eq!(white + black, 24);
+        assert!(
+            black > white,
+            "expected black-majority (raw, no /Decode override), got white={white} black={black}"
+        );
+    }
+
+    /// The corpus bug (govdocs 00339_005342 page 0): `/Decode [1 0]` on the
+    /// image XObject must invert CCITT polarity, turning this same
+    /// black-majority raw codestream into a white-majority image - a
+    /// mostly-white page with a small black mark - matching poppler.
+    /// Before the fix, `extract_image_from_xobject` never read `/Decode`
+    /// for the CCITT path, so this asserted black-majority (the bug).
+    #[test]
+    fn decode_1_0_inverts_to_white_majority() {
+        let (white, black) = white_black_counts(&ccitt_xobject(Some([1, 0])));
+        assert_eq!(white + black, 24);
+        assert!(
+            white > black,
+            "expected white-majority under /Decode [1 0], got white={white} black={black}"
+        );
+        assert_eq!(black, 2, "exactly the 2-pixel notch should render black (the 'mark')");
+    }
+
+    /// `/Decode [0 1]` written out explicitly is the non-inverted default
+    /// and must behave identically to an absent `/Decode` entry.
+    #[test]
+    fn decode_0_1_is_a_no_op() {
+        let (white, black) = white_black_counts(&ccitt_xobject(Some([0, 1])));
+        assert_eq!((white, black), white_black_counts(&ccitt_xobject(None)));
     }
 }
