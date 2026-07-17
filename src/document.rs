@@ -923,6 +923,11 @@ impl PdfDocument {
         // scan (vs. a parsed xref). Used to pre-seed the object-scan cache so
         // a later miss doesn't rescan the whole file a second time (#572).
         let mut xref_reconstructed = false;
+        // SYNTHETIC objects a recovery invented (a rebuilt Catalog / page-tree
+        // root for a truncated file). They have no byte offset, so they are
+        // seeded into the object cache after the document is built. Empty in the
+        // ordinary case.
+        let mut synthetic_objects: Vec<(ObjectRef, Object)> = Vec::new();
 
         // Try to parse xref table normally
         let (mut xref, trailer) = match Self::try_open_regular(&mut reader) {
@@ -935,7 +940,9 @@ impl PdfDocument {
                         "Regular xref parsing succeeded but table is empty, attempting reconstruction"
                     );
                     xref_reconstructed = true;
-                    Self::try_reconstruct_xref(&mut reader)?
+                    let (x, t, syn) = Self::try_reconstruct_xref(&mut reader)?;
+                    synthetic_objects = syn;
+                    (x, t)
                 } else {
                     // A valid xref can have any number of entries (§7.5.4).
                     // Small xrefs (e.g. portfolio PDFs with 3-4 objects) are perfectly
@@ -948,9 +955,10 @@ impl PdfDocument {
 
                 // Fall back to xref reconstruction
                 match Self::try_reconstruct_xref(&mut reader) {
-                    Ok((reconstructed_xref, reconstructed_trailer)) => {
+                    Ok((reconstructed_xref, reconstructed_trailer, syn)) => {
                         log::info!("Successfully reconstructed xref table");
                         xref_reconstructed = true;
+                        synthetic_objects = syn;
                         (reconstructed_xref, reconstructed_trailer)
                     },
                     Err(recon_err) => {
@@ -999,9 +1007,10 @@ impl PdfDocument {
                 "Root object not loadable after xref parse, falling back to xref reconstruction"
             );
             match Self::try_reconstruct_xref(&mut reader) {
-                Ok(result) => {
+                Ok((x, t, syn)) => {
                     xref_reconstructed = true;
-                    result
+                    synthetic_objects = syn;
+                    (x, t)
                 },
                 Err(_) => (xref, trailer), // Use original if reconstruction also fails
             }
@@ -1081,6 +1090,17 @@ impl PdfDocument {
             warning_sink: crate::extractors::warnings::WarningSink::new(),
         };
 
+        // Seed any SYNTHETIC recovery objects (a Catalog / page-tree root rebuilt
+        // for a truncated file) into the object cache. They have no byte offset,
+        // so `load_object` - which checks the cache before the xref - is the only
+        // way to reach them. Done before encryption init so the /Root resolves.
+        if !synthetic_objects.is_empty() {
+            let mut cache = document.object_cache.lock_or_recover();
+            for (obj_ref, obj) in synthetic_objects {
+                cache.insert(obj_ref, obj);
+            }
+        }
+
         // Initialize encryption immediately
         if let Err(e) = document.ensure_encryption_initialized() {
             log::error!("Failed to initialize encryption: {}", e);
@@ -1112,8 +1132,13 @@ impl PdfDocument {
         Ok((xref, trailer))
     }
 
-    /// Try to reconstruct the xref table by scanning the file.
-    fn try_reconstruct_xref<R: Read + Seek>(reader: &mut R) -> Result<(CrossRefTable, Object)> {
+    /// Try to reconstruct the xref table by scanning the file. The third tuple
+    /// element is any SYNTHETIC objects (a rebuilt Catalog / page-tree root for a
+    /// truncated file) the caller must seed into the object cache - empty in the
+    /// ordinary case.
+    fn try_reconstruct_xref<R: Read + Seek>(
+        reader: &mut R,
+    ) -> Result<(CrossRefTable, Object, Vec<(ObjectRef, Object)>)> {
         crate::xref_reconstruction::reconstruct_xref(reader)
     }
 
