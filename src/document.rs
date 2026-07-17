@@ -14805,15 +14805,48 @@ impl PdfDocument {
         false
     }
 
+    /// Numeric value 0–9 of a folio (page-number) digit, or `None` if `c` is
+    /// not one. Scoped to the decimal-digit blocks that actually appear as
+    /// page folios: ASCII, Arabic-Indic, Extended Arabic-Indic (Persian/Urdu),
+    /// Devanagari, and full-width. Deliberately narrower than
+    /// `char::is_numeric()` (which also matches `½`, `①`, superscripts) and
+    /// wider than `char::is_ascii_digit()`. CJK ideographic numerals
+    /// (`一二三…`) are intentionally excluded — they are not Unicode `Nd`, and
+    /// collapsing them would over-normalize real headings (`第一章` → `第#章`).
+    ///
+    /// `char::to_digit(10)` cannot stand in here: it is ASCII-only and returns
+    /// `None` for `'٥'` / `'५'` / `'５'`, so each block is mapped to its zero
+    /// code point directly.
+    fn folio_digit_value(c: char) -> Option<u32> {
+        let cp = c as u32;
+        let base = match cp {
+            0x0030..=0x0039 => 0x0030, // ASCII 0-9
+            0x0660..=0x0669 => 0x0660, // Arabic-Indic
+            0x06F0..=0x06F9 => 0x06F0, // Extended Arabic-Indic (Persian/Urdu)
+            0x0966..=0x096F => 0x0966, // Devanagari
+            0xFF10..=0xFF19 => 0xFF10, // Full-width
+            _ => return None,
+        };
+        Some(cp - base)
+    }
+
+    /// Unicode-aware decimal-digit predicate for page folios. See
+    /// [`Self::folio_digit_value`] for the supported blocks and rationale.
+    fn is_folio_digit(c: char) -> bool {
+        Self::folio_digit_value(c).is_some()
+    }
+
     /// Normalize a span's text for cross-page signature matching.
     /// Collapses whitespace and replaces digit runs with `#` so that page
     /// numbers ("Page 1 of 10", "Page 2 of 10") collapse to one signature.
+    /// Non-Latin folio digits (Arabic-Indic, Persian, Devanagari, full-width)
+    /// collapse too, so folios paginated in those scripts share one signature.
     fn normalize_artifact_signature(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let mut in_digit_run = false;
         let mut last_was_space = true;
         for c in text.chars() {
-            if c.is_ascii_digit() {
+            if Self::is_folio_digit(c) {
                 if !in_digit_run {
                     out.push('#');
                     in_digit_run = true;
@@ -14844,7 +14877,10 @@ impl PdfDocument {
     /// matched (miss-rather-than-drop — a false positive deletes real content).
     fn looks_like_stable_pagination(literal: &str) -> bool {
         let l = literal.to_ascii_lowercase();
-        if !l.chars().any(|c| c.is_ascii_digit()) {
+        // The digit gate is script-aware (a non-Latin folio digit still
+        // qualifies); the citation/URL keyword tokens below remain English-
+        // only by design — keyword universality is tracked separately.
+        if !l.chars().any(Self::is_folio_digit) {
             return false;
         }
         if l.contains("doi.org") || l.contains("doi:") || l.contains("/doi/") {
@@ -15019,13 +15055,21 @@ impl PdfDocument {
     /// applied inside the top/bottom margin band by the caller, so ordinary
     /// numerals in body text are never affected.
     fn is_bare_page_number_text(trimmed: &str) -> bool {
-        !trimmed.is_empty()
-            && trimmed.len() <= 4
-            && trimmed.chars().all(|c| c.is_ascii_digit())
-            && trimmed
-                .parse::<u32>()
-                .map(|n| (1..=9999).contains(&n))
-                .unwrap_or(false)
+        // Bound by character count, not byte length: non-Latin folio digits are
+        // 2–3 UTF-8 bytes each, so a byte cap would reject "۱۲۳" outright.
+        if trimmed.is_empty() || trimmed.chars().count() > 4 {
+            return false;
+        }
+        // Fold the (script-aware) digits to a value directly; `parse::<u32>`
+        // and `char::to_digit` are ASCII-only and reject non-Latin folios.
+        let mut value: u32 = 0;
+        for c in trimmed.chars() {
+            match Self::folio_digit_value(c) {
+                Some(d) => value = value * 10 + d,
+                None => return false,
+            }
+        }
+        (1..=9999).contains(&value)
     }
 
     fn mark_running_artifact_spans(
@@ -25727,6 +25771,57 @@ mod tests {
         ] {
             assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
         }
+    }
+
+    // Non-Latin folio digits are recognized as bare page numbers, bounded by
+    // character count (each is 2-3 UTF-8 bytes) and range-checked via the
+    // block-offset map (parse/to_digit are ASCII-only).
+    #[test]
+    fn test_is_bare_page_number_text_non_latin() {
+        for yes in [
+            "\u{0661}",                         // Arabic-Indic ١ = 1
+            "\u{0661}\u{0662}",                 // ١٢ = 12
+            "\u{06F3}",                         // Persian ۳ = 3
+            "\u{06F1}\u{06F2}\u{06F3}",         // ۱۲۳ = 123
+            "\u{0967}\u{0966}",                 // Devanagari १० = 10
+            "\u{FF11}\u{FF12}\u{FF13}\u{FF14}", // full-width １２３４ = 1234
+        ] {
+            assert!(
+                PdfDocument::is_bare_page_number_text(yes),
+                "{yes:?} should be a non-Latin page number"
+            );
+        }
+        for no in [
+            "\u{0660}",                                 // Arabic-Indic ٠ = 0 (out of 1..=9999)
+            "\u{FF11}\u{FF10}\u{FF10}\u{FF10}\u{FF10}", // full-width １００００ = 10000, 5 chars
+            "\u{4E00}",  // CJK 一 — ideographic, intentionally excluded
+            "\u{0661}a", // digit + letter
+        ] {
+            assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
+        }
+    }
+
+    // Folios paginated in non-Latin digits collapse to a shared signature, so
+    // the varying-literal gate (variants >= 2) can fire.
+    #[test]
+    fn test_normalize_artifact_signature_non_latin_digits() {
+        // Persian "صفحه ۱" and "صفحه ۲" must share one signature.
+        let s1 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F1}");
+        let s2 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F2}");
+        assert_eq!(s1, s2, "Persian folios must collapse to one signature");
+        assert!(s1.contains('#'), "digit run must collapse to # (got {s1:?})");
+
+        // Full-width "第１頁" / "第２頁" share a signature; multi-digit runs
+        // collapse to a single #.
+        let f1 = PdfDocument::normalize_artifact_signature("\u{FF11}\u{FF10}");
+        assert_eq!(f1, "#", "full-width digit run collapses to a single #");
+
+        // CJK ideographic numerals are NOT digits: "第一章" must stay intact
+        // so real headings are not over-normalized.
+        let heading = PdfDocument::normalize_artifact_signature("\u{7B2C}\u{4E00}\u{7AE0}");
+        assert_eq!(heading, "\u{7B2C}\u{4E00}\u{7AE0}", "ideographic numerals must not collapse");
     }
 
     #[test]
