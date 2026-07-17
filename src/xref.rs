@@ -223,34 +223,49 @@ impl Default for CrossRefTable {
 /// - The offset following "startxref" cannot be parsed
 /// - The file is too small to contain a valid xref reference
 pub fn find_xref_offset<R: Read + Seek>(reader: &mut R) -> Result<u64> {
-    // Get file size
     let file_size = reader.seek(SeekFrom::End(0))?;
 
-    // Read last portion of file (max 2KB to handle large trailers)
-    let read_size = std::cmp::min(2048, file_size);
-    reader.seek(SeekFrom::End(-(read_size as i64)))?;
+    // GROW the tail window until `startxref` is found. A fixed 2 KB window assumes
+    // the keyword sits close to the end of the file - and real producers break that
+    // assumption constantly by PADDING the file after `%%EOF`:
+    //
+    //   gov.uscourts.ca2.*  192 KiB exactly, with **5,245 trailing NUL bytes**.
+    //
+    // Those are valid, readable PDFs (poppler and Acrobat open them), but the last
+    // 2 KB is nothing but padding, so `startxref` is not in the window and the whole
+    // document is rejected as InvalidXref - a TOTAL loss, not a degradation. Growing
+    // the window costs nothing on a well-formed file (the first 2 KB read hits) and
+    // recovers the padded ones.
+    const WINDOWS: [u64; 5] = [2048, 16 * 1024, 128 * 1024, 1024 * 1024, u64::MAX];
+    for &want in WINDOWS.iter() {
+        let read_size = std::cmp::min(want, file_size);
+        reader.seek(SeekFrom::End(-(read_size as i64)))?;
 
-    let mut buf = Vec::new();
-    reader.take(read_size).read_to_end(&mut buf)?;
+        let mut buf = Vec::new();
+        reader.take(read_size).read_to_end(&mut buf)?;
+        let content = String::from_utf8_lossy(&buf);
 
-    // Convert to string for searching
-    let content = String::from_utf8_lossy(&buf);
+        if let Some(pos) = content.rfind("startxref") {
+            let after_keyword = &content[pos + 9..]; // 9 = len("startxref")
 
-    // Search for "startxref" keyword (should be near end)
-    let startxref_pos = content.rfind("startxref").ok_or(Error::InvalidXref)?;
+            // Split lines manually to handle CR, LF, and CRLF line endings.
+            // Standard .lines() only handles LF and CRLF, not standalone CR.
+            for line in split_lines(after_keyword) {
+                // Trim NUL padding as well as whitespace: a padded file leaves the
+                // offset line looking like "189089\0\0\0..." and `str::trim` alone
+                // does not strip NULs, so the all-digits check below would fail.
+                let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+                if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                    return trimmed.parse::<u64>().map_err(|_| Error::InvalidXref);
+                }
+            }
+            // Keyword found but no offset after it - a wider window will not help.
+            return Err(Error::InvalidXref);
+        }
 
-    // Extract everything after "startxref"
-    let after_keyword = &content[startxref_pos + 9..]; // 9 = len("startxref")
-
-    // Split lines manually to handle CR, LF, and CRLF line endings
-    // Standard .lines() only handles LF and CRLF, not standalone CR
-    let lines = split_lines(after_keyword);
-
-    // Find the first line that contains digits (the offset)
-    for line in lines {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-            return trimmed.parse::<u64>().map_err(|_| Error::InvalidXref);
+        // Whole file already scanned: the keyword genuinely is not there.
+        if read_size == file_size {
+            break;
         }
     }
 
@@ -1214,6 +1229,35 @@ mod tests {
         let mut cursor = Cursor::new(pdf);
         let offset = find_xref_offset(&mut cursor).unwrap();
         assert_eq!(offset, 50);
+    }
+
+    /// A file PADDED with trailing NULs after `%%EOF` must still be read.
+    ///
+    /// Real producers do this: the 2nd-Circuit appellate filings
+    /// (`gov.uscourts.ca2.*`) are padded to an exact 192 KiB with **5,245 trailing
+    /// NUL bytes**. They are valid PDFs - poppler and Acrobat open them - but a
+    /// fixed 2 KB tail window contains nothing but padding, so `startxref` is never
+    /// found and the ENTIRE DOCUMENT is rejected. Not a degradation: a total loss.
+    #[test]
+    fn find_xref_offset_survives_trailing_nul_padding() {
+        let mut pdf: Vec<u8> =
+            b"%PDF-1.6\n1 0 obj\n<< >>\nendobj\nstartxref\n189089\n%%EOF".to_vec();
+        // Pad well past the old 2 KB window.
+        pdf.extend(std::iter::repeat_n(0u8, 5245));
+
+        let mut cur = std::io::Cursor::new(pdf);
+        let offset = find_xref_offset(&mut cur).expect("a padded file must still parse");
+        assert_eq!(offset, 189089);
+    }
+
+    /// The offset LINE itself may carry the padding (`"189089\0\0\0..."`).
+    /// `str::trim` does not strip NULs, so the all-digits check must.
+    #[test]
+    fn find_xref_offset_trims_nuls_from_the_offset_line() {
+        let mut pdf: Vec<u8> = b"%PDF-1.6\nstartxref\n4242".to_vec();
+        pdf.extend(std::iter::repeat_n(0u8, 64));
+        let mut cur = std::io::Cursor::new(pdf);
+        assert_eq!(find_xref_offset(&mut cur).expect("trailing NULs on the offset line"), 4242);
     }
 
     #[test]
