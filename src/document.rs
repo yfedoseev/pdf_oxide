@@ -475,6 +475,11 @@ pub struct PdfDocument {
     /// the second from cache. Cleared by redaction (`erase_region` /
     /// `clear_erase_regions`), the only span-affecting mutation.
     page_spans_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextSpan>>>>,
+    /// Per-page character cache for the unfiltered (`extract_chars`) result.
+    /// `postprocess_spans` needs the same char sequence the public API returns,
+    /// so without this every span extraction re-parses the content stream a
+    /// second time purely to stamp per-glyph x-origins.
+    page_chars_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextChar>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
     /// repetition. A span whose normalized text matches a signature
     /// sits near the top/bottom of the page is treated as an artifact.
@@ -486,7 +491,8 @@ pub struct PdfDocument {
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
-    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    running_artifact_signatures:
+        Mutex<Option<std::sync::Arc<std::collections::HashMap<String, usize>>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -1097,6 +1103,7 @@ impl PdfDocument {
             erase_regions: Mutex::new(HashMap::new()),
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
+            page_chars_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
             output_intent_cmyk_profile_cache: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
@@ -11842,10 +11849,26 @@ impl PdfDocument {
             return;
         }
 
-        let accurate = match self.extract_chars(page_index) {
+        let accurate = match self.cached_page_chars(page_index) {
             Ok(chars) if !chars.is_empty() => chars,
             _ => return,
         };
+
+        // Baseline index: char positions ordered by `origin_y`, so each span's
+        // baseline slice is a binary-searched range rather than a linear scan
+        // over every glyph on the page (that scan made this pass
+        // O(spans x chars) — the dominant per-page cost on long documents).
+        let mut by_y: Vec<u32> = (0..accurate.len() as u32).collect();
+        by_y.sort_by(|&a, &b| {
+            crate::utils::safe_float_cmp(
+                accurate[a as usize].origin_y,
+                accurate[b as usize].origin_y,
+            )
+        });
+        let ys: Vec<f32> = by_y
+            .iter()
+            .map(|&i| accurate[i as usize].origin_y)
+            .collect();
 
         for span in spans.iter_mut() {
             // Rotated-content spans are in the displayed frame (mapped on 90/270)
@@ -11866,14 +11889,33 @@ impl PdfDocument {
 
             // Accurate chars sharing this span's baseline, left-to-right.
             let baseline_tol = 0.6 * span.font_size.max(1.0);
-            let mut line: Vec<&crate::layout::TextChar> = accurate
+            // Chars sharing this span's baseline, left-to-right. The y-sorted
+            // index brackets a candidate range; the exact `abs()` predicate then
+            // selects from it, so the result matches a full linear scan even
+            // where the bracket arithmetic rounds differently. The widened
+            // bracket keeps that range a superset. Ordering by
+            // (origin_x, source index) reproduces the previous stable
+            // filter-then-sort: ties on origin_x keep their `accurate` order.
+            let bracket = baseline_tol + baseline_tol.abs() * 1e-6 + f32::EPSILON;
+            let lo = ys.partition_point(|&y| y < span.bbox.y - bracket);
+            let hi = ys.partition_point(|&y| y <= span.bbox.y + bracket);
+            let mut idx: Vec<u32> = by_y[lo..hi]
                 .iter()
-                .filter(|c| (c.origin_y - span.bbox.y).abs() <= baseline_tol)
+                .copied()
+                .filter(|&i| (accurate[i as usize].origin_y - span.bbox.y).abs() <= baseline_tol)
                 .collect();
-            if line.is_empty() {
+            if idx.is_empty() {
                 continue;
             }
-            line.sort_by(|a, b| crate::utils::safe_float_cmp(a.origin_x, b.origin_x));
+            idx.sort_by(|&a, &b| {
+                crate::utils::safe_float_cmp(
+                    accurate[a as usize].origin_x,
+                    accurate[b as usize].origin_x,
+                )
+                .then(a.cmp(&b))
+            });
+            let line: Vec<&crate::layout::TextChar> =
+                idx.iter().map(|&i| &accurate[i as usize]).collect();
 
             // Greedy per-glyph alignment. Anchor the scan cursor at the accurate
             // char nearest this span's left edge, then walk the span's glyphs,
@@ -15027,17 +15069,20 @@ impl PdfDocument {
     /// that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::collections::HashMap<String, usize>> {
+    ) -> Result<std::sync::Arc<std::collections::HashMap<String, usize>>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
-                return Ok(map.clone());
+                // Shared by reference: this runs once per page and the map is
+                // document-wide, so cloning it here scaled with page count.
+                return Ok(std::sync::Arc::clone(map));
             }
         }
         let page_count = self.page_count()?;
         if page_count < 2 {
-            let empty = std::collections::HashMap::new();
-            *self.running_artifact_signatures.lock_or_recover() = Some(empty.clone());
+            let empty = std::sync::Arc::new(std::collections::HashMap::new());
+            *self.running_artifact_signatures.lock_or_recover() =
+                Some(std::sync::Arc::clone(&empty));
             return Ok(empty);
         }
 
@@ -15158,7 +15203,9 @@ impl PdfDocument {
                 (sig, first)
             })
             .collect();
-        *self.running_artifact_signatures.lock_or_recover() = Some(signatures.clone());
+        let signatures = std::sync::Arc::new(signatures);
+        *self.running_artifact_signatures.lock_or_recover() =
+            Some(std::sync::Arc::clone(&signatures));
         Ok(signatures)
     }
 
@@ -16307,7 +16354,29 @@ impl PdfDocument {
     /// Character extraction is typically 30-50% faster than span extraction
     /// because it skips the text grouping and merging logic.
     pub fn extract_chars(&self, page_index: usize) -> Result<Vec<crate::layout::TextChar>> {
-        self.extract_chars_impl(page_index, HashSet::new(), HashSet::new())
+        Ok((*self.cached_page_chars(page_index)?).clone())
+    }
+
+    /// Shared, cached character sequence for a page — identical to what
+    /// [`Self::extract_chars`] returns, minus the clone. Only the unfiltered
+    /// extraction is cached; the layer/ink-filtered variant is keyed on its
+    /// filters and stays uncached.
+    fn cached_page_chars(
+        &self,
+        page_index: usize,
+    ) -> Result<std::sync::Arc<Vec<crate::layout::TextChar>>> {
+        if let Some(cached) = self.page_chars_cache.lock_or_recover().get(&page_index) {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let chars = std::sync::Arc::new(self.extract_chars_impl(
+            page_index,
+            HashSet::new(),
+            HashSet::new(),
+        )?);
+        self.page_chars_cache
+            .lock_or_recover()
+            .insert(page_index, std::sync::Arc::clone(&chars));
+        Ok(chars)
     }
 
     /// Extract characters from a page, excluding content from specified layers and inks.
@@ -16376,7 +16445,7 @@ impl PdfDocument {
             }
         }
 
-        let mut chars = extractor.extract(&content_data)?;
+        let mut chars = extractor.extract_owned(&content_data)?;
 
         chars.sort_by(|a, b| {
             let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
@@ -16503,8 +16572,13 @@ impl PdfDocument {
         // Materialize each span's chars ONCE (to_chars allocates + decodes); the
         // word-clustering loop below reuses chars_per_span instead of calling
         // to_chars a second time per span. Byte-identical, halves to_chars work.
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         if all_chars.is_empty() {
             return Ok(Vec::new());
         }
@@ -16538,7 +16612,7 @@ impl PdfDocument {
             std::collections::HashSet::new();
         let mut words = Vec::new();
         for (span_idx, span) in spans.iter().enumerate() {
-            let span_chars = &chars_per_span[span_idx];
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
@@ -16821,8 +16895,13 @@ impl PdfDocument {
             crate::geometry::Rect::new(media_box.0, media_box.1, media_box.2, media_box.3);
 
         // Materialize each span's chars once (see extract_text_as_words).
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
         let mut params = AdaptiveLayoutParams::from_properties(&props);
@@ -16846,7 +16925,8 @@ impl PdfDocument {
         // are therefore lifted out and each emitted as its own line.
         let mut words: Vec<Word> = Vec::new();
         let mut word_rot_run: Vec<Option<usize>> = Vec::new();
-        for (span_idx, (span, span_chars)) in spans.iter().zip(chars_per_span.iter()).enumerate() {
+        for (span_idx, span) in spans.iter().enumerate() {
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
