@@ -18033,13 +18033,17 @@ impl PdfDocument {
             });
 
         // Get rotation (optional, default 0).
-        // PDF spec §7.3.10: Rotate may also be an indirect reference.
+        // PDF spec Section 7.3.10: Rotate may also be an indirect reference.
+        // Some producers emit it as a real number (e.g. /Rotate 90.0), which
+        // the lexer parses as Object::Real - accept both, mirroring
+        // get_page_rotation's Integer/Real handling (~line 4171 above).
         let rotation = page_dict
             .get("Rotate")
             .map(|o| self.resolve_obj_ref(o))
             .as_ref()
             .and_then(|o| match o {
                 Object::Integer(i) => Some(*i as i32),
+                Object::Real(r) => Some(*r as i32),
                 _ => None,
             })
             .unwrap_or(0);
@@ -18183,6 +18187,49 @@ impl PdfDocument {
             if let Some(to_unicode) = d.get("ToUnicode") {
                 17u8.hash(&mut hasher);
                 self.fold_stream_bytes(to_unicode, &mut hasher);
+            }
+
+            // /Encoding CONTENT for a referenced or inline encoding dictionary.
+            // The cheap hash can only fold a constant marker for a
+            // referenced/dict /Encoding (it does not resolve), so two simple
+            // fonts that share a /BaseFont name but re-encode through DIFFERENT
+            // /Differences arrays collide on the cheap key. That is common in
+            // subsetted PDFs: several /BaseFont "Times-Roman" instances each
+            // carry a per-instance, frequency-ordered /Encoding (code 1 -> first
+            // glyph used, ...). With no /ToUnicode and no embedded program (a
+            // non-embedded base font) NOTHING else distinguishes them, so the
+            // per-document cache served the first font's parsed FontInfo for the
+            // second, decoding its body text through the wrong /Differences - a
+            // substitution-cipher scramble ("the" -> "bis"). Fold the resolved
+            // base encoding name and the /Differences [code -> glyph name] pairs
+            // so such fonts get distinct keys, while genuinely identical
+            // encodings still dedup.
+            if let Some(enc) = d.get("Encoding") {
+                if let Some(enc_obj) = self.resolve_indirect_for_hash(enc) {
+                    if let Some(enc_dict) = enc_obj.as_dict() {
+                        20u8.hash(&mut hasher);
+                        if let Some(Object::Name(base)) = enc_dict.get("BaseEncoding") {
+                            base.hash(&mut hasher);
+                        }
+                        if let Some(diffs) = enc_dict.get("Differences") {
+                            if let Some(diffs_obj) = self.resolve_indirect_for_hash(diffs) {
+                                if let Some(arr) = diffs_obj.as_array() {
+                                    for item in arr {
+                                        match item {
+                                            Object::Integer(i) => i.hash(&mut hasher),
+                                            Object::Name(n) => n.hash(&mut hasher),
+                                            Object::Reference(r) => {
+                                                r.id.hash(&mut hasher);
+                                                r.gen.hash(&mut hasher);
+                                            },
+                                            _ => {},
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Simple fonts (Type1/TrueType) carry their embedded program on the
@@ -27704,6 +27751,52 @@ mod tests {
             Object::Array(vec![Object::Reference(ObjectRef::new(20, 0))]),
         );
         assert_ne!(PdfDocument::font_identity_hash_cheap(&Object::Dictionary(d)), 0);
+    }
+
+    // Regression: two same-named, non-embedded simple fonts whose /Encoding are
+    // REFERENCES to different /Differences arrays must not share an identity
+    // hash. The cheap hash folds only a constant marker for a referenced
+    // /Encoding, so without folding the referenced encoding's CONTENT they
+    // collide and the second font decodes through the first's /Differences (a
+    // substitution-cipher scramble). font_identity_hash_with_descendants must
+    // distinguish them.
+    #[test]
+    fn test_font_identity_hash_folds_referenced_encoding_differences() {
+        let doc = PdfDocument::from_bytes(build_minimal_pdf(b"")).unwrap();
+
+        let enc = |names: &[&str]| {
+            let mut diffs = vec![Object::Integer(1)];
+            diffs.extend(names.iter().map(|n| Object::Name((*n).to_string())));
+            let mut d = std::collections::HashMap::new();
+            d.insert("Type".to_string(), Object::Name("Encoding".to_string()));
+            d.insert("Differences".to_string(), Object::Array(diffs));
+            Object::Dictionary(d)
+        };
+        // Two distinct encoding objects with different frequency-ordered maps.
+        doc.object_cache
+            .lock_or_recover()
+            .insert(ObjectRef::new(100, 0), enc(&["T", "h", "i", "s"]));
+        doc.object_cache
+            .lock_or_recover()
+            .insert(ObjectRef::new(101, 0), enc(&["one", "T", "h", "e"]));
+
+        let font = |enc_ref: u32| {
+            let mut f = std::collections::HashMap::new();
+            f.insert("BaseFont".to_string(), Object::Name("Times-Roman".to_string()));
+            f.insert("Subtype".to_string(), Object::Name("Type1".to_string()));
+            f.insert("Encoding".to_string(), Object::Reference(ObjectRef::new(enc_ref, 0)));
+            Object::Dictionary(f)
+        };
+
+        let h100 = doc.font_identity_hash_with_descendants(&font(100));
+        let h101 = doc.font_identity_hash_with_descendants(&font(101));
+        assert_ne!(h100, h101, "fonts with different referenced /Differences must not collide");
+
+        // Two fonts pointing at the SAME encoding object still dedup.
+        assert_eq!(
+            doc.font_identity_hash_with_descendants(&font(100)),
+            doc.font_identity_hash_with_descendants(&font(100)),
+        );
     }
 
     // ========================================================================

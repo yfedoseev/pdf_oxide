@@ -9513,6 +9513,99 @@ mod tests {
         assert_eq!(chars[0].color.b, 0.0);
     }
 
+    /// Regression test for a text-only-parser bug where a fill colour set by
+    /// `scn` *before* the enclosing `BT` was silently dropped, leaving the
+    /// text drawn in the GraphicsState default (black) instead of the
+    /// colour the content stream actually requested.
+    ///
+    /// Root cause: `scan_graphics_region()` (src/content/parser.rs) is used
+    /// by `parse_and_execute_text_only()` to fast-scan non-text regions
+    /// looking for the next `BT`. It classified `scn`/`cs`/`sc`/`rg`/`g`/`k`
+    /// (and friends) as unconditionally "skippable" - correct only when a
+    /// matching `Q` is guaranteed to revert the change before any `BT`, but
+    /// wrong at the top level (outside any q/Q scope), where the colour
+    /// change legitimately persists into the next text object per
+    /// ISO 32000-1:2008 SS8.4. Reproduces the exact operator sequence found
+    /// on a real-world govdocs1 slide-deck PDF: a marked-content BDC opens,
+    /// `scn` sets a blue fill colour *outside* any text object, then `BT`
+    /// opens the text object that draws the (should-be-blue) heading.
+    #[test]
+    fn test_fill_color_scn_before_bt_after_bdc_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"/Shape <</MCID 3 >>BDC \
+                        0.2 0.2 0.604 scn \
+                        BT /F1 12 Tf 100 700 Td (Blue Heading) Tj ET \
+                        EMC";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 0.2).abs() < 0.01,
+            "expected blue fill (0.2, 0.2, 0.604), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 0.2).abs() < 0.01);
+        assert!((spans[0].color.b - 0.604).abs() < 0.01);
+    }
+
+    /// Same bug, second real-world pattern: a `Q` (RestoreGraphicsState)
+    /// immediately precedes the out-of-text-object `scn`. Reproduces the
+    /// gold author-block sequence from the same source PDF.
+    #[test]
+    fn test_fill_color_scn_after_q_before_bt_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"q 1 0 0 1 0 0 cm Q \
+                        1 1 0 scn \
+                        BT /F1 12 Tf 100 700 Td (Gold Author) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 1.0).abs() < 0.01,
+            "expected gold fill (1, 1, 0), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 1.0).abs() < 0.01);
+        assert!((spans[0].color.b - 0.0).abs() < 0.01);
+    }
+
+    /// Must-not-regress guard: `scn` issued *inside* an already-open text
+    /// object (continuing after a prior `Tj`, still within the same BT/ET)
+    /// always worked correctly - it goes through the ordinary text-operator
+    /// parse path, not the non-text `scan_graphics_region` fast scanner.
+    /// Confirms the fix above did not disturb this working case.
+    #[test]
+    fn test_fill_color_scn_inside_open_text_object_still_works() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"BT /F1 12 Tf 100 700 Td (Black Text) Tj \
+                        0.2 0.2 0.604 scn \
+                        0 -20 Td (Blue Text) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 2);
+        assert!(
+            (spans[0].color.r - 0.0).abs() < 0.01 && (spans[0].color.b - 0.0).abs() < 0.01,
+            "first run should still be default black, got {:?}",
+            spans[0].color
+        );
+        assert!(
+            (spans[1].color.r - 0.2).abs() < 0.01,
+            "second run should be blue (0.2, 0.2, 0.604), got {:?}",
+            spans[1].color
+        );
+        assert!((spans[1].color.g - 0.2).abs() < 0.01);
+        assert!((spans[1].color.b - 0.604).abs() < 0.01);
+    }
+
     /// Regression test: is_monospace flag must propagate from FontInfo flags
     /// through TjBuffer into the final TextSpan.
     ///
