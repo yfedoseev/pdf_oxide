@@ -6535,7 +6535,12 @@ impl PdfDocument {
             return Ok(0);
         }
 
-        let mut occurrences: HashMap<String, HashSet<usize>> = HashMap::new();
+        // Each entry records the IN-ZONE occurrences of a repeated string as
+        // (page, bbox). Keeping the bbox (not just the page set) lets us both
+        // (a) erase only the header/footer occurrence and never an identically
+        // worded span elsewhere on the page, and (b) require the occurrences to
+        // share a position before treating the string as chrome.
+        let mut occurrences: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
 
         // Sanitize threshold to avoid min_occurrences becoming 0 for invalid inputs.
         let clamped_threshold = if threshold.is_finite() {
@@ -6545,9 +6550,6 @@ impl PdfDocument {
         };
         let raw_min = (page_count as f32 * clamped_threshold).ceil();
         let min_occurrences = if raw_min < 1.0 { 1 } else { raw_min as usize };
-
-        // Cache spans per page to avoid redundant extraction in Pass 2
-        let mut page_spans: HashMap<usize, Vec<crate::layout::TextSpan>> = HashMap::new();
 
         for page_idx in 0..page_count {
             let height = self.get_page_media_box(page_idx)?.3;
@@ -6566,26 +6568,49 @@ impl PdfDocument {
                 if is_in_zone {
                     let text = span.text.trim().to_string();
                     if text.len() > 3 && !text.chars().all(|c| c.is_numeric()) {
-                        occurrences.entry(text).or_default().insert(page_idx);
+                        occurrences
+                            .entry(text)
+                            .or_default()
+                            .push((page_idx, span.bbox));
                     }
                 }
             }
-            page_spans.insert(page_idx, spans);
         }
 
-        for (text, pages) in occurrences {
-            if pages.len() >= min_occurrences {
-                for page_idx in pages {
-                    // Reuse cached spans
-                    if let Some(spans) = page_spans.get(&page_idx) {
-                        for span in spans {
-                            if span.text.trim() == text {
-                                self.erase_region(page_idx, span.bbox)?;
-                                removed_count += 1;
-                            }
-                        }
-                    }
-                }
+        // Genuine running headers/footers are position-locked: the same string
+        // lands at the same x/y on every page. A form label or instruction that
+        // merely happens to recur — e.g. "Check if:", "(see instructions)",
+        // "Name(s) shown on return" on a multi-page tax form — drifts in x or y
+        // between pages. Requiring positional consistency separates "recurs
+        // because it is chrome" from "recurs because it is the same real label"
+        // without deleting content.
+        const POS_TOL_X: f32 = 40.0;
+        const POS_TOL_Y: f32 = 24.0;
+
+        for (_text, occs) in occurrences {
+            let distinct_pages: HashSet<usize> = occs.iter().map(|(p, _)| *p).collect();
+            if distinct_pages.len() < min_occurrences {
+                continue;
+            }
+
+            // Positional spread across every in-zone occurrence.
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for (_, bbox) in &occs {
+                min_x = min_x.min(bbox.x);
+                max_x = max_x.max(bbox.x);
+                min_y = min_y.min(bbox.y);
+                max_y = max_y.max(bbox.y);
+            }
+            if (max_x - min_x) > POS_TOL_X || (max_y - min_y) > POS_TOL_Y {
+                continue; // drifts between pages → real content, not chrome
+            }
+
+            // Erase only the header/footer occurrences that qualified — never a
+            // same-text span outside the band.
+            for (page_idx, bbox) in occs {
+                self.erase_region(page_idx, bbox)?;
+                removed_count += 1;
             }
         }
 
@@ -14807,15 +14832,48 @@ impl PdfDocument {
         false
     }
 
+    /// Numeric value 0–9 of a folio (page-number) digit, or `None` if `c` is
+    /// not one. Scoped to the decimal-digit blocks that actually appear as
+    /// page folios: ASCII, Arabic-Indic, Extended Arabic-Indic (Persian/Urdu),
+    /// Devanagari, and full-width. Deliberately narrower than
+    /// `char::is_numeric()` (which also matches `½`, `①`, superscripts) and
+    /// wider than `char::is_ascii_digit()`. CJK ideographic numerals
+    /// (`一二三…`) are intentionally excluded — they are not Unicode `Nd`, and
+    /// collapsing them would over-normalize real headings (`第一章` → `第#章`).
+    ///
+    /// `char::to_digit(10)` cannot stand in here: it is ASCII-only and returns
+    /// `None` for `'٥'` / `'५'` / `'５'`, so each block is mapped to its zero
+    /// code point directly.
+    fn folio_digit_value(c: char) -> Option<u32> {
+        let cp = c as u32;
+        let base = match cp {
+            0x0030..=0x0039 => 0x0030, // ASCII 0-9
+            0x0660..=0x0669 => 0x0660, // Arabic-Indic
+            0x06F0..=0x06F9 => 0x06F0, // Extended Arabic-Indic (Persian/Urdu)
+            0x0966..=0x096F => 0x0966, // Devanagari
+            0xFF10..=0xFF19 => 0xFF10, // Full-width
+            _ => return None,
+        };
+        Some(cp - base)
+    }
+
+    /// Unicode-aware decimal-digit predicate for page folios. See
+    /// [`Self::folio_digit_value`] for the supported blocks and rationale.
+    fn is_folio_digit(c: char) -> bool {
+        Self::folio_digit_value(c).is_some()
+    }
+
     /// Normalize a span's text for cross-page signature matching.
     /// Collapses whitespace and replaces digit runs with `#` so that page
     /// numbers ("Page 1 of 10", "Page 2 of 10") collapse to one signature.
+    /// Non-Latin folio digits (Arabic-Indic, Persian, Devanagari, full-width)
+    /// collapse too, so folios paginated in those scripts share one signature.
     fn normalize_artifact_signature(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let mut in_digit_run = false;
         let mut last_was_space = true;
         for c in text.chars() {
-            if c.is_ascii_digit() {
+            if Self::is_folio_digit(c) {
                 if !in_digit_run {
                     out.push('#');
                     in_digit_run = true;
@@ -14846,7 +14904,10 @@ impl PdfDocument {
     /// matched (miss-rather-than-drop — a false positive deletes real content).
     fn looks_like_stable_pagination(literal: &str) -> bool {
         let l = literal.to_ascii_lowercase();
-        if !l.chars().any(|c| c.is_ascii_digit()) {
+        // The digit gate is script-aware (a non-Latin folio digit still
+        // qualifies); the citation/URL keyword tokens below remain English-
+        // only by design — keyword universality is tracked separately.
+        if !l.chars().any(Self::is_folio_digit) {
             return false;
         }
         if l.contains("doi.org") || l.contains("doi:") || l.contains("/doi/") {
@@ -14865,10 +14926,58 @@ impl PdfDocument {
         l.contains("www.") && (l.contains(".org") || l.contains(".com") || l.contains(".net"))
     }
 
+    /// A page is treated as vertical-writing (CJK tategaki, 縦書き) when a
+    /// majority of its non-empty text spans were rendered in WMode 1. The
+    /// writing mode comes from the PDF's own `/WMode` (captured on each span
+    /// via `GraphicsState::text_wmode`), so this is authoritative — a
+    /// horizontal page (WMode 0) is never misclassified, and its
+    /// running-header/footer detection is unchanged.
+    fn page_is_vertical(spans: &[crate::layout::TextSpan]) -> bool {
+        let mut vertical = 0usize;
+        let mut total = 0usize;
+        for s in spans {
+            if s.text.trim().is_empty() {
+                continue;
+            }
+            total += 1;
+            if s.wmode == 1 {
+                vertical += 1;
+            }
+        }
+        total > 0 && vertical * 2 > total
+    }
+
+    /// Is `bbox` inside the candidate running-header/footer band for a page of
+    /// the given dimensions? Horizontal pages use the top/bottom 12% strips.
+    /// Vertical-writing (tategaki) pages *additionally* use the left/right 12%
+    /// strips — the outer edge where CJK vertical folios and running heads
+    /// conventionally sit, rather than across the top/bottom edge. The side
+    /// strips are additive (the top/bottom test still applies), so this only
+    /// ever widens detection, never narrows it.
+    fn in_chrome_band(
+        bbox: &crate::geometry::Rect,
+        page_width: f32,
+        page_height: f32,
+        vertical: bool,
+    ) -> bool {
+        let vband = page_height * 0.12;
+        if bbox.y < vband || bbox.y + bbox.height > page_height - vband {
+            return true;
+        }
+        if vertical {
+            let hband = page_width * 0.12;
+            if bbox.x < hband || bbox.x + bbox.width > page_width - hband {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Ensure running-artifact signatures are computed (once) and return a
     /// clone for matching. The computation scans every page's raw spans,
-    /// collects normalized text that appears in the top or bottom 12% of
-    /// the page, and keeps entries that recur on >=50% of pages.
+    /// collects normalized text that appears in the top/bottom 12% band (and,
+    /// on vertical-writing pages, the left/right 12% band), and keeps entries
+    /// that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
     ) -> Result<std::collections::HashMap<String, usize>> {
@@ -14908,23 +15017,19 @@ impl PdfDocument {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let page_height = match self.get_page_media_box(pi) {
-                Ok((_, _, _, h)) if h > 0.0 => h,
+            let (page_width, page_height) = match self.get_page_media_box(pi) {
+                Ok((_, _, w, h)) if h > 0.0 => (w, h),
                 _ => continue,
             };
-            let band = page_height * 0.12;
-            // Require that the page has CONTENT outside the top/bottom
-            // bands before counting band spans as candidate artifacts.
-            // Otherwise, a page consisting only of a title near the top
-            // would have its own title classified as a "running header"
-            // across all pages.
+            let vertical = Self::page_is_vertical(&spans);
+            // Require that the page has CONTENT outside the chrome band(s)
+            // before counting band spans as candidate artifacts. Otherwise, a
+            // page consisting only of a title near the top would have its own
+            // title classified as a "running header" across all pages. (For
+            // horizontal pages this is identical to the prior top/bottom test.)
             let has_body_content = spans.iter().any(|s| {
-                let t = s.text.trim();
-                if t.is_empty() {
-                    return false;
-                }
-                let top_of_span = s.bbox.y + s.bbox.height;
-                top_of_span <= page_height - band && s.bbox.y >= band
+                !s.text.trim().is_empty()
+                    && !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
             });
             // Collect per-page unique signatures from the chrome bands.
             // Runs even when there's no body content so `first_seen_any`
@@ -14936,9 +15041,7 @@ impl PdfDocument {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let near_bottom = s.bbox.y < band;
-                let near_top = s.bbox.y + s.bbox.height > page_height - band;
-                if !(near_top || near_bottom) {
+                if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                     continue;
                 }
                 let sig = Self::normalize_artifact_signature(trimmed);
@@ -15021,13 +15124,21 @@ impl PdfDocument {
     /// applied inside the top/bottom margin band by the caller, so ordinary
     /// numerals in body text are never affected.
     fn is_bare_page_number_text(trimmed: &str) -> bool {
-        !trimmed.is_empty()
-            && trimmed.len() <= 4
-            && trimmed.chars().all(|c| c.is_ascii_digit())
-            && trimmed
-                .parse::<u32>()
-                .map(|n| (1..=9999).contains(&n))
-                .unwrap_or(false)
+        // Bound by character count, not byte length: non-Latin folio digits are
+        // 2–3 UTF-8 bytes each, so a byte cap would reject "۱۲۳" outright.
+        if trimmed.is_empty() || trimmed.chars().count() > 4 {
+            return false;
+        }
+        // Fold the (script-aware) digits to a value directly; `parse::<u32>`
+        // and `char::to_digit` are ASCII-only and reject non-Latin folios.
+        let mut value: u32 = 0;
+        for c in trimmed.chars() {
+            match Self::folio_digit_value(c) {
+                Some(d) => value = value * 10 + d,
+                None => return false,
+            }
+        }
+        (1..=9999).contains(&value)
     }
 
     fn mark_running_artifact_spans(
@@ -15035,14 +15146,14 @@ impl PdfDocument {
         page_index: usize,
         spans: &mut [crate::layout::TextSpan],
     ) -> Result<()> {
-        let (_, _, _, page_height) = match self.get_page_media_box(page_index) {
+        let (_, _, page_width, page_height) = match self.get_page_media_box(page_index) {
             Ok(mb) => mb,
             Err(_) => return Ok(()),
         };
         if page_height <= 0.0 {
             return Ok(());
         }
-        let band = page_height * 0.12;
+        let vertical = Self::page_is_vertical(spans);
         // Snapshot baselines of every non-blank span, so the bare-page-number
         // rule can require a candidate to stand ALONE on its line (#553): a
         // digit adjacent to other text — e.g. the "8" in "8th" — is content,
@@ -15059,9 +15170,7 @@ impl PdfDocument {
             if s.artifact_type.is_some() {
                 continue;
             }
-            let near_bottom = s.bbox.y < band;
-            let near_top = s.bbox.y + s.bbox.height > page_height - band;
-            if !(near_top || near_bottom) {
+            if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                 continue;
             }
             let trimmed = s.text.trim();
@@ -25722,6 +25831,68 @@ mod tests {
         assert_eq!(texts, vec!["שלום", "World"], "mixed RTL+Latin must stay in raw order");
     }
 
+    fn span_wmode(x: f32, y: f32, wmode: u8) -> TextSpan {
+        TextSpan {
+            text: "x".to_string(),
+            bbox: crate::geometry::Rect::new(x, y, 12.0, 12.0),
+            wmode,
+            ..TextSpan::default()
+        }
+    }
+
+    // A page is vertical-writing only when a majority of non-empty spans carry
+    // WMode 1 — authoritative, so horizontal pages are never misclassified.
+    #[test]
+    fn test_page_is_vertical() {
+        // Majority vertical.
+        let v = [
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 0),
+        ];
+        assert!(PdfDocument::page_is_vertical(&v));
+        // Majority horizontal.
+        let h = [
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 1),
+        ];
+        assert!(!PdfDocument::page_is_vertical(&h));
+        // Exact tie is not a majority — stay horizontal (conservative).
+        let tie = [span_wmode(0.0, 0.0, 1), span_wmode(0.0, 0.0, 0)];
+        assert!(!PdfDocument::page_is_vertical(&tie));
+        // Empty / blank-only.
+        assert!(!PdfDocument::page_is_vertical(&[]));
+        let mut blank = span_wmode(0.0, 0.0, 1);
+        blank.text = "   ".to_string();
+        assert!(!PdfDocument::page_is_vertical(std::slice::from_ref(&blank)));
+    }
+
+    // Horizontal pages use the top/bottom band; vertical pages ALSO use the
+    // left/right band. The side band is additive — it never removes the
+    // top/bottom membership a horizontal page relies on.
+    #[test]
+    fn test_in_chrome_band() {
+        let (w, h) = (612.0_f32, 792.0_f32); // vband=95.04, hband=73.44
+        let top = crate::geometry::Rect::new(300.0, 780.0, 12.0, 12.0);
+        let bottom = crate::geometry::Rect::new(300.0, 10.0, 12.0, 12.0);
+        let middle = crate::geometry::Rect::new(300.0, 400.0, 12.0, 12.0);
+        let left = crate::geometry::Rect::new(10.0, 400.0, 12.0, 12.0);
+        let right = crate::geometry::Rect::new(600.0, 400.0, 12.0, 12.0);
+
+        // Top/bottom are chrome in BOTH modes; middle is never chrome.
+        for vertical in [false, true] {
+            assert!(PdfDocument::in_chrome_band(&top, w, h, vertical));
+            assert!(PdfDocument::in_chrome_band(&bottom, w, h, vertical));
+            assert!(!PdfDocument::in_chrome_band(&middle, w, h, vertical));
+        }
+        // Side strips: chrome only when vertical.
+        assert!(!PdfDocument::in_chrome_band(&left, w, h, false));
+        assert!(!PdfDocument::in_chrome_band(&right, w, h, false));
+        assert!(PdfDocument::in_chrome_band(&left, w, h, true));
+        assert!(PdfDocument::in_chrome_band(&right, w, h, true));
+    }
+
     // #553: bare page-number detection (applied only inside the margin band).
     #[test]
     fn test_is_bare_page_number_text() {
@@ -25733,6 +25904,57 @@ mod tests {
         ] {
             assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
         }
+    }
+
+    // Non-Latin folio digits are recognized as bare page numbers, bounded by
+    // character count (each is 2-3 UTF-8 bytes) and range-checked via the
+    // block-offset map (parse/to_digit are ASCII-only).
+    #[test]
+    fn test_is_bare_page_number_text_non_latin() {
+        for yes in [
+            "\u{0661}",                         // Arabic-Indic ١ = 1
+            "\u{0661}\u{0662}",                 // ١٢ = 12
+            "\u{06F3}",                         // Persian ۳ = 3
+            "\u{06F1}\u{06F2}\u{06F3}",         // ۱۲۳ = 123
+            "\u{0967}\u{0966}",                 // Devanagari १० = 10
+            "\u{FF11}\u{FF12}\u{FF13}\u{FF14}", // full-width １２３４ = 1234
+        ] {
+            assert!(
+                PdfDocument::is_bare_page_number_text(yes),
+                "{yes:?} should be a non-Latin page number"
+            );
+        }
+        for no in [
+            "\u{0660}",                                 // Arabic-Indic ٠ = 0 (out of 1..=9999)
+            "\u{FF11}\u{FF10}\u{FF10}\u{FF10}\u{FF10}", // full-width １００００ = 10000, 5 chars
+            "\u{4E00}",  // CJK 一 — ideographic, intentionally excluded
+            "\u{0661}a", // digit + letter
+        ] {
+            assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
+        }
+    }
+
+    // Folios paginated in non-Latin digits collapse to a shared signature, so
+    // the varying-literal gate (variants >= 2) can fire.
+    #[test]
+    fn test_normalize_artifact_signature_non_latin_digits() {
+        // Persian "صفحه ۱" and "صفحه ۲" must share one signature.
+        let s1 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F1}");
+        let s2 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F2}");
+        assert_eq!(s1, s2, "Persian folios must collapse to one signature");
+        assert!(s1.contains('#'), "digit run must collapse to # (got {s1:?})");
+
+        // Full-width "第１頁" / "第２頁" share a signature; multi-digit runs
+        // collapse to a single #.
+        let f1 = PdfDocument::normalize_artifact_signature("\u{FF11}\u{FF10}");
+        assert_eq!(f1, "#", "full-width digit run collapses to a single #");
+
+        // CJK ideographic numerals are NOT digits: "第一章" must stay intact
+        // so real headings are not over-normalized.
+        let heading = PdfDocument::normalize_artifact_signature("\u{7B2C}\u{4E00}\u{7AE0}");
+        assert_eq!(heading, "\u{7B2C}\u{4E00}\u{7AE0}", "ideographic numerals must not collapse");
     }
 
     #[test]
