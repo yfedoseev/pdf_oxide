@@ -15,10 +15,13 @@ Gem::Specification.new do |spec|
     spec.platform = Gem::Platform.new(gem_plat)
   end
 
-  spec.summary = 'Ruby bindings for PDF Oxide - high-performance PDF processing'
-  spec.description = 'Idiomatic Ruby bindings for PDF Oxide. Process, analyze, ' \
-                     'and generate PDFs through the libpdf_oxide cdylib used by ' \
-                     'the Python, Java, Node, Go, and C# bindings.'
+  spec.summary = 'The fastest Ruby PDF library — 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs'
+  spec.description = 'The fastest Ruby PDF library: 0.8ms mean, 5× faster than the ' \
+                     'industry leaders, 100% pass rate on 3,830 real-world PDFs. ' \
+                     'Idiomatic Ruby bindings for text extraction, Markdown/HTML ' \
+                     'conversion, and PDF creation and editing over the pdf_oxide ' \
+                     'Rust core (the libpdf_oxide cdylib shared by the Python, ' \
+                     'Java, Node, Go, and C# bindings).'
   spec.homepage = 'https://github.com/yfedoseev/pdf_oxide'
   # Dual-licensed at the repo root (MIT OR Apache-2.0); mirror that here.
   spec.licenses = ['MIT', 'Apache-2.0']
