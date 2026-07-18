@@ -667,6 +667,7 @@ mod tests {
     fn make_span(text: &str, x: f32, y: f32) -> OrderedTextSpan {
         OrderedTextSpan::new(
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
@@ -855,6 +856,7 @@ mod tests {
     fn make_span_with_width(text: &str, x: f32, y: f32, width: f32) -> OrderedTextSpan {
         OrderedTextSpan::new(
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),

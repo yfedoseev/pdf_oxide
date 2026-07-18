@@ -3146,6 +3146,33 @@ pub extern "C" fn pdf_oxide_element_get_text(
     to_c_string(&list.spans[index as usize].text)
 }
 
+/// The span's Unicode-mapping provenance label (ISO 32000-1 §9.10.2 tier):
+/// `"to_unicode"`, `"encoding"`, `"predefined_cmap"`, `"embedded_cmap"`,
+/// `"actual_text"`, or `"fallback"` (the text is a fabricated glyph-index echo,
+/// not read from the file). Returns null when the font could not be resolved.
+/// Free the returned string with `pdf_oxide_free_string`.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_element_get_provenance(
+    elements: *const FfiElementList,
+    index: i32,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if elements.is_null() || index < 0 {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let list = handle_ref(elements);
+    if (index as usize) >= list.spans.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return ptr::null_mut();
+    }
+    set_error(error_code, ERR_SUCCESS);
+    match list.spans[index as usize].provenance {
+        Some(p) => to_c_string(p.as_str()),
+        None => ptr::null_mut(),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_element_get_rect(
     elements: *const FfiElementList,
@@ -8765,6 +8792,9 @@ struct JsonElement<'a> {
     y: f32,
     width: f32,
     height: f32,
+    /// §9.10.2 mapping-provenance label; omitted when the font is unresolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -8947,6 +8977,7 @@ pub extern "C" fn pdf_oxide_elements_to_json(
             y: s.bbox.y,
             width: s.bbox.width,
             height: s.bbox.height,
+            provenance: s.provenance.map(|p| p.as_str()),
         })
         .collect();
     match serde_json::to_string(&items) {
