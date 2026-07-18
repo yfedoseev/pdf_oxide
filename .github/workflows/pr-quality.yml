@@ -1,0 +1,98 @@
+# Deterministic PR-quality gates — no LLM/agent judgment, pure rule checks.
+# These substitute for the human reviewer a solo maintainer doesn't have:
+#   - title:     PR title must follow Conventional Commits (load-bearing for squash-merge)
+#   - no-binary: block committed compiled/library artifacts (reinforces Binary-Artifacts + fixture policy)
+#   - ai-label:  label (never block) PRs whose commits disclose AI co-authorship
+#
+# Security: uses `pull_request_target` for write access on fork PRs, but only
+# reads strings from the event payload / REST API via github-script and never
+# checks out or runs PR code, and never interpolates untrusted input into a
+# shell — so there is no injection surface (only integer PR numbers appear in
+# `${{ }}`).
+name: PR quality gates
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title (Conventional Commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || '';
+            const conventional = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9,\-_ /]+\))?!?: .+/;
+            const release = /^Release v?\d+\.\d+/;   // maintainer release PRs
+            if (conventional.test(title) || release.test(title)) return;
+            core.setFailed(
+              'PR title must follow Conventional Commits — e.g. "fix(text): …", "feat: …", ' +
+              '"docs: …" (or a "Release vX.Y.Z …" title). Got: "' + title + '"'
+            );
+
+  no-binary:
+    name: No compiled / binary artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            // Compiled libraries / bytecode / executables — build from source,
+            // ship via release assets. (PDFs are handled by fixture-hygiene;
+            // fonts/images/ICC are legitimate fixtures and intentionally allowed.)
+            const disallowed = /\.(so|dll|dylib|a|rlib|o|class|pyc|pyo|exe|wasm|jar|node|dSYM)$/i;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const offenders = files
+              .filter(f => f.status === 'added' && disallowed.test(f.filename))
+              .map(f => f.filename);
+            if (offenders.length) {
+              core.setFailed(
+                'These compiled/binary artifacts must not be committed:\n' +
+                offenders.map(f => '  - ' + f).join('\n')
+              );
+            }
+
+  ai-label:
+    name: Label AI-assisted contributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            // Label (never block) — disclosed AI co-authorship is legitimate;
+            // this is for reviewer routing/metrics. Catches only *disclosed* AI
+            // (trailers / an Assisted-by line); undisclosed use is undetectable.
+            const marker = /(co-authored-by:[^\n]*(claude|copilot|cursor|devin|chatgpt|gpt|gemini|codex)|assisted-by:)/i;
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const body = context.payload.pull_request.body || '';
+            const disclosed = marker.test(body) || commits.some(c => marker.test(c.commit.message || ''));
+            if (!disclosed) return;
+            const common = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            };
+            const existing = (await github.rest.issues.listLabelsOnIssue(common)).data.map(l => l.name);
+            if (!existing.includes('ai-assisted')) {
+              await github.rest.issues.addLabels({ ...common, labels: ['ai-assisted'] });
+            }
