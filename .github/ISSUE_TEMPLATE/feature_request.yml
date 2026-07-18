@@ -10,6 +10,8 @@ body:
 
         **This is where the work starts — not the PR.** Features need a maintainer to accept the issue and agree on the approach *before* any code is written. A pull request opened without an accepted issue may be closed without detailed review (see [CONTRIBUTING.md](https://github.com/yfedoseev/pdf_oxide/blob/main/CONTRIBUTING.md)). Please wait for a maintainer to confirm scope before implementing.
 
+        A request submitted without filling in this form is closed automatically; just fill it in and reopen.
+
   - type: textarea
     id: problem
     attributes:

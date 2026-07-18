@@ -283,6 +283,10 @@ mandatory floor mirrors what you should run locally:
   git commit -s     # adds: Signed-off-by: Your Name <you@example.com>
   ```
   The `dco` CI job enforces this. There is no CLA.
+- **Fill in the template.** Issues and pull requests opened without filling in
+  their template are **closed automatically** (you'll get a comment explaining
+  how) — edit yours to fill it in, then reopen and we'll pick it up. Maintainers,
+  drafts, and items labelled `skip-template-check` are exempt.
 - **Review**: a maintainer reviews and merges. Address feedback by pushing
   follow-up commits. **PRs left in "changes requested" without a response will
   be closed** to keep the queue clean — reopen when you're ready to continue.

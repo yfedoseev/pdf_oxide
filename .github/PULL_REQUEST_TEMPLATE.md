@@ -5,6 +5,10 @@ Read CONTRIBUTING.md first. The two rules that matter most:
   2. Any extraction/layout/rendering/font change must be proven not to regress
      on a corpus of real PDFs (yours — the project corpus is private).
 Write this PR in your own words. Delete the guidance comments as you fill it in.
+
+NOTE: a PR opened without filling in this template is closed automatically —
+just fill it in and reopen. (Maintainers, drafts, and `skip-template-check` are
+exempt.)
 -->
 
 ## Linked issue

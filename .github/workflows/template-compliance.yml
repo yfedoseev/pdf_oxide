@@ -1,0 +1,77 @@
+# Auto-close issues and pull requests that ignore the templates.
+#
+# Enforcement is deliberately narrow: we only auto-close when the body is
+# effectively EMPTY once the template scaffolding (guidance comments, headings,
+# checkboxes, empty "Closes #") is stripped — i.e. the reporter opened the form
+# and submitted it without filling anything in. A contributor who fills in the
+# template is never touched. Maintainers, drafts, and anything labelled
+# `skip-template-check` are exempt. A closed item can be edited and reopened.
+#
+# Security: this uses `pull_request_target` (needed for write access on PRs from
+# forks) but ONLY reads strings from the event payload via github-script and
+# calls the issues/pulls API. It never checks out or executes PR code, and never
+# interpolates untrusted text into a shell — so there is no injection surface.
+name: Template compliance
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: template-compliance-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const isPR = !!context.payload.pull_request;
+            const item = context.payload.pull_request || context.payload.issue;
+            if (!item || item.state !== 'open') return;
+
+            // --- exemptions -------------------------------------------------
+            if (isPR && item.draft) return;                      // WIP drafts
+            const assoc = item.author_association;
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(assoc)) return; // maintainers
+            const labels = (item.labels || []).map(l => (l.name || l).toLowerCase());
+            if (labels.includes('skip-template-check')) return;  // manual bypass
+
+            // --- is the template effectively unfilled? ----------------------
+            const stripped = (item.body || '')
+              .replace(/<!--[\s\S]*?-->/g, '')                   // guidance comments
+              .split('\n')
+              .filter(line => {
+                const s = line.trim();
+                if (!s) return false;                            // blank
+                if (/^#{1,6}\s/.test(s)) return false;           // md / issue-form headings
+                if (/^-\s*\[[ xX]\]/.test(s)) return false;      // checkboxes
+                if (/^(closes|fixes|resolves)\s*#?\s*$/i.test(s)) return false; // empty "Closes #"
+                if (/^_no response_$/i.test(s)) return false;    // empty issue-form optional
+                return true;
+              })
+              .join('\n')
+              .trim();
+
+            if (stripped.length > 0) return;                     // they filled something in — OK
+
+            // --- close with a friendly, actionable explanation --------------
+            const kind = isPR ? 'pull request' : 'issue';
+            const body = [
+              `Thanks for opening this. It looks like the ${kind} template wasn't filled in, so it was closed automatically — this keeps the tracker reviewable (see CONTRIBUTING.md).`,
+              '',
+              `Please **edit** this ${kind} to fill in the template, then **reopen** it and we'll pick it up. If you think this was a mistake, add the \`skip-template-check\` label or ping a maintainer.`,
+            ].join('\n');
+
+            const common = { owner: context.repo.owner, repo: context.repo.repo, issue_number: item.number };
+            await github.rest.issues.createComment({ ...common, body });
+            await github.rest.issues.update({ ...common, state: 'closed', state_reason: 'not_planned' });

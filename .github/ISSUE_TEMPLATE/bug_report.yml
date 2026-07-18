@@ -13,6 +13,8 @@ body:
 
         Write the report in your own words — AI-generated reports you can't stand behind will be closed.
 
+        A report submitted without filling in this form is closed automatically; just fill it in and reopen.
+
   - type: textarea
     id: description
     attributes:
