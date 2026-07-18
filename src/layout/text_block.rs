@@ -157,7 +157,7 @@ pub struct TextSpan {
     /// echo, not read from the file. Runtime metadata only — deliberately not
     /// serialized (kept out of span JSON so existing output is byte-identical);
     /// bindings surface it through explicit accessors.
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub provenance: Option<crate::fonts::MappingProvenance>,
 }
 

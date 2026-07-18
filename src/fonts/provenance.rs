@@ -21,28 +21,37 @@
 //! fabricated?").
 
 /// Which §9.10.2 tier produced a character's Unicode value.
+///
+/// Serializes as the same stable lowercase labels [`Self::as_str`] returns, so
+/// every serde-based binding (WASM/JSON) and every explicit accessor agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[non_exhaustive]
 pub enum MappingProvenance {
     /// An `/ActualText` replacement on a structure element or marked-content
     /// sequence (§14.9.4). An explicit, authoritative override of the shown
     /// characters.
+    #[serde(rename = "actual_text")]
     ActualText,
     /// The font's `/ToUnicode` CMap (§9.10.3) — the authoritative per-font map.
+    #[serde(rename = "to_unicode")]
     ToUnicode,
     /// The font `/Encoding` → glyph name → Adobe Glyph List path (§9.10.2, the
     /// simple-font branch).
+    #[serde(rename = "encoding")]
     EncodingName,
     /// A predefined CID→Unicode CMap for a known character collection (§9.10.2,
     /// e.g. `Adobe-Japan1-UCS2`).
+    #[serde(rename = "predefined_cmap")]
     PredefinedCMap,
     /// Inversion of the embedded font program's own `cmap` table — the
     /// recoverable byte-as-GID / Identity subset shape.
+    #[serde(rename = "embedded_cmap")]
     EmbeddedCmap,
     /// No mapping tier produced a value; the character was chosen by fallback
     /// (a CID-as-Unicode echo, or `U+FFFD`). Per §9.10.2 the character code's
     /// meaning is undetermined, so any Unicode here is **fabricated by the
     /// extractor, not read from the file**.
+    #[serde(rename = "fallback")]
     Fallback,
 }
 
