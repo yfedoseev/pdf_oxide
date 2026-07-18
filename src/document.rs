@@ -8734,6 +8734,7 @@ impl PdfDocument {
             };
 
             spans.push(TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text,
                 bbox: rect,
@@ -8904,6 +8905,7 @@ impl PdfDocument {
             };
 
             spans.push(TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text,
                 bbox: rect,
@@ -17300,6 +17302,7 @@ impl PdfDocument {
         let spans: Vec<_> = words
             .into_iter()
             .map(|w| crate::layout::TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text: w.text,
                 bbox: w.bbox,
@@ -19105,6 +19108,7 @@ impl PdfDocument {
         let word_spans: Vec<crate::layout::TextSpan> = words
             .into_iter()
             .map(|w| crate::layout::TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text: w.text,
                 bbox: w.bbox,
@@ -24270,6 +24274,7 @@ mod tests {
 
     fn make_test_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -24801,6 +24806,7 @@ mod tests {
         font_size: f32,
     ) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             text: text.to_string(),
             bbox: crate::geometry::Rect {
@@ -28692,6 +28698,7 @@ mod tests {
 
         fn make_span(label: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: label.to_string(),
@@ -28760,6 +28767,7 @@ mod tests {
         use crate::geometry::Rect;
         use crate::layout::{Color, FontWeight, TextSpan};
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -29453,6 +29461,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
@@ -29527,6 +29536,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
@@ -29600,6 +29610,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),

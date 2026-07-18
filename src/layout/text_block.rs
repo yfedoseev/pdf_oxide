@@ -148,6 +148,17 @@ pub struct TextSpan {
     /// both use base-form characters (no presentation forms, no `/ReversedChars`).
     #[serde(skip_serializing_if = "is_false", default)]
     pub rtl_draw_logical: bool,
+    /// Provenance of this span's Unicode text — which ISO 32000-1 §9.10.2
+    /// mapping tier the font offered, as a
+    /// [`MappingProvenance`](crate::fonts::MappingProvenance). `None` when the
+    /// span was not produced by the extractor (synthetic/test spans). A
+    /// [`Fallback`](crate::fonts::MappingProvenance::Fallback) value means the
+    /// font carried no mapping resource, so the text is a fabricated glyph-index
+    /// echo, not read from the file. Runtime metadata only — deliberately not
+    /// serialized (kept out of span JSON so existing output is byte-identical);
+    /// bindings surface it through explicit accessors.
+    #[serde(skip)]
+    pub provenance: Option<crate::fonts::MappingProvenance>,
 }
 
 /// serde skip helper: omit a `false` flag (the common case) from serialized output.
@@ -195,6 +206,7 @@ impl Default for TextSpan {
             wmode: 0,
             text_rise: 0.0,
             rtl_draw_logical: false,
+            provenance: None,
         }
     }
 }
