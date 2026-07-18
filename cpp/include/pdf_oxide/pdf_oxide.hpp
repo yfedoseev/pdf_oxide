@@ -905,9 +905,9 @@ class Document {
                 e.text = detail::take_string(pdf_oxide_element_get_text(list, i, &code),
                                              code, "Document::page_get_elements");
                 code = 0;
-                if (char *p = pdf_oxide_element_get_provenance(list, i, &code)) {
-                    e.provenance = detail::take_string(p, code,
-                                                       "Document::page_get_elements");
+                if (char* p = pdf_oxide_element_get_provenance(list, i, &code)) {
+                    e.provenance =
+                        detail::take_string(p, code, "Document::page_get_elements");
                 }
                 Bbox b{0, 0, 0, 0};
                 pdf_oxide_element_get_rect(list, i, &b.x, &b.y, &b.width, &b.height,
