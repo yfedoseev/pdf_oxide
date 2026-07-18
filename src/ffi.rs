@@ -8792,6 +8792,9 @@ struct JsonElement<'a> {
     y: f32,
     width: f32,
     height: f32,
+    /// §9.10.2 mapping-provenance label; omitted when the font is unresolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -8974,6 +8977,7 @@ pub extern "C" fn pdf_oxide_elements_to_json(
             y: s.bbox.y,
             width: s.bbox.width,
             height: s.bbox.height,
+            provenance: s.provenance.map(|p| p.as_str()),
         })
         .collect();
     match serde_json::to_string(&items) {

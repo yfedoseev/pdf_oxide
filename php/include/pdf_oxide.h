@@ -502,6 +502,10 @@ char *pdf_oxide_element_get_text(const FfiElementList *elements,
                                  int32_t index,
                                  int32_t *error_code);
 
+char *pdf_oxide_element_get_provenance(const FfiElementList *elements,
+                                       int32_t index,
+                                       int32_t *error_code);
+
 void pdf_oxide_element_get_rect(const FfiElementList *elements,
                                 int32_t index,
                                 float *x,

@@ -1466,6 +1466,16 @@ char *pdf_oxide_element_get_text(const FfiElementList *elements,
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
+/* §9.10.2 mapping-provenance label ("to_unicode"/"encoding"/"predefined_cmap"/
+ * "embedded_cmap"/"actual_text"/"fallback"), or NULL when unknown. Free with
+ * pdf_oxide_free_string. "fallback" means the text is a fabricated glyph-index
+ * echo, not read from the file. */
+char *pdf_oxide_element_get_provenance(const FfiElementList *elements,
+                                       int32_t index,
+                                       int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
 void pdf_oxide_element_get_rect(const FfiElementList *elements,
                                 int32_t index,
                                 float *x,
