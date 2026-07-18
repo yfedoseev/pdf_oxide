@@ -832,6 +832,28 @@ impl TextLine {
 mod tests {
     use super::*;
 
+    // The provenance fact reaches every JSON/serde binding (WASM, Go, Ruby,
+    // Java's structured extraction, ...) through span serialization: present as
+    // a stable label when known, omitted when absent so existing output is
+    // byte-identical.
+    #[test]
+    fn provenance_serializes_as_stable_label_and_omits_when_absent() {
+        let mut span = TextSpan {
+            text: "x".to_string(),
+            ..TextSpan::default()
+        };
+        span.provenance = Some(crate::fonts::MappingProvenance::Fallback);
+        let json = serde_json::to_string(&span).unwrap();
+        assert!(json.contains("\"provenance\":\"fallback\""), "got {json}");
+
+        let plain = TextSpan {
+            text: "y".to_string(),
+            ..TextSpan::default()
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("provenance"), "absent provenance must be omitted: {json}");
+    }
+
     fn mock_char(c: char, x: f32, y: f32) -> TextChar {
         let bbox = Rect::new(x, y, 10.0, 12.0);
         TextChar {
