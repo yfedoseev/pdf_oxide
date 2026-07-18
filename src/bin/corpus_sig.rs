@@ -1,13 +1,19 @@
 //! Native Rust regression-sweep signature tool.
 //!
 //! Prints one line per PDF in a corpus directory:
-//!   <relpath>\t<text_hash>\t<nchars>\t<max_word_len>\t<page_rotations>
+//!
+//! ```text
+//! <relpath>\t<text_hash>\t<nchars>\t<max_word_len>\t<page_rotations>
+//! ```
 //!
 //! Build once per version and diff the outputs to find extraction regressions:
-//!   cargo build --release --bin corpus_sig --jobs 3
-//!   ./target/release/corpus_sig <corpus_dir> > head.txt
-//!   # (in a v0.3.71 worktree) ./target/release/corpus_sig <corpus_dir> > base.txt
-//!   diff base.txt head.txt
+//!
+//! ```text
+//! cargo build --release --bin corpus_sig --jobs 3
+//! ./target/release/corpus_sig <corpus_dir> > head.txt
+//! # (in a v0.3.71 worktree) ./target/release/corpus_sig <corpus_dir> > base.txt
+//! diff base.txt head.txt
+//! ```
 //!
 //! Single process, release speed — no Python, no per-doc subprocess.
 
