@@ -33,6 +33,7 @@ fn create_test_span(
     _tj_space_signal: bool,
 ) -> TextSpan {
     TextSpan {
+        provenance: None,
         artifact_type: None,
         text: text.to_string(),
         bbox: Rect::new(x, y, width, height),

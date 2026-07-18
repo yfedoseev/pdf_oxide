@@ -147,6 +147,7 @@ impl From<TextSpan> for TextContent {
 impl From<TextContent> for TextSpan {
     fn from(content: TextContent) -> Self {
         TextSpan {
+            provenance: None,
             text: content.text,
             bbox: content.bbox,
             font_name: content.font.name,
@@ -318,6 +319,7 @@ mod tests {
     #[test]
     fn test_text_span_conversion() {
         let span = TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "Test".to_string(),

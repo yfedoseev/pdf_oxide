@@ -176,6 +176,11 @@ struct Element {
     std::string type;
     std::string text;
     Bbox rect;
+    /// ISO 32000-1 §9.10.2 mapping-provenance label ("to_unicode"/"encoding"/
+    /// "predefined_cmap"/"embedded_cmap"/"actual_text"/"fallback"), or empty
+    /// when unknown. "fallback" means the text is a fabricated glyph-index echo,
+    /// not read from the file.
+    std::string provenance;
 };
 
 /// A single interactive AcroForm field (PHASE-8 forms).
@@ -899,6 +904,11 @@ class Document {
                 code = 0;
                 e.text = detail::take_string(pdf_oxide_element_get_text(list, i, &code),
                                              code, "Document::page_get_elements");
+                code = 0;
+                if (char *p = pdf_oxide_element_get_provenance(list, i, &code)) {
+                    e.provenance = detail::take_string(p, code,
+                                                       "Document::page_get_elements");
+                }
                 Bbox b{0, 0, 0, 0};
                 pdf_oxide_element_get_rect(list, i, &b.x, &b.y, &b.width, &b.height,
                                            &code);

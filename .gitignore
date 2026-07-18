@@ -455,3 +455,10 @@ r/*.tar.gz
 /elixir/deps/
 /elixir/priv/
 /elixir/mix.lock
+
+# Viewer build artifacts (never commit generated output)
+viewer/dotnet/**/bin/
+viewer/dotnet/**/obj/
+viewer/dist-browser/
+viewer/**/node_modules/
+viewer/**/.gradle/

@@ -4205,6 +4205,15 @@ impl PyTextSpan {
     fn sequence(&self) -> usize {
         self.inner.sequence
     }
+    /// Which ISO 32000-1 §9.10.2 mapping tier the span's font offered:
+    /// `"to_unicode"`, `"encoding"`, `"predefined_cmap"`, `"embedded_cmap"`,
+    /// `"actual_text"`, or `"fallback"` — the last meaning the font carried no
+    /// mapping resource, so the text is a fabricated glyph-index echo rather
+    /// than read from the file. `None` when the font could not be resolved.
+    #[getter]
+    fn provenance(&self) -> Option<&'static str> {
+        self.inner.provenance.map(|p| p.as_str())
+    }
 }
 
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "TextWord", skip_from_py_object)]
