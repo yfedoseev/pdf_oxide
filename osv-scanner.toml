@@ -50,13 +50,3 @@ id = "RUSTSEC-2026-0192"
 # migration of the cmap path. Re-evaluate once that migration lands.
 ignoreUntil = 2026-09-30
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0206"
-# `rustybuzz` crate: "unmaintained" advisory (informational, not a CVE; no
-# memory-safety or RCE implication — the maintainer has stated the crate will
-# receive no further updates). Published 2026-07-11; there is no patched
-# version. Pulled transitively for text shaping on the (non-default) rendering
-# path only, never in the default extraction feature set. The named successor
-# (`harfrust`, the Harfbuzz project's actively-maintained replacement) requires
-# a non-trivial migration of the shaping path. Re-evaluate once that lands.
-ignoreUntil = 2026-09-30
