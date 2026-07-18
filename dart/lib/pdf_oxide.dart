@@ -1169,8 +1169,8 @@ class _Native {
             .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_type'),
         elementGetText = lib
             .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_text'),
-        elementGetProvenance = lib
-            .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_provenance'),
+        elementGetProvenance = lib.lookupFunction<_ListStrC, _ListStrD>(
+            'pdf_oxide_element_get_provenance'),
         elementGetRect = lib.lookupFunction<_ElemRectC, _ElemRectD>(
             'pdf_oxide_element_get_rect'),
         elementsFree = lib
