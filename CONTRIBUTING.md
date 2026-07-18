@@ -307,9 +307,15 @@ Speculative, unreproducible "findings" will be closed.
 
 ## License
 
-By contributing you agree your contributions are dual-licensed under **MIT OR
-Apache-2.0** (see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)),
-with no additional terms. Inbound = outbound.
+By contributing you agree that the **outbound licence for released code is
+MIT OR Apache-2.0** (see [LICENSE-MIT](LICENSE-MIT) and
+[LICENSE-APACHE](LICENSE-APACHE)) — inbound = outbound for what ships to users. In
+addition, **non-trivial contributions are made under the project's
+[Contributor License Agreement](CLA.md)**, which grants the Maintainer a broader,
+sub-licensable copyright and patent licence so the project can relicense *future*
+versions if it ever needs to. The CLA does not change the licence of any
+already-published release. Trivial changes (typos, formatting, docs) are exempt
+from the CLA and remain inbound = outbound only.
 
 ---
 
