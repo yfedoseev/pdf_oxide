@@ -148,7 +148,8 @@ weezl = "0.2"                                                                  #
 brotli = "8"                                                                   # Brotli compression (PDF 2.0, ISO 32000-2:2020)
 
 # Font parsing
-ttf-parser = "0.25" # TrueType font parser for embedded font cmap tables
+ttf-parser = "0.25" # TrueType/OpenType parsing: embedded-font cmap, glyph outlines, metrics, name records.
+# Unmaintained (RUSTSEC-2026-0192); fontations (skrifa) migration is upstream-gated — rationale in osv-scanner.toml.
 subsetter = "0.2"   # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
 # EmbeddedFont to shrink embedded fonts to only the glyphs actually used.
 taffy = { version = "0.12", default-features = false, features = [
