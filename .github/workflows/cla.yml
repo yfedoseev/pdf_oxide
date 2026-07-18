@@ -1,0 +1,50 @@
+# Contributor License Agreement bot (CLA Assistant Lite).
+#
+# Runs entirely in this repo — no external SaaS. Signatures are stored in this
+# repo on the `cla-signatures` branch, so it needs ONLY the built-in
+# GITHUB_TOKEN (with contents: write), the same mechanism the release workflow
+# already uses to push git tags. No PERSONAL_ACCESS_TOKEN is required (that is
+# only needed when signatures live in a *different* repository).
+#
+# On a non-trivial contributor's PR the bot comments asking them to sign; they
+# reply with the sign phrase and the bot records their GitHub username in
+# signatures/cla.json and turns the CLA check green. The maintainer and bots are
+# allowlisted so they are never asked. See CLA.md for the agreement text.
+name: CLA
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write
+  contents: write        # create/update signatures/cla.json (same-repo storage)
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Only act on PR events or on the sign / recheck comment phrases — not on
+    # every comment in the tracker.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+        (github.event.comment.body == 'recheck' ||
+         contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')))
+    steps:
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/cla.json'
+          path-to-document: 'https://github.com/yfedoseev/pdf_oxide/blob/main/CLA.md'
+          branch: 'cla-signatures'
+          # Maintainer + bots never need to sign.
+          allowlist: 'yfedoseev,dependabot[bot],github-actions[bot],bot*'
