@@ -282,7 +282,14 @@ mandatory floor mirrors what you should run locally:
   ```bash
   git commit -s     # adds: Signed-off-by: Your Name <you@example.com>
   ```
-  The `dco` CI job enforces this. There is no CLA.
+  The `dco` CI job enforces this.
+- **CLA** — non-trivial contributions are accepted under the project's
+  [Contributor License Agreement](CLA.md). It is a *licence, not an assignment*:
+  you keep ownership of your work and grant the project a broad licence to use
+  and sub-licence it. Trivial changes (typos, formatting, docs) are exempt. Once
+  the CLA bot is enabled it records your one-click sign-off on your first PR;
+  until then the DCO sign-off above is the operative requirement. See
+  [CLA.md](CLA.md) and the licence/trademark note in the README.
 - **Fill in the template.** Issues and pull requests opened without filling in
   their template are **closed automatically** (you'll get a comment explaining
   how) — edit yours to fill it in, then reopen and we'll pick it up. Maintainers,

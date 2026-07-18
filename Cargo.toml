@@ -79,6 +79,8 @@ include = [
     "/Cargo.toml",
     "/LICENSE-MIT",
     "/LICENSE-APACHE",
+    "/NOTICE",
+    "/TRADEMARKS.md",
     "/README.md",
     "/include/**/*",
 ]
