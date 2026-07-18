@@ -17,6 +17,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Least-privilege default token (OpenSSF Scorecard Token-Permissions). Jobs
+# opt into wider scopes only where they actually need them.
+permissions:
+  contents: read
+
 jobs:
   # Test job - builds extension and runs tests
   test:

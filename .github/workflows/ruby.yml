@@ -28,6 +28,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Least-privilege default token (OpenSSF Scorecard Token-Permissions). Jobs
+# opt into wider scopes only where they actually need them.
+permissions:
+  contents: read
+
 jobs:
   # Lint job — RuboCop 1.86 (FFI-tuned config in ruby/.rubocop.yml).
   # Cheap (~1 min); runs in parallel with the matrix.

@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "pdf_oxide_mcp", "pdf_oxide_cli", "pdf_oxide_jni"]
-exclude = ["js"]
+exclude = ["js", "fuzz"]
 
 # cargo-shear exemptions: these optional deps are referenced from `[features]`
 # via `dep:X` and only link when their feature is on. cargo-shear reports them

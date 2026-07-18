@@ -1,0 +1,36 @@
+# cargo-fuzz targets for pdf_oxide.
+#
+# A PDF parser is a prime fuzzing surface: it consumes fully untrusted bytes
+# (malformed xref tables, cyclic object graphs, bogus stream lengths, hostile
+# filters). Targets here must never panic on any input — only return `Err`.
+#
+# This is a standalone workspace (own `[workspace]` below, and excluded from the
+# root workspace) so the nightly + sanitizer toolchain cargo-fuzz needs never
+# affects the normal `cargo build`/`cargo test` matrix.
+#
+# Run locally:  cargo +nightly fuzz run fuzz_parse -- -max_total_time=300
+[package]
+name = "pdf-oxide-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pdf_oxide]
+path = ".."
+
+[[bin]]
+name = "fuzz_parse"
+path = "fuzz_targets/fuzz_parse.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone workspace — keep the fuzz crate out of the root workspace's
+# resolver so its nightly/sanitizer build never perturbs the library build.
+[workspace]
