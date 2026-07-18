@@ -6,7 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a feature! Please provide as much detail as possible to help us understand your request.
+        Thanks for suggesting a feature. Please describe the problem and the approach so we can decide whether it's in scope.
+
+        **This is where the work starts — not the PR.** Features need a maintainer to accept the issue and agree on the approach *before* any code is written. A pull request opened without an accepted issue may be closed without detailed review (see [CONTRIBUTING.md](https://github.com/yfedoseev/pdf_oxide/blob/main/CONTRIBUTING.md)). Please wait for a maintainer to confirm scope before implementing.
 
   - type: textarea
     id: problem
@@ -106,6 +108,8 @@ body:
         - label: I have searched existing issues to make sure this is not a duplicate
           required: true
         - label: I have provided a clear description of the feature
+          required: true
+        - label: I understand a maintainer must accept this issue and agree on the approach before I write any implementation code
           required: true
         - label: I am willing to contribute to the implementation (optional)
           required: false
