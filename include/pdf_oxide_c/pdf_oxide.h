@@ -1466,10 +1466,13 @@ char *pdf_oxide_element_get_text(const FfiElementList *elements,
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
-/* §9.10.2 mapping-provenance label ("to_unicode"/"encoding"/"predefined_cmap"/
- * "embedded_cmap"/"actual_text"/"fallback"), or NULL when unknown. Free with
- * pdf_oxide_free_string. "fallback" means the text is a fabricated glyph-index
- * echo, not read from the file. */
+/**
+ * The span's Unicode-mapping provenance label (ISO 32000-1 §9.10.2 tier):
+ * `"to_unicode"`, `"encoding"`, `"predefined_cmap"`, `"embedded_cmap"`,
+ * `"actual_text"`, or `"fallback"` (the text is a fabricated glyph-index echo,
+ * not read from the file). Returns null when the font could not be resolved.
+ * Free the returned string with `pdf_oxide_free_string`.
+ */
 char *pdf_oxide_element_get_provenance(const FfiElementList *elements,
                                        int32_t index,
                                        int32_t *error_code);
