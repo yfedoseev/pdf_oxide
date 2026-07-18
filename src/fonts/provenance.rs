@@ -69,6 +69,22 @@ impl MappingProvenance {
         !matches!(self, Self::Fallback)
     }
 
+    /// A stable, lowercase label for bindings and serialized surfaces. Shared
+    /// so every language binding exposes the same strings:
+    /// `"actual_text"`, `"to_unicode"`, `"encoding"`, `"predefined_cmap"`,
+    /// `"embedded_cmap"`, `"fallback"`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ActualText => "actual_text",
+            Self::ToUnicode => "to_unicode",
+            Self::EncodingName => "encoding",
+            Self::PredefinedCMap => "predefined_cmap",
+            Self::EmbeddedCmap => "embedded_cmap",
+            Self::Fallback => "fallback",
+        }
+    }
+
     /// The weaker (less authoritative) of two provenances — the reduction used
     /// to summarise a run of characters by its least-trustworthy member.
     #[must_use]
