@@ -11466,30 +11466,29 @@ impl PdfDocument {
         out
     }
 
-    fn postprocess_spans(
-        &self,
-        page_index: usize,
-        raw_spans: Vec<crate::layout::TextSpan>,
-    ) -> Result<Vec<crate::layout::TextSpan>> {
-        let mut spans = raw_spans;
-
-        // Drop spans whose bbox lies entirely outside the page's MediaBox.
-        // PDFs that reuse one big Form XObject across pages (ExpertPdf
-        // similar tools — see issue B1 / nougat_005.pdf) rely on the
-        // content stream's `W n` clip rectangle to hide the off-page
-        // portion. Our text extractor doesn't honour `W n` yet, so
-        // without this filter every page emits all 5 pages' worth of
-        // spans at distinct but out-of-bounds Y coordinates. Keep spans
-        // that even partially overlap with MediaBox so we don't drop
-        // legitimate bleed / trim-mark content.
-        // get_page_media_box returns (llx, lly, urx, ury) — absolute corner
-        // coordinates per ISO 32000-1 §7.7.3.3, NOT (x, y, width, height).
+    /// Drop spans whose bbox lies ENTIRELY outside the page's MediaBox.
+    ///
+    /// PDFs that reuse one big Form XObject across pages (ExpertPdf and similar
+    /// tools - see issue B1 / nougat_005.pdf) rely on the content stream's `W n`
+    /// clip rectangle to hide the off-page portion. The text extractor does not
+    /// honour `W n` yet, so without this filter a page emits every page's worth of
+    /// spans at distinct but out-of-bounds Y coordinates. Spans that even
+    /// PARTIALLY overlap the MediaBox are kept, so legitimate bleed / trim-mark
+    /// content is never dropped.
+    ///
+    /// `get_page_media_box` returns `(llx, lly, urx, ury)` - absolute corner
+    /// coordinates per ISO 32000-1 s7.7.3.3, NOT `(x, y, width, height)`.
+    fn drop_offpage_spans(&self, page_index: usize, spans: &mut Vec<crate::layout::TextSpan>) {
         if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
             const EDGE_TOLERANCE_PT: f32 = 2.0;
-            let left = llx - EDGE_TOLERANCE_PT;
-            let bottom = lly - EDGE_TOLERANCE_PT;
-            let right = urx + EDGE_TOLERANCE_PT;
-            let top = ury + EDGE_TOLERANCE_PT;
+            // Normalise corners: some producers write the MediaBox with swapped
+            // corners (e.g. `[0 792 612 0]`, ury < lly). Taking min/max makes the
+            // bounds correct either way - without this a swapped box inverts the
+            // test below and drops the whole page's legitimate text.
+            let left = llx.min(urx) - EDGE_TOLERANCE_PT;
+            let right = llx.max(urx) + EDGE_TOLERANCE_PT;
+            let bottom = lly.min(ury) - EDGE_TOLERANCE_PT;
+            let top = lly.max(ury) + EDGE_TOLERANCE_PT;
             spans.retain(|span| {
                 let sx1 = span.bbox.x;
                 let sx2 = span.bbox.x + span.bbox.width;
@@ -11498,6 +11497,16 @@ impl PdfDocument {
                 sx2 > left && sx1 < right && sy2 > bottom && sy1 < top
             });
         }
+    }
+
+    fn postprocess_spans(
+        &self,
+        page_index: usize,
+        raw_spans: Vec<crate::layout::TextSpan>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        let mut spans = raw_spans;
+
+        self.drop_offpage_spans(page_index, &mut spans);
 
         // Recover decimal points mis-decoded as `¬` (U+00AC) in Computer-Modern
         // math subsets, where the `/Differences` names the decimal slot
@@ -15427,6 +15436,14 @@ impl PdfDocument {
     ) -> Result<Vec<crate::layout::TextSpan>> {
         // Extract raw spans using the common extraction logic
         let mut spans = self.extract_spans_raw(page_index)?;
+
+        // Drop text lying entirely off the MediaBox - a doc that reuses one big
+        // Form XObject across pages relies on the `W n` clip to hide the off-page
+        // portion, which the raw extractor does not honour. `extract_spans` applies
+        // this via `postprocess_spans`; the reading-order path must too, or it
+        // emits every page's worth of spans (measured: a stats report emitted a
+        // chart's full hidden data table, ~5x the visible label count).
+        self.drop_offpage_spans(page_index, &mut spans);
 
         // Apply reading order strategy
         match reading_order {
