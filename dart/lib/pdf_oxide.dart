@@ -1169,6 +1169,8 @@ class _Native {
             .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_type'),
         elementGetText = lib
             .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_text'),
+        elementGetProvenance = lib
+            .lookupFunction<_ListStrC, _ListStrD>('pdf_oxide_element_get_provenance'),
         elementGetRect = lib.lookupFunction<_ElemRectC, _ElemRectD>(
             'pdf_oxide_element_get_rect'),
         elementsFree = lib
@@ -1680,6 +1682,7 @@ class _Native {
   final _ElemCountD elementCount;
   final _ListStrD elementGetType;
   final _ListStrD elementGetText;
+  final _ListStrD elementGetProvenance;
   final _ElemRectD elementGetRect;
   final _ListFreeD elementsFree;
   final _ElemJsonD elementsToJson;
@@ -7311,7 +7314,7 @@ class OcrEngine implements Finalizable {
 
 /// A single layout element read from an [ElementList].
 class Element {
-  const Element(this.type, this.text, this.rect);
+  const Element(this.type, this.text, this.rect, [this.provenance = '']);
 
   /// The element type label (e.g. `Text`, `Image`, `Table`).
   final String type;
@@ -7321,6 +7324,12 @@ class Element {
 
   /// The element's bounding box in page user-space points.
   final Bbox rect;
+
+  /// ISO 32000-1 §9.10.2 mapping-provenance label (`to_unicode`/`encoding`/
+  /// `predefined_cmap`/`embedded_cmap`/`actual_text`/`fallback`), or `''` when
+  /// unknown. `fallback` means the text is a fabricated glyph-index echo, not
+  /// read from the file.
+  final String provenance;
 
   @override
   String toString() => 'Element($type, $rect)';
@@ -7372,6 +7381,8 @@ class ElementList implements Finalizable {
     _check();
     final type = _str(_n.elementGetType, index, 'elementGetType');
     final text = _str(_n.elementGetText, index, 'elementGetText');
+    final provenance =
+        _str(_n.elementGetProvenance, index, 'elementGetProvenance');
     final x = calloc<Float>();
     final y = calloc<Float>();
     final w = calloc<Float>();
@@ -7380,7 +7391,8 @@ class ElementList implements Finalizable {
     try {
       _n.elementGetRect(_handle, index, x, y, w, h, code);
       if (code.value != 0) throw PdfOxideError(code.value, 'elementGetRect');
-      return Element(type, text, Bbox(x.value, y.value, w.value, h.value));
+      return Element(
+          type, text, Bbox(x.value, y.value, w.value, h.value), provenance);
     } finally {
       calloc.free(x);
       calloc.free(y);
