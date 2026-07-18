@@ -1829,7 +1829,8 @@ jobs:
   dco:
     name: DCO check
     runs-on: ubuntu-latest
-    if: false # temporarily disabled — re-enable before public contributor onboarding
+    # Enabled as part of the contribution-policy hardening: every PR commit must
+    # carry a Signed-off-by trailer (see CONTRIBUTING.md → Commits, DCO, and review).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

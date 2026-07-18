@@ -1,70 +1,74 @@
-## Description
+<!--
+Read CONTRIBUTING.md first. The two rules that matter most:
+  1. Non-trivial PRs must reference an issue the maintainer has ACCEPTED.
+     Drive-by PRs with no accepted issue may be closed without detailed review.
+  2. Any extraction/layout/rendering/font change must be proven not to regress
+     on a corpus of real PDFs (yours — the project corpus is private).
+Write this PR in your own words. Delete the guidance comments as you fill it in.
+-->
 
-<!-- Provide a brief description of the changes in this PR -->
+## Linked issue
 
-## Type of Change
+<!-- Required for features/behavior changes. Bug/typo/docs fixes may omit. -->
+Closes #
 
-<!-- Mark the relevant option with an "x" -->
+## What and why
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring
-- [ ] Tests
-- [ ] CI/CD changes
+<!-- In your own words: what problem does this solve, and why this approach?
+     What did you consider and reject? -->
 
-## Related Issues
+## Type of change
 
-<!-- Link to related issues, e.g., "Fixes #123" or "Relates to #456" -->
+- [ ] Bug fix
+- [ ] New feature (has an accepted issue: #___)
+- [ ] Performance
+- [ ] Refactor / internal
+- [ ] Docs / CI / chore
+- [ ] Breaking change
 
-Fixes #
+## Tests
 
-## Changes Made
+- [ ] I added a test that **fails before this change and passes after**
+      (revert-checked). For bug fixes the reproducer is a **minimal synthetic
+      PDF built in code** — no third-party/reporter PDF is committed.
+- [ ] Test named by defect **class**, not an issue/PR number; no
+      contributor/company names in code or fixtures.
+- [ ] `cargo test` passes, **and** the affected feature tiers:
+      `rendering` / `fips,icc` / `ml` / binding (list which): ____
+- [ ] `cargo fmt --check` and `cargo clippy -- -D warnings` are clean.
 
-<!-- List the main changes made in this PR -->
+## Regression on real PDFs
 
--
--
--
+<!-- Required for ANY extraction / layout / rendering / font change.
+     The project corpus is private; use your OWN corpus. -->
 
-## Testing
+**Corpus I tested** (count + kinds + source): <!-- e.g. "~120 PDFs: scanned OCR,
+tagged, CJK+RTL, forms, 2-column academic, from my own collection" -->
 
-<!-- Describe the tests you ran to verify your changes -->
+- [ ] Ran `corpus_sig` and diffed my branch against **`main`** — no unintended
+      regressions (no new word-fusions, over-splits, dropped spans, reversed
+      scripts, or crashes).
+- [ ] Diffed my branch against the **latest release** (`v0.3.__`) — same.
+- [ ] Judged with a structural metric (word-Jaccard + spacing outliers), not
+      char-Levenshtein.
 
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] All new and existing tests pass locally
-- [ ] I have run `cargo test` (see [CONTRIBUTING.md](../CONTRIBUTING.md#4-test-your-changes) — `--all-features` fails to build: `fips` and `legacy-crypto` are mutually exclusive by design)
-- [ ] I have run `cargo clippy -- -D warnings`
-- [ ] I have run `cargo fmt`
+**Diff summary vs `main`:** <!-- e.g. "3 docs changed, all the intended fix" -->
 
-## Python Bindings (if applicable)
+**Diff summary vs latest release:** <!--  -->
 
-- [ ] Python bindings updated (if needed)
-- [ ] Python tests pass
-- [ ] Python code formatted with `ruff format`
-- [ ] Python code linted with `ruff check`
+<!-- N/A only if this PR touches no extraction/layout/rendering/font code. -->
 
-## Documentation
+## AI assistance disclosure
 
-- [ ] I have updated the documentation (README, docs/, code comments)
-- [ ] I have added/updated examples (if applicable)
-- [ ] I have updated CHANGELOG.md
+- [ ] AI assistance: **none**, or **assisted** — tool: ______, extent: ______
+- [ ] I understand and can explain every line; the description and my review
+      replies are written by me, not generated. This PR is not fully or
+      predominantly AI-generated.
 
 ## Checklist
 
-- [ ] My code follows the project's coding guidelines (see CONTRIBUTING.md)
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] My changes generate no new warnings
-- [ ] I have checked my code and corrected any misspellings
-- [ ] The PR title follows conventional commits format (e.g., `feat:`, `fix:`, `docs:`)
-
-## Screenshots (if applicable)
-
-<!-- Add screenshots to help explain your changes -->
-
-## Additional Notes
-
-<!-- Any additional information that reviewers should know -->
+- [ ] One logical change (no bundled refactor/perf/correctness).
+- [ ] Commits follow Conventional Commits and are **DCO signed-off** (`git commit -s`).
+- [ ] Docs/`CHANGELOG.md` updated if user-facing; reporters credited in the
+      CHANGELOG (not in code).
+- [ ] Public-API changes considered for semver (`semver-checks` will run).
