@@ -56,6 +56,10 @@ pub enum WarningCategory {
     Font,
     /// Layout / reading-order warnings.
     Layout,
+    /// The file carries no glyph→Unicode mapping for a font (no §9.10.2
+    /// path exists); extracted text for it is fabricated, typically the
+    /// raw glyph indices. Page-scoped.
+    UndecodableTextLayer,
 }
 
 impl WarningCategory {
@@ -71,6 +75,7 @@ impl WarningCategory {
             Self::Encryption => "encryption",
             Self::Font => "font",
             Self::Layout => "layout",
+            Self::UndecodableTextLayer => "undecodable_text_layer",
         }
     }
 }
@@ -175,6 +180,24 @@ impl WarningSink {
         }
     }
 
+    /// Push unless an identical warning (category, page, message) is
+    /// already in the sink — for warnings stating a per-page fact that
+    /// multiple extraction passes may re-derive. Returns whether pushed.
+    pub fn push_once(&self, warning: Warning) -> bool {
+        if let Ok(mut v) = self.warnings.lock() {
+            let duplicate = v.iter().any(|w| {
+                w.category == warning.category
+                    && w.page == warning.page
+                    && w.message == warning.message
+            });
+            if !duplicate {
+                v.push(warning);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Push multiple warnings at once. Used by callers that merge a
     /// drained external sink (e.g. the process-wide global sink) into
     /// the per-document sink under a single lock acquisition.
@@ -227,6 +250,28 @@ mod tests {
         assert_eq!(WarningCategory::SpecViolation.as_str(), "spec_violation");
         assert_eq!(WarningCategory::ToUnicodeMissing.as_str(), "to_unicode_missing");
         assert_eq!(WarningCategory::OperatorCapExceeded.as_str(), "operator_cap_exceeded");
+        assert_eq!(WarningCategory::UndecodableTextLayer.as_str(), "undecodable_text_layer");
+    }
+
+    #[test]
+    fn push_once_deduplicates_identical_warnings() {
+        let sink = WarningSink::new();
+        let warning = Warning {
+            category: WarningCategory::UndecodableTextLayer,
+            page: Some(3),
+            message: "Font 'X': no glyph-to-Unicode mapping".into(),
+            spec_section: Some("9.10.2"),
+        };
+        assert!(sink.push_once(warning.clone()));
+        assert!(!sink.push_once(warning.clone()), "identical warning must not be pushed twice");
+        assert_eq!(sink.len(), 1);
+
+        // A different page is a different fact — not a duplicate.
+        assert!(sink.push_once(Warning {
+            page: Some(4),
+            ..warning
+        }));
+        assert_eq!(sink.len(), 2);
     }
 
     #[test]

@@ -12370,6 +12370,15 @@ impl PdfDocument {
         self.warning_sink.push(warning);
     }
 
+    /// Record a structured warning unless an identical one (category,
+    /// page, message) is already recorded. Returns whether it was recorded.
+    pub fn push_structured_warning_once(
+        &self,
+        warning: crate::extractors::warnings::Warning,
+    ) -> bool {
+        self.warning_sink.push_once(warning)
+    }
+
     /// Heuristic: does this page have two or more vertical text columns?
     ///
     /// Used by `extract_spans` to decide whether to pay the XY-cut cost
@@ -15593,6 +15602,7 @@ impl PdfDocument {
 
         // Create text extractor with merged configuration
         let mut extractor = TextExtractor::new().with_merging_config(config);
+        extractor.set_diagnostic_page_index(page_index as u32);
 
         // Load fonts from page resources and set resources for XObject access
         if let Some(resources) = page_dict.get("Resources") {
@@ -16043,6 +16053,7 @@ impl PdfDocument {
         }
 
         let mut extractor = TextExtractor::new();
+        extractor.set_diagnostic_page_index(page_index as u32);
         if !excluded_layers.is_empty() {
             extractor.set_excluded_layers(excluded_layers);
         }

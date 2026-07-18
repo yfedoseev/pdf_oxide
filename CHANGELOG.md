@@ -4,6 +4,10 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Pages whose text layer is provably undecodable are now flagged instead of failing silently (#876)** — a common subsetting pattern (Type0/Identity-H, Identity ordering, `CIDToGIDMap /Identity`, no `/ToUnicode`, embedded CIDFontType2 stripped of both `cmap` and `post`) leaves a file with no glyph→Unicode mapping at all: the page renders fine, every conformant extractor emits mojibake, and callers could not tell that output from a clean extraction. Extraction now emits an `undecodable_text_layer` structured warning — page-scoped, once per page/font, naming the font and citing §9.10.2 — whenever text is shown with such a font. Text output is unchanged: the raw glyph-index echo stays available to callers who want it; the warning adds the provable fact so a pipeline can route the page to OCR, skip it, or surface it for review. The predicate (`FontInfo::has_undecodable_text_layer`) is strictly structural and proves `cmap` absence from the embedded program's own table directory, so recoverable relatives — a live embedded `cmap` (byte-as-GID subsets), usable `post` names, a usable `/ToUnicode`, non-Identity orderings, explicit `CIDToGIDMap` streams, or an unparseable program — are never flagged. Flows through `structured_warnings()` on every binding with no API changes; a 577-document differential sweep confirms extraction output is byte-identical.
+
 ## [0.3.74] - 2026-07-13
 
 > Scientific and print-era PDF extraction fixes — per-glyph advance now folds `TJ` kerning per the spec so it matches the renderer (poppler/PDFium/pymupdf), fixing word spacing on justified and kerned text; displayed-math tokens no longer fuse into single words, dense LaTeX pages stop being misrouted to OCR, subscript indices stay subscripts, condensed headings and running footers recover their word gaps, stroke-drawn table rules and 90°-rotated pages read correctly, and scanned Hebrew/Arabic OCR layers extract in logical order.

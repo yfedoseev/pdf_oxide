@@ -2717,6 +2717,14 @@ pub struct TextExtractor<'doc> {
     /// Cached current font (updated on Tf). Avoids per-Tj HashMap lookup
     /// in advance_position_for_string.
     cached_current_font: Option<Arc<FontInfo>>,
+    /// Fonts (by `Arc` identity) already checked for an undecodable text
+    /// layer on this page — bounds the predicate to one run per font.
+    undecodable_layer_checked: HashSet<usize>,
+    /// The page named by the calling API, for page-attributed diagnostics.
+    /// Separate from the MCID scope stack, whose `Page(0)` default is
+    /// indistinguishable from a real page 0 and whose values are public
+    /// span data.
+    diagnostic_page_index: Option<usize>,
     /// Stack of MCID content-stream scopes (ISO 32000-1:2008 §14.7.4.3).
     ///
     /// Bottom of the stack is the page's own content-stream scope
@@ -2815,6 +2823,8 @@ impl<'doc> TextExtractor<'doc> {
             current_x_position: 0.0,        // Start at origin
             word_boundary_mode,             // Word boundary detection mode
             cached_current_font: None,      // Set on first Tf
+            undecodable_layer_checked: HashSet::new(),
+            diagnostic_page_index: None,
             // Default to Page(0); `set_page_index` overrides before
             // extraction. Form XObject `Do` invocations push their
             // own scope on top.
@@ -2836,6 +2846,58 @@ impl<'doc> TextExtractor<'doc> {
         } else {
             self.mcid_scope_stack
                 .push(crate::structure::McidScope::Page(page_index));
+        }
+        self.diagnostic_page_index = Some(page_index as usize);
+    }
+
+    /// Record the page for page-attributed diagnostics without touching
+    /// the MCID scope stack (whose values are public span data).
+    pub fn set_diagnostic_page_index(&mut self, page_index: u32) {
+        self.diagnostic_page_index = Some(page_index as usize);
+    }
+
+    /// Emit the `undecodable_text_layer` warning the first time a
+    /// fully-severed font is selected on this page. Text output is left
+    /// unchanged; the warning is page-scoped, once per page/font, and only
+    /// fires when the calling API named a page (`diagnostic_page_index`),
+    /// so it can never attribute the fact to a defaulted page.
+    fn warn_if_undecodable_text_layer(&mut self) {
+        let Some(page_idx) = self.diagnostic_page_index else {
+            return;
+        };
+        // Per-document sink only: every page-naming path also sets the
+        // document before loading fonts, and per-document keeps attribution
+        // correct across concurrent documents.
+        let Some(doc) = self.document else {
+            return;
+        };
+        let Some(font) = self.cached_current_font.as_ref() else {
+            return;
+        };
+        let font_key = Arc::as_ptr(font) as usize;
+        if !self.undecodable_layer_checked.insert(font_key) {
+            return;
+        }
+        if !font.has_undecodable_text_layer() {
+            return;
+        }
+        let base_font = font.base_font.clone();
+        let msg = format!(
+            "Font '{base_font}': no glyph-to-Unicode mapping exists in this file \
+             (Identity-encoded CID font without ToUnicode; the embedded font program \
+             carries neither a 'cmap' table nor 'post' glyph names). Text extracted \
+             for this font is fabricated by the extractor - typically the raw glyph \
+             indices - not read from the document."
+        );
+        let recorded = doc.push_structured_warning_once(crate::extractors::warnings::Warning {
+            category: crate::extractors::warnings::WarningCategory::UndecodableTextLayer,
+            page: Some(page_idx),
+            message: msg.clone(),
+            spec_section: Some("9.10.2"),
+        });
+        // Log only when newly recorded, so repeated passes don't repeat it.
+        if recorded {
+            log::warn!("{}", msg);
         }
     }
 
@@ -5427,6 +5489,7 @@ impl<'doc> TextExtractor<'doc> {
 
                     // Cache font reference for advance_position_for_string
                     self.cached_current_font = self.fonts.get(&font).cloned();
+                    self.warn_if_undecodable_text_layer();
                     // Cache wmode on the graphics state so the advance hot
                     // path branches on a single primitive read instead of
                     // dereferencing the FontInfo every glyph.

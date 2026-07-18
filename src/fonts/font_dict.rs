@@ -396,8 +396,14 @@ impl FontInfo {
     ///
     /// Used by §9.10.2 Priority 3c in `decode_char_to_unicode`.
     pub(crate) fn embedded_glyph_name(&self, gid: u16) -> Option<&str> {
-        let names = self
-            .embedded_glyph_names
+        let names = self.embedded_glyph_names_table()?;
+        names.get(gid as usize).and_then(|n| n.as_deref())
+    }
+
+    /// The embedded program's glyph-name table (lazily parsed, cached), or
+    /// `None` when it carries no usable names (`post` absent/Format 3).
+    fn embedded_glyph_names_table(&self) -> Option<&Vec<Option<String>>> {
+        self.embedded_glyph_names
             .get_or_init(|| {
                 let font_data = self.embedded_font_data.as_ref()?;
                 if font_data.is_empty() {
@@ -442,8 +448,74 @@ impl FontInfo {
                 );
                 Some(out)
             })
-            .as_ref()?;
-        names.get(gid as usize).and_then(|n| n.as_deref())
+            .as_ref()
+    }
+
+    /// Is this font's text layer provably undecodable — does the file
+    /// carry no glyph→Unicode mapping for it at all?
+    ///
+    /// True exactly for the fully-severed subsetting pattern: Type0 with
+    /// Identity encoding and Identity ordering, `CIDToGIDMap` Identity
+    /// (codes are raw glyph indices), no usable `/ToUnicode`, and an
+    /// embedded TrueType program with neither a `cmap` table nor usable
+    /// `post` names — every §9.10.2 mapping path severed, so any Unicode
+    /// an extractor emits is fabricated. Extraction surfaces this as an
+    /// `undecodable_text_layer` warning without changing text output.
+    ///
+    /// Conservative by design: anything recoverable — or unprovable
+    /// (missing/unparseable program) — returns `false`. The final leg
+    /// re-reads the program's table directory when no cmap is cached, so
+    /// hot paths should evaluate once per font, as the text extractor does.
+    pub fn has_undecodable_text_layer(&self) -> bool {
+        if self.subtype != "Type0" || !matches!(self.encoding, Encoding::Identity) {
+            return false;
+        }
+        let identity_ordered = self
+            .cid_system_info
+            .as_ref()
+            .is_some_and(|info| info.ordering == "Identity");
+        if !identity_ordered {
+            return false;
+        }
+        // Absent means Identity (§9.7.4.2); an explicit stream means codes
+        // are not raw glyph indices.
+        if !matches!(self.cid_to_gid_map, None | Some(CIDToGIDMap::Identity)) {
+            return false;
+        }
+        // Empty/unparseable /ToUnicode maps nothing (same usability rule
+        // as the decode cascade).
+        let has_usable_tounicode = self
+            .to_unicode
+            .as_ref()
+            .and_then(|c| c.get())
+            .is_some_and(|cmap| !cmap.is_empty());
+        if has_usable_tounicode {
+            return false;
+        }
+        // The program lives on the CIDFontType2 descendant for Type0 fonts;
+        // `is_truetype_font` covers a top-level FontFile2.
+        let is_truetype =
+            self.is_truetype_font || self.cid_font_type.as_deref() == Some("CIDFontType2");
+        let Some(data) = self.embedded_font_data.as_ref().filter(|d| !d.is_empty()) else {
+            return false;
+        };
+        if !is_truetype {
+            return false;
+        }
+        // Prove cmap absence from the program's own table directory: the
+        // lazy accessor never inspects some embeddings (e.g. CIDFontType2
+        // delivered as OpenType FontFile3), and a parse failure proves
+        // nothing.
+        if self.truetype_cmap().is_some() {
+            return false;
+        }
+        let Ok(face) = ttf_parser::Face::parse(data, 0) else {
+            return false;
+        };
+        if face.tables().cmap.is_some() {
+            return false;
+        }
+        self.embedded_glyph_names_table().is_none()
     }
 
     /// Authoritative glyph name for a *simple* font character code, in priority
