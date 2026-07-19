@@ -50,7 +50,7 @@ jobs:
           rustflags: ''
 
       - name: Cache Cargo build
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: target
           key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
@@ -73,9 +73,15 @@ jobs:
         # Fail hard if any package is missing after install (install.packages
         # only warns on a failed install). Uses the RSPM binary repo configured
         # above (no explicit repos= override, which would force source).
+        #
+        # `backports` is a hard Imports dependency of lintr. On the RSPM binary
+        # path it was intermittently not pulled in, leaving lintr installed but
+        # unloadable ("there is no package called 'backports'") in the Lint
+        # step. Install and hard-verify it explicitly so the failure surfaces
+        # here (as a missing-package error) rather than later at library(lintr).
         run: |
-          Rscript -e 'install.packages(c("tinytest", "lintr", "roxygen2", "rcmdcheck"))' \
-                  -e 'pkgs <- c("tinytest","lintr","roxygen2","rcmdcheck")' \
+          Rscript -e 'install.packages(c("backports", "tinytest", "lintr", "roxygen2", "rcmdcheck"))' \
+                  -e 'pkgs <- c("backports","tinytest","lintr","roxygen2","rcmdcheck")' \
                   -e 'miss <- pkgs[!pkgs %in% rownames(installed.packages())]' \
                   -e 'if (length(miss)) { cat("Failed to install:", miss, "\n"); quit(status=1) }'
 

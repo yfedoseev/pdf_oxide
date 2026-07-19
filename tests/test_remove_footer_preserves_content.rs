@@ -252,3 +252,83 @@ fn remove_footers_preserves_common_word_across_unique_sentences() {
         }
     }
 }
+
+/// A phrase that legitimately repeats across pages of a form but at a
+/// DIFFERENT horizontal position each time (e.g. a per-field instruction like
+/// "see instructions" that sits beside a different control on each page) must
+/// not be mistaken for chrome. Genuine running footers are position-locked;
+/// this one drifts in x, so it is real content.
+#[test]
+fn remove_footers_preserves_repeated_phrase_that_drifts_in_x() {
+    let phrase = "See the instructions";
+    // Same phrase, in the footer band (y=30) on all 5 pages, but shifted well
+    // beyond the x tolerance (72, 152, 232, 312, 392 → spread 320pt).
+    let bytes = build_pdf_with_page_extras(5, |i| {
+        let x = 72 + (i as i32) * 80;
+        format!("BT /F1 10 Tf 1 0 0 1 {x} 30 Tm ({phrase}) Tj ET\n")
+    });
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+    doc.remove_footers(0.5).unwrap();
+
+    for page in 0..5 {
+        let text = doc.extract_text(page).unwrap();
+        assert!(
+            text.contains(phrase),
+            "page {page}: phrase {phrase:?} repeats at a different x per page (real \
+             content, not a running footer) but was removed: {text:?}"
+        );
+    }
+}
+
+/// The complementary guard: a genuine, position-locked running footer must
+/// still be removed. Without this, "preserve everything" would silently
+/// neuter the feature.
+#[test]
+fn remove_footers_still_removes_position_locked_footer() {
+    let phrase = "Confidential Draft Only";
+    // Identical (x=72, y=30) on every page — a real running footer.
+    let bytes = build_pdf_with_page_extras(5, |_i| {
+        format!("BT /F1 10 Tf 1 0 0 1 72 30 Tm ({phrase}) Tj ET\n")
+    });
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+    let removed = doc.remove_footers(0.5).unwrap();
+    assert!(removed >= 5, "expected the running footer removed on every page, got {removed}");
+
+    for page in 0..5 {
+        let text = doc.extract_text(page).unwrap();
+        assert!(
+            !text.contains(phrase),
+            "page {page}: position-locked running footer {phrase:?} should have been \
+             removed: {text:?}"
+        );
+    }
+}
+
+/// Zone-scoped erasure: when a string qualifies as footer chrome, only the
+/// occurrence IN the footer band is erased — an identically worded span
+/// elsewhere on the page (a real body label) must survive. The old heuristic
+/// erased every span whose text matched, deleting body content.
+#[test]
+fn remove_footers_preserves_body_twin_of_footer_text() {
+    let phrase = "Company Confidential";
+    // Footer occurrence at (72, 30) [removed] and a body twin at (72, 350)
+    // [must survive], on every page.
+    let bytes = build_pdf_with_page_extras(5, |_i| {
+        format!(
+            "BT /F1 10 Tf 1 0 0 1 72 30 Tm ({phrase}) Tj ET\n\
+             BT /F1 10 Tf 1 0 0 1 72 350 Tm ({phrase}) Tj ET\n"
+        )
+    });
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+    doc.remove_footers(0.5).unwrap();
+
+    for page in 0..5 {
+        let text = doc.extract_text(page).unwrap();
+        let hits = text.matches(phrase).count();
+        assert_eq!(
+            hits, 1,
+            "page {page}: footer occurrence of {phrase:?} should be removed and the body \
+             twin kept (expected 1 remaining, got {hits}): {text:?}"
+        );
+    }
+}
