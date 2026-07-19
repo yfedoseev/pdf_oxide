@@ -265,6 +265,21 @@ impl<'a> PageBuilder<'a> {
                 .embedded_resource_for_user_name(&t.font.name)
                 .map(String::from);
             if let Some(resource_name) = resource_name {
+                // Emit the element's fill colour before the glyph run.
+                // `add_embedded_text` is deliberately colour-agnostic (the
+                // HTML painter sets/resets the fill colour around its calls),
+                // so — unlike the base-14 `add_text_content` path, which
+                // always emits `rg` from `style.color` — the requested colour
+                // would otherwise be dropped and embedded-font text would
+                // render in whatever fill colour was last set (default black).
+                // The `rg` op just before `begin_text` is valid PDF: the
+                // graphics-state colour carries across `BT`. No restore is
+                // needed — every text element sets its own colour, matching
+                // the base-14 branch's "always set explicitly" contract.
+                let color = t.style.color;
+                self.writer.pages[self.page_index]
+                    .content_builder
+                    .fill_color(color);
                 self.add_embedded_text(&t.text, t.bbox.x, t.bbox.y, &resource_name, t.font.size);
                 return self;
             }
