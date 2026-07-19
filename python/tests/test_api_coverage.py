@@ -295,7 +295,7 @@ class TestPdfCreation:
         assert pdf.to_bytes()[:5] == _PDF_MAGIC
 
     def test_multi_page_markdown(self):
-        md = "\n\n".join(["# Section %d\n\nText %d." % (i, i) for i in range(5)])
+        md = "\n\n".join([f"# Section {i}\n\nText {i}." for i in range(5)])
         pdf = Pdf.from_markdown(md)
         doc = PdfDocument.from_bytes(pdf.to_bytes())
         assert doc.page_count() >= 1
