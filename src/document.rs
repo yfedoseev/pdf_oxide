@@ -15427,8 +15427,78 @@ impl PdfDocument {
         page_index: usize,
         reading_order: ReadingOrder,
     ) -> Result<Vec<crate::layout::TextSpan>> {
-        // Extract raw spans using the common extraction logic
-        let mut spans = self.extract_spans_raw(page_index)?;
+        self.extract_spans_filtered_with_reading_order(
+            page_index,
+            reading_order,
+            HashSet::new(),
+            HashSet::new(),
+        )
+    }
+
+    /// Extract positioned spans in a reading order, excluding optional-content
+    /// layers and/or Separation/DeviceN inks.
+    ///
+    /// This is [`extract_spans_with_reading_order`](Self::extract_spans_with_reading_order)
+    /// and [`extract_text_filtered`](Self::extract_text_filtered) combined: the
+    /// former cannot filter, and the latter returns assembled text rather than
+    /// positioned spans. A consumer that lays spans out itself - an HTML/XML
+    /// emitter placing each span at its own rectangle - needs both at once.
+    ///
+    /// The motivating case is render/extract parity. `render_page` honours the
+    /// document's default configuration `/OCProperties/D`, but span extraction
+    /// treats everything as visible unless the caller names layers (see the
+    /// `optional_content` module note). Passing
+    /// `optional_content::compute_default_off_ocgs(&doc)` as `excluded_layers`
+    /// makes extraction agree with what the page actually displays - without it,
+    /// a default-OFF layer holding a copy of the page contributes a SECOND copy
+    /// of every word.
+    ///
+    /// Empty sets are exactly equivalent to the unfiltered call, so this is a
+    /// superset of the existing API and costs nothing when no filtering is asked
+    /// for.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `reading_order` - The reading order strategy to apply
+    /// * `excluded_layers` - OCG layer names to suppress (empty = no filtering)
+    /// * `excluded_inks` - Separation/DeviceN ink names to suppress (empty = none)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::document::{PdfDocument, ReadingOrder};
+    /// # use pdf_oxide::optional_content;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let doc = PdfDocument::open("layered.pdf")?;
+    /// // Agree with what the page displays: drop the default-off layers.
+    /// let hidden = optional_content::compute_default_off_ocgs(&doc);
+    /// let spans = doc.extract_spans_filtered_with_reading_order(
+    ///     0,
+    ///     ReadingOrder::ColumnAware,
+    ///     hidden,
+    ///     Default::default(),
+    /// )?;
+    /// for span in spans {
+    ///     println!("{}", span.text);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn extract_spans_filtered_with_reading_order(
+        &self,
+        page_index: usize,
+        reading_order: ReadingOrder,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        // Extract raw spans using the common extraction logic. The unfiltered
+        // path is kept verbatim for empty sets so existing callers are unchanged.
+        let mut spans = if excluded_layers.is_empty() && excluded_inks.is_empty() {
+            self.extract_spans_raw(page_index)?
+        } else {
+            self.extract_spans_raw_filtered(page_index, excluded_layers, excluded_inks)?
+        };
 
         // Apply reading order strategy
         match reading_order {

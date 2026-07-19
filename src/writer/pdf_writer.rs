@@ -201,7 +201,7 @@ impl<'a> PageBuilder<'a> {
         self
     }
 
-    /// Add Unicode text on a page using the rustybuzz shaper. Required
+    /// Add Unicode text on a page using the harfrust shaper. Required
     /// for any complex script (Arabic, Hebrew, Devanagari) where
     /// `add_embedded_text`'s naive char→glyph cmap lookup produces
     /// the wrong glyphs (no contextual forms, no ligatures, no RTL
