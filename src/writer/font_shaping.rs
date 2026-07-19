@@ -1,4 +1,4 @@
-//! Text shaping via rustybuzz (HarfBuzz port, MIT-licensed).
+//! Text shaping via harfrust (the HarfBuzz project's own Rust port, MIT-licensed).
 //!
 //! `EmbeddedFont::encode_string` produces a naive char→glyph hex string
 //! that works correctly for ASCII and most Latin Extended content but
@@ -12,16 +12,16 @@
 //!   from the font's GSUB/GPOS tables. None of this works without a
 //!   shaping engine.
 //!
-//! This module wraps `rustybuzz::shape` to produce a `ShapedRun` of
+//! This module wraps harfrust's shaper to produce a `ShapedRun` of
 //! positioned glyphs that the v0.3.35 inline-formatting layer (Phase
 //! LAYOUT) consumes when computing line widths and emitting Tj
 //! operators with correct widths.
 //!
 //! Feature-gated on `system-fonts` (same as `font_discovery`) — the two
 //! always travel together: discover a font with fontdb, shape with
-//! rustybuzz against the same face bytes.
+//! harfrust against the same face bytes.
 
-use rustybuzz::{Face, UnicodeBuffer};
+use harfrust::{FontRef, ShapeOptions, ShaperData, UnicodeBuffer};
 
 /// One positioned glyph from text shaping. Coordinates are in font
 /// design units (typically 1/units_per_em); convert to PDF points by
@@ -70,12 +70,12 @@ pub enum Direction {
     Ttb,
 }
 
-impl From<Direction> for rustybuzz::Direction {
+impl From<Direction> for harfrust::Direction {
     fn from(d: Direction) -> Self {
         match d {
-            Direction::Ltr => rustybuzz::Direction::LeftToRight,
-            Direction::Rtl => rustybuzz::Direction::RightToLeft,
-            Direction::Ttb => rustybuzz::Direction::TopToBottom,
+            Direction::Ltr => harfrust::Direction::LeftToRight,
+            Direction::Rtl => harfrust::Direction::RightToLeft,
+            Direction::Ttb => harfrust::Direction::TopToBottom,
         }
     }
 }
@@ -89,25 +89,30 @@ impl From<Direction> for rustybuzz::Direction {
 /// `direction` controls visual reordering. For mixed-direction runs
 /// (English text inside an Arabic paragraph, etc.) the caller must
 /// segment first via the `unicode-bidi` crate and call this once per
-/// run; rustybuzz itself does no BiDi.
+/// run; harfrust itself does no BiDi.
 ///
 /// Returns `None` if the face bytes can't be parsed.
 pub fn shape(text: &str, face_bytes: &[u8], direction: Direction) -> Option<ShapedRun> {
-    let face = Face::from_slice(face_bytes, 0)?;
+    let font = FontRef::from_index(face_bytes, 0).ok()?;
+    let shaper_data = ShaperData::new(&font);
+    let shaper = shaper_data.shaper(&font).instance(None).build();
+
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.set_direction(direction.into());
-    // Auto-detect script from the first non-common codepoint. rustybuzz
-    // does this internally if the script isn't set explicitly, but
-    // exposing the detection point keeps the code obvious.
-    let glyphs_buffer = rustybuzz::shape(&face, &[], buffer);
+    // Fill in script + language from the text. `guess_segment_properties`
+    // only sets properties still unset, so the explicit direction above is
+    // preserved. Complex scripts (Arabic, Indic) need the script set for
+    // the shaper to select the right GSUB/GPOS rules.
+    buffer.guess_segment_properties();
+    let glyphs_buffer = shaper.shape(buffer, ShapeOptions::new());
 
     let infos = glyphs_buffer.glyph_infos();
     let positions = glyphs_buffer.glyph_positions();
     debug_assert_eq!(
         infos.len(),
         positions.len(),
-        "rustybuzz invariant: infos and positions match in length"
+        "harfrust invariant: infos and positions match in length"
     );
 
     let mut glyphs = Vec::with_capacity(infos.len());

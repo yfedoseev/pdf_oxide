@@ -122,7 +122,7 @@ impl FontSubsetter {
 
     /// Record a glyph ID as used without an associated codepoint.
     ///
-    /// Used by the shaping path: rustybuzz returns glyph IDs (after
+    /// Used by the shaping path: harfrust returns glyph IDs (after
     /// ligature substitution and contextual reordering) that have no
     /// 1:1 source codepoint. The cluster information is preserved
     /// elsewhere for ToUnicode mapping.
