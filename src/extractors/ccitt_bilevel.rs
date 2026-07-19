@@ -248,7 +248,10 @@ fn try_decode_with_fax(
 /// without converting a row: the in-house decoder emits `u16`, while the `fax`
 /// crate emits `u32` (widened in fax 0.3). Positions are compared in `usize`,
 /// so neither width is truncated.
-pub(crate) fn transitions_to_bytes<T: Copy + Into<u32>>(transitions: &[T], width: usize) -> Vec<u8> {
+pub(crate) fn transitions_to_bytes<T: Copy + Into<u32>>(
+    transitions: &[T],
+    width: usize,
+) -> Vec<u8> {
     let bytes_per_row = width.div_ceil(8);
     let mut row_bytes = vec![0u8; bytes_per_row];
 
