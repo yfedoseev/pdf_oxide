@@ -6288,9 +6288,11 @@ impl PageRenderer {
                 return (cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
             }
         }
-        // §10.3.5 inverse for the qcms / no-CMM backends. K stays at 0
-        // because the additive-clamp form `(C, M, Y) = (1-R, 1-G, 1-B)`
-        // does not encode ink-coverage in K.
+        // Process-ink separation for the qcms / no-CMM backends: the inverse of
+        // the tetralinear `crate::color::cmyk_to_rgb`, so a pure-RGB paint
+        // mirrored into the CMYK sidecar and composited back round-trips within
+        // the process gamut (an out-of-gamut sRGB paint gamut-compresses). K
+        // stays 0 (no black generation). Replaces the additive `(1-R,1-G,1-B)`.
         //
         // When the document catalog DECLARES an /OutputIntents array
         // but `output_intent_cmyk_profile()` returns `None`, the
@@ -6314,7 +6316,7 @@ impl PageRenderer {
             );
             self.k_zero_warning_emitted = true;
         }
-        (1.0 - r, 1.0 - g, 1.0 - b, 0.0)
+        crate::color::rgb_to_cmyk(r, g, b)
     }
 
     /// Mirror an RGB-source paint into the CMYK sidecar via §11.3.4 +
@@ -9230,14 +9232,17 @@ fn pixmap_paint_for_image_blit(
     paint
 }
 
-/// Convert DeviceCMYK (0.0–1.0) to DeviceRGB (0.0–1.0) per ISO 32000-1:2008
-/// §10.3.5. The additive-clamp formula `R = 1 − min(1, C+K)` is the
-/// spec-mandated fallback when no ICC profile is available.
+/// Convert DeviceCMYK (0.0-1.0) to DeviceRGB (0.0-1.0) using the PROCESS-INK
+/// conversion (`crate::color::cmyk_to_rgb`, tetralinear over the 16 measured ink
+/// corners), NOT the naive additive-clamp `R = 1 - min(1, C+K)`. This unifies
+/// the renderer's DeviceCMYK display with the text/extraction and image paths so
+/// the same CMYK value resolves to the same RGB everywhere (100% K is `#231F20`,
+/// 100% cyan `#00ADEF`). The RGB->CMYK sidecar inverse is
+/// `crate::color::rgb_to_cmyk`, which keeps the overprint round-trip consistent
+/// within the process gamut. A real ICC/OutputIntent CMM still takes precedence
+/// when a profile is available.
 fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
-    let r = 1.0 - (c + k).min(1.0);
-    let g = 1.0 - (m + k).min(1.0);
-    let b = 1.0 - (y + k).min(1.0);
-    (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+    crate::color::cmyk_to_rgb(c, m, y, k)
 }
 
 /// Parse a colour-key `/Mask` array (ISO 32000-1 §8.9.6.4) into per-component
@@ -9890,18 +9895,18 @@ mod tests {
 
     #[test]
     fn test_cmyk_to_rgb_black() {
+        // Process inks (not additive): 100% K is the K ink #231F20, NOT #000000.
         let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
-        assert!((r - 0.0).abs() < 0.001);
-        assert!((g - 0.0).abs() < 0.001);
-        assert!((b - 0.0).abs() < 0.001);
+        let q = |v: f32| (v * 255.0).round() as u8;
+        assert_eq!([q(r), q(g), q(b)], [0x23, 0x1F, 0x20]);
     }
 
     #[test]
     fn test_cmyk_to_rgb_pure_cyan() {
+        // Process inks (not additive): 100% cyan is #00ADEF, NOT #00FFFF.
         let (r, g, b) = cmyk_to_rgb(1.0, 0.0, 0.0, 0.0);
-        assert!((r - 0.0).abs() < 0.001);
-        assert!((g - 1.0).abs() < 0.001);
-        assert!((b - 1.0).abs() < 0.001);
+        let q = |v: f32| (v * 255.0).round() as u8;
+        assert_eq!([q(r), q(g), q(b)], [0x00, 0xAD, 0xEF]);
     }
 
     #[test]

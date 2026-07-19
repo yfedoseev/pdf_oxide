@@ -609,9 +609,127 @@ pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
 }
 
+/// Solve the 3x3 linear system `a * x = b` by Cramer's rule. `None` when the
+/// matrix is (near-)singular.
+fn solve3(a: [[f32; 3]; 3], b: [f32; 3]) -> Option<[f32; 3]> {
+    let det3 = |m: [[f32; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let det = det3(a);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let mut out = [0.0f32; 3];
+    for i in 0..3 {
+        let mut m = a;
+        for r in 0..3 {
+            m[r][i] = b[r];
+        }
+        out[i] = det3(m) / det;
+    }
+    Some(out)
+}
+
+/// Process-ink DeviceRGB -> DeviceCMYK separation: the (approximate) inverse of
+/// [`cmyk_to_rgb`].
+///
+/// Used to mirror a pure-RGB paint into the CMYK overprint sidecar so that
+/// RGB -> CMYK -> RGB round-trips as closely as the process gamut allows
+/// (ISO 32000-1 s11.7.4.3). Uses `K = 0` (no black generation) and solves for
+/// the `(C, M, Y)` whose process-ink forward reproduces `(r, g, b)`, by Newton
+/// iteration with a finite-difference Jacobian.
+///
+/// The process gamut is SMALLER than sRGB, so an out-of-gamut RGB (e.g. sRGB
+/// primary blue) cannot be reproduced by any CMY mix - it maps to the nearest
+/// in-gamut CMY (each ink clamped to `0..=1`). Called ONCE PER PAINT (not per
+/// pixel), so the handful of forward evaluations is negligible. It starts from,
+/// and never returns worse than, the additive complement `(1-r, 1-g, 1-b, 0)`
+/// (the legacy inverse), so it can only tighten the round-trip.
+pub fn rgb_to_cmyk(r: f32, g: f32, b: f32) -> (f32, f32, f32, f32) {
+    let target = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)];
+    let fwd = |x: [f32; 3]| {
+        let (fr, fg, fb) = cmyk_to_rgb(x[0], x[1], x[2], 0.0);
+        [fr, fg, fb]
+    };
+    let resid = |x: [f32; 3]| {
+        let f = fwd(x);
+        (target[0] - f[0]).abs() + (target[1] - f[1]).abs() + (target[2] - f[2]).abs()
+    };
+    // Start from the additive complement: a good first guess AND the safe floor.
+    let mut x = [1.0 - target[0], 1.0 - target[1], 1.0 - target[2]];
+    let mut best_x = x;
+    let mut best_r = resid(x);
+    const EPS: f32 = 1e-3;
+    for _ in 0..16 {
+        if best_r < 1.0 / 255.0 {
+            break;
+        }
+        let f0 = fwd(x);
+        let res = [target[0] - f0[0], target[1] - f0[1], target[2] - f0[2]];
+        // Jacobian J[i][j] = d fwd_i / d x_j by one-sided finite differences,
+        // stepping inward when x_j is on the [0,1] boundary.
+        let mut j = [[0.0f32; 3]; 3];
+        for c in 0..3 {
+            let step = if x[c] + EPS <= 1.0 { EPS } else { -EPS };
+            let mut xp = x;
+            xp[c] += step;
+            let fp = fwd(xp);
+            for (row, jr) in j.iter_mut().enumerate() {
+                jr[c] = (fp[row] - f0[row]) / step;
+            }
+        }
+        let Some(delta) = solve3(j, res) else { break };
+        for (k, xk) in x.iter_mut().enumerate() {
+            *xk = (*xk + delta[k]).clamp(0.0, 1.0);
+        }
+        let rr = resid(x);
+        if rr < best_r {
+            best_r = rr;
+            best_x = x;
+        }
+    }
+    (best_x[0], best_x[1], best_x[2], 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgb_to_cmyk_round_trips_in_gamut_and_stays_in_range() {
+        let q = |v: f32| (v * 255.0).round() as i32;
+        // Any colour reachable by a K=0 CMY mix must round-trip
+        // RGB -> CMYK -> RGB to within a couple of 8-bit steps.
+        for &(c0, m0, y0) in &[
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.5, 0.2, 0.0),
+            (0.3, 0.3, 0.3),
+            (0.8, 0.4, 0.1),
+            (1.0, 1.0, 1.0),
+        ] {
+            let (r, g, b) = cmyk_to_rgb(c0, m0, y0, 0.0);
+            let (c, m, y, k) = rgb_to_cmyk(r, g, b);
+            assert_eq!(k, 0.0, "separation uses K=0");
+            let (rr, gg, bb) = cmyk_to_rgb(c, m, y, k);
+            for (got, want) in [(rr, r), (gg, g), (bb, b)] {
+                assert!(
+                    (q(got) - q(want)).abs() <= 3,
+                    "in-gamut round-trip off: cmy ({c0},{m0},{y0}) rgb ({r},{g},{b}) -> ({rr},{gg},{bb})"
+                );
+            }
+        }
+        // Out-of-gamut sRGB primary blue cannot be reproduced by any process CMY
+        // mix; it must map to a valid in-range CMYK (nearest in-gamut), not diverge.
+        let (c, m, y, k) = rgb_to_cmyk(0.0, 0.0, 1.0);
+        for v in [c, m, y, k] {
+            assert!((0.0..=1.0).contains(&v), "out-of-gamut CMYK stays in range");
+        }
+    }
 
     #[test]
     fn cmyk_uses_process_inks_not_the_naive_complement() {
