@@ -4109,12 +4109,26 @@ impl FontInfo {
         // NOTE: Identity-H/V is actually handled by checking the encoding field.
         // It is checked here for Type0 fonts to ensure it happens before other fallbacks.
         if self.subtype == "Type0" {
-            if let Encoding::Standard(ref encoding_name) = self.encoding {
-                if encoding_name == "Identity-H"
-                    || encoding_name == "Identity-V"
-                    || encoding_name.contains("UCS2")
-                    || encoding_name.contains("UTF16")
+            // Identity-H/V is collapsed into the `Encoding::Identity` enum variant
+            // (see the `Encoding` doc comment), so we must accept BOTH
+            // `Encoding::Identity` and a `Standard` string naming an
+            // Identity/UCS2/UTF16 CMap. The old `if let Encoding::Standard(..)`
+            // silently skipped `Encoding::Identity` fonts, dropping their CIDs to
+            // the bare `char::from_u32(cid)` fallback — which mis-decodes CJK
+            // glyphs (e.g. CID 0x69 rendered as 'i' instead of the real char).
+            let (encoding_name, is_identity_enc) = match &self.encoding {
+                Encoding::Identity => ("Identity-H".to_string(), true),
+                Encoding::Standard(name)
+                    if name == "Identity-H"
+                        || name == "Identity-V"
+                        || name.contains("UCS2")
+                        || name.contains("UTF16") =>
                 {
+                    (name.clone(), true)
+                }
+                _ => (String::new(), false),
+            };
+            if is_identity_enc {
                     // For Identity-H/V: CID value IS the Unicode code point (2-byte)
                     // Valid Unicode range for 2-byte CID: 0x0000 to 0xFFFF
                     // (Standard Unicode BMP - Basic Multilingual Plane)
@@ -4163,7 +4177,7 @@ impl FontInfo {
                         if !is_ucs2_or_utf16 && is_non_identity_ordering {
                             // Identity-H/V with CJK collection: CIDs are NOT Unicode!
                             if let Some(unicode_codepoint) = lookup_predefined_cmap(
-                                encoding_name,
+                                &encoding_name,
                                 &self.cid_system_info,
                                 char_code as u16,
                             ) {
@@ -4204,7 +4218,6 @@ impl FontInfo {
                         );
                     }
                 }
-            }
         }
 
         // ==================================================================================
