@@ -4148,9 +4148,12 @@ impl PdfDocument {
         // non-encrypted document is almost always a page tree they could not
         // resolve - `/Pages` packed inside an object stream, or a deeply nested
         // `/Pages` -> `/Pages` -> `/Page` tree - not a genuinely empty document.
-        // `get_page` still reaches every page by walking `/Pages` -> `/Kids`
-        // (`all_page_refs`), so agree with it. Gated on a primary result of 0,
-        // so every document the standard reader counts normally is unchanged.
+        // The /Count readers and `all_page_refs` (which walks `/Pages` -> `/Kids`
+        // via `collect_page_refs`) both MISS such a tree; `get_page` still reaches
+        // every page through its own per-page traversal / `collect_all_pages` bulk
+        // walk, so count by agreeing with what it can actually reach. Gated on a
+        // primary result of 0, so every document the standard reader counts
+        // normally is unchanged.
         if matches!(primary, Ok(0)) && !self.is_encrypted() {
             // The /Count readers - and `all_page_refs`, which walks
             // `/Pages` -> `/Kids` via `collect_page_refs` - miss a page tree
@@ -4159,9 +4162,11 @@ impl PdfDocument {
             // bulk walk, so count by probing it: the definitive agreement with
             // the pages the rest of the API can actually reach. `get_page` never
             // calls back into `page_count` (no recursion) and caches each page
-            // (repeat probes are cheap). Bounded by a sanity cap. Only runs when
-            // the primary count is 0, so normally-counted documents are
-            // byte-identical.
+            // (repeat probes are cheap). For an ObjStm-packed tree each `get_page`
+            // can fall back to a full object scan, so counting this way is
+            // O(n * objects) - bounded by the sanity cap, and only ever on an
+            // already-broken document. Only runs when the primary count is 0, so
+            // normally-counted documents are byte-identical.
             let mut n = 0usize;
             while n < 1_000_000 && self.get_page(n).is_ok() {
                 n += 1;
@@ -28546,6 +28551,56 @@ mod tests {
         );
         let doc = PdfDocument::from_bytes(pdf).unwrap();
         assert_eq!(doc.page_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_page_count_rescued_when_count_is_zero_but_pages_exist() {
+        // The motivating broken-/Count case (#909): a `/Pages` node whose `/Count`
+        // says 0 while its `/Kids` hold real pages. An ObjStm-packed `/Pages` tree
+        // that the standard reader cannot resolve reaches `page_count` the same way
+        // - `primary == Ok(0)`. Here the standard reader trusts the literal `/Count`
+        // and returns 0, but `get_page` still walks `/Pages` -> `/Kids` and reaches
+        // every page, so the rescue enumerates them.
+        //
+        // WITHOUT the rescue block this returns 0 (verified: reverting the
+        // document.rs hunk makes this assertion fail with `0 != 3`); WITH it, 3.
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = pdf.len();
+        pdf.extend_from_slice(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 0 >>\nendobj\n",
+        );
+        let mut offs = vec![off1, off2];
+        for n in 3..=5u32 {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+                    n
+                )
+                .as_bytes(),
+            );
+        }
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+        // The standard /Count reader really does report 0 here, so the count of 3
+        // comes entirely from the enumerator rescue (not from the primary path).
+        assert_eq!(
+            doc.get_page_count_standard().unwrap(),
+            0,
+            "fixture must drive the standard reader to 0"
+        );
+        assert_eq!(doc.page_count().unwrap(), 3, "rescue must enumerate the real pages");
     }
 
     // ========================================================================
