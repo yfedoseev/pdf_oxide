@@ -5,9 +5,9 @@ build-backend = "maturin"
 [project]
 name = "pdf_oxide"
 version = "0.3.74"
-description = "The fastest Python PDF library: 0.8ms mean, 5× faster than PyMuPDF. Text extraction, markdown conversion, PDF creation. 100% pass rate on 3,830 PDFs."
+description = "The fastest Python PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Text extraction, Markdown/HTML conversion, PDF creation and editing."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "PDF Oxide Contributors", email = "yfedoseev@gmail.com" }]
@@ -33,7 +33,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -117,7 +116,7 @@ python_functions = ["test_*"]
 # Docs: https://docs.astral.sh/ruff/
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 extend-exclude = [".git", "__pycache__", "build", "dist", ".eggs", "*.egg-info"]
 
 [tool.ruff.lint]
@@ -132,13 +131,13 @@ select = [
     "C4",  # flake8-comprehensions
     "SIM", # flake8-simplify
     "TCH", # flake8-type-checking
+    "UP",  # pyupgrade (modernize syntax to the py39+ baseline)
 ]
 
 # Disable specific rules if needed
 ignore = [
     "E501", # Line too long (handled by formatter)
     "B008", # Do not perform function calls in argument defaults
-    "UP",   # pyupgrade (modernize Python code) # compatible with py38
 ]
 
 # Allow unused variables when underscore-prefixed
