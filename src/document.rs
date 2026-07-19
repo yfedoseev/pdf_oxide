@@ -4115,26 +4115,22 @@ impl PdfDocument {
     /// # Ok::<(), pdf_oxide::error::Error>(())
     /// ```
     pub fn page_count(&self) -> Result<usize> {
-        // Try standard method first
-        match self.get_page_count_standard() {
+        // Standard /Count reader, then a manual page-tree scan on failure.
+        let primary: Result<usize> = match self.get_page_count_standard() {
             Ok(count) => {
                 log::debug!("Page count from /Count: {}", count);
                 Ok(count)
             },
-            Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
+            Err(Error::EncryptedPdf) => return Err(Error::EncryptedPdf),
             Err(e) => {
                 // For encrypted PDFs any failure to read the page tree means we
-                // cannot access the content. Scanning would also return Ok(0),
-                // so skip the fallback and surface the real error immediately.
+                // cannot access the content, so surface it immediately.
                 if self.is_encrypted() {
                     log::warn!("Page count failed for encrypted PDF: {}", e);
                     return Err(Error::EncryptedPdf);
                 }
-
                 log::warn!("Failed to get page count from /Count: {}", e);
                 log::info!("Falling back to scanning page tree");
-
-                // Fallback: scan the page tree manually
                 match self.get_page_count_by_scanning() {
                     Ok(count) => {
                         log::info!("Page count from scanning: {}", count);
@@ -4146,7 +4142,36 @@ impl PdfDocument {
                     },
                 }
             },
+        };
+
+        // Enumerator rescue. A count of 0 from the /Count-based readers on a
+        // non-encrypted document is almost always a page tree they could not
+        // resolve - `/Pages` packed inside an object stream, or a deeply nested
+        // `/Pages` -> `/Pages` -> `/Page` tree - not a genuinely empty document.
+        // `get_page` still reaches every page by walking `/Pages` -> `/Kids`
+        // (`all_page_refs`), so agree with it. Gated on a primary result of 0,
+        // so every document the standard reader counts normally is unchanged.
+        if matches!(primary, Ok(0)) && !self.is_encrypted() {
+            // The /Count readers - and `all_page_refs`, which walks
+            // `/Pages` -> `/Kids` via `collect_page_refs` - miss a page tree
+            // packed inside an object stream. `get_page` still resolves every
+            // such page through its own per-page traversal / `collect_all_pages`
+            // bulk walk, so count by probing it: the definitive agreement with
+            // the pages the rest of the API can actually reach. `get_page` never
+            // calls back into `page_count` (no recursion) and caches each page
+            // (repeat probes are cheap). Bounded by a sanity cap. Only runs when
+            // the primary count is 0, so normally-counted documents are
+            // byte-identical.
+            let mut n = 0usize;
+            while n < 1_000_000 && self.get_page(n).is_ok() {
+                n += 1;
+            }
+            if n > 0 {
+                log::info!("Page /Count was 0; enumerated {} pages via get_page", n);
+                return Ok(n);
+            }
         }
+        primary
     }
 
     /// Get the MediaBox of a page (v0.3.14).
