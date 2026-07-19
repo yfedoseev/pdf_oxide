@@ -996,17 +996,27 @@ fn preserve_unmapped_glyphs_flag_toggles() {
     );
 }
 
-/// `structured_warnings()` returns an empty
-/// list on a clean PDF (no warnings raised), and the
-/// `push_structured_warning` / `flatten_warnings` pair round-trips.
+/// The `push_structured_warning` / `take_structured_warnings` pair
+/// round-trips: pushing one warning surfaces exactly one, and taking
+/// drains the sink back to empty.
 #[test]
 fn structured_warnings_round_trip_on_real_document() {
     let path = "tests/fixtures/1008.3918v2.pdf";
     if !std::path::Path::new(path).exists() {
         return;
     }
-    let doc = pdf_oxide::document::PdfDocument::open(path).expect("open simple.pdf");
-    let initial = doc.structured_warnings();
+    let doc = pdf_oxide::document::PdfDocument::open(path).expect("open fixture");
+    // Opening a real document may raise a non-deterministic number of
+    // warnings; drain them first so the round-trip asserts against a
+    // known-empty baseline rather than a moving `initial.len()` count.
+    // (This test previously flaked on the nightly toolchain when that
+    // baseline shifted under a different hash seed.)
+    let _ = doc.take_structured_warnings();
+    assert_eq!(
+        doc.structured_warnings().len(),
+        0,
+        "sink is empty after draining open-time warnings",
+    );
     // Push a synthetic warning
     doc.push_structured_warning(Warning {
         category: WarningCategory::SpecViolation,
@@ -1014,17 +1024,11 @@ fn structured_warnings_round_trip_on_real_document() {
         message: "synthetic test warning".into(),
         spec_section: Some("7.3.8.1"),
     });
-    let after_push = doc.structured_warnings();
-    assert_eq!(
-        after_push.len(),
-        initial.len() + 1,
-        "push must add exactly one structured warning",
-    );
-    // Drain
+    assert_eq!(doc.structured_warnings().len(), 1, "push adds exactly one structured warning",);
+    // Drain empties the sink.
     let drained = doc.take_structured_warnings();
-    assert_eq!(drained.len(), after_push.len());
-    let after_drain = doc.structured_warnings();
-    assert_eq!(after_drain.len(), 0, "take must drain the sink");
+    assert_eq!(drained.len(), 1);
+    assert_eq!(doc.structured_warnings().len(), 0, "take must drain the sink",);
 }
 
 // ===========================================================================
