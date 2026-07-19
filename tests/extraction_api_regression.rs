@@ -997,8 +997,15 @@ fn preserve_unmapped_glyphs_flag_toggles() {
 }
 
 /// The `push_structured_warning` / `take_structured_warnings` pair
-/// round-trips: pushing one warning surfaces exactly one, and taking
-/// drains the sink back to empty.
+/// round-trips: a pushed warning is surfaced by `structured_warnings()`,
+/// returned by `take`, and then gone from the sink.
+///
+/// Asserted by CONTENT (a unique sentinel message), never by absolute
+/// count: opening a real document raises its own warnings, and it can do
+/// so asynchronously (lazy/background processing), so any count-based
+/// assertion races the producer — that flaked earlier versions of this
+/// test on the nightly and windows-beta toolchains. Matching a sentinel
+/// is immune to whatever other warnings the document raises or when.
 #[test]
 fn structured_warnings_round_trip_on_real_document() {
     let path = "tests/fixtures/1008.3918v2.pdf";
@@ -1006,29 +1013,33 @@ fn structured_warnings_round_trip_on_real_document() {
         return;
     }
     let doc = pdf_oxide::document::PdfDocument::open(path).expect("open fixture");
-    // Opening a real document may raise a non-deterministic number of
-    // warnings; drain them first so the round-trip asserts against a
-    // known-empty baseline rather than a moving `initial.len()` count.
-    // (This test previously flaked on the nightly toolchain when that
-    // baseline shifted under a different hash seed.)
-    let _ = doc.take_structured_warnings();
-    assert_eq!(
-        doc.structured_warnings().len(),
-        0,
-        "sink is empty after draining open-time warnings",
-    );
-    // Push a synthetic warning
+    const SENTINEL: &str = "round-trip-sentinel-warning-7c3f0a";
     doc.push_structured_warning(Warning {
         category: WarningCategory::SpecViolation,
         page: Some(0),
-        message: "synthetic test warning".into(),
+        message: SENTINEL.into(),
         spec_section: Some("7.3.8.1"),
     });
-    assert_eq!(doc.structured_warnings().len(), 1, "push adds exactly one structured warning",);
-    // Drain empties the sink.
+    // push surfaces it
+    assert!(
+        doc.structured_warnings()
+            .iter()
+            .any(|w| w.message == SENTINEL),
+        "pushed warning must be surfaced by structured_warnings()",
+    );
+    // take returns it...
     let drained = doc.take_structured_warnings();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(doc.structured_warnings().len(), 0, "take must drain the sink",);
+    assert!(
+        drained.iter().any(|w| w.message == SENTINEL),
+        "take_structured_warnings must return the pushed warning",
+    );
+    // ...and removes it from the sink
+    assert!(
+        !doc.structured_warnings()
+            .iter()
+            .any(|w| w.message == SENTINEL),
+        "take must remove the pushed warning from the sink",
+    );
 }
 
 // ===========================================================================
