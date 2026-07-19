@@ -395,11 +395,11 @@ mod tests {
         // Should produce: 0b00111001 = 57 (0x39)
         // Exercised for both transition scalars: the in-house decoder emits
         // u16, the fax crate (0.3+) emits u32, and both share this packer.
-        let row_u16 = transitions_to_bytes(&vec![2u16, 5, 7], 8);
+        let row_u16 = transitions_to_bytes(&[2u16, 5, 7], 8);
         assert_eq!(row_u16.len(), 1);
         assert_eq!(row_u16[0], 0b00111001);
 
-        let row_u32 = transitions_to_bytes(&vec![2u32, 5, 7], 8);
+        let row_u32 = transitions_to_bytes(&[2u32, 5, 7], 8);
         assert_eq!(row_u32, row_u16, "u32 and u16 transitions must pack identically");
     }
 
@@ -409,7 +409,7 @@ mod tests {
     fn test_transitions_to_bytes_beyond_u16() {
         let width = 70_000usize;
         // black run from 65_536 to 65_544 - a position that u16 could not hold
-        let row = transitions_to_bytes(&vec![65_536u32, 65_544], width);
+        let row = transitions_to_bytes(&[65_536u32, 65_544], width);
         assert_eq!(row.len(), width.div_ceil(8));
         assert_eq!(row[65_536 / 8], 0xFF, "the 8 pixels at 65536.. must be black");
         assert!(row[..65_536 / 8].iter().all(|&b| b == 0), "everything before must stay white");
