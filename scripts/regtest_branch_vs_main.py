@@ -23,7 +23,6 @@ import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +157,7 @@ def cmd_collect(args):
     default_total = sum(t for _, _, t, _, _ in BUCKETS)
     rng = random.Random(0xC0FFEE)
     seen: set = set()
-    rows: List[Tuple[str, Path]] = []
+    rows: list[tuple[str, Path]] = []
 
     for bucket, dirs, target_n, max_bytes, _ in BUCKETS:
         bucket_target = max(1, round(target_n * total_target / default_total))
@@ -300,7 +299,7 @@ def cmd_run(args):
 _WORD_RE = re.compile(r"[\w/\-\.@]+", re.UNICODE)
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     return _WORD_RE.findall(text)
 
 
@@ -310,7 +309,7 @@ def _jaccard(a: str, b: str) -> float:
     return len(sa & sb) / u if u else 1.0
 
 
-def _classify(main_txt: str, branch_txt: str, main_ok: bool, branch_ok: bool) -> Tuple[str, float]:
+def _classify(main_txt: str, branch_txt: str, main_ok: bool, branch_ok: bool) -> tuple[str, float]:
     if not main_ok and not branch_ok:
         return "CRASH_BOTH", 0.0
     if not branch_ok:
@@ -372,7 +371,7 @@ def cmd_report(args):
     diff_dir = run_root / "diffs"
     diff_dir.mkdir(exist_ok=True)
 
-    rows: Dict[Tuple[str, str, str], dict] = {}  # (pdf, fmt, build) → row
+    rows: dict[tuple[str, str, str], dict] = {}  # (pdf, fmt, build) → row
     for line in manifest_path.read_text().splitlines():
         try:
             r = json.loads(line)
@@ -387,8 +386,8 @@ def cmd_report(args):
 
     tsv_rows = []
     content_diffs = []
-    counts: Dict[Tuple[str, str], int] = {}  # (status, fmt) → count
-    bucket_status: Dict[Tuple[str, str], int] = {}  # (bucket, status) → count
+    counts: dict[tuple[str, str], int] = {}  # (status, fmt) → count
+    bucket_status: dict[tuple[str, str], int] = {}  # (bucket, status) → count
 
     for pdf, fmt in sorted(pairs):
         main_row = rows.get((pdf, fmt, "main"), {})
