@@ -377,6 +377,56 @@ impl FontInfo {
         self.truetype_cmap().is_some()
     }
 
+    /// The most authoritative Unicode-mapping resource this font offers, as a
+    /// [`MappingProvenance`](crate::fonts::MappingProvenance).
+    ///
+    /// This is a **fact** derived from the font's structure — which mapping
+    /// resources exist — not a decode of any particular character code. It
+    /// mirrors the ISO 32000-1 §9.10.2 priority order and covers every font
+    /// type, so it is complete where a font-type-specific structural check is
+    /// not.
+    ///
+    /// [`Fallback`](crate::fonts::MappingProvenance::Fallback) is the important
+    /// value: it means the font carries **no** mapping resource — no usable
+    /// `/ToUnicode`, no predefined CID→Unicode collection, no embedded `cmap`,
+    /// and no simple-font encoding — so any Unicode extracted for its glyphs is
+    /// a fabricated echo, not read from the file (§9.10.2: "there is no way to
+    /// determine what the character code represents"). Callers compose their own
+    /// policy from this (route to OCR, flag the page, keep the raw echo).
+    pub fn best_mapping_provenance(&self) -> crate::fonts::MappingProvenance {
+        use crate::fonts::MappingProvenance as P;
+        // 1. A present, non-empty /ToUnicode CMap is authoritative (§9.10.2).
+        if self
+            .to_unicode
+            .as_ref()
+            .and_then(|c| c.get())
+            .is_some_and(|m| !m.is_empty())
+        {
+            return P::ToUnicode;
+        }
+        // 2. A predefined CID→Unicode collection: a Type0 font whose descendant
+        //    uses a known, non-Identity ordering (Adobe-GB1/CNS1/Japan1/Korea1).
+        if self.subtype == "Type0" {
+            if let Some(info) = &self.cid_system_info {
+                if info.ordering != "Identity" && !info.ordering.is_empty() {
+                    return P::PredefinedCMap;
+                }
+            }
+        }
+        // 3. The embedded program's own cmap (recoverable byte-as-GID / Identity
+        //    subsets that kept a usable cmap).
+        if self.has_truetype_cmap() {
+            return P::EmbeddedCmap;
+        }
+        // 4. A simple font resolves through its /Encoding → glyph name → AGL, and
+        //    symbolic Symbol/ZapfDingbats through their built-in encodings.
+        if self.subtype != "Type0" {
+            return P::EncodingName;
+        }
+        // 5. A Type0 font with none of the above severs every path to Unicode.
+        P::Fallback
+    }
+
     /// Look up the embedded font program's `post`-table glyph name for the
     /// given GID.
     ///
@@ -8167,6 +8217,59 @@ mod tests {
         };
         overrides(&mut f);
         f
+    }
+
+    // =========================================================================
+    // best_mapping_provenance — font-level Unicode-mapping capability (fact)
+    // =========================================================================
+
+    // The critical case: a Type0 / Identity-ordered subset with no ToUnicode
+    // and no embedded cmap severs every path to Unicode → Fallback.
+    #[test]
+    fn best_mapping_provenance_fallback_on_severed_identity_type0() {
+        let f = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.encoding = Encoding::Standard("Identity-H".to_string());
+            f.cid_system_info = Some(CIDSystemInfo {
+                registry: "Adobe".to_string(),
+                ordering: "Identity".to_string(),
+                supplement: 0,
+            });
+            f.to_unicode = None;
+        });
+        assert_eq!(f.best_mapping_provenance(), crate::fonts::MappingProvenance::Fallback);
+    }
+
+    #[test]
+    fn best_mapping_provenance_fallback_type0_without_cidsysteminfo() {
+        let f = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.encoding = Encoding::Standard("Identity-H".to_string());
+            f.cid_system_info = None;
+            f.to_unicode = None;
+        });
+        assert_eq!(f.best_mapping_provenance(), crate::fonts::MappingProvenance::Fallback);
+    }
+
+    // A known character collection (non-Identity ordering) → predefined CMap.
+    #[test]
+    fn best_mapping_provenance_predefined_for_known_collection() {
+        let f = make_font(|f| {
+            f.subtype = "Type0".to_string();
+            f.cid_system_info = Some(CIDSystemInfo {
+                registry: "Adobe".to_string(),
+                ordering: "Japan1".to_string(),
+                supplement: 6,
+            });
+        });
+        assert_eq!(f.best_mapping_provenance(), crate::fonts::MappingProvenance::PredefinedCMap);
+    }
+
+    // A simple font resolves through its /Encoding → glyph name → AGL.
+    #[test]
+    fn best_mapping_provenance_encoding_for_simple_font() {
+        let f = make_font(|_| {});
+        assert_eq!(f.best_mapping_provenance(), crate::fonts::MappingProvenance::EncodingName);
     }
 
     // =========================================================================

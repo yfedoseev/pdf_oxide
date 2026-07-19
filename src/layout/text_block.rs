@@ -148,6 +148,17 @@ pub struct TextSpan {
     /// both use base-form characters (no presentation forms, no `/ReversedChars`).
     #[serde(skip_serializing_if = "is_false", default)]
     pub rtl_draw_logical: bool,
+    /// Provenance of this span's Unicode text — which ISO 32000-1 §9.10.2
+    /// mapping tier the font offered, as a
+    /// [`MappingProvenance`](crate::fonts::MappingProvenance). `None` when the
+    /// span was not produced by the extractor (synthetic/test spans). A
+    /// [`Fallback`](crate::fonts::MappingProvenance::Fallback) value means the
+    /// font carried no mapping resource, so the text is a fabricated glyph-index
+    /// echo, not read from the file. Runtime metadata only — deliberately not
+    /// serialized (kept out of span JSON so existing output is byte-identical);
+    /// bindings surface it through explicit accessors.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub provenance: Option<crate::fonts::MappingProvenance>,
 }
 
 /// serde skip helper: omit a `false` flag (the common case) from serialized output.
@@ -195,6 +206,7 @@ impl Default for TextSpan {
             wmode: 0,
             text_rise: 0.0,
             rtl_draw_logical: false,
+            provenance: None,
         }
     }
 }
@@ -819,6 +831,28 @@ impl TextLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The provenance fact reaches every JSON/serde binding (WASM, Go, Ruby,
+    // Java's structured extraction, ...) through span serialization: present as
+    // a stable label when known, omitted when absent so existing output is
+    // byte-identical.
+    #[test]
+    fn provenance_serializes_as_stable_label_and_omits_when_absent() {
+        let mut span = TextSpan {
+            text: "x".to_string(),
+            ..TextSpan::default()
+        };
+        span.provenance = Some(crate::fonts::MappingProvenance::Fallback);
+        let json = serde_json::to_string(&span).unwrap();
+        assert!(json.contains("\"provenance\":\"fallback\""), "got {json}");
+
+        let plain = TextSpan {
+            text: "y".to_string(),
+            ..TextSpan::default()
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("provenance"), "absent provenance must be omitted: {json}");
+    }
 
     fn mock_char(c: char, x: f32, y: f32) -> TextChar {
         let bbox = Rect::new(x, y, 10.0, 12.0);

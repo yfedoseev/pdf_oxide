@@ -901,6 +901,7 @@ impl MarkdownConverter {
             .iter()
             .enumerate()
             .map(|(seq, block)| TextSpan {
+                provenance: None,
                 text: block.text.clone(),
                 bbox: block.bbox,
                 font_name: block.dominant_font.clone(),
@@ -1554,6 +1555,7 @@ mod tests {
         // Create spans with whitespace that should be filtered
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -1581,6 +1583,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "   ".to_string(), // Whitespace only - should be filtered
@@ -1608,6 +1611,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -1657,6 +1661,7 @@ mod tests {
 
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Section".to_string(),
@@ -1684,6 +1689,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "---".to_string(), // Punctuation only, but marked bold
@@ -1711,6 +1717,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Content".to_string(),
@@ -1764,6 +1771,7 @@ mod tests {
 
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Year:".to_string(),
@@ -1791,6 +1799,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "2024".to_string(), // Numeric, should be bold if marked
@@ -1843,6 +1852,7 @@ mod tests {
         // All potentially bolded
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Title".to_string(),
@@ -1870,6 +1880,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " ".to_string(), // Whitespace - should be filtered
@@ -1897,6 +1908,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "...".to_string(), // Punctuation - should be neutralized
@@ -1924,6 +1936,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "  \n  ".to_string(), // Mixed whitespace - should be filtered
@@ -1951,6 +1964,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Content".to_string(),
@@ -2139,6 +2153,7 @@ mod tests {
 
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Content".to_string(),
@@ -2166,6 +2181,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "  \n  ".to_string(), // Whitespace with newlines
@@ -2193,6 +2209,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "More".to_string(),
