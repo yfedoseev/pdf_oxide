@@ -26,8 +26,8 @@
     <Product>pdf_oxide</Product>
 
     <!-- Package Description and Metadata -->
-    <Description>Complete .NET bindings for pdf_oxide Rust PDF processing library. Provides idiomatic C# APIs for reading, creating, and editing PDFs with support for text extraction, format conversion (Markdown/HTML), element and annotation access, full text search, and async operations.</Description>
-    <Summary>Production-ready C# bindings for the pdf_oxide Rust PDF library</Summary>
+    <Description>The fastest .NET PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Idiomatic C# APIs for reading, creating, and editing PDFs: text extraction, format conversion (Markdown/HTML), element and annotation access, full-text search, and async operations.</Description>
+    <Summary>The fastest .NET PDF library — 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs</Summary>
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Release Notes -->

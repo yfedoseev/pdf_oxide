@@ -4,6 +4,10 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Coloured text on a registered embedded font rendered black — `FluentPageBuilder::inline_color` (and any `TextStyle.color`) was silently dropped for embedded fonts** — `PdfWriter::add_element` routed embedded-font text through the deliberately colour-agnostic `add_embedded_text` (the HTML painter sets and resets the fill colour around its own calls) without ever emitting the element's fill colour, so no `rg` operator reached the content stream and the glyphs painted in whatever fill colour was last set (default black). The base-14 path (`add_text_content`) always emits `rg` from `style.color`; the embedded path now matches it by emitting `fill_color` before the glyph run. No restore is needed — every text element sets its own colour, mirroring the base-14 branch's "always set explicitly" contract.
+
 ## [0.3.74] - 2026-07-13
 
 > Scientific and print-era PDF extraction fixes — per-glyph advance now folds `TJ` kerning per the spec so it matches the renderer (poppler/PDFium/pymupdf), fixing word spacing on justified and kerned text; displayed-math tokens no longer fuse into single words, dense LaTeX pages stop being misrouted to OCR, subscript indices stay subscripts, condensed headings and running footers recover their word gaps, stroke-drawn table rules and 90°-rotated pages read correctly, and scanned Hebrew/Arabic OCR layers extract in logical order.
