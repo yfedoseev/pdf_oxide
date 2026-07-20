@@ -45,6 +45,19 @@ pub enum ReadingOrder {
     /// column fully (top-to-bottom) before moving to the next column.
     /// Best for newspapers, academic papers, and multi-column layouts.
     ColumnAware,
+    /// Logical-structure ordering from the document's `/StructTreeRoot`.
+    ///
+    /// For a Tagged PDF, ISO 32000-1:2008 §14.8.2.3 makes a pre-order traversal
+    /// of the structure hierarchy AUTHORITATIVE for reading order - it is the
+    /// producer's declared sequence, independent of glyph geometry, so it reads
+    /// tables and complex layouts correctly where a geometric XY-cut guesses.
+    ///
+    /// Spans are ordered by their marked-content id (`/MCID`) following that
+    /// traversal; any span without a matching MCID is appended in geometric
+    /// (`ColumnAware`) order. When the structure tree is absent or not
+    /// trustworthy for ordering (untagged, or `/Suspects true`), this falls back
+    /// to `ColumnAware` entirely, so it is always safe to request.
+    Structure,
 }
 
 /// In-memory reader used by `open()` and `from_bytes()`. Wrapping in an enum
@@ -6560,7 +6573,12 @@ impl PdfDocument {
             return Ok(0);
         }
 
-        let mut occurrences: HashMap<String, HashSet<usize>> = HashMap::new();
+        // Each entry records the IN-ZONE occurrences of a repeated string as
+        // (page, bbox). Keeping the bbox (not just the page set) lets us both
+        // (a) erase only the header/footer occurrence and never an identically
+        // worded span elsewhere on the page, and (b) require the occurrences to
+        // share a position before treating the string as chrome.
+        let mut occurrences: HashMap<String, Vec<(usize, crate::geometry::Rect)>> = HashMap::new();
 
         // Sanitize threshold to avoid min_occurrences becoming 0 for invalid inputs.
         let clamped_threshold = if threshold.is_finite() {
@@ -6570,9 +6588,6 @@ impl PdfDocument {
         };
         let raw_min = (page_count as f32 * clamped_threshold).ceil();
         let min_occurrences = if raw_min < 1.0 { 1 } else { raw_min as usize };
-
-        // Cache spans per page to avoid redundant extraction in Pass 2
-        let mut page_spans: HashMap<usize, Vec<crate::layout::TextSpan>> = HashMap::new();
 
         for page_idx in 0..page_count {
             let height = self.get_page_media_box(page_idx)?.3;
@@ -6591,26 +6606,49 @@ impl PdfDocument {
                 if is_in_zone {
                     let text = span.text.trim().to_string();
                     if text.len() > 3 && !text.chars().all(|c| c.is_numeric()) {
-                        occurrences.entry(text).or_default().insert(page_idx);
+                        occurrences
+                            .entry(text)
+                            .or_default()
+                            .push((page_idx, span.bbox));
                     }
                 }
             }
-            page_spans.insert(page_idx, spans);
         }
 
-        for (text, pages) in occurrences {
-            if pages.len() >= min_occurrences {
-                for page_idx in pages {
-                    // Reuse cached spans
-                    if let Some(spans) = page_spans.get(&page_idx) {
-                        for span in spans {
-                            if span.text.trim() == text {
-                                self.erase_region(page_idx, span.bbox)?;
-                                removed_count += 1;
-                            }
-                        }
-                    }
-                }
+        // Genuine running headers/footers are position-locked: the same string
+        // lands at the same x/y on every page. A form label or instruction that
+        // merely happens to recur — e.g. "Check if:", "(see instructions)",
+        // "Name(s) shown on return" on a multi-page tax form — drifts in x or y
+        // between pages. Requiring positional consistency separates "recurs
+        // because it is chrome" from "recurs because it is the same real label"
+        // without deleting content.
+        const POS_TOL_X: f32 = 40.0;
+        const POS_TOL_Y: f32 = 24.0;
+
+        for (_text, occs) in occurrences {
+            let distinct_pages: HashSet<usize> = occs.iter().map(|(p, _)| *p).collect();
+            if distinct_pages.len() < min_occurrences {
+                continue;
+            }
+
+            // Positional spread across every in-zone occurrence.
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for (_, bbox) in &occs {
+                min_x = min_x.min(bbox.x);
+                max_x = max_x.max(bbox.x);
+                min_y = min_y.min(bbox.y);
+                max_y = max_y.max(bbox.y);
+            }
+            if (max_x - min_x) > POS_TOL_X || (max_y - min_y) > POS_TOL_Y {
+                continue; // drifts between pages → real content, not chrome
+            }
+
+            // Erase only the header/footer occurrences that qualified — never a
+            // same-text span outside the band.
+            for (page_idx, bbox) in occs {
+                self.erase_region(page_idx, bbox)?;
+                removed_count += 1;
             }
         }
 
@@ -8759,6 +8797,7 @@ impl PdfDocument {
             };
 
             spans.push(TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text,
                 bbox: rect,
@@ -8929,6 +8968,7 @@ impl PdfDocument {
             };
 
             spans.push(TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text,
                 bbox: rect,
@@ -14830,15 +14870,48 @@ impl PdfDocument {
         false
     }
 
+    /// Numeric value 0–9 of a folio (page-number) digit, or `None` if `c` is
+    /// not one. Scoped to the decimal-digit blocks that actually appear as
+    /// page folios: ASCII, Arabic-Indic, Extended Arabic-Indic (Persian/Urdu),
+    /// Devanagari, and full-width. Deliberately narrower than
+    /// `char::is_numeric()` (which also matches `½`, `①`, superscripts) and
+    /// wider than `char::is_ascii_digit()`. CJK ideographic numerals
+    /// (`一二三…`) are intentionally excluded — they are not Unicode `Nd`, and
+    /// collapsing them would over-normalize real headings (`第一章` → `第#章`).
+    ///
+    /// `char::to_digit(10)` cannot stand in here: it is ASCII-only and returns
+    /// `None` for `'٥'` / `'५'` / `'５'`, so each block is mapped to its zero
+    /// code point directly.
+    fn folio_digit_value(c: char) -> Option<u32> {
+        let cp = c as u32;
+        let base = match cp {
+            0x0030..=0x0039 => 0x0030, // ASCII 0-9
+            0x0660..=0x0669 => 0x0660, // Arabic-Indic
+            0x06F0..=0x06F9 => 0x06F0, // Extended Arabic-Indic (Persian/Urdu)
+            0x0966..=0x096F => 0x0966, // Devanagari
+            0xFF10..=0xFF19 => 0xFF10, // Full-width
+            _ => return None,
+        };
+        Some(cp - base)
+    }
+
+    /// Unicode-aware decimal-digit predicate for page folios. See
+    /// [`Self::folio_digit_value`] for the supported blocks and rationale.
+    fn is_folio_digit(c: char) -> bool {
+        Self::folio_digit_value(c).is_some()
+    }
+
     /// Normalize a span's text for cross-page signature matching.
     /// Collapses whitespace and replaces digit runs with `#` so that page
     /// numbers ("Page 1 of 10", "Page 2 of 10") collapse to one signature.
+    /// Non-Latin folio digits (Arabic-Indic, Persian, Devanagari, full-width)
+    /// collapse too, so folios paginated in those scripts share one signature.
     fn normalize_artifact_signature(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let mut in_digit_run = false;
         let mut last_was_space = true;
         for c in text.chars() {
-            if c.is_ascii_digit() {
+            if Self::is_folio_digit(c) {
                 if !in_digit_run {
                     out.push('#');
                     in_digit_run = true;
@@ -14869,7 +14942,10 @@ impl PdfDocument {
     /// matched (miss-rather-than-drop — a false positive deletes real content).
     fn looks_like_stable_pagination(literal: &str) -> bool {
         let l = literal.to_ascii_lowercase();
-        if !l.chars().any(|c| c.is_ascii_digit()) {
+        // The digit gate is script-aware (a non-Latin folio digit still
+        // qualifies); the citation/URL keyword tokens below remain English-
+        // only by design — keyword universality is tracked separately.
+        if !l.chars().any(Self::is_folio_digit) {
             return false;
         }
         if l.contains("doi.org") || l.contains("doi:") || l.contains("/doi/") {
@@ -14888,10 +14964,58 @@ impl PdfDocument {
         l.contains("www.") && (l.contains(".org") || l.contains(".com") || l.contains(".net"))
     }
 
+    /// A page is treated as vertical-writing (CJK tategaki, 縦書き) when a
+    /// majority of its non-empty text spans were rendered in WMode 1. The
+    /// writing mode comes from the PDF's own `/WMode` (captured on each span
+    /// via `GraphicsState::text_wmode`), so this is authoritative — a
+    /// horizontal page (WMode 0) is never misclassified, and its
+    /// running-header/footer detection is unchanged.
+    fn page_is_vertical(spans: &[crate::layout::TextSpan]) -> bool {
+        let mut vertical = 0usize;
+        let mut total = 0usize;
+        for s in spans {
+            if s.text.trim().is_empty() {
+                continue;
+            }
+            total += 1;
+            if s.wmode == 1 {
+                vertical += 1;
+            }
+        }
+        total > 0 && vertical * 2 > total
+    }
+
+    /// Is `bbox` inside the candidate running-header/footer band for a page of
+    /// the given dimensions? Horizontal pages use the top/bottom 12% strips.
+    /// Vertical-writing (tategaki) pages *additionally* use the left/right 12%
+    /// strips — the outer edge where CJK vertical folios and running heads
+    /// conventionally sit, rather than across the top/bottom edge. The side
+    /// strips are additive (the top/bottom test still applies), so this only
+    /// ever widens detection, never narrows it.
+    fn in_chrome_band(
+        bbox: &crate::geometry::Rect,
+        page_width: f32,
+        page_height: f32,
+        vertical: bool,
+    ) -> bool {
+        let vband = page_height * 0.12;
+        if bbox.y < vband || bbox.y + bbox.height > page_height - vband {
+            return true;
+        }
+        if vertical {
+            let hband = page_width * 0.12;
+            if bbox.x < hband || bbox.x + bbox.width > page_width - hband {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Ensure running-artifact signatures are computed (once) and return a
     /// clone for matching. The computation scans every page's raw spans,
-    /// collects normalized text that appears in the top or bottom 12% of
-    /// the page, and keeps entries that recur on >=50% of pages.
+    /// collects normalized text that appears in the top/bottom 12% band (and,
+    /// on vertical-writing pages, the left/right 12% band), and keeps entries
+    /// that recur on >=50% of pages.
     fn ensure_running_artifact_signatures(
         &self,
     ) -> Result<std::collections::HashMap<String, usize>> {
@@ -14931,23 +15055,19 @@ impl PdfDocument {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let page_height = match self.get_page_media_box(pi) {
-                Ok((_, _, _, h)) if h > 0.0 => h,
+            let (page_width, page_height) = match self.get_page_media_box(pi) {
+                Ok((_, _, w, h)) if h > 0.0 => (w, h),
                 _ => continue,
             };
-            let band = page_height * 0.12;
-            // Require that the page has CONTENT outside the top/bottom
-            // bands before counting band spans as candidate artifacts.
-            // Otherwise, a page consisting only of a title near the top
-            // would have its own title classified as a "running header"
-            // across all pages.
+            let vertical = Self::page_is_vertical(&spans);
+            // Require that the page has CONTENT outside the chrome band(s)
+            // before counting band spans as candidate artifacts. Otherwise, a
+            // page consisting only of a title near the top would have its own
+            // title classified as a "running header" across all pages. (For
+            // horizontal pages this is identical to the prior top/bottom test.)
             let has_body_content = spans.iter().any(|s| {
-                let t = s.text.trim();
-                if t.is_empty() {
-                    return false;
-                }
-                let top_of_span = s.bbox.y + s.bbox.height;
-                top_of_span <= page_height - band && s.bbox.y >= band
+                !s.text.trim().is_empty()
+                    && !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
             });
             // Collect per-page unique signatures from the chrome bands.
             // Runs even when there's no body content so `first_seen_any`
@@ -14959,9 +15079,7 @@ impl PdfDocument {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let near_bottom = s.bbox.y < band;
-                let near_top = s.bbox.y + s.bbox.height > page_height - band;
-                if !(near_top || near_bottom) {
+                if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                     continue;
                 }
                 let sig = Self::normalize_artifact_signature(trimmed);
@@ -15044,13 +15162,21 @@ impl PdfDocument {
     /// applied inside the top/bottom margin band by the caller, so ordinary
     /// numerals in body text are never affected.
     fn is_bare_page_number_text(trimmed: &str) -> bool {
-        !trimmed.is_empty()
-            && trimmed.len() <= 4
-            && trimmed.chars().all(|c| c.is_ascii_digit())
-            && trimmed
-                .parse::<u32>()
-                .map(|n| (1..=9999).contains(&n))
-                .unwrap_or(false)
+        // Bound by character count, not byte length: non-Latin folio digits are
+        // 2–3 UTF-8 bytes each, so a byte cap would reject "۱۲۳" outright.
+        if trimmed.is_empty() || trimmed.chars().count() > 4 {
+            return false;
+        }
+        // Fold the (script-aware) digits to a value directly; `parse::<u32>`
+        // and `char::to_digit` are ASCII-only and reject non-Latin folios.
+        let mut value: u32 = 0;
+        for c in trimmed.chars() {
+            match Self::folio_digit_value(c) {
+                Some(d) => value = value * 10 + d,
+                None => return false,
+            }
+        }
+        (1..=9999).contains(&value)
     }
 
     fn mark_running_artifact_spans(
@@ -15058,14 +15184,14 @@ impl PdfDocument {
         page_index: usize,
         spans: &mut [crate::layout::TextSpan],
     ) -> Result<()> {
-        let (_, _, _, page_height) = match self.get_page_media_box(page_index) {
+        let (_, _, page_width, page_height) = match self.get_page_media_box(page_index) {
             Ok(mb) => mb,
             Err(_) => return Ok(()),
         };
         if page_height <= 0.0 {
             return Ok(());
         }
-        let band = page_height * 0.12;
+        let vertical = Self::page_is_vertical(spans);
         // Snapshot baselines of every non-blank span, so the bare-page-number
         // rule can require a candidate to stand ALONE on its line (#553): a
         // digit adjacent to other text — e.g. the "8" in "8th" — is content,
@@ -15082,9 +15208,7 @@ impl PdfDocument {
             if s.artifact_type.is_some() {
                 continue;
             }
-            let near_bottom = s.bbox.y < band;
-            let near_top = s.bbox.y + s.bbox.height > page_height - band;
-            if !(near_top || near_bottom) {
+            if !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical) {
                 continue;
             }
             let trimmed = s.text.trim();
@@ -15309,6 +15433,23 @@ impl PdfDocument {
         self.assemble_text_from_spans(page_index, spans, &options)
     }
 
+    /// Geometric `ColumnAware` (XY-cut) span ordering. Shared by the
+    /// `ColumnAware` and `Structure` reading-order branches (the latter uses it
+    /// as its baseline and its tiebreak for unstructured spans).
+    fn order_spans_column_aware(
+        &self,
+        spans: Vec<crate::layout::TextSpan>,
+        page_index: usize,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new().with_page(page_index as u32);
+        let ordered = strategy.apply(spans, &context)?;
+        Ok(ordered.into_iter().map(|o| o.span).collect())
+    }
+
     /// Extract text spans from a page using a specified reading order strategy.
     ///
     /// This method extracts text spans identically to [`extract_spans`](Self::extract_spans),
@@ -15341,8 +15482,78 @@ impl PdfDocument {
         page_index: usize,
         reading_order: ReadingOrder,
     ) -> Result<Vec<crate::layout::TextSpan>> {
-        // Extract raw spans using the common extraction logic
-        let mut spans = self.extract_spans_raw(page_index)?;
+        self.extract_spans_filtered_with_reading_order(
+            page_index,
+            reading_order,
+            HashSet::new(),
+            HashSet::new(),
+        )
+    }
+
+    /// Extract positioned spans in a reading order, excluding optional-content
+    /// layers and/or Separation/DeviceN inks.
+    ///
+    /// This is [`extract_spans_with_reading_order`](Self::extract_spans_with_reading_order)
+    /// and [`extract_text_filtered`](Self::extract_text_filtered) combined: the
+    /// former cannot filter, and the latter returns assembled text rather than
+    /// positioned spans. A consumer that lays spans out itself - an HTML/XML
+    /// emitter placing each span at its own rectangle - needs both at once.
+    ///
+    /// The motivating case is render/extract parity. `render_page` honours the
+    /// document's default configuration `/OCProperties/D`, but span extraction
+    /// treats everything as visible unless the caller names layers (see the
+    /// `optional_content` module note). Passing
+    /// `optional_content::compute_default_off_ocgs(&doc)` as `excluded_layers`
+    /// makes extraction agree with what the page actually displays - without it,
+    /// a default-OFF layer holding a copy of the page contributes a SECOND copy
+    /// of every word.
+    ///
+    /// Empty sets are exactly equivalent to the unfiltered call, so this is a
+    /// superset of the existing API and costs nothing when no filtering is asked
+    /// for.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_index` - Zero-based page index
+    /// * `reading_order` - The reading order strategy to apply
+    /// * `excluded_layers` - OCG layer names to suppress (empty = no filtering)
+    /// * `excluded_inks` - Separation/DeviceN ink names to suppress (empty = none)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use pdf_oxide::document::{PdfDocument, ReadingOrder};
+    /// # use pdf_oxide::optional_content;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let doc = PdfDocument::open("layered.pdf")?;
+    /// // Agree with what the page displays: drop the default-off layers.
+    /// let hidden = optional_content::compute_default_off_ocgs(&doc);
+    /// let spans = doc.extract_spans_filtered_with_reading_order(
+    ///     0,
+    ///     ReadingOrder::ColumnAware,
+    ///     hidden,
+    ///     Default::default(),
+    /// )?;
+    /// for span in spans {
+    ///     println!("{}", span.text);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn extract_spans_filtered_with_reading_order(
+        &self,
+        page_index: usize,
+        reading_order: ReadingOrder,
+        excluded_layers: HashSet<String>,
+        excluded_inks: HashSet<String>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        // Extract raw spans using the common extraction logic. The unfiltered
+        // path is kept verbatim for empty sets so existing callers are unchanged.
+        let mut spans = if excluded_layers.is_empty() && excluded_inks.is_empty() {
+            self.extract_spans_raw(page_index)?
+        } else {
+            self.extract_spans_raw_filtered(page_index, excluded_layers, excluded_inks)?
+        };
 
         // Apply reading order strategy
         match reading_order {
@@ -15353,13 +15564,74 @@ impl PdfDocument {
                 });
             },
             ReadingOrder::ColumnAware => {
-                use crate::pipeline::reading_order::{
-                    ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
-                };
-                let strategy = XYCutStrategy::new();
-                let context = ROContext::new().with_page(page_index as u32);
-                let ordered = strategy.apply(spans, &context)?;
-                spans = ordered.into_iter().map(|o| o.span).collect();
+                spans = self.order_spans_column_aware(spans, page_index)?;
+            },
+            ReadingOrder::Structure => {
+                // Geometric order is the baseline. The structure tree then fixes ONLY
+                // the spans it can fix unambiguously: TABLE cells.
+                //
+                // A geometric XY-cut reads a wide table column-major and drops cells;
+                // the structure tree's pre-order traversal gives the authoritative
+                // row-major order (§14.8.2.3). But applying that traversal to the WHOLE
+                // page also reorders flowing prose - where the tree's section order can
+                // legitimately differ from visual order (it de-prioritises page
+                // artifacts, for one) - which is a change, not an improvement. So table
+                // content is reordered IN PLACE by structure rank while every non-table
+                // span keeps its geometric position.
+                let mut ordered = self.order_spans_column_aware(spans, page_index)?;
+                if let Some(tree) = self.struct_tree_trustworthy() {
+                    // Populate the structure-content cache, then read it (it carries the
+                    // per-MCID `in_table` flag the mcid-order list does not).
+                    let _ = self.cached_mcid_order_for_page(&tree, page_index as u32);
+                    let content: Vec<crate::structure::OrderedContent> = self
+                        .structure_content_cache
+                        .lock_or_recover()
+                        .as_ref()
+                        .and_then(|c| c.get(&(page_index as u32)))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let page_scope = crate::structure::McidScope::Page(page_index as u32);
+                    // Structure rank for TABLE MCIDs only.
+                    let mut table_rank: HashMap<(crate::structure::McidScope, u32), usize> =
+                        HashMap::new();
+                    for (i, c) in content.iter().enumerate() {
+                        if let (true, Some(m)) = (c.in_table, c.mcid) {
+                            let scope = c.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                            table_rank.entry((scope, m)).or_insert(i);
+                        }
+                    }
+
+                    if !table_rank.is_empty() {
+                        let key_of = |s: &crate::layout::TextSpan| {
+                            s.mcid.and_then(|m| {
+                                let scope =
+                                    s.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                                table_rank
+                                    .get(&(scope, m))
+                                    .or_else(|| table_rank.get(&(page_scope.clone(), m)))
+                                    .copied()
+                            })
+                        };
+                        // The slots the table spans occupy in geometric order, and the
+                        // table spans themselves.
+                        let mut slots: Vec<usize> = Vec::new();
+                        let mut cells: Vec<(usize, crate::layout::TextSpan)> = Vec::new();
+                        for (idx, s) in ordered.iter().enumerate() {
+                            if let Some(r) = key_of(s) {
+                                slots.push(idx);
+                                cells.push((r, s.clone()));
+                            }
+                        }
+                        // Re-fill those exact slots with the cells in structure
+                        // (row-major) order. Non-table spans never move.
+                        cells.sort_by_key(|(r, _)| *r);
+                        for (slot, (_, cell)) in slots.into_iter().zip(cells) {
+                            ordered[slot] = cell;
+                        }
+                    }
+                }
+                spans = ordered;
             },
         }
 
@@ -17325,6 +17597,7 @@ impl PdfDocument {
         let spans: Vec<_> = words
             .into_iter()
             .map(|w| crate::layout::TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text: w.text,
                 bbox: w.bbox,
@@ -19130,6 +19403,7 @@ impl PdfDocument {
         let word_spans: Vec<crate::layout::TextSpan> = words
             .into_iter()
             .map(|w| crate::layout::TextSpan {
+                provenance: None,
                 artifact_type: None,
                 text: w.text,
                 bbox: w.bbox,
@@ -22349,9 +22623,29 @@ impl PdfDocument {
                 // prefix is meaningless to consumers — strip it for dedup.
                 let base = font_arc.base_font.as_str();
                 let canonical = base.split_once('+').map(|(_, rest)| rest).unwrap_or(base);
-                by_name
-                    .entry(canonical.to_string())
-                    .or_insert_with(|| data.as_ref().clone());
+                // When several subsets share a base name, `get_font_set()` yields
+                // them in HashMap order, so `or_insert` kept a NONDETERMINISTIC
+                // one - the returned bytes changed run to run for the same PDF.
+                //
+                // Choose by a TOTAL ORDER instead: largest program, ties broken
+                // bytewise. Size is only a heuristic for "the richer subset" - a
+                // program's byte count also grows with hinting and auxiliary
+                // tables, so a larger subset is not necessarily a superset of a
+                // smaller one. What the total order does guarantee is the property
+                // callers actually depend on: the same PDF always yields the same
+                // bytes.
+                match by_name.entry(canonical.to_string()) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(data.as_ref().clone());
+                    },
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let cand = data.as_ref();
+                        let cur = o.get();
+                        if (cand.len(), cand.as_slice()) > (cur.len(), cur.as_slice()) {
+                            *o.get_mut() = cand.clone();
+                        }
+                    },
+                }
             }
         }
 
@@ -22558,6 +22852,25 @@ impl PdfDocument {
                 let entry = by_name
                     .entry(canonical.to_string())
                     .or_insert_with(|| (data.as_ref().clone(), HashMap::new(), HashMap::new()));
+                // Same total-order choice as `extract_embedded_fonts`: largest
+                // program, ties broken bytewise, rather than whichever HashMap
+                // order surfaced first. (Size is a heuristic for the richer
+                // subset, not a proof of superset - see the note there.)
+                //
+                // KNOWN GAP, deliberately left for a follow-up: the maps below
+                // still merge across ALL subsets while the emitted program is now
+                // a single chosen one, so a GID in the maps need not exist in the
+                // program we hand back. Worse, when two subsets disagree about a
+                // codepoint's GID - which subsets of one base font routinely do -
+                // `or_insert` keeps whichever arrived first, so the maps carry the
+                // very HashMap-order nondeterminism this fix removes from the
+                // program. Fixing it means binding the maps to the chosen subset
+                // instead of merging; that is a behaviour change (coverage may
+                // shrink where subsets are disjoint) and belongs in its own PR.
+                let cand = data.as_ref();
+                if (cand.len(), cand.as_slice()) > (entry.0.len(), entry.0.as_slice()) {
+                    entry.0 = cand.clone();
+                }
                 for (cp, gid) in uni_to_gid {
                     entry.1.entry(cp).or_insert(gid);
                 }
@@ -23584,6 +23897,164 @@ mod tests {
 
     /// Build a minimal PDF with a `/Font` resource (needed for `Tf`/`Tj`
     /// to resolve glyph widths), used by the NaN-bbox regression test.
+    /// Build a one-page PDF embedding TWO subsets of the SAME base font -
+    /// `ABCDEF+Helvetica` and `GHIJKL+Helvetica` - whose font programs differ
+    /// in size. `big_in_f1` chooses which resource slot carries the larger
+    /// program, so a caller can show the choice does not depend on the order
+    /// the fonts are encountered.
+    ///
+    /// Returns `(pdf_bytes, small_program, big_program)`. The programs are not
+    /// real TrueType: `FontFile2` is decoded and stored verbatim, never parsed,
+    /// so distinguishable payloads keep the test on the dedup logic.
+    fn build_pdf_with_two_font_subsets(big_in_f1: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let small: Vec<u8> = b"SMALL-SUBSET-".iter().cycle().take(64).copied().collect();
+        let big: Vec<u8> = b"BIG-SUBSET-".iter().cycle().take(512).copied().collect();
+        let (f1_prog, f2_prog) = if big_in_f1 {
+            (big.clone(), small.clone())
+        } else {
+            (small.clone(), big.clone())
+        };
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offs: Vec<usize> = Vec::new();
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> >>\nendobj\n",
+        );
+
+        // /F1 = ABCDEF+Helvetica, /F2 = GHIJKL+Helvetica. Same canonical base
+        // name, so they must dedup to a single entry.
+        for (obj, prefix, desc_obj, file_obj, prog) in
+            [(4, "ABCDEF", 5, 6, &f1_prog), (7, "GHIJKL", 8, 9, &f2_prog)]
+        {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{obj} 0 obj\n<< /Type /Font /Subtype /TrueType /BaseFont /{prefix}+Helvetica \
+                     /FontDescriptor {desc_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{desc_obj} 0 obj\n<< /Type /FontDescriptor /FontName /{prefix}+Helvetica \
+                     /Flags 32 /FontFile2 {file_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{file_obj} 0 obj\n<< /Length {} /Length1 {} >>\nstream\n",
+                    prog.len(),
+                    prog.len()
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(prog);
+            pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        }
+
+        // Objects were emitted 1,2,3 then 4,5,6 then 7,8,9 - already in order.
+        let xref_off = pdf.len();
+        let total = offs.len() + 1;
+        pdf.extend_from_slice(format!("xref\n0 {total}\n").as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref_off}\n%%EOF\n")
+                .as_bytes(),
+        );
+
+        (pdf, small, big)
+    }
+
+    /// Two subsets of one base font must dedup to ONE entry, and that entry
+    /// must be the SAME bytes every time - the bug this fix exists for.
+    ///
+    /// `get_font_set()` hands the subsets back in `HashMap` order, and each
+    /// call builds a fresh map whose iteration order is independently seeded,
+    /// so the old `or_insert` returned a different subset from run to run for
+    /// one unchanged PDF. Extracting repeatedly makes that flake fatal rather
+    /// than occasional; swapping which resource slot holds the larger program
+    /// shows the choice is driven by the total order, not by encounter order.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic() {
+        for big_in_f1 in [true, false] {
+            let (pdf, small, big) = build_pdf_with_two_font_subsets(big_in_f1);
+            let mut previous: Option<Vec<u8>> = None;
+
+            for round in 0..64 {
+                let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+                let fonts = doc.extract_embedded_fonts().expect("extract fonts");
+
+                assert_eq!(
+                    fonts.len(),
+                    1,
+                    "the two subsets share a base name and must dedup to one entry \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                let (name, bytes) = &fonts[0];
+                assert_eq!(name, "Helvetica", "the subset prefix must be stripped");
+                assert_eq!(
+                    bytes, &big,
+                    "the LARGER subset must win regardless of which slot holds it \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                assert_ne!(bytes, &small);
+
+                if let Some(prev) = &previous {
+                    assert_eq!(
+                        prev, bytes,
+                        "repeated extraction of one unchanged PDF must be byte-identical \
+                         (big_in_f1={big_in_f1}, round={round})"
+                    );
+                }
+                previous = Some(bytes.clone());
+            }
+        }
+    }
+
+    /// The same guarantee on the variant that also returns the Unicode/width
+    /// maps: it carries its own copy of the subset choice, so it needs its own
+    /// guard against regressing back to `or_insert`.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic_with_maps() {
+        let (pdf, small, big) = build_pdf_with_two_font_subsets(true);
+        let mut previous: Option<Vec<u8>> = None;
+
+        for round in 0..64 {
+            let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+            let fonts = doc
+                .extract_embedded_fonts_with_unicode_maps_and_widths()
+                .expect("extract fonts with maps");
+
+            assert_eq!(fonts.len(), 1, "must dedup to one entry (round={round})");
+            let (name, bytes, _uni, _widths) = &fonts[0];
+            assert_eq!(name, "Helvetica");
+            assert_eq!(bytes, &big, "the LARGER subset must win (round={round})");
+            assert_ne!(bytes, &small);
+
+            if let Some(prev) = &previous {
+                assert_eq!(prev, bytes, "repeated extraction must be stable (round={round})");
+            }
+            previous = Some(bytes.clone());
+        }
+    }
+
     fn build_minimal_pdf_with_font(content: &[u8]) -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
 
@@ -24295,6 +24766,7 @@ mod tests {
 
     fn make_test_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -24826,6 +25298,7 @@ mod tests {
         font_size: f32,
     ) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             text: text.to_string(),
             bbox: crate::geometry::Rect {
@@ -25741,6 +26214,68 @@ mod tests {
         assert_eq!(texts, vec!["שלום", "World"], "mixed RTL+Latin must stay in raw order");
     }
 
+    fn span_wmode(x: f32, y: f32, wmode: u8) -> TextSpan {
+        TextSpan {
+            text: "x".to_string(),
+            bbox: crate::geometry::Rect::new(x, y, 12.0, 12.0),
+            wmode,
+            ..TextSpan::default()
+        }
+    }
+
+    // A page is vertical-writing only when a majority of non-empty spans carry
+    // WMode 1 — authoritative, so horizontal pages are never misclassified.
+    #[test]
+    fn test_page_is_vertical() {
+        // Majority vertical.
+        let v = [
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 1),
+            span_wmode(0.0, 0.0, 0),
+        ];
+        assert!(PdfDocument::page_is_vertical(&v));
+        // Majority horizontal.
+        let h = [
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 0),
+            span_wmode(0.0, 0.0, 1),
+        ];
+        assert!(!PdfDocument::page_is_vertical(&h));
+        // Exact tie is not a majority — stay horizontal (conservative).
+        let tie = [span_wmode(0.0, 0.0, 1), span_wmode(0.0, 0.0, 0)];
+        assert!(!PdfDocument::page_is_vertical(&tie));
+        // Empty / blank-only.
+        assert!(!PdfDocument::page_is_vertical(&[]));
+        let mut blank = span_wmode(0.0, 0.0, 1);
+        blank.text = "   ".to_string();
+        assert!(!PdfDocument::page_is_vertical(std::slice::from_ref(&blank)));
+    }
+
+    // Horizontal pages use the top/bottom band; vertical pages ALSO use the
+    // left/right band. The side band is additive — it never removes the
+    // top/bottom membership a horizontal page relies on.
+    #[test]
+    fn test_in_chrome_band() {
+        let (w, h) = (612.0_f32, 792.0_f32); // vband=95.04, hband=73.44
+        let top = crate::geometry::Rect::new(300.0, 780.0, 12.0, 12.0);
+        let bottom = crate::geometry::Rect::new(300.0, 10.0, 12.0, 12.0);
+        let middle = crate::geometry::Rect::new(300.0, 400.0, 12.0, 12.0);
+        let left = crate::geometry::Rect::new(10.0, 400.0, 12.0, 12.0);
+        let right = crate::geometry::Rect::new(600.0, 400.0, 12.0, 12.0);
+
+        // Top/bottom are chrome in BOTH modes; middle is never chrome.
+        for vertical in [false, true] {
+            assert!(PdfDocument::in_chrome_band(&top, w, h, vertical));
+            assert!(PdfDocument::in_chrome_band(&bottom, w, h, vertical));
+            assert!(!PdfDocument::in_chrome_band(&middle, w, h, vertical));
+        }
+        // Side strips: chrome only when vertical.
+        assert!(!PdfDocument::in_chrome_band(&left, w, h, false));
+        assert!(!PdfDocument::in_chrome_band(&right, w, h, false));
+        assert!(PdfDocument::in_chrome_band(&left, w, h, true));
+        assert!(PdfDocument::in_chrome_band(&right, w, h, true));
+    }
+
     // #553: bare page-number detection (applied only inside the margin band).
     #[test]
     fn test_is_bare_page_number_text() {
@@ -25752,6 +26287,57 @@ mod tests {
         ] {
             assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
         }
+    }
+
+    // Non-Latin folio digits are recognized as bare page numbers, bounded by
+    // character count (each is 2-3 UTF-8 bytes) and range-checked via the
+    // block-offset map (parse/to_digit are ASCII-only).
+    #[test]
+    fn test_is_bare_page_number_text_non_latin() {
+        for yes in [
+            "\u{0661}",                         // Arabic-Indic ١ = 1
+            "\u{0661}\u{0662}",                 // ١٢ = 12
+            "\u{06F3}",                         // Persian ۳ = 3
+            "\u{06F1}\u{06F2}\u{06F3}",         // ۱۲۳ = 123
+            "\u{0967}\u{0966}",                 // Devanagari १० = 10
+            "\u{FF11}\u{FF12}\u{FF13}\u{FF14}", // full-width １２３４ = 1234
+        ] {
+            assert!(
+                PdfDocument::is_bare_page_number_text(yes),
+                "{yes:?} should be a non-Latin page number"
+            );
+        }
+        for no in [
+            "\u{0660}",                                 // Arabic-Indic ٠ = 0 (out of 1..=9999)
+            "\u{FF11}\u{FF10}\u{FF10}\u{FF10}\u{FF10}", // full-width １００００ = 10000, 5 chars
+            "\u{4E00}",  // CJK 一 — ideographic, intentionally excluded
+            "\u{0661}a", // digit + letter
+        ] {
+            assert!(!PdfDocument::is_bare_page_number_text(no), "{no:?} must NOT be a page number");
+        }
+    }
+
+    // Folios paginated in non-Latin digits collapse to a shared signature, so
+    // the varying-literal gate (variants >= 2) can fire.
+    #[test]
+    fn test_normalize_artifact_signature_non_latin_digits() {
+        // Persian "صفحه ۱" and "صفحه ۲" must share one signature.
+        let s1 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F1}");
+        let s2 =
+            PdfDocument::normalize_artifact_signature("\u{0635}\u{0641}\u{062D}\u{0647} \u{06F2}");
+        assert_eq!(s1, s2, "Persian folios must collapse to one signature");
+        assert!(s1.contains('#'), "digit run must collapse to # (got {s1:?})");
+
+        // Full-width "第１頁" / "第２頁" share a signature; multi-digit runs
+        // collapse to a single #.
+        let f1 = PdfDocument::normalize_artifact_signature("\u{FF11}\u{FF10}");
+        assert_eq!(f1, "#", "full-width digit run collapses to a single #");
+
+        // CJK ideographic numerals are NOT digits: "第一章" must stay intact
+        // so real headings are not over-normalized.
+        let heading = PdfDocument::normalize_artifact_signature("\u{7B2C}\u{4E00}\u{7AE0}");
+        assert_eq!(heading, "\u{7B2C}\u{4E00}\u{7AE0}", "ideographic numerals must not collapse");
     }
 
     #[test]
@@ -28717,6 +29303,7 @@ mod tests {
 
         fn make_span(label: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: label.to_string(),
@@ -28785,6 +29372,7 @@ mod tests {
         use crate::geometry::Rect;
         use crate::layout::{Color, FontWeight, TextSpan};
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -29478,6 +30066,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
@@ -29552,6 +30141,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),
@@ -29625,6 +30215,7 @@ mod tests {
 
         fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: text.to_string(),

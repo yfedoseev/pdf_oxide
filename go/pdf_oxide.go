@@ -133,6 +133,7 @@ extern void* pdf_page_get_elements(void* handle, int32_t page_index, int* error_
 extern int32_t pdf_oxide_element_count(const void* elements);
 extern char* pdf_oxide_element_get_type(const void* elements, int32_t index, int* error_code);
 extern char* pdf_oxide_element_get_text(const void* elements, int32_t index, int* error_code);
+extern char* pdf_oxide_element_get_provenance(const void* elements, int32_t index, int* error_code);
 extern void pdf_oxide_element_get_rect(const void* elements, int32_t index, float* x, float* y, float* width, float* height, int* error_code);
 extern void pdf_oxide_elements_free(void* handle);
 

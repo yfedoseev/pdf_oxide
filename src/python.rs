@@ -2056,7 +2056,8 @@ impl PyPdfDocument {
     ///     page: Zero-based page index.
     ///     region: Optional (x, y, w, h) bounding box to restrict extraction.
     ///     reading_order: Optional reading order strategy. One of "top_to_bottom"
-    ///         (default) or "column_aware" (XY-Cut column detection).
+    ///         (default), "column_aware" (XY-Cut column detection), or "structure"
+    ///         (follow the tagged structure tree for table cells).
     #[pyo3(signature = (page, region=None, reading_order=None))]
     fn extract_spans(
         &mut self,
@@ -2066,10 +2067,11 @@ impl PyPdfDocument {
     ) -> PyResult<Vec<PyTextSpan>> {
         let order = match reading_order {
             Some("column_aware") => crate::document::ReadingOrder::ColumnAware,
+            Some("structure") => crate::document::ReadingOrder::Structure,
             Some("top_to_bottom") | None => crate::document::ReadingOrder::TopToBottom,
             Some(other) => {
                 return Err(PyRuntimeError::new_err(format!(
-                    "Unknown reading_order '{}'. Expected 'top_to_bottom' or 'column_aware'.",
+                    "Unknown reading_order '{}'. Expected 'top_to_bottom', 'column_aware', or 'structure'.",
                     other
                 )));
             },
@@ -2096,7 +2098,7 @@ impl PyPdfDocument {
     /// Args:
     ///     page (int): Zero-based page index.
     ///     reading_order (str, optional): Reading order strategy. One of
-    ///         "top_to_bottom" (default) or "column_aware".
+    ///         "top_to_bottom" (default), "column_aware", or "structure".
     ///
     /// Returns:
     ///     dict: ``{"spans": [...], "chars": [...], "page_width": float, "page_height": float}``
@@ -2109,10 +2111,11 @@ impl PyPdfDocument {
     ) -> PyResult<Py<PyAny>> {
         let order = match reading_order {
             Some("column_aware") => crate::document::ReadingOrder::ColumnAware,
+            Some("structure") => crate::document::ReadingOrder::Structure,
             Some("top_to_bottom") | None => crate::document::ReadingOrder::TopToBottom,
             Some(other) => {
                 return Err(PyRuntimeError::new_err(format!(
-                    "Unknown reading_order '{}'. Expected 'top_to_bottom' or 'column_aware'.",
+                    "Unknown reading_order '{}'. Expected 'top_to_bottom', 'column_aware', or 'structure'.",
                     other
                 )));
             },
@@ -4204,6 +4207,15 @@ impl PyTextSpan {
     #[getter]
     fn sequence(&self) -> usize {
         self.inner.sequence
+    }
+    /// Which ISO 32000-1 §9.10.2 mapping tier the span's font offered:
+    /// `"to_unicode"`, `"encoding"`, `"predefined_cmap"`, `"embedded_cmap"`,
+    /// `"actual_text"`, or `"fallback"` — the last meaning the font carried no
+    /// mapping resource, so the text is a fabricated glyph-index echo rather
+    /// than read from the file. `None` when the font could not be resolved.
+    #[getter]
+    fn provenance(&self) -> Option<&'static str> {
+        self.inner.provenance.map(|p| p.as_str())
     }
 }
 
