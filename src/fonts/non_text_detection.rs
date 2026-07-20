@@ -415,6 +415,7 @@ mod tests {
         use crate::geometry::Rect;
         use crate::layout::{Color, FontWeight, TextSpan};
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),

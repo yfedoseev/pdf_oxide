@@ -32,6 +32,7 @@ pub mod non_text_detection;
 /// faces (Ryumin-Light, GothicBBB-Medium, STSong-Light, …) without embedding
 /// glyph outlines. ISO 32000-2 §9.7.5.2 mandates support for these collections.
 pub mod predefined_cidfont;
+pub mod provenance;
 /// TrueType font CMap parsing for glyph-to-character mapping.
 pub mod truetype_cmap;
 /// TrueType/OpenType font parser for PDF embedding (v0.3.0).
@@ -50,5 +51,6 @@ pub use font_subsetter::{subset_font_bytes, FontSubsetter, GlyphRemapper, Subset
 pub use non_text_detection::{
     CharacterConfidence, ConfidenceReason, NonTextDetector, NonTextStats,
 };
+pub use provenance::MappingProvenance;
 pub use truetype_cmap::TrueTypeCMap;
 pub use truetype_parser::{FontMetrics, TrueTypeError, TrueTypeFont, TrueTypeResult};
