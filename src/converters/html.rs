@@ -780,6 +780,7 @@ mod tests {
         // TextSpan represents complete strings from Tj/TJ operators, not individual chars
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "First".to_string(),
@@ -807,6 +808,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Second".to_string(),

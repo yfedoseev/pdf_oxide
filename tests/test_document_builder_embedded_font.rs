@@ -117,3 +117,34 @@ fn document_builder_mixed_base14_and_embedded_on_same_page() {
     assert!(text.contains("English via base-14"), "base-14 text missing: {text:?}");
     assert!(text.contains("Привет via embedded"), "embedded text missing: {text:?}");
 }
+
+/// Regression for the embedded-font `inline_color` colour drop: the
+/// glyph-run dispatch in `PdfWriter::add_element` used to route embedded
+/// text through the colour-agnostic `add_embedded_text` without ever
+/// emitting the element's fill colour, so `inline_color`/coloured text on
+/// an embedded font rendered black (no `rg` operator in the stream). The
+/// base-14 path always emits `rg`; the embedded path must match it.
+#[test]
+fn document_builder_embedded_font_inline_color_emits_rg() {
+    let font = load_dejavu_sans();
+
+    let mut builder = DocumentBuilder::new().register_embedded_font("DejaVuCustom", font);
+    builder
+        .a4_page()
+        .font("DejaVuCustom", 20.0)
+        .at(10.0, 12.0)
+        .inline_color(0.5, 0.5, 0.5, "hello")
+        .done();
+
+    let bytes = builder.build().expect("build should succeed");
+    let content = String::from_utf8_lossy(&bytes);
+
+    // Embedded path must be the one taken (control: the /EFn resource).
+    assert!(content.contains("/EF1"), "embedded-font path not taken — missing /EF1");
+    // The requested fill colour must reach the content stream.
+    assert!(
+        content.contains("0.5 0.5 0.5 rg"),
+        "fill-colour operator missing for embedded-font inline_color — \
+         embedded text would render black"
+    );
+}

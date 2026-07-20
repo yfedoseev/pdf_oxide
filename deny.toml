@@ -20,26 +20,6 @@ ignore = [
     # migrating to a fully constant-time implementation); re-audit
     # when the #208 signing half lands.
     "RUSTSEC-2023-0071",
-    # RUSTSEC-2026-0176 / RUSTSEC-2026-0177 — pyo3 0.28.x: out-of-bounds read
-    # in `nth`/`nth_back` for PyList/PyTuple iterators, and a missing `Sync`
-    # bound on `PyCFunction::new_closure` closures. Both vulnerable APIs are
-    # unused by our binding (lists via `PyList::empty`+`append`; callables are
-    # `#[pyfunction]`/`#[pymethods]`, never runtime closures), so neither path
-    # is reachable. Fixed in pyo3 0.29.0, blocked by pyo3-log (0.13.3 caps at
-    # pyo3 `<0.29`); bump pyo3 + pyo3-log together once pyo3-log adds 0.29
-    # support. Re-audit 2026-09-10.
-    "RUSTSEC-2026-0176",
-    "RUSTSEC-2026-0177",
-    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml < 0.41: quadratic-time
-    # duplicate-attribute check and unbounded `NsReader` namespace allocation,
-    # both denial-of-service only (no memory-safety or RCE). Our direct
-    # dependency is already quick-xml 0.41.0 (the fixed version). The only
-    # affected instance is quick-xml 0.40.1 pulled transitively by
-    # office_oxide 0.1.2 (Office-document conversion); 0.1.2 is the latest 0.1.x,
-    # so it cannot move to 0.41 until office_oxide releases against it. Drop
-    # these the moment that release lands. Re-audit 2026-09-30.
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]
 
 [licenses]

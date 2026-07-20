@@ -4073,6 +4073,17 @@ pub const ElementList = struct {
         return takeString(alloc, c.pdf_oxide_element_get_text(h, index, &code), code);
     }
 
+    /// Element ISO 32000-1 §9.10.2 mapping-provenance label at `index`
+    /// ("to_unicode"/"encoding"/"predefined_cmap"/"embedded_cmap"/"actual_text"/
+    /// "fallback"), or empty when unknown; caller owns the returned slice.
+    /// "fallback" means the text is a fabricated glyph-index echo, not read from
+    /// the file.
+    pub fn getProvenance(self: ElementList, alloc: std.mem.Allocator, index: i32) Error![]u8 {
+        const h = try self.live();
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_oxide_element_get_provenance(h, index, &code), code);
+    }
+
     /// Element bounding box at `index`.
     pub fn getRect(self: ElementList, index: i32) Error!Bbox {
         const h = try self.live();

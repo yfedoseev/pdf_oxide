@@ -4498,6 +4498,12 @@ static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
                          @"elementText", error);
 }
 
+- (NSString*)provenanceAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_oxide_element_get_provenance(_handle, index, &code), code,
+                         @"elementProvenance", error);
+}
+
 - (POXBbox)rectAtIndex:(int32_t)index error:(NSError**)error {
     int32_t code = 0;
     float x = 0, y = 0, w = 0, h = 0;
