@@ -647,12 +647,14 @@ fn qa_iccbased_cmyk_n4_fill_paints_centre_cyan() {
     let doc = PdfDocument::from_bytes(buf).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
     // ICCBased N=4 reads /N=4 and treats components as CMYK. The fill
-    // here is (1,0,0,0) = pure cyan → §10.3.5 additive-clamp gives
-    // R=0, G=1, B=1 (cyan). Pin that the rect centre is cyan.
+    // here is (1,0,0,0) = pure cyan. With no usable embedded CMM the
+    // composite renderer takes the process-ink fallback, so the cyan
+    // corner is #00ADEF = (0, 173, 239) - blue-leaning cyan, NOT the
+    // additive (0, 255, 255). Pin that the rect centre is process cyan.
     let (r, g, b, _) = center_pixel(&on);
     assert!(
-        r < 30 && g > 220 && b > 220,
-        "ICCBased N=4 cyan fill must paint cyan at centre; got ({r},{g},{b})"
+        r < 30 && (150..=195).contains(&g) && b > 220,
+        "ICCBased N=4 cyan fill must paint process-ink cyan #00ADEF at centre; got ({r},{g},{b})"
     );
 }
 
@@ -694,10 +696,12 @@ fn qa_devicen_multi_colorant_type4_pipeline_resolves() {
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
 
     let on = render_with_pipeline(&doc, true);
+    // CMYK(0,1,0,0) composites through the process-ink converter to the
+    // magenta corner #EC008C = (236, 0, 140), NOT the additive (255,0,255).
     let (r, g, b, _) = center_pixel(&on);
     assert!(
-        r > 200 && g < 60 && b > 200,
-        "pipeline DeviceN Type-4 must resolve to magenta, got ({r}, {g}, {b})"
+        r > 200 && g < 60 && (110..=170).contains(&b),
+        "pipeline DeviceN Type-4 must resolve to process-ink magenta #EC008C, got ({r}, {g}, {b})"
     );
 }
 

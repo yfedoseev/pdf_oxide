@@ -750,10 +750,10 @@ fn smask_bc_devicen_5_components_evaluates_tint_transform() {
     // visible) and from n=1/3/4 device-family cases.
     assert_eq!(
         (r, g, b),
-        (255, 64, 64),
+        (255, 56, 56),
         "ISO 32000-1 §11.6.5.2 + §8.6.6.5 /SMask /BC n=5 DeviceN: tint \
-         transform must run and project to RGB via the alternate CMYK; \
-         expected byte-exact (255, 64, 64); got ({r}, {g}, {b})"
+         transform must run and project to RGB via the alternate CMYK \
+         (process-ink); expected byte-exact (255, 56, 56); got ({r}, {g}, {b})"
     );
 }
 
@@ -838,9 +838,9 @@ fn smask_bc_devicen_5_components_type0_sampled_byte_exact() {
     let (r, g, b, _) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b),
-        (255, 96, 96),
-        "§7.10.2 Type 0 sampled /BC tint-transform evaluation; expected \
-         byte-exact (255, 96, 96); got ({r}, {g}, {b}). A regression to \
+        (255, 85, 85),
+        "§7.10.2 Type 0 sampled /BC tint-transform evaluation (process-ink \
+         projection); expected byte-exact (255, 85, 85); got ({r}, {g}, {b}). A regression to \
          (255, 255, 255) means the Type 0 evaluator fell to None and the \
          /BC pre-fill collapsed to the (0, 0, 0) black point — paint then \
          shows through unmasked."
@@ -911,9 +911,9 @@ fn smask_bc_devicen_5_components_type3_stitching_byte_exact() {
     let (r, g, b, _) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b),
-        (255, 170, 170),
-        "§7.10.4 Type 3 stitching /BC tint-transform evaluation; expected \
-         byte-exact (255, 170, 170); got ({r}, {g}, {b}). A regression to \
+        (255, 148, 148),
+        "§7.10.4 Type 3 stitching /BC tint-transform evaluation (process-ink \
+         projection); expected byte-exact (255, 148, 148); got ({r}, {g}, {b}). A regression to \
          (255, 255, 255) means the Type 3 evaluator fell to None and the \
          /BC pre-fill collapsed to the (0, 0, 0) black point."
     );
@@ -1189,9 +1189,9 @@ fn smask_bc_devicen_5_components_iccbased_alternate_byte_exact() {
     let (r, g, b, _) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b),
-        (255, 127, 127),
-        "§8.6.5.5 ICCBased /BC projection via /Alternate fallback; \
-         expected byte-exact (255, 127, 127); got ({r}, {g}, {b})"
+        (255, 111, 111),
+        "§8.6.5.5 ICCBased /BC projection via /Alternate fallback (process-ink); \
+         expected byte-exact (255, 111, 111); got ({r}, {g}, {b})"
     );
 }
 
@@ -2071,16 +2071,16 @@ fn overprint_composite_overlap_differs_from_no_overprint() {
     let (r_no, g_no, b_no, _) = pixel_at(&rgba_no, 50, 50);
     assert_eq!(
         (r_op, g_op, b_op),
-        (128, 255, 0),
+        (131, 178, 41),
         "§11.7.4.3 OPM=1: CMYK(0.5,0,0,0) + CMYK(0,0,1,0) under /op true \
-         must compose to byte-exact RGB (128, 255, 0) at the overlap; \
+         must compose to byte-exact process-ink RGB (131, 178, 41) at the overlap; \
          got ({r_op}, {g_op}, {b_op})"
     );
     assert_eq!(
         (r_no, g_no, b_no),
-        (255, 255, 0),
-        "§10.3.5 baseline: CMYK(0,0,1,0) opaque SourceOver over cyan must \
-         yield byte-exact RGB (255, 255, 0) at the overlap; got \
+        (255, 242, 0),
+        "process-ink baseline: CMYK(0,0,1,0) opaque SourceOver over cyan must \
+         yield byte-exact RGB (255, 242, 0) at the overlap; got \
          ({r_no}, {g_no}, {b_no})"
     );
     assert_ne!(
@@ -2145,35 +2145,28 @@ fn outputintent_then_transparency_composite_before_convert() {
     // PDF (15, 15) is firmly inside the lower-only region.
     // PDF y=15 → image y=85.
     let (r, g, b, _) = pixel_at(&rgba, 15, 85);
-    // CMYK(0.5, 0, 0, 0) via additive-clamp = RGB(128, 255, 255):
-    // R = (1 - C - K)·255 = (1 - 0.5 - 0)·255 = 127.5 → byte 128
-    // G = (1 - M - K)·255 = (1 - 0 - 0)·255 = 255
-    // B = (1 - Y - K)·255 = (1 - 0 - 0)·255 = 255
-    // Byte-exact reference: the rasteriser produces (128, 255, 255)
-    // for every pixel in the lower-only region (no AA inside the
-    // rect interior).
+    // CMYK(0.5, 0, 0, 0) via the process-ink converter = 0.5*paper +
+    // 0.5*cyan corner = RGB(128, 214, 247). Byte-exact reference: the
+    // rasteriser produces (128, 214, 247) for every pixel in the
+    // lower-only region (no AA inside the rect interior).
     assert_eq!(
         (r, g, b),
-        (128, 255, 255),
-        "ISO 32000-1 §10.3.5 additive-clamp CMYK→RGB: lower-paint-only \
-         region must show byte-exact (128, 255, 255); got ({r}, {g}, {b})"
+        (128, 214, 247),
+        "process-ink CMYK->RGB: lower-paint-only \
+         region must show byte-exact (128, 214, 247); got ({r}, {g}, {b})"
     );
 
-    // Sample inside the overlap region. Convert-first order:
-    //   lower paint → RGB(128, 255, 255), opaque
-    //   upper paint → RGB(255, 255, 128) per additive-clamp at /ca 0.5
-    //   tiny_skia source-over premul math at α=0.5:
-    //     r: round((128·128 + (255 - 128)·255) / 255) = 192
-    //     g: 255
-    //     b: round((255·128 + (128)·(255-128)/255)) = 191
-    // The R/B asymmetry comes from tiny_skia's u8 premul rounding;
-    // the byte-exact reference is (192, 255, 191).
+    // Sample inside the overlap region. Convert-first order, process-ink:
+    //   lower paint -> RGB(128, 214, 247), opaque
+    //   upper paint -> process-ink RGB(255, 249, 128) at /ca 0.5
+    //   tiny_skia source-over premul math at alpha=0.5 yields the
+    //   byte-exact reference (192, 231, 187).
     let (r2, g2, b2, _) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r2, g2, b2),
-        (192, 255, 191),
+        (192, 231, 187),
         "overlap must show byte-exact convert-first composite \
-         (192, 255, 191); got ({r2}, {g2}, {b2})"
+         (192, 231, 187); got ({r2}, {g2}, {b2})"
     );
 }
 

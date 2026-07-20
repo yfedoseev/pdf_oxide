@@ -7847,7 +7847,7 @@ impl PageRenderer {
             // backend has the channel decomposition. Project to RGBA
             // via the context-aware CMYK→RGB path: consult the
             // document's /OutputIntents CMYK profile when present, fall
-            // back to §10.3.5 additive-clamp otherwise.
+            // back to the process-ink conversion otherwise.
             ResolvedColor::Cmyk { c, m, y, k, a } => {
                 let (r, g, b) =
                     crate::rendering::resolution::color::cmyk_to_rgb_via_intent(c, m, y, k, &ctx);
@@ -10119,9 +10119,11 @@ mod tests {
             .expect("Tr=1 stroke side must produce ResolvedColors");
 
         let (r, g, b, _a) = colors.stroke.expect("Tr=1 must populate the stroke side");
+        // Process-ink magenta corner #EC008C = (0.9255, 0, 0.5490); the
+        // legacy 1-tint=0 fallback would put black on the stroke channel.
         assert!(
-            r > 0.78 && g < 0.24 && b > 0.78,
-            "stroke side must be magenta (Type-4 evaluated), \
+            (r - 0.9255).abs() < 0.02 && g < 0.02 && (b - 0.5490).abs() < 0.02,
+            "stroke side must be process-ink magenta (Type-4 evaluated), \
              not the legacy 1-tint=0 black; got ({r}, {g}, {b})"
         );
         // The fill channel must not have been resolved — the helper
@@ -10206,9 +10208,10 @@ mod tests {
             .expect("Type 4 Separation fill must splice through ImageMask variant");
 
         let (r, g, b) = spliced.fill_color_rgb;
+        // Process-ink magenta corner #EC008C = (0.9255, 0, 0.5490).
         assert!(
-            r > 0.78 && g < 0.24 && b > 0.78,
-            "ImageMask fill must be magenta (Type 4 evaluated), not legacy black; got ({r}, {g}, {b})"
+            (r - 0.9255).abs() < 0.02 && g < 0.02 && (b - 0.5490).abs() < 0.02,
+            "ImageMask fill must be process-ink magenta (Type 4 evaluated), not legacy black; got ({r}, {g}, {b})"
         );
         // Stroke side must remain untouched — the variant is fill-only.
         assert_eq!(
@@ -10287,11 +10290,12 @@ mod tests {
             .expect("Type 4 Separation full-tint must resolve to Some(rgba)");
         let (r, g, b, a) = rgba;
         assert!(
-            (r - 1.0).abs() < 1.0e-3
+            (r - 0.9255).abs() < 1.0e-3
                 && g.abs() < 1.0e-3
-                && (b - 1.0).abs() < 1.0e-3
+                && (b - 0.5490).abs() < 1.0e-3
                 && (a - 1.0).abs() < 1.0e-3,
-            "Type 4 Separation at tint=1 must produce magenta RGBA (≈1, 0, 1, 1); got ({r}, {g}, {b}, {a})"
+            "Type 4 Separation at tint=1 must produce process-ink magenta RGBA \
+             (#EC008C ≈ 0.9255, 0, 0.5490, 1); got ({r}, {g}, {b}, {a})"
         );
     }
 
@@ -10334,9 +10338,9 @@ mod tests {
             "DeviceGray must expand the single component to (g, g, g); got ({r}, {g}, {b})"
         );
 
-        // DeviceCMYK: additive-clamp conversion `(1-c-k, 1-m-k,
-        // 1-y-k)` with clamping to [0, 1]. Pure cyan (1, 0, 0, 0)
-        // → RGB(0, 1, 1).
+        // DeviceCMYK: process-ink conversion (tetralinear over the 16
+        // measured ink corners). Pure cyan (1, 0, 0, 0) lands on the
+        // measured cyan corner #00ADEF = (0, 0.6784, 0.9373).
         let cmyk_space = Object::Name("DeviceCMYK".to_string());
         let rgba = renderer
             .pipeline_resolve_components(
@@ -10349,8 +10353,8 @@ mod tests {
             .expect("DeviceCMYK must resolve");
         let (r, g, b, _a) = rgba;
         assert!(
-            r.abs() < 1.0e-3 && (g - 1.0).abs() < 1.0e-3 && (b - 1.0).abs() < 1.0e-3,
-            "DeviceCMYK pure cyan must map to (0, 1, 1) under additive clamp; got ({r}, {g}, {b})"
+            r.abs() < 1.0e-3 && (g - 0.6784).abs() < 1.0e-3 && (b - 0.9373).abs() < 1.0e-3,
+            "DeviceCMYK pure cyan must map to process-ink #00ADEF (0, 0.6784, 0.9373); got ({r}, {g}, {b})"
         );
     }
 
