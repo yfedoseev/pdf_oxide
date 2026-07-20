@@ -691,6 +691,11 @@ typedef struct {
 - (nullable NSString*)typeAtIndex:(int32_t)index error:(NSError**)error;
 /// The element text at `index` (nil on error).
 - (nullable NSString*)textAtIndex:(int32_t)index error:(NSError**)error;
+/// The element ISO 32000-1 §9.10.2 mapping-provenance label at `index`
+/// (@"to_unicode"/@"encoding"/@"predefined_cmap"/@"embedded_cmap"/
+/// @"actual_text"/@"fallback"), or nil when unknown. @"fallback" means the text
+/// is a fabricated glyph-index echo, not read from the file.
+- (nullable NSString*)provenanceAtIndex:(int32_t)index error:(NSError**)error;
 /// The element bounding box at `index`.
 - (POXBbox)rectAtIndex:(int32_t)index error:(NSError**)error;
 /// Serialize the whole list to JSON (nil on error).

@@ -8,7 +8,7 @@
 //!
 //! This module provides a text rendering implementation that:
 //! - Uses system fonts as fallback when embedded fonts aren't available
-//! - Renders text using rustybuzz for shaping and tiny-skia for drawing glyph paths
+//! - Renders text using harfrust for shaping and tiny-skia for drawing glyph paths
 
 use super::create_fill_paint;
 use crate::content::operators::TextElement;
@@ -180,40 +180,49 @@ fn cached_font_bytes(id: fontdb::ID, db: &fontdb::Database) -> Option<(Arc<Vec<u
 
 /// Parsed font faces cached by fontdb ID.
 ///
-/// `rustybuzz::Face` and `ttf_parser::Face` both borrow the backing bytes.
+/// harfrust's `FontRef` and `ttf_parser::Face` both borrow the backing bytes.
 /// We use a self-referential pattern (backed Arc keeps bytes alive) with
 /// unsafe 'static transmute so we can store them in a process-wide cache
 /// and reuse them across hundreds of render_text calls for the same font.
+/// `ShaperData` caches the shaping tables derived from the font (owned, no
+/// borrow) so each render only has to build a cheap `Shaper` from it.
 ///
 /// # Safety
-/// Both face fields borrow `_data`'s heap allocation (not the Arc pointer
-/// itself, so no double-free on Arc drop). The fields are only ever
+/// The `font` and `ttf_face` fields borrow `_data`'s heap allocation (not the
+/// Arc pointer itself, so no double-free on Arc drop). They are only ever
 /// accessed while `_data` is alive — i.e., while this struct exists.
 /// Because the struct is behind `Arc`, it lives at least as long as any
 /// caller that holds a clone of that Arc.
 struct CachedFace {
     _data: Arc<Vec<u8>>,
-    rb_face: rustybuzz::Face<'static>,
+    font: harfrust::FontRef<'static>,
+    shaper_data: harfrust::ShaperData,
     ttf_face: ttf_parser::Face<'static>,
     pub units_per_em: f32,
 }
 
-// SAFETY: rustybuzz::Face and ttf_parser::Face only borrow immutable bytes.
+// SAFETY: harfrust::FontRef and ttf_parser::Face only borrow immutable bytes;
+// harfrust::ShaperData owns the cached tables it derives from the font.
 unsafe impl Send for CachedFace {}
 unsafe impl Sync for CachedFace {}
 
 impl CachedFace {
     fn new(data: Arc<Vec<u8>>, index: u32) -> Option<Self> {
-        let rb_face: rustybuzz::Face<'_> = rustybuzz::Face::from_slice(&data, index)?;
+        let font: harfrust::FontRef<'_> = harfrust::FontRef::from_index(&data, index).ok()?;
         let ttf_face: ttf_parser::Face<'_> = ttf_parser::Face::parse(&data, index).ok()?;
         let units_per_em = ttf_face.units_per_em() as f32;
-        // SAFETY: both faces borrow the data slice. We store an Arc to that
-        // data in `_data`, ensuring the bytes stay alive for this struct's lifetime.
-        let rb_face: rustybuzz::Face<'static> = unsafe { std::mem::transmute(rb_face) };
+        // SAFETY: both the font and ttf_face borrow the data slice. We store an
+        // Arc to that data in `_data`, ensuring the bytes stay alive for this
+        // struct's lifetime.
+        let font: harfrust::FontRef<'static> = unsafe { std::mem::transmute(font) };
         let ttf_face: ttf_parser::Face<'static> = unsafe { std::mem::transmute(ttf_face) };
+        // ShaperData owns its derived tables (no borrow of `font`), so it is
+        // safe to build from the now-'static font and store it alongside.
+        let shaper_data = harfrust::ShaperData::new(&font);
         Some(CachedFace {
             _data: data,
-            rb_face,
+            font,
+            shaper_data,
             ttf_face,
             units_per_em,
         })
@@ -511,7 +520,7 @@ impl TextRasterizer {
                         //
                         // Type0 + CIDFontType0 (CFF / OpenType-CFF): Identity-H
                         // emission means the content-stream's 2-byte codes ARE
-                        // the GIDs in the CFF charset; bypass rustybuzz Unicode
+                        // the GIDs in the CFF charset; bypass harfrust Unicode
                         // shaping (which round-trips CID→Unicode→GID through
                         // the patched cmap and can drift on CFF charset
                         // positions) and feed the raw codes to
@@ -543,7 +552,7 @@ impl TextRasterizer {
 
         if let Some((font_id, font_data, index, use_cid_to_gid)) = font_data_and_index {
             if use_cid_to_gid {
-                // Direct CIDToGIDMap/CFF rendering — bypass rustybuzz, use ttf-parser for glyph outlines
+                // Direct CIDToGIDMap/CFF rendering — bypass harfrust, use ttf-parser for glyph outlines
                 match self.render_cid_direct(
                     pixmap,
                     text,
@@ -1012,24 +1021,28 @@ impl TextRasterizer {
 
         // Storage for locally-created faces when there is no cache entry
         // (embedded fonts, first-ever render of a system font).
-        let _local_rb: Option<rustybuzz::Face<'_>>;
+        let _local_font: Option<harfrust::FontRef<'_>>;
         let _local_ttf: Option<ttf_parser::Face<'_>>;
+        let _local_shaper_data: Option<harfrust::ShaperData>;
 
-        let rb_face_ref: &rustybuzz::Face<'_>;
+        let font_ref: &harfrust::FontRef<'_>;
+        let shaper_data_ref: &harfrust::ShaperData;
         let ttf_face_ref: &ttf_parser::Face<'_>;
         let units_per_em: f32;
 
         if let Some(ref c) = cached_arc {
-            _local_rb = None;
+            _local_font = None;
             _local_ttf = None;
-            rb_face_ref = &c.rb_face;
+            _local_shaper_data = None;
+            font_ref = &c.font;
+            shaper_data_ref = &c.shaper_data;
             ttf_face_ref = &c.ttf_face;
             units_per_em = c.units_per_em;
         } else {
-            let rb_opt = rustybuzz::Face::from_slice(&font_data, index);
-            if rb_opt.is_none() {
+            let font_opt = harfrust::FontRef::from_index(&font_data, index).ok();
+            if font_opt.is_none() {
                 if allow_fallback {
-                    log::warn!("Failed to create rustybuzz face from embedded data for '{}', falling back to system font", pdf_font_name);
+                    log::warn!("Failed to create harfrust font from embedded data for '{}', falling back to system font", pdf_font_name);
                     if let Some((fb_id, fallback_data, fallback_index)) =
                         self.load_font_data(pdf_font_name)
                     {
@@ -1059,18 +1072,21 @@ impl TextRasterizer {
                     clip_mask,
                 );
             }
-            _local_rb = rb_opt;
+            _local_font = font_opt;
             _local_ttf = ttf_parser::Face::parse(&font_data, index).ok();
             if _local_ttf.is_none() {
                 return Err(Error::InvalidPdf(format!("Failed to parse font: {}", pdf_font_name)));
             }
-            rb_face_ref = _local_rb.as_ref().unwrap();
+            font_ref = _local_font.as_ref().unwrap();
             ttf_face_ref = _local_ttf.as_ref().unwrap();
             units_per_em = ttf_face_ref.units_per_em() as f32;
+            // ShaperData owns its derived tables (no borrow of `font_ref`).
+            _local_shaper_data = Some(harfrust::ShaperData::new(font_ref));
+            shaper_data_ref = _local_shaper_data.as_ref().unwrap();
         }
 
         // 2. Buffer setup
-        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        let mut buffer = harfrust::UnicodeBuffer::new();
         buffer.push_str(text);
 
         // Explicitly set script and direction for better CJK shaping
@@ -1078,16 +1094,19 @@ impl TextRasterizer {
             .chars()
             .any(|c| (c as u32) >= 0x4E00 && (c as u32) <= 0x9FFF)
         {
-            if let Some(script) = rustybuzz::Script::from_iso15924_tag(
-                rustybuzz::ttf_parser::Tag::from_bytes(b"Hani"),
-            ) {
+            if let Some(script) = harfrust::Script::from_iso15924_tag(harfrust::Tag::new(b"Hani")) {
                 buffer.set_script(script);
             }
         }
-        buffer.set_direction(rustybuzz::Direction::LeftToRight);
+        buffer.set_direction(harfrust::Direction::LeftToRight);
+        // Fill in any still-unset segment properties (script for non-CJK,
+        // language) so the shaper picks the right GSUB/GPOS rules. The
+        // explicit direction and CJK script set above are preserved.
+        buffer.guess_segment_properties();
 
         // 3. Shape the text
-        let glyphs = rustybuzz::shape(rb_face_ref, &[], buffer);
+        let shaper = shaper_data_ref.shaper(font_ref).instance(None).build();
+        let glyphs = shaper.shape(buffer, harfrust::ShapeOptions::new());
         let info = glyphs.glyph_infos();
         let pos = glyphs.glyph_positions();
 
@@ -1159,7 +1178,7 @@ impl TextRasterizer {
             // Determine how many *source* characters this glyph represents.
             // For normal 1:1 glyphs, cluster_chars == 1. For shaped
             // ligatures like the "ffi" glyph (#331 R2), one glyph covers
-            // multiple characters and rustybuzz reports them with the
+            // multiple characters and harfrust reports them with the
             // same cluster index on every glyph of the cluster. Since we
             // advance the output cursor by the sum of the PDF-declared
             // widths of the *source* characters (per PDF §9.2.4 text-
@@ -1184,7 +1203,7 @@ impl TextRasterizer {
             // 1. Explicit /W or /DW from FontInfo (in 1000ths of em),
             //    summed across every source character in the cluster
             //    so ligatures advance by the full cluster's width.
-            // 2. Shaped advance from rustybuzz (fallback, already
+            // 2. Shaped advance from harfrust (fallback, already
             //    reflects the ligature's real width because it comes
             //    from the font's horizontal metrics table).
             let pdf_width = if let Some(font_info_ref) = font_info {
@@ -1409,7 +1428,7 @@ impl TextRasterizer {
         // helper (which itself handles the axis swap).
         Ok(if wmode == 0 { x_cursor } else { y_cursor })
     }
-    /// Render text using direct CID-to-GID mapping, bypassing rustybuzz shaping.
+    /// Render text using direct CID-to-GID mapping, bypassing harfrust shaping.
     /// Used for CID subset fonts that have embedded data but no usable Unicode cmap.
     /// Per PDF spec section 9.7.4, CIDToGIDMap maps CIDs to glyph indices in the TrueType font.
     fn render_cid_direct(

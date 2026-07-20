@@ -3766,6 +3766,17 @@ impl<'doc> TextExtractor<'doc> {
             }
         }
 
+        // Attach the §9.10.2 mapping provenance now that each span's font name
+        // is finalized: the tier the span's font offered, or `Fallback` when it
+        // carries no mapping resource (the text is then a fabricated glyph-index
+        // echo, not read from the file). `None` when the font is unresolvable.
+        for span in self.spans.iter_mut() {
+            span.provenance = self
+                .fonts
+                .get(span.font_name.as_str())
+                .map(|f| f.best_mapping_provenance());
+        }
+
         Ok(std::mem::take(&mut self.spans))
     }
 
@@ -7376,6 +7387,7 @@ impl<'doc> TextExtractor<'doc> {
         }
 
         let span = TextSpan {
+            provenance: None,
             text,
             bbox: Rect {
                 x: buffer.user_pos_x,
@@ -7912,6 +7924,7 @@ impl<'doc> TextExtractor<'doc> {
 
         // Step 5: Create TextSpan with primary_detected flag
         let span = TextSpan {
+            provenance: None,
             text: unicode_text,
             bbox,
             font_name: state
@@ -8631,6 +8644,7 @@ impl<'doc> TextExtractor<'doc> {
             (effective_font_size, space_advance.abs())
         };
         let span = TextSpan {
+            provenance: None,
             text: " ".to_string(),
             bbox: Rect {
                 x: user_pos.x,
@@ -8808,6 +8822,7 @@ impl<'doc> TextExtractor<'doc> {
                 }
 
                 let span = TextSpan {
+                    provenance: None,
                     text,
                     bbox: Rect {
                         x: buffer.user_pos_x,
@@ -9513,6 +9528,99 @@ mod tests {
         assert_eq!(chars[0].color.b, 0.0);
     }
 
+    /// Regression test for a text-only-parser bug where a fill colour set by
+    /// `scn` *before* the enclosing `BT` was silently dropped, leaving the
+    /// text drawn in the GraphicsState default (black) instead of the
+    /// colour the content stream actually requested.
+    ///
+    /// Root cause: `scan_graphics_region()` (src/content/parser.rs) is used
+    /// by `parse_and_execute_text_only()` to fast-scan non-text regions
+    /// looking for the next `BT`. It classified `scn`/`cs`/`sc`/`rg`/`g`/`k`
+    /// (and friends) as unconditionally "skippable" - correct only when a
+    /// matching `Q` is guaranteed to revert the change before any `BT`, but
+    /// wrong at the top level (outside any q/Q scope), where the colour
+    /// change legitimately persists into the next text object per
+    /// ISO 32000-1:2008 SS8.4. Reproduces the exact operator sequence found
+    /// on a real-world govdocs1 slide-deck PDF: a marked-content BDC opens,
+    /// `scn` sets a blue fill colour *outside* any text object, then `BT`
+    /// opens the text object that draws the (should-be-blue) heading.
+    #[test]
+    fn test_fill_color_scn_before_bt_after_bdc_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"/Shape <</MCID 3 >>BDC \
+                        0.2 0.2 0.604 scn \
+                        BT /F1 12 Tf 100 700 Td (Blue Heading) Tj ET \
+                        EMC";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 0.2).abs() < 0.01,
+            "expected blue fill (0.2, 0.2, 0.604), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 0.2).abs() < 0.01);
+        assert!((spans[0].color.b - 0.604).abs() < 0.01);
+    }
+
+    /// Same bug, second real-world pattern: a `Q` (RestoreGraphicsState)
+    /// immediately precedes the out-of-text-object `scn`. Reproduces the
+    /// gold author-block sequence from the same source PDF.
+    #[test]
+    fn test_fill_color_scn_after_q_before_bt_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"q 1 0 0 1 0 0 cm Q \
+                        1 1 0 scn \
+                        BT /F1 12 Tf 100 700 Td (Gold Author) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 1.0).abs() < 0.01,
+            "expected gold fill (1, 1, 0), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 1.0).abs() < 0.01);
+        assert!((spans[0].color.b - 0.0).abs() < 0.01);
+    }
+
+    /// Must-not-regress guard: `scn` issued *inside* an already-open text
+    /// object (continuing after a prior `Tj`, still within the same BT/ET)
+    /// always worked correctly - it goes through the ordinary text-operator
+    /// parse path, not the non-text `scan_graphics_region` fast scanner.
+    /// Confirms the fix above did not disturb this working case.
+    #[test]
+    fn test_fill_color_scn_inside_open_text_object_still_works() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"BT /F1 12 Tf 100 700 Td (Black Text) Tj \
+                        0.2 0.2 0.604 scn \
+                        0 -20 Td (Blue Text) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 2);
+        assert!(
+            (spans[0].color.r - 0.0).abs() < 0.01 && (spans[0].color.b - 0.0).abs() < 0.01,
+            "first run should still be default black, got {:?}",
+            spans[0].color
+        );
+        assert!(
+            (spans[1].color.r - 0.2).abs() < 0.01,
+            "second run should be blue (0.2, 0.2, 0.604), got {:?}",
+            spans[1].color
+        );
+        assert!((spans[1].color.g - 0.2).abs() < 0.01);
+        assert!((spans[1].color.b - 0.604).abs() < 0.01);
+    }
+
     /// Regression test: is_monospace flag must propagate from FontInfo flags
     /// through TjBuffer into the final TextSpan.
     ///
@@ -9697,6 +9805,7 @@ mod tests {
     fn test_split_boundary_merges_with_space() {
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "the".to_string(),
@@ -9729,6 +9838,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "General".to_string(),
@@ -10617,6 +10727,7 @@ mod tests {
     // being flaky.
     fn snap_span(text: &str, x: f32, y: f32, w: f32, fs: f32, seq: usize) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -11598,6 +11709,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -11625,6 +11737,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -11677,6 +11790,7 @@ mod tests {
         // body-text sizes.
         let narrow_span =
             |glyph: char, x: f32, font_size: f32, advance: f32, seq: usize| TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: glyph.to_string(),
@@ -11737,6 +11851,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
 
         let narrow_at = |x: f32, seq: usize| TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "l".to_string(),
@@ -11793,6 +11908,7 @@ mod tests {
         // Create spans all in one column
         for i in 0..10 {
             extractor.spans.push(TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: format!("Line {}", i),
@@ -11991,6 +12107,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12018,6 +12135,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -12059,6 +12177,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12086,6 +12205,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -12132,6 +12252,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Left".to_string(),
@@ -12159,6 +12280,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Right".to_string(),
@@ -12198,6 +12320,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12225,6 +12348,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " ".to_string(),
@@ -12252,6 +12376,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -14685,6 +14810,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // >= 5 chars
@@ -14712,6 +14838,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // Same text, overlapping position
@@ -14749,6 +14876,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(),
@@ -14776,6 +14904,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // Same text but far apart
@@ -14873,6 +15002,7 @@ mod tests {
     fn test_split_fused_words_camelcase() {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "theGeneral".to_string(),
@@ -14911,6 +15041,7 @@ mod tests {
     fn test_split_fused_words_no_split() {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "hello".to_string(),
@@ -15096,6 +15227,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Right Col".to_string(),
@@ -15123,6 +15255,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Left Col".to_string(),
@@ -15206,6 +15339,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello ".to_string(), // ends with space
@@ -15233,6 +15367,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " World".to_string(), // starts with space
@@ -15536,6 +15671,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Line2".to_string(),
@@ -15563,6 +15699,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Line1".to_string(),
@@ -15772,6 +15909,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -15799,6 +15937,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " ".to_string(), // offset_semantic space
@@ -16343,6 +16482,7 @@ mod profile_based_space_tests {
         // Second value starts at x=131, creating a 1pt gap (100 + 30 = 130, gap = 1pt)
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "$0.00".to_string(),
@@ -16370,6 +16510,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "$0.00".to_string(),
@@ -16416,6 +16557,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "100".to_string(),
@@ -16443,6 +16585,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "200".to_string(),
@@ -16489,6 +16632,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hel".to_string(),
@@ -16516,6 +16660,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "lo".to_string(),
@@ -16568,6 +16713,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "123456".to_string(),
@@ -16595,6 +16741,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "72".to_string(),
@@ -16639,6 +16786,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "50".to_string(),
@@ -16666,6 +16814,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "00".to_string(),
@@ -16707,6 +16856,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -16734,6 +16884,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "72".to_string(),
@@ -16779,6 +16930,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "123456".to_string(),
@@ -16806,6 +16958,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "723".to_string(),
@@ -16846,6 +16999,7 @@ mod profile_based_space_tests {
     /// Compact TextSpan builder for the intervening-ink decimal tests.
     fn digit_test_span(text: &str, bbox: Rect, font_size: f32) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -16977,6 +17131,7 @@ mod profile_based_space_tests {
         // gap = 114.5 - (100.0 + 3.5) = 11.0pt -> 11.0 / 7.0 = 1.57x font size.
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "1".to_string(),
@@ -17004,6 +17159,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "0".to_string(),
@@ -17058,6 +17214,7 @@ mod profile_based_space_tests {
         // gap = 238.4 - (200.0 + 24.0) = 14.4pt -> 14.4 / 12.0 = 1.2x font size.
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "1234".to_string(),
@@ -17085,6 +17242,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "56".to_string(),
