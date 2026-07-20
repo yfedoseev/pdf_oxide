@@ -69,7 +69,7 @@ mavenPublishing {
     coordinates("fyi.oxide", "pdf-oxide-kotlin", version.toString())
     pom {
         name.set("pdf_oxide Kotlin bindings")
-        description.set("Idiomatic Kotlin/JVM bindings for pdf_oxide — a thin facade over the fyi.oxide:pdf-oxide Java binding (JNI).")
+        description.set("The fastest Kotlin/JVM PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Text extraction, Markdown/HTML conversion, and PDF creation over the pdf_oxide Rust core via JNI.")
         url.set("https://github.com/yfedoseev/pdf_oxide")
         licenses {
             license {

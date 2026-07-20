@@ -3406,6 +3406,11 @@ public struct Element {
     public let type: String
     public let text: String
     public let rect: Bbox
+    /// ISO 32000-1 §9.10.2 mapping-provenance label ("to_unicode"/"encoding"/
+    /// "predefined_cmap"/"embedded_cmap"/"actual_text"/"fallback"), or nil when
+    /// unknown. "fallback" means the text is a fabricated glyph-index echo, not
+    /// read from the file.
+    public let provenance: String?
 }
 
 /// An opaque list of page elements (`FfiElementList`), freed in `deinit`/`close()`.
@@ -3435,9 +3440,14 @@ public final class ElementList {
             pdf_oxide_element_get_text(h, idx, &code), code, "ElementList.text")
         var x: Float = 0, y: Float = 0, w: Float = 0, hgt: Float = 0
         pdf_oxide_element_get_rect(h, idx, &x, &y, &w, &hgt, &code)
+        var pcode: Int32 = 0
+        let provPtr = pdf_oxide_element_get_provenance(h, idx, &pcode)
+        let provenance: String? =
+            provPtr != nil ? try takeString(provPtr, pcode, "ElementList.provenance") : nil
         return Element(
             type: type, text: text,
-            rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(hgt))
+            rect: Bbox(x: Double(x), y: Double(y), width: Double(w), height: Double(hgt)),
+            provenance: provenance
         )
     }
 

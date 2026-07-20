@@ -7097,6 +7097,18 @@ namespace PdfOxide.Internal
             out int errorCode);
 
         /// <summary>
+        /// Gets the §9.10.2 mapping-provenance label of an element
+        /// ("to_unicode"/"encoding"/"predefined_cmap"/"embedded_cmap"/
+        /// "actual_text"/"fallback"), or null when unknown.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_element_get_provenance", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_oxide_element_get_provenance(
+            NativeHandle elements,
+            int index,
+            out int errorCode);
+
+        /// <summary>
         /// Gets the bounding rectangle of an element.
         /// </summary>
         [LibraryImport(LibName, EntryPoint = "pdf_oxide_element_get_rect", StringMarshalling = StringMarshalling.Utf8)]

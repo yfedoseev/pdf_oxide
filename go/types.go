@@ -282,6 +282,11 @@ type Element struct {
 	Y      float32 `json:"y"`
 	Width  float32 `json:"width"`
 	Height float32 `json:"height"`
+	// Provenance is the ISO 32000-1 §9.10.2 mapping tier the span's font
+	// offered ("to_unicode"/"encoding"/"predefined_cmap"/"embedded_cmap"/
+	// "actual_text"/"fallback"), or "" when unknown. "fallback" means the
+	// text is a fabricated glyph-index echo, not read from the file.
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // ─── DocumentBuilder write-side value types ──────────────────────────────

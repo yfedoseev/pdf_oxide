@@ -887,7 +887,8 @@ impl WasmPdfDocument {
     /// font_weight, is_italic, color, sequence, etc.
     ///
     /// Optional `reading_order`: `"column_aware"` for XY-Cut column detection,
-    /// or `"top_to_bottom"` (default).
+    /// `"structure"` to follow the tagged structure tree (table cells), or
+    /// `"top_to_bottom"` (default).
     #[wasm_bindgen(js_name = "extractSpans")]
     pub fn extract_spans(
         &mut self,
@@ -897,10 +898,11 @@ impl WasmPdfDocument {
     ) -> Result<JsValue, JsValue> {
         let order = match reading_order.as_deref() {
             Some("column_aware") => crate::document::ReadingOrder::ColumnAware,
+            Some("structure") => crate::document::ReadingOrder::Structure,
             Some("top_to_bottom") | None => crate::document::ReadingOrder::TopToBottom,
             Some(other) => {
                 return Err(JsValue::from_str(&format!(
-                    "Unknown reading_order '{}'. Expected 'top_to_bottom' or 'column_aware'.",
+                    "Unknown reading_order '{}'. Expected 'top_to_bottom', 'column_aware', or 'structure'.",
                     other
                 )));
             },
@@ -935,7 +937,8 @@ impl WasmPdfDocument {
     /// The `chars` are derived from spans using font-metric widths when available.
     ///
     /// Optional `reading_order`: `"column_aware"` for XY-Cut column detection,
-    /// or `"top_to_bottom"` (default).
+    /// `"structure"` to follow the tagged structure tree (table cells), or
+    /// `"top_to_bottom"` (default).
     #[wasm_bindgen(js_name = "extractPageText")]
     pub fn extract_page_text(
         &mut self,
@@ -944,10 +947,11 @@ impl WasmPdfDocument {
     ) -> Result<JsValue, JsValue> {
         let order = match reading_order.as_deref() {
             Some("column_aware") => crate::document::ReadingOrder::ColumnAware,
+            Some("structure") => crate::document::ReadingOrder::Structure,
             Some("top_to_bottom") | None => crate::document::ReadingOrder::TopToBottom,
             Some(other) => {
                 return Err(JsValue::from_str(&format!(
-                    "Unknown reading_order '{}'. Expected 'top_to_bottom' or 'column_aware'.",
+                    "Unknown reading_order '{}'. Expected 'top_to_bottom', 'column_aware', or 'structure'.",
                     other
                 )));
             },
