@@ -794,6 +794,7 @@ fn extract_cell(
                         block.text.clone()
                     };
                     cell_spans.push(TextSpan {
+                        provenance: None,
                         artifact_type: None,
                         text: span_text,
                         bbox: block.bbox,
@@ -1152,6 +1153,7 @@ mod tests {
         use crate::layout::text_block::{Color, FontWeight};
 
         crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -1347,6 +1349,7 @@ mod tests {
         //   "（"    x=353.83 w=10.56 end=364.39   gap=-0.18 (overlap → no space)
         //   "peu/d" x=364.39 w=25.24             gap=0.00  (touching → no space)
         let base = crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
@@ -1424,6 +1427,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
@@ -1500,6 +1504,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
@@ -1602,6 +1607,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: String::new(),
@@ -1687,6 +1693,7 @@ mod tests {
         table_elem.add_child(StructChild::StructElem(Box::new(tr)));
 
         let base = crate::layout::TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: String::new(),

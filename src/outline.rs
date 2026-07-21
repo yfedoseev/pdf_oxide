@@ -200,7 +200,23 @@ impl PdfDocument {
     /// PDF 1.2+ `/Names` → `/Dests` name tree, ISO 32000-1 §12.3.2.3 /
     /// §7.9.6) to a 0-based page index. `Ok(None)` when the name is
     /// genuinely unresolvable (caller keeps [`Destination::Named`]).
-    pub(crate) fn resolve_named_destination(&self, name: &str) -> Result<Option<usize>> {
+    ///
+    /// Named destinations are referenced by string from Link/GoTo actions and
+    /// outline items; a consumer that follows those references needs to turn a
+    /// name into the page it targets.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use pdf_oxide::PdfDocument;
+    ///
+    /// let doc = PdfDocument::open("doc.pdf")?;
+    /// if let Some(page) = doc.resolve_named_destination("section.1")? {
+    ///     println!("named destination -> page {page}");
+    /// }
+    /// # Ok::<(), pdf_oxide::error::Error>(())
+    /// ```
+    pub fn resolve_named_destination(&self, name: &str) -> Result<Option<usize>> {
         let catalog = self.catalog()?;
         let Some(cat) = catalog.as_dict() else {
             return Ok(None);

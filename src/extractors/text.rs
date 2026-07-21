@@ -3152,16 +3152,28 @@ impl<'doc> TextExtractor<'doc> {
 
     /// Decide whether `/PlacedPDF` text should be kept (not suppressed) for a page.
     ///
-    /// Cheap read-only pre-scan of the page content stream: sum the byte length of
-    /// text-show operands (`Tj`/`TJ`/`'`/`"`) emitted INSIDE a `/PlacedPDF`
-    /// marked-content scope vs. OUTSIDE it. The placed region is treated as the
-    /// page's real content (kept) only when it carries a substantial body of text
-    /// AND the non-placed text is a small fraction of it — i.e. the publisher
-    /// placed the whole article as a PlacedPDF (MATEC), not a decorative figure
-    /// overlay duplicating outside text (PMC8100493). Conservative on purpose:
-    /// when placed text is in a nested XObject the page-stream scan undercounts it
-    /// and falls back to suppression (the prior behaviour), so this can only ADD
-    /// recovery on the whole-body-placed case, never remove the de-dup win.
+    /// Cheap read-only pre-scan of the page content stream. Text-show operands
+    /// (`Tj`/`TJ`/`'`/`"`) are bucketed by whether they are emitted INSIDE a
+    /// `/PlacedPDF` marked-content scope or OUTSIDE it, and the placed bucket is
+    /// KEPT (not suppressed) unless it looks like a decorative/duplicate overlay:
+    ///
+    /// 1. Too little placed text (`< MIN_PLACED_CHARS`) -> suppress. A stray
+    ///    placed logo or figure caption is not the page body.
+    /// 2. Placed text clearly dominates the page (non-placed text is a small
+    ///    minority, ~3:1) -> keep. The publisher placed the whole article body as
+    ///    one `/PlacedPDF` and left only a running header outside (MATEC Web of
+    ///    Conferences).
+    /// 3. Placed text is substantial but the non-placed text is comparable or
+    ///    larger -> keep ONLY when the placed words are mostly NOT already present
+    ///    outside. A placed region that mostly repeats the surrounding text is a
+    ///    draft galley / overlay copy and stays suppressed (PMC8100493, the de-dup
+    ///    win); one carrying mostly-unique words is the page's real placed content
+    ///    (e.g. an InDesign figure that holds the page's labels and body text, as
+    ///    on placed floor-plan / marketing spreads) and must be kept.
+    ///
+    /// Conservative on purpose: when placed text lives in a nested XObject the
+    /// page-stream scan undercounts it and gate 1 falls back to suppression (the
+    /// prior behaviour).
     fn placed_pdf_text_dominates(content_stream: &[u8]) -> bool {
         // Gate: only pages that actually carry the InDesign tag pay for a parse.
         if !content_stream
@@ -3173,56 +3185,112 @@ impl<'doc> TextExtractor<'doc> {
         let Ok(operators) = parse_content_stream(content_stream) else {
             return false;
         };
+        // A substantial placed body; below this a placed region is treated as a
+        // decorative figure, not the page's logical content.
+        const MIN_PLACED_CHARS: usize = 800;
+        // Keep placed text whose words are mostly unique; suppress it once a
+        // majority is also present in the non-placed text (a duplicate overlay).
+        const MAX_DUP_FRACTION: f64 = 0.5;
+
         let mut placed_stack: Vec<bool> = Vec::new();
         let mut placed_chars: usize = 0;
         let mut other_chars: usize = 0;
+        let mut placed_txt: Vec<u8> = Vec::new();
+        let mut other_txt: Vec<u8> = Vec::new();
         let inside = |stack: &[bool]| stack.iter().any(|&p| p);
         for op in &operators {
             match op {
-                Operator::BeginMarkedContent { tag } => {
-                    placed_stack.push(tag == "PlacedPDF");
-                },
-                Operator::BeginMarkedContentDict { tag, .. } => {
+                Operator::BeginMarkedContent { tag }
+                | Operator::BeginMarkedContentDict { tag, .. } => {
                     placed_stack.push(tag == "PlacedPDF");
                 },
                 Operator::EndMarkedContent => {
                     placed_stack.pop();
                 },
                 Operator::Tj { text } | Operator::Quote { text } => {
-                    if inside(&placed_stack) {
-                        placed_chars += text.len();
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += text.len();
-                    }
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    *chars += text.len();
+                    txt.extend_from_slice(text);
+                    txt.push(b' ');
                 },
                 Operator::DoubleQuote { text, .. } => {
-                    if inside(&placed_stack) {
-                        placed_chars += text.len();
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += text.len();
-                    }
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    *chars += text.len();
+                    txt.extend_from_slice(text);
+                    txt.push(b' ');
                 },
                 Operator::TJ { array } => {
-                    let n: usize = array
-                        .iter()
-                        .map(|e| match e {
-                            TextElement::String(s) => s.len(),
-                            TextElement::Offset(_) => 0,
-                        })
-                        .sum();
-                    if inside(&placed_stack) {
-                        placed_chars += n;
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += n;
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    for e in array {
+                        if let TextElement::String(s) = e {
+                            *chars += s.len();
+                            txt.extend_from_slice(s);
+                        }
                     }
+                    txt.push(b' ');
                 },
                 _ => {},
             }
         }
-        // Keep placed text only when it is a substantial body AND the non-placed
-        // text is a small minority of it (≈3:1). MATEC: other≈header ≪ placed;
-        // PMC8100493: other = a full paper ≫ 1/3 of the duplicated galley.
-        placed_chars >= 800 && other_chars.saturating_mul(3) < placed_chars
+
+        // Gate 1: too little placed text -> decorative figure, suppress.
+        if placed_chars < MIN_PLACED_CHARS {
+            return false;
+        }
+        // Gate 2: placed text dominates the page -> whole-body placed, keep.
+        if other_chars.saturating_mul(3) < placed_chars {
+            return true;
+        }
+        // Gate 3: placed text is substantial but the outside text is comparable
+        // or larger. Keep it unless a majority of the placed words also appear
+        // outside (a duplicate overlay). Tokenising here (behind gates 1 and 2)
+        // keeps the common single-column path allocation-free.
+        Self::text_duplication_fraction(&placed_txt, &other_txt) < MAX_DUP_FRACTION
+    }
+
+    /// Fraction of alphanumeric word tokens in `a` (counting repeats) that also
+    /// occur anywhere in `b`. Words are lowercased runs of >= 2 alphanumeric
+    /// bytes; punctuation and single characters are ignored. Returns 0.0 when `a`
+    /// has no such tokens (nothing to be a duplicate of).
+    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> f64 {
+        fn tokens(bytes: &[u8]) -> Vec<Vec<u8>> {
+            let mut out = Vec::new();
+            let mut cur = Vec::new();
+            for &c in bytes {
+                if c.is_ascii_alphanumeric() {
+                    cur.push(c.to_ascii_lowercase());
+                } else if !cur.is_empty() {
+                    if cur.len() >= 2 {
+                        out.push(std::mem::take(&mut cur));
+                    } else {
+                        cur.clear();
+                    }
+                }
+            }
+            if cur.len() >= 2 {
+                out.push(cur);
+            }
+            out
+        }
+        let a_tokens = tokens(a);
+        if a_tokens.is_empty() {
+            return 0.0;
+        }
+        let b_set: std::collections::HashSet<Vec<u8>> = tokens(b).into_iter().collect();
+        let shared = a_tokens.iter().filter(|t| b_set.contains(*t)).count();
+        shared as f64 / a_tokens.len() as f64
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.
@@ -3767,6 +3835,17 @@ impl<'doc> TextExtractor<'doc> {
             }
         }
 
+        // Attach the §9.10.2 mapping provenance now that each span's font name
+        // is finalized: the tier the span's font offered, or `Fallback` when it
+        // carries no mapping resource (the text is then a fabricated glyph-index
+        // echo, not read from the file). `None` when the font is unresolvable.
+        for span in self.spans.iter_mut() {
+            span.provenance = self
+                .fonts
+                .get(span.font_name.as_str())
+                .map(|f| f.best_mapping_provenance());
+        }
+
         Ok(std::mem::take(&mut self.spans))
     }
 
@@ -3776,6 +3855,12 @@ impl<'doc> TextExtractor<'doc> {
     /// For most use cases, prefer using `extract_text_spans()` which groups
     /// characters into text spans according to PDF semantics.
     pub fn extract(&mut self, content_stream: &[u8]) -> Result<Vec<TextChar>> {
+        self.extract_into_self(content_stream)?;
+        Ok(self.chars.clone())
+    }
+
+    /// Run the character extraction and leave the result in `self.chars`.
+    fn extract_into_self(&mut self, content_stream: &[u8]) -> Result<()> {
         // Enable character extraction mode
         self.extract_spans = false;
         self.chars.clear();
@@ -3804,7 +3889,17 @@ impl<'doc> TextExtractor<'doc> {
         // at the same Y position have X positions within 2pt of each other.
         self.deduplicate_overlapping_chars();
 
-        Ok(self.chars.clone())
+        Ok(())
+    }
+
+    /// Same extraction as [`Self::extract`], but hands the buffer over instead
+    /// of copying it. Every `TextChar` owns a `font_name` String, so `extract`'s
+    /// clone re-allocates once per glyph — measurable on long documents. Leaves
+    /// `self.chars` empty, so callers that read `char_count`/`chars` afterwards
+    /// must keep using [`Self::extract`].
+    pub fn extract_owned(&mut self, content_stream: &[u8]) -> Result<Vec<TextChar>> {
+        self.extract_into_self(content_stream)?;
+        Ok(std::mem::take(&mut self.chars))
     }
 
     /// Deduplicate overlapping characters on the same line.
@@ -3837,12 +3932,16 @@ impl<'doc> TextExtractor<'doc> {
             return;
         }
 
-        let mut deduplicated = Vec::with_capacity(self.chars.len());
+        let before = self.chars.len();
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
         let mut prev_char: Option<char> = None;
 
-        for ch in self.chars.iter() {
+        // Retained in place: the predicate only looks back at the previously
+        // KEPT glyph, which `retain`'s in-order visit preserves. Building a
+        // second Vec instead deep-cloned every glyph — and `TextChar` owns a
+        // `font_name` String, so that was one malloc per glyph, per page.
+        self.chars.retain(|ch| {
             let y_rounded = ch.bbox.y.round() as i32;
             let x = ch.bbox.x;
 
@@ -3869,7 +3968,6 @@ impl<'doc> TextExtractor<'doc> {
             };
 
             if !should_skip {
-                deduplicated.push(ch.clone());
                 prev_y_rounded = Some(y_rounded);
                 prev_x = Some(x);
                 prev_char = Some(ch.char);
@@ -3881,16 +3979,15 @@ impl<'doc> TextExtractor<'doc> {
                     ch.bbox.y
                 );
             }
-        }
+            !should_skip
+        });
 
         log::debug!(
             "Deduplicated {} overlapping characters ({} -> {} chars)",
-            self.chars.len() - deduplicated.len(),
-            self.chars.len(),
-            deduplicated.len()
+            before - self.chars.len(),
+            before,
+            self.chars.len()
         );
-
-        self.chars = deduplicated;
     }
 
     /// Snap super/subscript glyph spans onto the baseline of an
@@ -7377,6 +7474,7 @@ impl<'doc> TextExtractor<'doc> {
         }
 
         let span = TextSpan {
+            provenance: None,
             text,
             bbox: Rect {
                 x: buffer.user_pos_x,
@@ -7913,6 +8011,7 @@ impl<'doc> TextExtractor<'doc> {
 
         // Step 5: Create TextSpan with primary_detected flag
         let span = TextSpan {
+            provenance: None,
             text: unicode_text,
             bbox,
             font_name: state
@@ -8632,6 +8731,7 @@ impl<'doc> TextExtractor<'doc> {
             (effective_font_size, space_advance.abs())
         };
         let span = TextSpan {
+            provenance: None,
             text: " ".to_string(),
             bbox: Rect {
                 x: user_pos.x,
@@ -8809,6 +8909,7 @@ impl<'doc> TextExtractor<'doc> {
                 }
 
                 let span = TextSpan {
+                    provenance: None,
                     text,
                     bbox: Rect {
                         x: buffer.user_pos_x,
@@ -9277,6 +9378,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -9498,6 +9602,99 @@ mod tests {
         assert_eq!(chars[0].color.b, 0.0);
     }
 
+    /// Regression test for a text-only-parser bug where a fill colour set by
+    /// `scn` *before* the enclosing `BT` was silently dropped, leaving the
+    /// text drawn in the GraphicsState default (black) instead of the
+    /// colour the content stream actually requested.
+    ///
+    /// Root cause: `scan_graphics_region()` (src/content/parser.rs) is used
+    /// by `parse_and_execute_text_only()` to fast-scan non-text regions
+    /// looking for the next `BT`. It classified `scn`/`cs`/`sc`/`rg`/`g`/`k`
+    /// (and friends) as unconditionally "skippable" - correct only when a
+    /// matching `Q` is guaranteed to revert the change before any `BT`, but
+    /// wrong at the top level (outside any q/Q scope), where the colour
+    /// change legitimately persists into the next text object per
+    /// ISO 32000-1:2008 SS8.4. Reproduces the exact operator sequence found
+    /// on a real-world govdocs1 slide-deck PDF: a marked-content BDC opens,
+    /// `scn` sets a blue fill colour *outside* any text object, then `BT`
+    /// opens the text object that draws the (should-be-blue) heading.
+    #[test]
+    fn test_fill_color_scn_before_bt_after_bdc_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"/Shape <</MCID 3 >>BDC \
+                        0.2 0.2 0.604 scn \
+                        BT /F1 12 Tf 100 700 Td (Blue Heading) Tj ET \
+                        EMC";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 0.2).abs() < 0.01,
+            "expected blue fill (0.2, 0.2, 0.604), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 0.2).abs() < 0.01);
+        assert!((spans[0].color.b - 0.604).abs() < 0.01);
+    }
+
+    /// Same bug, second real-world pattern: a `Q` (RestoreGraphicsState)
+    /// immediately precedes the out-of-text-object `scn`. Reproduces the
+    /// gold author-block sequence from the same source PDF.
+    #[test]
+    fn test_fill_color_scn_after_q_before_bt_not_dropped() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"q 1 0 0 1 0 0 cm Q \
+                        1 1 0 scn \
+                        BT /F1 12 Tf 100 700 Td (Gold Author) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 1);
+        assert!(
+            (spans[0].color.r - 1.0).abs() < 0.01,
+            "expected gold fill (1, 1, 0), got {:?}",
+            spans[0].color
+        );
+        assert!((spans[0].color.g - 1.0).abs() < 0.01);
+        assert!((spans[0].color.b - 0.0).abs() < 0.01);
+    }
+
+    /// Must-not-regress guard: `scn` issued *inside* an already-open text
+    /// object (continuing after a prior `Tj`, still within the same BT/ET)
+    /// always worked correctly - it goes through the ordinary text-operator
+    /// parse path, not the non-text `scan_graphics_region` fast scanner.
+    /// Confirms the fix above did not disturb this working case.
+    #[test]
+    fn test_fill_color_scn_inside_open_text_object_still_works() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let stream = b"BT /F1 12 Tf 100 700 Td (Black Text) Tj \
+                        0.2 0.2 0.604 scn \
+                        0 -20 Td (Blue Text) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert_eq!(spans.len(), 2);
+        assert!(
+            (spans[0].color.r - 0.0).abs() < 0.01 && (spans[0].color.b - 0.0).abs() < 0.01,
+            "first run should still be default black, got {:?}",
+            spans[0].color
+        );
+        assert!(
+            (spans[1].color.r - 0.2).abs() < 0.01,
+            "second run should be blue (0.2, 0.2, 0.604), got {:?}",
+            spans[1].color
+        );
+        assert!((spans[1].color.g - 0.2).abs() < 0.01);
+        assert!((spans[1].color.b - 0.604).abs() < 0.01);
+    }
+
     /// Regression test: is_monospace flag must propagate from FontInfo flags
     /// through TjBuffer into the final TextSpan.
     ///
@@ -9682,6 +9879,7 @@ mod tests {
     fn test_split_boundary_merges_with_space() {
         let spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "the".to_string(),
@@ -9714,6 +9912,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "General".to_string(),
@@ -10606,6 +10805,7 @@ mod tests {
     // being flaky.
     fn snap_span(text: &str, x: f32, y: f32, w: f32, fs: f32, seq: usize) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -10948,6 +11148,37 @@ mod tests {
         // (keep the default suppression state; pay nothing for ordinary pages).
         let stream = b"BT (ordinary single column page of text) Tj ET\n";
         assert!(!TextExtractor::placed_pdf_text_dominates(stream));
+    }
+
+    #[test]
+    fn test_placed_pdf_kept_when_unique_body_amid_comparable_outside() {
+        // Gate 3: an InDesign spread (e.g. a placed floor-plan / marketing page)
+        // where the placed region carries a substantial body of UNIQUE text and
+        // the non-placed text is comparable or larger but different (labels,
+        // headers). The 3:1 dominance ratio fails, yet the placed words are not a
+        // duplicate of the outside text, so it must be KEPT (pdftotext/pymupdf
+        // extract it; suppressing it drops the whole spread's content).
+        let placed = "(master bedroom terrace kitchen dimensions balcony) Tj\n".repeat(30);
+        let outside = "(square footage residence penthouse skyline waterfront) Tj\n".repeat(35);
+        let stream = format!("BT\n{outside}ET\n/PlacedPDF /MC0 BDC\nBT\n{placed}ET\nEMC\n");
+        assert!(
+            TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "unique placed body amid comparable outside text must be KEPT"
+        );
+    }
+
+    #[test]
+    fn test_placed_pdf_suppressed_when_large_duplicate_overlay() {
+        // Gate 3, the other side: a large placed region whose words DUPLICATE the
+        // surrounding text is a draft galley / overlay copy and stays suppressed
+        // even though it clears the size gate (the PMC8100493 de-dup intent, at
+        // full body size rather than the minority-overlay size).
+        let body = "(the published paragraph of the real article body content) Tj\n".repeat(30);
+        let stream = format!("BT\n{body}ET\n/PlacedPDF /MC0 BDC\nBT\n{body}ET\nEMC\n");
+        assert!(
+            !TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "a full-size placed DUPLICATE of the outside text must stay suppressed"
+        );
     }
 
     #[test]
@@ -11587,6 +11818,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -11614,6 +11846,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -11666,6 +11899,7 @@ mod tests {
         // body-text sizes.
         let narrow_span =
             |glyph: char, x: f32, font_size: f32, advance: f32, seq: usize| TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: glyph.to_string(),
@@ -11726,6 +11960,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
 
         let narrow_at = |x: f32, seq: usize| TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "l".to_string(),
@@ -11782,6 +12017,7 @@ mod tests {
         // Create spans all in one column
         for i in 0..10 {
             extractor.spans.push(TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: format!("Line {}", i),
@@ -11980,6 +12216,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12007,6 +12244,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -12048,6 +12286,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12075,6 +12314,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -12121,6 +12361,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Left".to_string(),
@@ -12148,6 +12389,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Right".to_string(),
@@ -12187,6 +12429,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -12214,6 +12457,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " ".to_string(),
@@ -12241,6 +12485,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "World".to_string(),
@@ -14674,6 +14919,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // >= 5 chars
@@ -14701,6 +14947,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // Same text, overlapping position
@@ -14738,6 +14985,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(),
@@ -14765,6 +15013,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello World".to_string(), // Same text but far apart
@@ -14862,6 +15111,7 @@ mod tests {
     fn test_split_fused_words_camelcase() {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "theGeneral".to_string(),
@@ -14900,6 +15150,7 @@ mod tests {
     fn test_split_fused_words_no_split() {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: "hello".to_string(),
@@ -15085,6 +15336,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Right Col".to_string(),
@@ -15112,6 +15364,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Left Col".to_string(),
@@ -15195,6 +15448,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello ".to_string(), // ends with space
@@ -15222,6 +15476,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " World".to_string(), // starts with space
@@ -15525,6 +15780,7 @@ mod tests {
         let mut extractor = TextExtractor::new();
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Line2".to_string(),
@@ -15552,6 +15808,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Line1".to_string(),
@@ -15761,6 +16018,7 @@ mod tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -15788,6 +16046,7 @@ mod tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: " ".to_string(), // offset_semantic space
@@ -16332,6 +16591,7 @@ mod profile_based_space_tests {
         // Second value starts at x=131, creating a 1pt gap (100 + 30 = 130, gap = 1pt)
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "$0.00".to_string(),
@@ -16359,6 +16619,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "$0.00".to_string(),
@@ -16405,6 +16666,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "100".to_string(),
@@ -16432,6 +16694,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "200".to_string(),
@@ -16478,6 +16741,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hel".to_string(),
@@ -16505,6 +16769,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "lo".to_string(),
@@ -16557,6 +16822,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "123456".to_string(),
@@ -16584,6 +16850,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "72".to_string(),
@@ -16628,6 +16895,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "50".to_string(),
@@ -16655,6 +16923,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "00".to_string(),
@@ -16696,6 +16965,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "Hello".to_string(),
@@ -16723,6 +16993,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "72".to_string(),
@@ -16768,6 +17039,7 @@ mod profile_based_space_tests {
 
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "123456".to_string(),
@@ -16795,6 +17067,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "723".to_string(),
@@ -16835,6 +17108,7 @@ mod profile_based_space_tests {
     /// Compact TextSpan builder for the intervening-ink decimal tests.
     fn digit_test_span(text: &str, bbox: Rect, font_size: f32) -> TextSpan {
         TextSpan {
+            provenance: None,
             text_rise: 0.0,
             artifact_type: None,
             text: text.to_string(),
@@ -16966,6 +17240,7 @@ mod profile_based_space_tests {
         // gap = 114.5 - (100.0 + 3.5) = 11.0pt -> 11.0 / 7.0 = 1.57x font size.
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "1".to_string(),
@@ -16993,6 +17268,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "0".to_string(),
@@ -17047,6 +17323,7 @@ mod profile_based_space_tests {
         // gap = 238.4 - (200.0 + 24.0) = 14.4pt -> 14.4 / 12.0 = 1.2x font size.
         extractor.spans = vec![
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "1234".to_string(),
@@ -17074,6 +17351,7 @@ mod profile_based_space_tests {
                 rtl_draw_logical: false,
             },
             TextSpan {
+                provenance: None,
                 text_rise: 0.0,
                 artifact_type: None,
                 text: "56".to_string(),

@@ -457,7 +457,11 @@ impl PageRenderer {
         let media_box = page_info.media_box;
 
         // Calculate output dimensions, accounting for page rotation
-        let rotation = page_info.rotation % 360;
+        // `%` is a remainder and preserves sign, so a legal negative /Rotate (e.g. -90,
+        // equivalent to 270 per ISO 32000-1 s7.7.3.3 Table 30) matched neither 90 nor
+        // 270 below and the page rendered unrotated. rem_euclid normalizes to 0..359,
+        // matching get_page_rotation's own `((raw % 360) + 360) % 360` convention.
+        let rotation = page_info.rotation.rem_euclid(360);
         let (page_w, page_h) = if rotation == 90 || rotation == 270 {
             (media_box.height, media_box.width) // Swap for landscape
         } else {
@@ -503,9 +507,26 @@ impl PageRenderer {
             180 => Transform::from_translate(-media_box.x, -media_box.y)
                 .post_scale(-scale, scale)
                 .post_translate(media_box.width * scale, 0.0),
-            270 => Transform::from_translate(-media_box.x, -media_box.y).post_concat(
-                Transform::from_row(0.0, scale, -scale, 0.0, media_box.height * scale, 0.0),
-            ),
+            270 => {
+                // 270° CW: PDF (x,y) → screen_x = (H - y)*s, screen_y = (W - x)*s.
+                //
+                // The `y` row used to be `screen_y = x*s`, which put the page's
+                // TOP-LEFT corner at the top-left of the raster; under a 270° turn
+                // it belongs at the BOTTOM-left. That is not merely a wrong angle -
+                // it is a MIRROR: the old matrix has a POSITIVE determinant, while
+                // 0°/90°/180° all have a negative one (they carry the PDF y-up →
+                // raster y-down flip). Text came out reversed.
+                Transform::from_translate(-media_box.x, -media_box.y).post_concat(
+                    Transform::from_row(
+                        0.0,
+                        -scale,
+                        -scale,
+                        0.0,
+                        media_box.height * scale,
+                        media_box.width * scale,
+                    ),
+                )
+            },
             _ => {
                 // No rotation (0°)
                 Transform::from_translate(-media_box.x, -media_box.y)
@@ -5532,7 +5553,7 @@ impl PageRenderer {
     ///
     /// Per ISO 32000-1 §9.4 text-showing operators + §9.6 simple-font
     /// glyph rasterisation: every glyph in the run is laid into the
-    /// scratch pixmap via the same tt-parser / rustybuzz / ttf-outline
+    /// scratch pixmap via the same tt-parser / harfrust / ttf-outline
     /// path the visible paint uses, so the coverage mask is geometry-
     /// identical (including font-fallback substitutions) to the
     /// visible glyph bodies.
