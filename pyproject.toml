@@ -89,7 +89,7 @@ benchmark = [
     "playa-pdf>=1.0.0",
 ]
 seg-edgar = ["sec-edgar-downloader>=5.0.3"]
-convert-models = ["torch>=2.4.1", "onnxruntime>=1.20.1", "transformers>=4.46.3"]
+convert-models = ["torch>=2.4.1", "onnxruntime>=1.20.1", "transformers>=5.14.1"]
 inspect-tj-array = ["pymupdf>=1.24.11"]
 check-pdf-structure = ["pypdf"]
 analyze-pdf-spacing = ["pymupdf>=1.24.11"]
