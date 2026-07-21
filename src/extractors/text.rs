@@ -3151,16 +3151,28 @@ impl<'doc> TextExtractor<'doc> {
 
     /// Decide whether `/PlacedPDF` text should be kept (not suppressed) for a page.
     ///
-    /// Cheap read-only pre-scan of the page content stream: sum the byte length of
-    /// text-show operands (`Tj`/`TJ`/`'`/`"`) emitted INSIDE a `/PlacedPDF`
-    /// marked-content scope vs. OUTSIDE it. The placed region is treated as the
-    /// page's real content (kept) only when it carries a substantial body of text
-    /// AND the non-placed text is a small fraction of it — i.e. the publisher
-    /// placed the whole article as a PlacedPDF (MATEC), not a decorative figure
-    /// overlay duplicating outside text (PMC8100493). Conservative on purpose:
-    /// when placed text is in a nested XObject the page-stream scan undercounts it
-    /// and falls back to suppression (the prior behaviour), so this can only ADD
-    /// recovery on the whole-body-placed case, never remove the de-dup win.
+    /// Cheap read-only pre-scan of the page content stream. Text-show operands
+    /// (`Tj`/`TJ`/`'`/`"`) are bucketed by whether they are emitted INSIDE a
+    /// `/PlacedPDF` marked-content scope or OUTSIDE it, and the placed bucket is
+    /// KEPT (not suppressed) unless it looks like a decorative/duplicate overlay:
+    ///
+    /// 1. Too little placed text (`< MIN_PLACED_CHARS`) -> suppress. A stray
+    ///    placed logo or figure caption is not the page body.
+    /// 2. Placed text clearly dominates the page (non-placed text is a small
+    ///    minority, ~3:1) -> keep. The publisher placed the whole article body as
+    ///    one `/PlacedPDF` and left only a running header outside (MATEC Web of
+    ///    Conferences).
+    /// 3. Placed text is substantial but the non-placed text is comparable or
+    ///    larger -> keep ONLY when the placed words are mostly NOT already present
+    ///    outside. A placed region that mostly repeats the surrounding text is a
+    ///    draft galley / overlay copy and stays suppressed (PMC8100493, the de-dup
+    ///    win); one carrying mostly-unique words is the page's real placed content
+    ///    (e.g. an InDesign figure that holds the page's labels and body text, as
+    ///    on placed floor-plan / marketing spreads) and must be kept.
+    ///
+    /// Conservative on purpose: when placed text lives in a nested XObject the
+    /// page-stream scan undercounts it and gate 1 falls back to suppression (the
+    /// prior behaviour).
     fn placed_pdf_text_dominates(content_stream: &[u8]) -> bool {
         // Gate: only pages that actually carry the InDesign tag pay for a parse.
         if !content_stream
@@ -3172,56 +3184,112 @@ impl<'doc> TextExtractor<'doc> {
         let Ok(operators) = parse_content_stream(content_stream) else {
             return false;
         };
+        // A substantial placed body; below this a placed region is treated as a
+        // decorative figure, not the page's logical content.
+        const MIN_PLACED_CHARS: usize = 800;
+        // Keep placed text whose words are mostly unique; suppress it once a
+        // majority is also present in the non-placed text (a duplicate overlay).
+        const MAX_DUP_FRACTION: f64 = 0.5;
+
         let mut placed_stack: Vec<bool> = Vec::new();
         let mut placed_chars: usize = 0;
         let mut other_chars: usize = 0;
+        let mut placed_txt: Vec<u8> = Vec::new();
+        let mut other_txt: Vec<u8> = Vec::new();
         let inside = |stack: &[bool]| stack.iter().any(|&p| p);
         for op in &operators {
             match op {
-                Operator::BeginMarkedContent { tag } => {
-                    placed_stack.push(tag == "PlacedPDF");
-                },
-                Operator::BeginMarkedContentDict { tag, .. } => {
+                Operator::BeginMarkedContent { tag }
+                | Operator::BeginMarkedContentDict { tag, .. } => {
                     placed_stack.push(tag == "PlacedPDF");
                 },
                 Operator::EndMarkedContent => {
                     placed_stack.pop();
                 },
                 Operator::Tj { text } | Operator::Quote { text } => {
-                    if inside(&placed_stack) {
-                        placed_chars += text.len();
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += text.len();
-                    }
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    *chars += text.len();
+                    txt.extend_from_slice(text);
+                    txt.push(b' ');
                 },
                 Operator::DoubleQuote { text, .. } => {
-                    if inside(&placed_stack) {
-                        placed_chars += text.len();
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += text.len();
-                    }
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    *chars += text.len();
+                    txt.extend_from_slice(text);
+                    txt.push(b' ');
                 },
                 Operator::TJ { array } => {
-                    let n: usize = array
-                        .iter()
-                        .map(|e| match e {
-                            TextElement::String(s) => s.len(),
-                            TextElement::Offset(_) => 0,
-                        })
-                        .sum();
-                    if inside(&placed_stack) {
-                        placed_chars += n;
+                    let (chars, txt) = if inside(&placed_stack) {
+                        (&mut placed_chars, &mut placed_txt)
                     } else {
-                        other_chars += n;
+                        (&mut other_chars, &mut other_txt)
+                    };
+                    for e in array {
+                        if let TextElement::String(s) = e {
+                            *chars += s.len();
+                            txt.extend_from_slice(s);
+                        }
                     }
+                    txt.push(b' ');
                 },
                 _ => {},
             }
         }
-        // Keep placed text only when it is a substantial body AND the non-placed
-        // text is a small minority of it (≈3:1). MATEC: other≈header ≪ placed;
-        // PMC8100493: other = a full paper ≫ 1/3 of the duplicated galley.
-        placed_chars >= 800 && other_chars.saturating_mul(3) < placed_chars
+
+        // Gate 1: too little placed text -> decorative figure, suppress.
+        if placed_chars < MIN_PLACED_CHARS {
+            return false;
+        }
+        // Gate 2: placed text dominates the page -> whole-body placed, keep.
+        if other_chars.saturating_mul(3) < placed_chars {
+            return true;
+        }
+        // Gate 3: placed text is substantial but the outside text is comparable
+        // or larger. Keep it unless a majority of the placed words also appear
+        // outside (a duplicate overlay). Tokenising here (behind gates 1 and 2)
+        // keeps the common single-column path allocation-free.
+        Self::text_duplication_fraction(&placed_txt, &other_txt) < MAX_DUP_FRACTION
+    }
+
+    /// Fraction of alphanumeric word tokens in `a` (counting repeats) that also
+    /// occur anywhere in `b`. Words are lowercased runs of >= 2 alphanumeric
+    /// bytes; punctuation and single characters are ignored. Returns 0.0 when `a`
+    /// has no such tokens (nothing to be a duplicate of).
+    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> f64 {
+        fn tokens(bytes: &[u8]) -> Vec<Vec<u8>> {
+            let mut out = Vec::new();
+            let mut cur = Vec::new();
+            for &c in bytes {
+                if c.is_ascii_alphanumeric() {
+                    cur.push(c.to_ascii_lowercase());
+                } else if !cur.is_empty() {
+                    if cur.len() >= 2 {
+                        out.push(std::mem::take(&mut cur));
+                    } else {
+                        cur.clear();
+                    }
+                }
+            }
+            if cur.len() >= 2 {
+                out.push(cur);
+            }
+            out
+        }
+        let a_tokens = tokens(a);
+        if a_tokens.is_empty() {
+            return 0.0;
+        }
+        let b_set: std::collections::HashSet<Vec<u8>> = tokens(b).into_iter().collect();
+        let shared = a_tokens.iter().filter(|t| b_set.contains(*t)).count();
+        shared as f64 / a_tokens.len() as f64
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.
@@ -11070,6 +11138,37 @@ mod tests {
         // (keep the default suppression state; pay nothing for ordinary pages).
         let stream = b"BT (ordinary single column page of text) Tj ET\n";
         assert!(!TextExtractor::placed_pdf_text_dominates(stream));
+    }
+
+    #[test]
+    fn test_placed_pdf_kept_when_unique_body_amid_comparable_outside() {
+        // Gate 3: an InDesign spread (e.g. a placed floor-plan / marketing page)
+        // where the placed region carries a substantial body of UNIQUE text and
+        // the non-placed text is comparable or larger but different (labels,
+        // headers). The 3:1 dominance ratio fails, yet the placed words are not a
+        // duplicate of the outside text, so it must be KEPT (pdftotext/pymupdf
+        // extract it; suppressing it drops the whole spread's content).
+        let placed = "(master bedroom terrace kitchen dimensions balcony) Tj\n".repeat(30);
+        let outside = "(square footage residence penthouse skyline waterfront) Tj\n".repeat(35);
+        let stream = format!("BT\n{outside}ET\n/PlacedPDF /MC0 BDC\nBT\n{placed}ET\nEMC\n");
+        assert!(
+            TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "unique placed body amid comparable outside text must be KEPT"
+        );
+    }
+
+    #[test]
+    fn test_placed_pdf_suppressed_when_large_duplicate_overlay() {
+        // Gate 3, the other side: a large placed region whose words DUPLICATE the
+        // surrounding text is a draft galley / overlay copy and stays suppressed
+        // even though it clears the size gate (the PMC8100493 de-dup intent, at
+        // full body size rather than the minority-overlay size).
+        let body = "(the published paragraph of the real article body content) Tj\n".repeat(30);
+        let stream = format!("BT\n{body}ET\n/PlacedPDF /MC0 BDC\nBT\n{body}ET\nEMC\n");
+        assert!(
+            !TextExtractor::placed_pdf_text_dominates(stream.as_bytes()),
+            "a full-size placed DUPLICATE of the outside text must stay suppressed"
+        );
     }
 
     #[test]
