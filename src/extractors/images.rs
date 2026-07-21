@@ -1951,7 +1951,16 @@ fn decode_jpx_image(
     ))
 }
 
-/// Expand abbreviated inline image dictionary keys to full names.
+/// Expand an inline image's abbreviated dictionary (ISO 32000-1 §8.9.7 Table 91)
+/// into the equivalent image XObject dictionary.
+///
+/// As well as expanding the abbreviations (`/W` → `/Width`, …) this supplies the
+/// `/Subtype /Image` that an inline image never carries: §8.9.7 says an inline
+/// image's dictionary holds "a subset of the entries in the image dictionary",
+/// with the subtype implied by the `BI` operator rather than written out. Callers
+/// hand the result to the image-XObject decoder, which *requires* `/Subtype` — so
+/// without this the decoder rejects every inline image with "XObject missing
+/// /Subtype", and the callers, which use `if let Ok(..)`, drop them SILENTLY.
 pub fn expand_inline_image_dict(
     dict: std::collections::HashMap<String, crate::object::Object>,
 ) -> std::collections::HashMap<String, crate::object::Object> {
@@ -1968,13 +1977,192 @@ pub fn expand_inline_image_dict(
             "IM" => "ImageMask",
             "I" => "Interpolate",
             "D" => "Decode",
-            "EF" => "EFontFile",
             "Intent" => "Intent",
             _ => &key,
         };
+        // §8.9.7 Table 92: inline images abbreviate the VALUES too, not just the
+        // keys - `/CS /RGB`, `/F /Fl`. Expanding only the keys leaves the decoder
+        // looking at a colour space called "RGB", which it does not know.
+        let value = match expanded_key {
+            "ColorSpace" => expand_inline_abbrev(value, colorspace_abbrev),
+            "Filter" => expand_inline_abbrev(value, filter_abbrev),
+            _ => value,
+        };
         expanded.insert(expanded_key.to_string(), value);
     }
+    // §8.9.7: the subtype is implied by `BI`, never written in the dictionary.
+    // The image-XObject decoder requires it, so supply it here. Do not clobber a
+    // dictionary that somehow carries one already.
     expanded
+        .entry("Subtype".to_string())
+        .or_insert_with(|| crate::object::Object::Name("Image".to_string()));
+    expanded
+}
+
+/// §8.9.7 Table 92 colour-space abbreviations. An unabbreviated name (or a name
+/// we do not recognise, e.g. a `/Resources /ColorSpace` entry like `/CS0`) passes
+/// through untouched.
+fn colorspace_abbrev(name: &str) -> Option<&'static str> {
+    match name {
+        "G" => Some("DeviceGray"),
+        "RGB" => Some("DeviceRGB"),
+        "CMYK" => Some("DeviceCMYK"),
+        "I" => Some("Indexed"),
+        _ => None,
+    }
+}
+
+/// §8.9.7 Table 92 filter abbreviations.
+fn filter_abbrev(name: &str) -> Option<&'static str> {
+    match name {
+        "AHx" => Some("ASCIIHexDecode"),
+        "A85" => Some("ASCII85Decode"),
+        "LZW" => Some("LZWDecode"),
+        "Fl" => Some("FlateDecode"),
+        "RL" => Some("RunLengthDecode"),
+        "CCF" => Some("CCITTFaxDecode"),
+        "DCT" => Some("DCTDecode"),
+        _ => None,
+    }
+}
+
+/// Rewrite abbreviated names in an inline-image value. Handles a bare name, and
+/// an array (a filter chain, or an `[/I /RGB 255 <lookup>]` indexed space, whose
+/// BASE name is itself abbreviated).
+fn expand_inline_abbrev(
+    value: crate::object::Object,
+    map: fn(&str) -> Option<&'static str>,
+) -> crate::object::Object {
+    use crate::object::Object;
+    match value {
+        Object::Name(n) => match map(&n) {
+            Some(full) => Object::Name(full.to_string()),
+            None => Object::Name(n),
+        },
+        Object::Array(items) => Object::Array(
+            items
+                .into_iter()
+                .map(|item| expand_inline_abbrev(item, map))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod inline_image_dict_tests {
+    use super::*;
+    use crate::object::Object;
+    use std::collections::HashMap;
+
+    fn dict(pairs: &[(&str, Object)]) -> HashMap<String, Object> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    /// The decoder requires `/Subtype`, and an inline image never carries one
+    /// (§8.9.7 - it is implied by `BI`). Without this every inline image was
+    /// rejected with "XObject missing /Subtype" and silently dropped.
+    #[test]
+    fn supplies_the_implied_image_subtype() {
+        let out = expand_inline_image_dict(dict(&[
+            ("W", Object::Integer(26)),
+            ("H", Object::Integer(1)),
+        ]));
+        assert_eq!(out.get("Subtype"), Some(&Object::Name("Image".to_string())));
+        assert_eq!(out.get("Width"), Some(&Object::Integer(26)));
+        assert_eq!(out.get("Height"), Some(&Object::Integer(1)));
+    }
+
+    /// §8.9.7 Table 92: inline images abbreviate the VALUES too. Expanding only
+    /// the keys left the decoder looking at a colour space named "RGB".
+    #[test]
+    fn expands_abbreviated_colour_space_and_filter_values() {
+        let out = expand_inline_image_dict(dict(&[
+            ("CS", Object::Name("RGB".to_string())),
+            ("F", Object::Name("Fl".to_string())),
+        ]));
+        assert_eq!(out.get("ColorSpace"), Some(&Object::Name("DeviceRGB".to_string())));
+        assert_eq!(out.get("Filter"), Some(&Object::Name("FlateDecode".to_string())));
+    }
+
+    #[test]
+    fn expands_every_table_92_abbreviation() {
+        for (abbr, full) in [
+            ("G", "DeviceGray"),
+            ("RGB", "DeviceRGB"),
+            ("CMYK", "DeviceCMYK"),
+            ("I", "Indexed"),
+        ] {
+            let out = expand_inline_image_dict(dict(&[("CS", Object::Name(abbr.to_string()))]));
+            assert_eq!(
+                out.get("ColorSpace"),
+                Some(&Object::Name(full.to_string())),
+                "colour space /{abbr}"
+            );
+        }
+        for (abbr, full) in [
+            ("AHx", "ASCIIHexDecode"),
+            ("A85", "ASCII85Decode"),
+            ("LZW", "LZWDecode"),
+            ("Fl", "FlateDecode"),
+            ("RL", "RunLengthDecode"),
+            ("CCF", "CCITTFaxDecode"),
+            ("DCT", "DCTDecode"),
+        ] {
+            let out = expand_inline_image_dict(dict(&[("F", Object::Name(abbr.to_string()))]));
+            assert_eq!(out.get("Filter"), Some(&Object::Name(full.to_string())), "filter /{abbr}");
+        }
+    }
+
+    /// A filter CHAIN, and an indexed space whose base name is itself abbreviated.
+    #[test]
+    fn expands_abbreviations_inside_arrays() {
+        let out = expand_inline_image_dict(dict(&[
+            (
+                "F",
+                Object::Array(vec![
+                    Object::Name("A85".to_string()),
+                    Object::Name("Fl".to_string()),
+                ]),
+            ),
+            (
+                "CS",
+                Object::Array(vec![
+                    Object::Name("I".to_string()),
+                    Object::Name("RGB".to_string()),
+                    Object::Integer(255),
+                ]),
+            ),
+        ]));
+        assert_eq!(
+            out.get("Filter"),
+            Some(&Object::Array(vec![
+                Object::Name("ASCII85Decode".to_string()),
+                Object::Name("FlateDecode".to_string()),
+            ]))
+        );
+        assert_eq!(
+            out.get("ColorSpace"),
+            Some(&Object::Array(vec![
+                Object::Name("Indexed".to_string()),
+                Object::Name("DeviceRGB".to_string()),
+                Object::Integer(255),
+            ]))
+        );
+    }
+
+    /// A name we do not recognise (a `/Resources /ColorSpace` entry like `/CS0`,
+    /// or an already-full name) must pass through untouched.
+    #[test]
+    fn leaves_unabbreviated_and_named_spaces_alone() {
+        let out = expand_inline_image_dict(dict(&[("CS", Object::Name("CS0".to_string()))]));
+        assert_eq!(out.get("ColorSpace"), Some(&Object::Name("CS0".to_string())));
+        let out = expand_inline_image_dict(dict(&[("CS", Object::Name("DeviceGray".to_string()))]));
+        assert_eq!(out.get("ColorSpace"), Some(&Object::Name("DeviceGray".to_string())));
+    }
 }
 
 #[cfg(test)]

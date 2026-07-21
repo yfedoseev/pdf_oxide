@@ -37,7 +37,11 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 # ---------------------------------------------------------------------------
@@ -61,9 +65,9 @@ PDFTOTEXT_BIN = "/usr/bin/pdftotext"
 MAX_PDF_BYTES = 50 * 1024 * 1024  # 50 MB
 EXTRACTOR_TIMEOUT = 30  # seconds
 
-FORMATS: Tuple[str, ...] = ("text", "markdown", "html")
+FORMATS: tuple[str, ...] = ("text", "markdown", "html")
 
-FORMAT_EXT: Dict[str, str] = {
+FORMAT_EXT: dict[str, str] = {
     "text": ".txt",
     "markdown": ".md",
     "html": ".html",
@@ -89,7 +93,7 @@ class ExtractorSpec:
 
     name: str  # logical extractor name, e.g. "head", "v0323"
     format: str  # "text" | "markdown" | "html"
-    runner: Callable[[Path, int], Tuple[bool, Optional[int], str, Optional[str]]]
+    runner: Callable[[Path, int], tuple[bool, int | None, str, str | None]]
     available: Callable[[], bool]
     unavail_reason: Callable[[], str]
     file_ext: str
@@ -102,7 +106,7 @@ class ExtractorSpec:
 # ---- helper runners for rust binaries -------------------------------------
 
 
-def _run_rust_bin(binary: Path, pdf: Path) -> Tuple[bool, Optional[int], str, Optional[str]]:
+def _run_rust_bin(binary: Path, pdf: Path) -> tuple[bool, int | None, str, str | None]:
     try:
         proc = subprocess.run(
             [str(binary), str(pdf)],
@@ -126,8 +130,8 @@ def _run_rust_bin(binary: Path, pdf: Path) -> Tuple[bool, Optional[int], str, Op
 
 def _make_rust_runner(
     binary: Path,
-) -> Callable[[Path, int], Tuple[bool, Optional[int], str, Optional[str]]]:
-    def runner(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Optional[str]]:
+) -> Callable[[Path, int], tuple[bool, int | None, str, str | None]]:
+    def runner(pdf: Path, pages: int) -> tuple[bool, int | None, str, str | None]:
         return _run_rust_bin(binary, pdf)
 
     return runner
@@ -144,8 +148,8 @@ def _binary_unavail(binary: Path) -> Callable[[], str]:
 # ---- pdftotext runners (text + html) --------------------------------------
 
 
-def _run_pdftotext_text(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Optional[str]]:
-    cmd: List[str] = [PDFTOTEXT_BIN, "-layout"]
+def _run_pdftotext_text(pdf: Path, pages: int) -> tuple[bool, int | None, str, str | None]:
+    cmd: list[str] = [PDFTOTEXT_BIN, "-layout"]
     if pages > 0:
         cmd += ["-f", "1", "-l", str(pages)]
     cmd += [str(pdf), "-"]
@@ -176,11 +180,11 @@ def _run_pdftotext_text(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str
     return ok, proc.returncode, text, err
 
 
-def _run_pdftotext_html(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Optional[str]]:
+def _run_pdftotext_html(pdf: Path, pages: int) -> tuple[bool, int | None, str, str | None]:
     # pdftotext -htmlmeta writes to a file argument, not stdout.
     with tempfile.TemporaryDirectory(prefix="pdftotext_html_") as tmp:
         out_file = Path(tmp) / "out.html"
-        cmd: List[str] = [PDFTOTEXT_BIN, "-layout", "-htmlmeta"]
+        cmd: list[str] = [PDFTOTEXT_BIN, "-layout", "-htmlmeta"]
         if pages > 0:
             cmd += ["-f", "1", "-l", str(pages)]
         cmd += [str(pdf), str(out_file)]
@@ -223,7 +227,7 @@ def _pdftotext_unavail() -> str:
 # ---- pypdfium2 runner (text only) -----------------------------------------
 
 
-def _run_pypdfium2(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Optional[str]]:
+def _run_pypdfium2(pdf: Path, pages: int) -> tuple[bool, int | None, str, str | None]:
     try:
         import pypdfium2 as pdfium  # type: ignore
     except Exception as e:
@@ -233,7 +237,7 @@ def _run_pypdfium2(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Opt
         doc = pdfium.PdfDocument(str(pdf))
         total = len(doc)
         last = total if pages <= 0 else min(total, pages)
-        chunks: List[str] = []
+        chunks: list[str] = []
         for i in range(last):
             if time.time() - start > EXTRACTOR_TIMEOUT:
                 return False, None, "", "timeout"
@@ -272,7 +276,7 @@ def _pypdfium2_unavail() -> str:
 # ---- pymupdf4llm runner (markdown only) -----------------------------------
 
 
-def _run_pymupdf4llm(pdf: Path, pages: int) -> Tuple[bool, Optional[int], str, Optional[str]]:
+def _run_pymupdf4llm(pdf: Path, pages: int) -> tuple[bool, int | None, str, str | None]:
     try:
         import pymupdf4llm  # type: ignore
     except Exception as e:
@@ -312,7 +316,7 @@ def _pymupdf4llm_unavail() -> str:
 # ---- catalogue factory ----------------------------------------------------
 
 
-def build_extractor_specs() -> List[ExtractorSpec]:
+def build_extractor_specs() -> list[ExtractorSpec]:
     head_text = HEAD_EXAMPLES / "extract_text_simple"
     head_md = HEAD_EXAMPLES / "extract_markdown_simple"
     head_html = HEAD_EXAMPLES / "extract_html_simple"
@@ -321,7 +325,7 @@ def build_extractor_specs() -> List[ExtractorSpec]:
     v0323_md = V0323_EXAMPLES / "extract_markdown_simple"
     v0323_html = V0323_EXAMPLES / "extract_html_simple"
 
-    specs: List[ExtractorSpec] = [
+    specs: list[ExtractorSpec] = [
         # ---- text ---------------------------------------------------------
         ExtractorSpec(
             name="v0323",
@@ -418,14 +422,14 @@ def build_extractor_specs() -> List[ExtractorSpec]:
 class Bucket:
     name: str
     target: int
-    candidates: List[Path] = field(default_factory=list)
-    picked: List[Path] = field(default_factory=list)
+    candidates: list[Path] = field(default_factory=list)
+    picked: list[Path] = field(default_factory=list)
 
 
-def _walk_pdfs(root: Path) -> List[Path]:
+def _walk_pdfs(root: Path) -> list[Path]:
     if not root.exists():
         return []
-    out: List[Path] = []
+    out: list[Path] = []
     for dirpath, _dirs, filenames in os.walk(root):
         for fn in filenames:
             if fn.lower().endswith(".pdf"):
@@ -441,8 +445,8 @@ def _walk_pdfs(root: Path) -> List[Path]:
     return out
 
 
-def _first_n(paths: Iterable[Path], n: int, seen: set) -> List[Path]:
-    out: List[Path] = []
+def _first_n(paths: Iterable[Path], n: int, seen: set) -> list[Path]:
+    out: list[Path] = []
     for p in paths:
         if len(out) >= n:
             break
@@ -453,11 +457,11 @@ def _first_n(paths: Iterable[Path], n: int, seen: set) -> List[Path]:
     return out
 
 
-def collect_corpus(output: Path) -> Dict[str, List[Path]]:
+def collect_corpus(output: Path) -> dict[str, list[Path]]:
     """Deterministically pick a diverse ~60-PDF corpus."""
 
     seen: set = set()
-    buckets: Dict[str, Bucket] = {}
+    buckets: dict[str, Bucket] = {}
 
     def add_bucket(name: str, target: int) -> Bucket:
         b = Bucket(name=name, target=target)
@@ -468,7 +472,7 @@ def collect_corpus(output: Path) -> Dict[str, List[Path]]:
     diverse = _walk_pdfs(TESTS_ROOT / "pdfs" / "diverse")
     theses = _walk_pdfs(TESTS_ROOT / "pdfs" / "theses")
     text_heavy = _walk_pdfs(TESTS_ROOT / "pdfs" / "text_heavy")
-    single_seeds: List[Path] = []
+    single_seeds: list[Path] = []
     for p in diverse + theses + text_heavy:
         name = p.name.lower()
         if any(key in name for key in ("rfc", "thesis", "gdpr", "apollo", "nasa")):
@@ -536,7 +540,7 @@ def collect_corpus(output: Path) -> Dict[str, List[Path]]:
             bucket.picked.extend(extras)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    lines: List[str] = []
+    lines: list[str] = []
     for bucket in buckets.values():
         for p in bucket.picked:
             lines.append(f"{bucket.name}\t{p}")
@@ -545,8 +549,8 @@ def collect_corpus(output: Path) -> Dict[str, List[Path]]:
     return {b.name: b.picked for b in buckets.values()}
 
 
-def load_corpus(path: Path) -> List[Tuple[str, Path]]:
-    entries: List[Tuple[str, Path]] = []
+def load_corpus(path: Path) -> list[tuple[str, Path]]:
+    entries: list[tuple[str, Path]] = []
     for raw in path.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -598,27 +602,27 @@ def _count_lines(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
-def _diagnostics(text: str) -> Dict[str, int]:
+def _diagnostics(text: str) -> dict[str, int]:
     return {s: text.count(s) for s in DIAGNOSTIC_STRINGS if s in text}
 
 
 def run_all(
-    corpus: List[Tuple[str, Path]],
+    corpus: list[tuple[str, Path]],
     out_dir: Path,
     pages: int,
     force: bool,
     formats: Sequence[str],
-) -> Dict:
+) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     all_specs = build_extractor_specs()
 
     # Group specs by format, honouring the --formats filter.
-    specs_by_format: Dict[str, List[ExtractorSpec]] = {f: [] for f in formats}
+    specs_by_format: dict[str, list[ExtractorSpec]] = {f: [] for f in formats}
     for spec in all_specs:
         if spec.format in specs_by_format:
             specs_by_format[spec.format].append(spec)
 
-    manifest: Dict = {
+    manifest: dict = {
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "out_dir": str(out_dir),
         "pages": pages,
@@ -631,7 +635,7 @@ def run_all(
     # Precompute extractor availability / reasons for each format.
     for fmt in formats:
         fmt_specs = specs_by_format[fmt]
-        ext_meta: Dict[str, Dict] = {}
+        ext_meta: dict[str, dict] = {}
         for spec in fmt_specs:
             if spec.available():
                 ext_meta[spec.name] = {"status": "available"}
@@ -662,7 +666,7 @@ def run_all(
 
         for fmt in formats:
             fmt_specs = specs_by_format[fmt]
-            pdf_results: Dict[str, Dict] = {
+            pdf_results: dict[str, dict] = {
                 "bucket": bucket,
                 "pdf": str(pdf),
                 "rel": rel_key,
@@ -766,7 +770,7 @@ def run_all(
 _WORD_RE = re.compile(r"[\w/\-\.@]+", re.UNICODE)
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     return _WORD_RE.findall(text)
 
 
@@ -786,7 +790,7 @@ def _jaccard(a: set, b: set) -> float:
     return inter / union if union else 0.0
 
 
-def _read_result_text(res: Optional[Dict]) -> str:
+def _read_result_text(res: dict | None) -> str:
     if not res:
         return ""
     path = Path(res.get("out_path", ""))
@@ -798,7 +802,7 @@ def _read_result_text(res: Optional[Dict]) -> str:
         return ""
 
 
-def _format_section(manifest: Dict, fmt: str) -> Optional[Dict]:
+def _format_section(manifest: dict, fmt: str) -> dict | None:
     """Return the per-format section of the manifest for ``fmt``.
 
     Handles both the new per-format layout and the legacy flat layout
@@ -809,7 +813,7 @@ def _format_section(manifest: Dict, fmt: str) -> Optional[Dict]:
         return formats[fmt]
     if fmt == "text" and "pdfs" in manifest:
         legacy_pdfs = manifest.get("pdfs", [])
-        pdfs_map: Dict[str, Dict] = {}
+        pdfs_map: dict[str, dict] = {}
         for entry in legacy_pdfs:
             pdfs_map[entry["pdf"]] = entry
         return {
@@ -819,7 +823,7 @@ def _format_section(manifest: Dict, fmt: str) -> Optional[Dict]:
     return None
 
 
-def _iter_pdf_entries(section: Dict) -> List[Dict]:
+def _iter_pdf_entries(section: dict) -> list[dict]:
     pdfs = section.get("pdfs", {})
     if isinstance(pdfs, dict):
         return list(pdfs.values())
@@ -838,11 +842,11 @@ def cmd_diff(args: argparse.Namespace) -> int:
         return 2
     base = args.baseline
     head = args.head
-    rows: List[Tuple[float, Dict]] = []
+    rows: list[tuple[float, dict]] = []
     total_base_bytes = 0
     total_head_bytes = 0
     errors = 0
-    flagged: List[Dict] = []
+    flagged: list[dict] = []
 
     base_avail = section.get("extractors", {}).get(base, {}).get("status") == "available"
     head_avail = section.get("extractors", {}).get(head, {}).get("status") == "available"
@@ -931,7 +935,7 @@ def cmd_groundtruth(args: argparse.Namespace) -> int:
     ref = args.ref
     actual = args.actual
 
-    rows: List[Tuple[float, Dict]] = []
+    rows: list[tuple[float, dict]] = []
     for entry in _iter_pdf_entries(section):
         res = entry.get("results", {})
         if ref not in res or actual not in res:
@@ -992,7 +996,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"No section for format {fmt!r} in {run_dir}/manifest.json", file=sys.stderr)
         return 2
     target = args.pdf
-    hit: Optional[Dict] = None
+    hit: dict | None = None
     for entry in _iter_pdf_entries(section):
         if entry["pdf"] == target or Path(entry["pdf"]).name == target:
             hit = entry
@@ -1049,8 +1053,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_formats(raw: str) -> List[str]:
-    out: List[str] = []
+def _parse_formats(raw: str) -> list[str]:
+    out: list[str] = []
     for tok in raw.split(","):
         tok = tok.strip().lower()
         if not tok:
@@ -1134,7 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

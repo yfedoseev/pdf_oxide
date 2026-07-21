@@ -120,7 +120,7 @@ class AsyncPdfDocument:
     # -- Construction (hand-written) ----------------------------------------
 
     @staticmethod
-    async def open(path: str, password: str | None = None) -> "AsyncPdfDocument":
+    async def open(path: str, password: str | None = None) -> AsyncPdfDocument:
         """Open a PDF file.  The document is created on the background thread."""
         loop = asyncio.get_running_loop()
         inst = AsyncPdfDocument.__new__(AsyncPdfDocument)
@@ -133,7 +133,7 @@ class AsyncPdfDocument:
         return inst
 
     @staticmethod
-    async def from_bytes(data: bytes, password: str | None = None) -> "AsyncPdfDocument":
+    async def from_bytes(data: bytes, password: str | None = None) -> AsyncPdfDocument:
         """Open a PDF from bytes."""
         loop = asyncio.get_running_loop()
         inst = AsyncPdfDocument.__new__(AsyncPdfDocument)
@@ -158,7 +158,7 @@ class AsyncPdfDocument:
         """Shut down the background thread pool."""
         self._executor.shutdown(wait=False)
 
-    async def __aenter__(self) -> "AsyncPdfDocument":
+    async def __aenter__(self) -> AsyncPdfDocument:
         return self
 
     async def __aexit__(self, *exc) -> None:
