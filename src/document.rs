@@ -23845,6 +23845,220 @@ mod tests {
         pdf
     }
 
+    /// Build a minimal one-page PDF reproducing issue #913: text painted via
+    /// a Form XObject invoked as `q <6 numbers> /Name Do Q` — deliberately
+    /// missing the `cm` operator token, so the numbers are dangling operands
+    /// with nothing to consume them. Per ISO 32000-1:2008 §7.8.2 an
+    /// operator's operand is whatever immediately precedes it in the stream;
+    /// `Do`'s operand here is still the Name, not the stray numbers ahead of it.
+    ///
+    /// `direct_text`: when `Some`, the page's own content stream also draws
+    /// this text directly before invoking the XObject (mirrors the issue's
+    /// case_a_overlay_xobject.pdf); when `None`, the page draws nothing
+    /// itself and all text comes from the XObject (mirrors
+    /// case_b_all_xobject.pdf).
+    fn build_issue_913_xobject_pdf(direct_text: Option<&str>) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Overlay 6 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        let mut content = Vec::new();
+        if let Some(text) = direct_text {
+            content.extend_from_slice(
+                format!("BT /F1 12 Tf 1 0 0 1 20 250 Tm ({text}) Tj ET\n").as_bytes(),
+            );
+        }
+        // Deliberately missing `cm`: dangling "1 0 0 1 20 150" operands
+        // directly precede "/Overlay Do" — the exact malformed shape from
+        // issue #913's repro fixtures.
+        content.extend_from_slice(b"q 1 0 0 1 20 150 /Overlay Do Q");
+
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(&content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+              /Encoding /WinAnsiEncoding >>\nendobj\n",
+        );
+
+        let off6 = pdf.len();
+        let xobj_content = b"BT /F1 12 Tf 1 0 0 1 10 12 Tm (overlay text) Tj ET";
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Length {} >>\nstream\n",
+                xobj_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(xobj_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 7\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5, off6] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        pdf
+    }
+
+    /// Regression test for #913 (mixed direct text + overlay XObject, no
+    /// `cm`): both the page's own text and the XObject's overlay text must
+    /// be extracted, matching poppler's and pymupdf's behaviour on the same
+    /// malformed content (both tools resolve `Do`'s name from whatever
+    /// immediately precedes it, discarding the dangling numeric operands
+    /// rather than misreading them as the XObject name).
+    #[test]
+    fn test_issue_913_overlay_xobject_missing_cm() {
+        let pdf_bytes = build_issue_913_xobject_pdf(Some("base body text"));
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let chars: String = doc
+            .extract_chars(0)
+            .unwrap()
+            .iter()
+            .map(|c| c.char)
+            .collect();
+        assert!(chars.contains("base body text"), "missing direct text: {chars:?}");
+        assert!(chars.contains("overlay text"), "missing XObject text: {chars:?}");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("base body text"));
+        assert!(text.contains("overlay text"));
+
+        let plain = doc
+            .to_plain_text(0, &crate::converters::ConversionOptions::default())
+            .unwrap();
+        assert!(plain.contains("base body text"));
+        assert!(plain.contains("overlay text"));
+    }
+
+    /// Regression test for #913 (all text via XObject on an otherwise-blank
+    /// page, no `cm`): extraction must not come back empty.
+    #[test]
+    fn test_issue_913_all_text_via_xobject_missing_cm() {
+        let pdf_bytes = build_issue_913_xobject_pdf(None);
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let chars: String = doc
+            .extract_chars(0)
+            .unwrap()
+            .iter()
+            .map(|c| c.char)
+            .collect();
+        assert_eq!(chars, "overlay text");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("overlay text"), "extract_text came back empty: {text:?}");
+    }
+
+    /// Build a minimal one-page PDF where XObject "Outer" invokes a second
+    /// XObject "Inner" (both via the same malformed missing-`cm` `Do` shape
+    /// as [`build_issue_913_xobject_pdf`]), and "Inner" is where the actual
+    /// text lives. Covers the issue's suggested nested-XObject case.
+    fn build_issue_913_nested_xobject_pdf() -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Outer 6 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        let content = b"q 1 0 0 1 0 0 /Outer Do Q";
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+              /Encoding /WinAnsiEncoding >>\nendobj\n",
+        );
+
+        let off6 = pdf.len();
+        // "Outer" invokes "Inner" — same malformed missing-`cm` shape, one level deeper.
+        let outer_content = b"q 1 0 0 1 10 10 /Inner Do Q";
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] \
+                  /Resources << /XObject << /Inner 7 0 R >> >> /Length {} >>\nstream\n",
+                outer_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(outer_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off7 = pdf.len();
+        let inner_content = b"BT /F1 12 Tf 1 0 0 1 10 12 Tm (nested text) Tj ET";
+        pdf.extend_from_slice(
+            format!(
+                "7 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Length {} >>\nstream\n",
+                inner_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(inner_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 8\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5, off6, off7] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        pdf
+    }
+
+    /// Regression test for #913 (nested XObjects, no `cm` at either level):
+    /// recursion into a Form XObject invoked by another Form XObject must
+    /// still resolve each `Do`'s operand correctly.
+    #[test]
+    fn test_issue_913_nested_xobject_missing_cm() {
+        let pdf_bytes = build_issue_913_nested_xobject_pdf();
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("nested text"), "nested XObject text missing: {text:?}");
+    }
+
     // #572: a corrupt/zero startxref forces full-file xref reconstruction.
     // Because reconstruction already scans the whole file for every
     // uncompressed object, the document must pre-seed its object-scan cache
