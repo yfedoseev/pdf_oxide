@@ -3,7 +3,7 @@
 # Top Python PDF Libraries
 pymupdf>=1.23.0
 pymupdf4llm>=0.0.1
-pdfplumber>=0.10.0
+pdfplumber>=0.11.10
 pypdf>=3.17.0
 pdfminer.six>=20221105
 pikepdf>=8.0.0
