@@ -45,6 +45,19 @@ pub enum ReadingOrder {
     /// column fully (top-to-bottom) before moving to the next column.
     /// Best for newspapers, academic papers, and multi-column layouts.
     ColumnAware,
+    /// Logical-structure ordering from the document's `/StructTreeRoot`.
+    ///
+    /// For a Tagged PDF, ISO 32000-1:2008 §14.8.2.3 makes a pre-order traversal
+    /// of the structure hierarchy AUTHORITATIVE for reading order - it is the
+    /// producer's declared sequence, independent of glyph geometry, so it reads
+    /// tables and complex layouts correctly where a geometric XY-cut guesses.
+    ///
+    /// Spans are ordered by their marked-content id (`/MCID`) following that
+    /// traversal; any span without a matching MCID is appended in geometric
+    /// (`ColumnAware`) order. When the structure tree is absent or not
+    /// trustworthy for ordering (untagged, or `/Suspects true`), this falls back
+    /// to `ColumnAware` entirely, so it is always safe to request.
+    Structure,
 }
 
 /// In-memory reader used by `open()` and `from_bytes()`. Wrapping in an enum
@@ -462,6 +475,11 @@ pub struct PdfDocument {
     /// the second from cache. Cleared by redaction (`erase_region` /
     /// `clear_erase_regions`), the only span-affecting mutation.
     page_spans_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextSpan>>>>,
+    /// Per-page character cache for the unfiltered (`extract_chars`) result.
+    /// `postprocess_spans` needs the same char sequence the public API returns,
+    /// so without this every span extraction re-parses the content stream a
+    /// second time purely to stamp per-glyph x-origins.
+    page_chars_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextChar>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
     /// repetition. A span whose normalized text matches a signature
     /// sits near the top/bottom of the page is treated as an artifact.
@@ -473,7 +491,12 @@ pub struct PdfDocument {
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
-    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    running_artifact_signatures:
+        Mutex<Option<std::sync::Arc<std::collections::HashMap<String, usize>>>>,
+    /// Document-wide article threads (`/Threads`), parsed once. Reading-order
+    /// resolution consults them per page, and parsing walks the whole page
+    /// tree — so without this the cost per page scaled with the document.
+    article_threads_cache: Mutex<Option<std::sync::Arc<Vec<crate::structure::ArticleThread>>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -923,6 +946,11 @@ impl PdfDocument {
         // scan (vs. a parsed xref). Used to pre-seed the object-scan cache so
         // a later miss doesn't rescan the whole file a second time (#572).
         let mut xref_reconstructed = false;
+        // SYNTHETIC objects a recovery invented (a rebuilt Catalog / page-tree
+        // root for a truncated file). They have no byte offset, so they are
+        // seeded into the object cache after the document is built. Empty in the
+        // ordinary case.
+        let mut synthetic_objects: Vec<(ObjectRef, Object)> = Vec::new();
 
         // Try to parse xref table normally
         let (mut xref, trailer) = match Self::try_open_regular(&mut reader) {
@@ -935,7 +963,9 @@ impl PdfDocument {
                         "Regular xref parsing succeeded but table is empty, attempting reconstruction"
                     );
                     xref_reconstructed = true;
-                    Self::try_reconstruct_xref(&mut reader)?
+                    let (x, t, syn) = Self::try_reconstruct_xref(&mut reader)?;
+                    synthetic_objects = syn;
+                    (x, t)
                 } else {
                     // A valid xref can have any number of entries (§7.5.4).
                     // Small xrefs (e.g. portfolio PDFs with 3-4 objects) are perfectly
@@ -948,9 +978,10 @@ impl PdfDocument {
 
                 // Fall back to xref reconstruction
                 match Self::try_reconstruct_xref(&mut reader) {
-                    Ok((reconstructed_xref, reconstructed_trailer)) => {
+                    Ok((reconstructed_xref, reconstructed_trailer, syn)) => {
                         log::info!("Successfully reconstructed xref table");
                         xref_reconstructed = true;
+                        synthetic_objects = syn;
                         (reconstructed_xref, reconstructed_trailer)
                     },
                     Err(recon_err) => {
@@ -999,9 +1030,10 @@ impl PdfDocument {
                 "Root object not loadable after xref parse, falling back to xref reconstruction"
             );
             match Self::try_reconstruct_xref(&mut reader) {
-                Ok(result) => {
+                Ok((x, t, syn)) => {
                     xref_reconstructed = true;
-                    result
+                    synthetic_objects = syn;
+                    (x, t)
                 },
                 Err(_) => (xref, trailer), // Use original if reconstruction also fails
             }
@@ -1075,11 +1107,24 @@ impl PdfDocument {
             erase_regions: Mutex::new(HashMap::new()),
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
+            page_chars_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
+            article_threads_cache: Mutex::new(None),
             output_intent_cmyk_profile_cache: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
             warning_sink: crate::extractors::warnings::WarningSink::new(),
         };
+
+        // Seed any SYNTHETIC recovery objects (a Catalog / page-tree root rebuilt
+        // for a truncated file) into the object cache. They have no byte offset,
+        // so `load_object` - which checks the cache before the xref - is the only
+        // way to reach them. Done before encryption init so the /Root resolves.
+        if !synthetic_objects.is_empty() {
+            let mut cache = document.object_cache.lock_or_recover();
+            for (obj_ref, obj) in synthetic_objects {
+                cache.insert(obj_ref, obj);
+            }
+        }
 
         // Initialize encryption immediately
         if let Err(e) = document.ensure_encryption_initialized() {
@@ -1112,8 +1157,13 @@ impl PdfDocument {
         Ok((xref, trailer))
     }
 
-    /// Try to reconstruct the xref table by scanning the file.
-    fn try_reconstruct_xref<R: Read + Seek>(reader: &mut R) -> Result<(CrossRefTable, Object)> {
+    /// Try to reconstruct the xref table by scanning the file. The third tuple
+    /// element is any SYNTHETIC objects (a rebuilt Catalog / page-tree root for a
+    /// truncated file) the caller must seed into the object cache - empty in the
+    /// ordinary case.
+    fn try_reconstruct_xref<R: Read + Seek>(
+        reader: &mut R,
+    ) -> Result<(CrossRefTable, Object, Vec<(ObjectRef, Object)>)> {
         crate::xref_reconstruction::reconstruct_xref(reader)
     }
 
@@ -11468,30 +11518,29 @@ impl PdfDocument {
         out
     }
 
-    fn postprocess_spans(
-        &self,
-        page_index: usize,
-        raw_spans: Vec<crate::layout::TextSpan>,
-    ) -> Result<Vec<crate::layout::TextSpan>> {
-        let mut spans = raw_spans;
-
-        // Drop spans whose bbox lies entirely outside the page's MediaBox.
-        // PDFs that reuse one big Form XObject across pages (ExpertPdf
-        // similar tools — see issue B1 / nougat_005.pdf) rely on the
-        // content stream's `W n` clip rectangle to hide the off-page
-        // portion. Our text extractor doesn't honour `W n` yet, so
-        // without this filter every page emits all 5 pages' worth of
-        // spans at distinct but out-of-bounds Y coordinates. Keep spans
-        // that even partially overlap with MediaBox so we don't drop
-        // legitimate bleed / trim-mark content.
-        // get_page_media_box returns (llx, lly, urx, ury) — absolute corner
-        // coordinates per ISO 32000-1 §7.7.3.3, NOT (x, y, width, height).
+    /// Drop spans whose bbox lies ENTIRELY outside the page's MediaBox.
+    ///
+    /// PDFs that reuse one big Form XObject across pages (ExpertPdf and similar
+    /// tools - see issue B1 / nougat_005.pdf) rely on the content stream's `W n`
+    /// clip rectangle to hide the off-page portion. The text extractor does not
+    /// honour `W n` yet, so without this filter a page emits every page's worth of
+    /// spans at distinct but out-of-bounds Y coordinates. Spans that even
+    /// PARTIALLY overlap the MediaBox are kept, so legitimate bleed / trim-mark
+    /// content is never dropped.
+    ///
+    /// `get_page_media_box` returns `(llx, lly, urx, ury)` - absolute corner
+    /// coordinates per ISO 32000-1 s7.7.3.3, NOT `(x, y, width, height)`.
+    fn drop_offpage_spans(&self, page_index: usize, spans: &mut Vec<crate::layout::TextSpan>) {
         if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
             const EDGE_TOLERANCE_PT: f32 = 2.0;
-            let left = llx - EDGE_TOLERANCE_PT;
-            let bottom = lly - EDGE_TOLERANCE_PT;
-            let right = urx + EDGE_TOLERANCE_PT;
-            let top = ury + EDGE_TOLERANCE_PT;
+            // Normalise corners: some producers write the MediaBox with swapped
+            // corners (e.g. `[0 792 612 0]`, ury < lly). Taking min/max makes the
+            // bounds correct either way - without this a swapped box inverts the
+            // test below and drops the whole page's legitimate text.
+            let left = llx.min(urx) - EDGE_TOLERANCE_PT;
+            let right = llx.max(urx) + EDGE_TOLERANCE_PT;
+            let bottom = lly.min(ury) - EDGE_TOLERANCE_PT;
+            let top = lly.max(ury) + EDGE_TOLERANCE_PT;
             spans.retain(|span| {
                 let sx1 = span.bbox.x;
                 let sx2 = span.bbox.x + span.bbox.width;
@@ -11500,6 +11549,16 @@ impl PdfDocument {
                 sx2 > left && sx1 < right && sy2 > bottom && sy1 < top
             });
         }
+    }
+
+    fn postprocess_spans(
+        &self,
+        page_index: usize,
+        raw_spans: Vec<crate::layout::TextSpan>,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        let mut spans = raw_spans;
+
+        self.drop_offpage_spans(page_index, &mut spans);
 
         // Recover decimal points mis-decoded as `¬` (U+00AC) in Computer-Modern
         // math subsets, where the `/Differences` names the decimal slot
@@ -11795,10 +11854,26 @@ impl PdfDocument {
             return;
         }
 
-        let accurate = match self.extract_chars(page_index) {
+        let accurate = match self.cached_page_chars(page_index) {
             Ok(chars) if !chars.is_empty() => chars,
             _ => return,
         };
+
+        // Baseline index: char positions ordered by `origin_y`, so each span's
+        // baseline slice is a binary-searched range rather than a linear scan
+        // over every glyph on the page (that scan made this pass
+        // O(spans x chars) — the dominant per-page cost on long documents).
+        let mut by_y: Vec<u32> = (0..accurate.len() as u32).collect();
+        by_y.sort_by(|&a, &b| {
+            crate::utils::safe_float_cmp(
+                accurate[a as usize].origin_y,
+                accurate[b as usize].origin_y,
+            )
+        });
+        let ys: Vec<f32> = by_y
+            .iter()
+            .map(|&i| accurate[i as usize].origin_y)
+            .collect();
 
         for span in spans.iter_mut() {
             // Rotated-content spans are in the displayed frame (mapped on 90/270)
@@ -11819,14 +11894,33 @@ impl PdfDocument {
 
             // Accurate chars sharing this span's baseline, left-to-right.
             let baseline_tol = 0.6 * span.font_size.max(1.0);
-            let mut line: Vec<&crate::layout::TextChar> = accurate
+            // Chars sharing this span's baseline, left-to-right. The y-sorted
+            // index brackets a candidate range; the exact `abs()` predicate then
+            // selects from it, so the result matches a full linear scan even
+            // where the bracket arithmetic rounds differently. The widened
+            // bracket keeps that range a superset. Ordering by
+            // (origin_x, source index) reproduces the previous stable
+            // filter-then-sort: ties on origin_x keep their `accurate` order.
+            let bracket = baseline_tol + baseline_tol.abs() * 1e-6 + f32::EPSILON;
+            let lo = ys.partition_point(|&y| y < span.bbox.y - bracket);
+            let hi = ys.partition_point(|&y| y <= span.bbox.y + bracket);
+            let mut idx: Vec<u32> = by_y[lo..hi]
                 .iter()
-                .filter(|c| (c.origin_y - span.bbox.y).abs() <= baseline_tol)
+                .copied()
+                .filter(|&i| (accurate[i as usize].origin_y - span.bbox.y).abs() <= baseline_tol)
                 .collect();
-            if line.is_empty() {
+            if idx.is_empty() {
                 continue;
             }
-            line.sort_by(|a, b| crate::utils::safe_float_cmp(a.origin_x, b.origin_x));
+            idx.sort_by(|&a, &b| {
+                crate::utils::safe_float_cmp(
+                    accurate[a as usize].origin_x,
+                    accurate[b as usize].origin_x,
+                )
+                .then(a.cmp(&b))
+            });
+            let line: Vec<&crate::layout::TextChar> =
+                idx.iter().map(|&i| &accurate[i as usize]).collect();
 
             // Greedy per-glyph alignment. Anchor the scan cursor at the accurate
             // char nearest this span's left edge, then walk the span's glyphs,
@@ -14978,19 +15072,36 @@ impl PdfDocument {
     /// collects normalized text that appears in the top/bottom 12% band (and,
     /// on vertical-writing pages, the left/right 12% band), and keeps entries
     /// that recur on >=50% of pages.
+    /// Article threads for this document, parsed once and shared.
+    /// [`crate::structure::parse_article_threads`] walks the entire page tree,
+    /// and reading-order resolution asks for them on every page.
+    pub(crate) fn cached_article_threads(
+        &self,
+    ) -> std::sync::Arc<Vec<crate::structure::ArticleThread>> {
+        if let Some(cached) = self.article_threads_cache.lock_or_recover().as_ref() {
+            return std::sync::Arc::clone(cached);
+        }
+        let threads = std::sync::Arc::new(crate::structure::parse_article_threads(self));
+        *self.article_threads_cache.lock_or_recover() = Some(std::sync::Arc::clone(&threads));
+        threads
+    }
+
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::collections::HashMap<String, usize>> {
+    ) -> Result<std::sync::Arc<std::collections::HashMap<String, usize>>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
-                return Ok(map.clone());
+                // Shared by reference: this runs once per page and the map is
+                // document-wide, so cloning it here scaled with page count.
+                return Ok(std::sync::Arc::clone(map));
             }
         }
         let page_count = self.page_count()?;
         if page_count < 2 {
-            let empty = std::collections::HashMap::new();
-            *self.running_artifact_signatures.lock_or_recover() = Some(empty.clone());
+            let empty = std::sync::Arc::new(std::collections::HashMap::new());
+            *self.running_artifact_signatures.lock_or_recover() =
+                Some(std::sync::Arc::clone(&empty));
             return Ok(empty);
         }
 
@@ -15111,7 +15222,9 @@ impl PdfDocument {
                 (sig, first)
             })
             .collect();
-        *self.running_artifact_signatures.lock_or_recover() = Some(signatures.clone());
+        let signatures = std::sync::Arc::new(signatures);
+        *self.running_artifact_signatures.lock_or_recover() =
+            Some(std::sync::Arc::clone(&signatures));
         Ok(signatures)
     }
 
@@ -15395,6 +15508,23 @@ impl PdfDocument {
         self.assemble_text_from_spans(page_index, spans, &options)
     }
 
+    /// Geometric `ColumnAware` (XY-cut) span ordering. Shared by the
+    /// `ColumnAware` and `Structure` reading-order branches (the latter uses it
+    /// as its baseline and its tiebreak for unstructured spans).
+    fn order_spans_column_aware(
+        &self,
+        spans: Vec<crate::layout::TextSpan>,
+        page_index: usize,
+    ) -> Result<Vec<crate::layout::TextSpan>> {
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new().with_page(page_index as u32);
+        let ordered = strategy.apply(spans, &context)?;
+        Ok(ordered.into_iter().map(|o| o.span).collect())
+    }
+
     /// Extract text spans from a page using a specified reading order strategy.
     ///
     /// This method extracts text spans identically to [`extract_spans`](Self::extract_spans),
@@ -15500,6 +15630,14 @@ impl PdfDocument {
             self.extract_spans_raw_filtered(page_index, excluded_layers, excluded_inks)?
         };
 
+        // Drop text lying entirely off the MediaBox - a doc that reuses one big
+        // Form XObject across pages relies on the `W n` clip to hide the off-page
+        // portion, which the raw extractor does not honour. `extract_spans` applies
+        // this via `postprocess_spans`; the reading-order path must too, or it
+        // emits every page's worth of spans (measured: a stats report emitted a
+        // chart's full hidden data table, ~5x the visible label count).
+        self.drop_offpage_spans(page_index, &mut spans);
+
         // Apply reading order strategy
         match reading_order {
             ReadingOrder::TopToBottom => {
@@ -15509,13 +15647,74 @@ impl PdfDocument {
                 });
             },
             ReadingOrder::ColumnAware => {
-                use crate::pipeline::reading_order::{
-                    ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
-                };
-                let strategy = XYCutStrategy::new();
-                let context = ROContext::new().with_page(page_index as u32);
-                let ordered = strategy.apply(spans, &context)?;
-                spans = ordered.into_iter().map(|o| o.span).collect();
+                spans = self.order_spans_column_aware(spans, page_index)?;
+            },
+            ReadingOrder::Structure => {
+                // Geometric order is the baseline. The structure tree then fixes ONLY
+                // the spans it can fix unambiguously: TABLE cells.
+                //
+                // A geometric XY-cut reads a wide table column-major and drops cells;
+                // the structure tree's pre-order traversal gives the authoritative
+                // row-major order (§14.8.2.3). But applying that traversal to the WHOLE
+                // page also reorders flowing prose - where the tree's section order can
+                // legitimately differ from visual order (it de-prioritises page
+                // artifacts, for one) - which is a change, not an improvement. So table
+                // content is reordered IN PLACE by structure rank while every non-table
+                // span keeps its geometric position.
+                let mut ordered = self.order_spans_column_aware(spans, page_index)?;
+                if let Some(tree) = self.struct_tree_trustworthy() {
+                    // Populate the structure-content cache, then read it (it carries the
+                    // per-MCID `in_table` flag the mcid-order list does not).
+                    let _ = self.cached_mcid_order_for_page(&tree, page_index as u32);
+                    let content: Vec<crate::structure::OrderedContent> = self
+                        .structure_content_cache
+                        .lock_or_recover()
+                        .as_ref()
+                        .and_then(|c| c.get(&(page_index as u32)))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let page_scope = crate::structure::McidScope::Page(page_index as u32);
+                    // Structure rank for TABLE MCIDs only.
+                    let mut table_rank: HashMap<(crate::structure::McidScope, u32), usize> =
+                        HashMap::new();
+                    for (i, c) in content.iter().enumerate() {
+                        if let (true, Some(m)) = (c.in_table, c.mcid) {
+                            let scope = c.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                            table_rank.entry((scope, m)).or_insert(i);
+                        }
+                    }
+
+                    if !table_rank.is_empty() {
+                        let key_of = |s: &crate::layout::TextSpan| {
+                            s.mcid.and_then(|m| {
+                                let scope =
+                                    s.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                                table_rank
+                                    .get(&(scope, m))
+                                    .or_else(|| table_rank.get(&(page_scope.clone(), m)))
+                                    .copied()
+                            })
+                        };
+                        // The slots the table spans occupy in geometric order, and the
+                        // table spans themselves.
+                        let mut slots: Vec<usize> = Vec::new();
+                        let mut cells: Vec<(usize, crate::layout::TextSpan)> = Vec::new();
+                        for (idx, s) in ordered.iter().enumerate() {
+                            if let Some(r) = key_of(s) {
+                                slots.push(idx);
+                                cells.push((r, s.clone()));
+                            }
+                        }
+                        // Re-fill those exact slots with the cells in structure
+                        // (row-major) order. Non-table spans never move.
+                        cells.sort_by_key(|(r, _)| *r);
+                        for (slot, (_, cell)) in slots.into_iter().zip(cells) {
+                            ordered[slot] = cell;
+                        }
+                    }
+                }
+                spans = ordered;
             },
         }
 
@@ -16174,7 +16373,29 @@ impl PdfDocument {
     /// Character extraction is typically 30-50% faster than span extraction
     /// because it skips the text grouping and merging logic.
     pub fn extract_chars(&self, page_index: usize) -> Result<Vec<crate::layout::TextChar>> {
-        self.extract_chars_impl(page_index, HashSet::new(), HashSet::new())
+        Ok((*self.cached_page_chars(page_index)?).clone())
+    }
+
+    /// Shared, cached character sequence for a page — identical to what
+    /// [`Self::extract_chars`] returns, minus the clone. Only the unfiltered
+    /// extraction is cached; the layer/ink-filtered variant is keyed on its
+    /// filters and stays uncached.
+    fn cached_page_chars(
+        &self,
+        page_index: usize,
+    ) -> Result<std::sync::Arc<Vec<crate::layout::TextChar>>> {
+        if let Some(cached) = self.page_chars_cache.lock_or_recover().get(&page_index) {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let chars = std::sync::Arc::new(self.extract_chars_impl(
+            page_index,
+            HashSet::new(),
+            HashSet::new(),
+        )?);
+        self.page_chars_cache
+            .lock_or_recover()
+            .insert(page_index, std::sync::Arc::clone(&chars));
+        Ok(chars)
     }
 
     /// Extract characters from a page, excluding content from specified layers and inks.
@@ -16243,7 +16464,7 @@ impl PdfDocument {
             }
         }
 
-        let mut chars = extractor.extract(&content_data)?;
+        let mut chars = extractor.extract_owned(&content_data)?;
 
         chars.sort_by(|a, b| {
             let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
@@ -16370,8 +16591,13 @@ impl PdfDocument {
         // Materialize each span's chars ONCE (to_chars allocates + decodes); the
         // word-clustering loop below reuses chars_per_span instead of calling
         // to_chars a second time per span. Byte-identical, halves to_chars work.
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         if all_chars.is_empty() {
             return Ok(Vec::new());
         }
@@ -16405,7 +16631,7 @@ impl PdfDocument {
             std::collections::HashSet::new();
         let mut words = Vec::new();
         for (span_idx, span) in spans.iter().enumerate() {
-            let span_chars = &chars_per_span[span_idx];
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
@@ -16485,9 +16711,18 @@ impl PdfDocument {
         // not a same-line neighbour — never merge across it. Gated off for
         // RTL text, whose leftward flow is ordinary reading order.
         let mut merged: Vec<Word> = Vec::with_capacity(words.len());
+        // RTL-ness of each entry in `merged`, carried alongside it. `looks_rtl`
+        // scans a whole string, and `prev` below GROWS by `push_str` on every
+        // merge — re-deriving it per iteration made a chain of k merges cost
+        // O(k^2) characters, the same blow-up the backtrack guard above exists
+        // to prevent. It is an `any()` over the chars, so
+        // `looks_rtl(a + b) == looks_rtl(a) || looks_rtl(b)`: maintain it
+        // incrementally instead.
+        let mut merged_rtl: Vec<bool> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
         for (idx, word) in words.into_iter().enumerate() {
             let cur_rotated = rotated_word_indices.contains(&idx);
+            let word_rtl = crate::text::bidi::looks_rtl(&word.text);
             if !cur_rotated && !prev_rotated && !split_boundary_word_indices.contains(&idx) {
                 if let Some(prev) = merged.last_mut() {
                     let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
@@ -16495,8 +16730,7 @@ impl PdfDocument {
                     let delta_x = word.bbox.x - prev.bbox.x;
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                    let not_rtl = !crate::text::bidi::looks_rtl(&prev.text)
-                        && !crate::text::bidi::looks_rtl(&word.text);
+                    let not_rtl = !merged_rtl.last().copied().unwrap_or(false) && !word_rtl;
                     let is_math_backtrack =
                         y_diff > 1.0 && delta_x <= 0.5 && gap < -font_size && not_rtl;
                     // A LINE WRAP can land at nearly the same y as the line
@@ -16536,11 +16770,15 @@ impl PdfDocument {
                         }
                         prev.text.push_str(&word.text);
                         prev.chars.extend(word.chars);
+                        if let Some(flag) = merged_rtl.last_mut() {
+                            *flag |= word_rtl;
+                        }
                         continue;
                     }
                 }
             }
             merged.push(word);
+            merged_rtl.push(word_rtl);
             prev_rotated = cur_rotated;
         }
 
@@ -16688,8 +16926,13 @@ impl PdfDocument {
             crate::geometry::Rect::new(media_box.0, media_box.1, media_box.2, media_box.3);
 
         // Materialize each span's chars once (see extract_text_as_words).
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
         let mut params = AdaptiveLayoutParams::from_properties(&props);
@@ -16713,7 +16956,8 @@ impl PdfDocument {
         // are therefore lifted out and each emitted as its own line.
         let mut words: Vec<Word> = Vec::new();
         let mut word_rot_run: Vec<Option<usize>> = Vec::new();
-        for (span_idx, (span, span_chars)) in spans.iter().zip(chars_per_span.iter()).enumerate() {
+        for (span_idx, span) in spans.iter().enumerate() {
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
@@ -16927,10 +17171,19 @@ impl PdfDocument {
     /// This returns the decoded content stream bytes for the specified page.
     /// The content stream contains PDF operators that define the page's appearance.
     pub fn get_page_content_data(&self, page_index: usize) -> Result<Vec<u8>> {
+        Ok((*self.cached_page_content(page_index)?).clone())
+    }
+
+    /// Shared, cached content-stream bytes for a page — the same data
+    /// [`Self::get_page_content_data`] returns, minus the copy. Extraction
+    /// only ever reads the bytes, and a single `extract_words` page touches
+    /// this twice (once for spans, once for chars), so handing back the `Arc`
+    /// avoids copying the decompressed stream on every call.
+    fn cached_page_content(&self, page_index: usize) -> Result<std::sync::Arc<Vec<u8>>> {
         {
             let mut cache = self.page_content_cache.lock_or_recover();
             if let Some(data) = cache.get(&page_index) {
-                return Ok(data.as_ref().clone());
+                return Ok(std::sync::Arc::clone(data));
             }
         }
 
@@ -16948,7 +17201,7 @@ impl PdfDocument {
         let contents_ref = match page_dict.get("Contents") {
             Some(Object::Null) | None => {
                 log::debug!("Page {} has no /Contents (blank page)", page_index);
-                return Ok(Vec::new());
+                return Ok(std::sync::Arc::new(Vec::new()));
             },
             Some(c) => c,
         };
@@ -17039,9 +17292,10 @@ impl PdfDocument {
             String::from_utf8_lossy(&content_data)
         );
 
+        let content_data = std::sync::Arc::new(content_data);
         self.page_content_cache
             .lock_or_recover()
-            .insert(page_index, std::sync::Arc::new(content_data.clone()));
+            .insert(page_index, std::sync::Arc::clone(&content_data));
 
         Ok(content_data)
     }
@@ -22507,9 +22761,29 @@ impl PdfDocument {
                 // prefix is meaningless to consumers — strip it for dedup.
                 let base = font_arc.base_font.as_str();
                 let canonical = base.split_once('+').map(|(_, rest)| rest).unwrap_or(base);
-                by_name
-                    .entry(canonical.to_string())
-                    .or_insert_with(|| data.as_ref().clone());
+                // When several subsets share a base name, `get_font_set()` yields
+                // them in HashMap order, so `or_insert` kept a NONDETERMINISTIC
+                // one - the returned bytes changed run to run for the same PDF.
+                //
+                // Choose by a TOTAL ORDER instead: largest program, ties broken
+                // bytewise. Size is only a heuristic for "the richer subset" - a
+                // program's byte count also grows with hinting and auxiliary
+                // tables, so a larger subset is not necessarily a superset of a
+                // smaller one. What the total order does guarantee is the property
+                // callers actually depend on: the same PDF always yields the same
+                // bytes.
+                match by_name.entry(canonical.to_string()) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(data.as_ref().clone());
+                    },
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let cand = data.as_ref();
+                        let cur = o.get();
+                        if (cand.len(), cand.as_slice()) > (cur.len(), cur.as_slice()) {
+                            *o.get_mut() = cand.clone();
+                        }
+                    },
+                }
             }
         }
 
@@ -22716,6 +22990,25 @@ impl PdfDocument {
                 let entry = by_name
                     .entry(canonical.to_string())
                     .or_insert_with(|| (data.as_ref().clone(), HashMap::new(), HashMap::new()));
+                // Same total-order choice as `extract_embedded_fonts`: largest
+                // program, ties broken bytewise, rather than whichever HashMap
+                // order surfaced first. (Size is a heuristic for the richer
+                // subset, not a proof of superset - see the note there.)
+                //
+                // KNOWN GAP, deliberately left for a follow-up: the maps below
+                // still merge across ALL subsets while the emitted program is now
+                // a single chosen one, so a GID in the maps need not exist in the
+                // program we hand back. Worse, when two subsets disagree about a
+                // codepoint's GID - which subsets of one base font routinely do -
+                // `or_insert` keeps whichever arrived first, so the maps carry the
+                // very HashMap-order nondeterminism this fix removes from the
+                // program. Fixing it means binding the maps to the chosen subset
+                // instead of merging; that is a behaviour change (coverage may
+                // shrink where subsets are disjoint) and belongs in its own PR.
+                let cand = data.as_ref();
+                if (cand.len(), cand.as_slice()) > (entry.0.len(), entry.0.as_slice()) {
+                    entry.0 = cand.clone();
+                }
                 for (cp, gid) in uni_to_gid {
                     entry.1.entry(cp).or_insert(gid);
                 }
@@ -23742,6 +24035,164 @@ mod tests {
 
     /// Build a minimal PDF with a `/Font` resource (needed for `Tf`/`Tj`
     /// to resolve glyph widths), used by the NaN-bbox regression test.
+    /// Build a one-page PDF embedding TWO subsets of the SAME base font -
+    /// `ABCDEF+Helvetica` and `GHIJKL+Helvetica` - whose font programs differ
+    /// in size. `big_in_f1` chooses which resource slot carries the larger
+    /// program, so a caller can show the choice does not depend on the order
+    /// the fonts are encountered.
+    ///
+    /// Returns `(pdf_bytes, small_program, big_program)`. The programs are not
+    /// real TrueType: `FontFile2` is decoded and stored verbatim, never parsed,
+    /// so distinguishable payloads keep the test on the dedup logic.
+    fn build_pdf_with_two_font_subsets(big_in_f1: bool) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let small: Vec<u8> = b"SMALL-SUBSET-".iter().cycle().take(64).copied().collect();
+        let big: Vec<u8> = b"BIG-SUBSET-".iter().cycle().take(512).copied().collect();
+        let (f1_prog, f2_prog) = if big_in_f1 {
+            (big.clone(), small.clone())
+        } else {
+            (small.clone(), big.clone())
+        };
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offs: Vec<usize> = Vec::new();
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        offs.push(pdf.len());
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> >>\nendobj\n",
+        );
+
+        // /F1 = ABCDEF+Helvetica, /F2 = GHIJKL+Helvetica. Same canonical base
+        // name, so they must dedup to a single entry.
+        for (obj, prefix, desc_obj, file_obj, prog) in
+            [(4, "ABCDEF", 5, 6, &f1_prog), (7, "GHIJKL", 8, 9, &f2_prog)]
+        {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{obj} 0 obj\n<< /Type /Font /Subtype /TrueType /BaseFont /{prefix}+Helvetica \
+                     /FontDescriptor {desc_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{desc_obj} 0 obj\n<< /Type /FontDescriptor /FontName /{prefix}+Helvetica \
+                     /Flags 32 /FontFile2 {file_obj} 0 R >>\nendobj\n"
+                )
+                .as_bytes(),
+            );
+
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{file_obj} 0 obj\n<< /Length {} /Length1 {} >>\nstream\n",
+                    prog.len(),
+                    prog.len()
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(prog);
+            pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        }
+
+        // Objects were emitted 1,2,3 then 4,5,6 then 7,8,9 - already in order.
+        let xref_off = pdf.len();
+        let total = offs.len() + 1;
+        pdf.extend_from_slice(format!("xref\n0 {total}\n").as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref_off}\n%%EOF\n")
+                .as_bytes(),
+        );
+
+        (pdf, small, big)
+    }
+
+    /// Two subsets of one base font must dedup to ONE entry, and that entry
+    /// must be the SAME bytes every time - the bug this fix exists for.
+    ///
+    /// `get_font_set()` hands the subsets back in `HashMap` order, and each
+    /// call builds a fresh map whose iteration order is independently seeded,
+    /// so the old `or_insert` returned a different subset from run to run for
+    /// one unchanged PDF. Extracting repeatedly makes that flake fatal rather
+    /// than occasional; swapping which resource slot holds the larger program
+    /// shows the choice is driven by the total order, not by encounter order.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic() {
+        for big_in_f1 in [true, false] {
+            let (pdf, small, big) = build_pdf_with_two_font_subsets(big_in_f1);
+            let mut previous: Option<Vec<u8>> = None;
+
+            for round in 0..64 {
+                let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+                let fonts = doc.extract_embedded_fonts().expect("extract fonts");
+
+                assert_eq!(
+                    fonts.len(),
+                    1,
+                    "the two subsets share a base name and must dedup to one entry \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                let (name, bytes) = &fonts[0];
+                assert_eq!(name, "Helvetica", "the subset prefix must be stripped");
+                assert_eq!(
+                    bytes, &big,
+                    "the LARGER subset must win regardless of which slot holds it \
+                     (big_in_f1={big_in_f1}, round={round})"
+                );
+                assert_ne!(bytes, &small);
+
+                if let Some(prev) = &previous {
+                    assert_eq!(
+                        prev, bytes,
+                        "repeated extraction of one unchanged PDF must be byte-identical \
+                         (big_in_f1={big_in_f1}, round={round})"
+                    );
+                }
+                previous = Some(bytes.clone());
+            }
+        }
+    }
+
+    /// The same guarantee on the variant that also returns the Unicode/width
+    /// maps: it carries its own copy of the subset choice, so it needs its own
+    /// guard against regressing back to `or_insert`.
+    #[test]
+    fn embedded_font_subset_choice_is_deterministic_with_maps() {
+        let (pdf, small, big) = build_pdf_with_two_font_subsets(true);
+        let mut previous: Option<Vec<u8>> = None;
+
+        for round in 0..64 {
+            let doc = PdfDocument::from_bytes(pdf.clone()).expect("open two-subset pdf");
+            let fonts = doc
+                .extract_embedded_fonts_with_unicode_maps_and_widths()
+                .expect("extract fonts with maps");
+
+            assert_eq!(fonts.len(), 1, "must dedup to one entry (round={round})");
+            let (name, bytes, _uni, _widths) = &fonts[0];
+            assert_eq!(name, "Helvetica");
+            assert_eq!(bytes, &big, "the LARGER subset must win (round={round})");
+            assert_ne!(bytes, &small);
+
+            if let Some(prev) = &previous {
+                assert_eq!(prev, bytes, "repeated extraction must be stable (round={round})");
+            }
+            previous = Some(bytes.clone());
+        }
+    }
+
     fn build_minimal_pdf_with_font(content: &[u8]) -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
 

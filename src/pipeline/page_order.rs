@@ -221,7 +221,7 @@ fn page_article_bead_rects(
     page_index: usize,
     spans: &[crate::layout::TextSpan],
 ) -> Option<Vec<Rect>> {
-    let threads = crate::structure::parse_article_threads(doc);
+    let threads = doc.cached_article_threads();
     if threads.is_empty() {
         return None;
     }

@@ -5553,7 +5553,7 @@ impl PageRenderer {
     ///
     /// Per ISO 32000-1 §9.4 text-showing operators + §9.6 simple-font
     /// glyph rasterisation: every glyph in the run is laid into the
-    /// scratch pixmap via the same tt-parser / rustybuzz / ttf-outline
+    /// scratch pixmap via the same tt-parser / harfrust / ttf-outline
     /// path the visible paint uses, so the coverage mask is geometry-
     /// identical (including font-fallback substitutions) to the
     /// visible glyph bodies.

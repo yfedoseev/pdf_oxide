@@ -14,6 +14,24 @@ use crate::object::Object;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Name-derived Standard-14 classification of a font, resolved once and
+/// memoized (see [`FontInfo::std14_memo`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Std14Flags {
+    /// Font is one of the Times family.
+    pub is_times: bool,
+    /// Font is one of the Courier (monospace) family.
+    pub is_courier: bool,
+    /// Font name carries a Bold marker.
+    pub is_bold: bool,
+    /// Font name carries a BoldItalic marker.
+    pub is_bold_italic: bool,
+    /// Font is one of the Helvetica family.
+    pub is_helvetica: bool,
+    /// Font name carries an Italic marker.
+    pub is_italic: bool,
+}
+
 /// Font information extracted from a PDF font dictionary.
 #[derive(Debug, Clone)]
 pub struct FontInfo {
@@ -124,6 +142,16 @@ pub struct FontInfo {
     /// Index by byte value (0-255). Built lazily on first advance_position call.
     /// Eliminates per-byte bounds check and subtraction in get_glyph_width.
     pub byte_to_width_table: std::sync::OnceLock<[f32; 256]>,
+    /// Memo of [`FontInfo::get_font_weight`]. The name-based fallback lowercases
+    /// `base_font` and runs a dozen substring searches; text extraction asks for
+    /// the weight once per glyph, where the answer is loop-invariant.
+    pub weight_memo: std::sync::OnceLock<FontWeight>,
+    /// Memo of [`FontInfo::is_italic`] — same per-glyph hot path as `weight_memo`.
+    pub italic_memo: std::sync::OnceLock<bool>,
+    /// Memo of the Standard-14 name classification. `get_standard_font_width`
+    /// is called per glyph and otherwise re-strips the subset prefix and
+    /// re-scans a 15-name table every time.
+    pub std14_memo: std::sync::OnceLock<Option<Std14Flags>>,
     /// Raw `/Differences` glyph names retained by character code (simple fonts).
     /// Populated alongside the `Encoding::Custom` map during `parse_encoding`,
     /// but unlike the Custom map (which stores the *resolved* char) this keeps the
@@ -1454,6 +1482,9 @@ impl FontInfo {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names,
             wmode,
             cid_vertical_metrics,
@@ -2981,6 +3012,21 @@ impl FontInfo {
                 }
             }
         }
+        // The name classification below is a pure function of `base_font`, but
+        // this runs once per glyph — so it is resolved once and memoized.
+        let std14 = (*self.std14_memo.get_or_init(|| self.classify_std14()))?;
+        let is_bold = std14.is_bold;
+        if std14.is_courier {
+            return Some(600.0); // Monospace
+        }
+        let is_times = std14.is_times;
+        let code = char_code as u8;
+        self.std14_width(std14, is_times, is_bold, code)
+    }
+
+    /// Classify `base_font` against the Standard-14 set (ISO 32000-1 Annex D).
+    /// `None` when the font is not one of the width-bearing standard families.
+    fn classify_std14(&self) -> Option<Std14Flags> {
         // F13 fix: use exact match against the canonical 14 standard PDF font names
         // after stripping any SUBSET+ prefix (e.g. "ABCDEF+Helvetica" → "Helvetica").
         // `contains` would incorrectly match "HelveticaCorp-Custom" as Helvetica.
@@ -3028,16 +3074,27 @@ impl FontInfo {
             return None;
         }
 
-        if is_courier {
-            return Some(600.0); // Monospace
-        }
+        Some(Std14Flags {
+            is_times,
+            is_courier,
+            is_bold: name.contains("Bold"),
+            is_bold_italic: name.contains("BoldItalic"),
+            is_helvetica,
+            is_italic: name.contains("Italic"),
+        })
+    }
 
-        let code = char_code as u8;
-        let is_bold = name.contains("Bold");
-
+    /// Standard-14 width tables, keyed off the memoized classification.
+    fn std14_width(
+        &self,
+        std14: Std14Flags,
+        is_times: bool,
+        is_bold: bool,
+        code: u8,
+    ) -> Option<f32> {
         // Times-Roman / Times-Bold / Times-BoldItalic standard widths (Adobe AFM metrics)
         if is_times {
-            if name.contains("BoldItalic") {
+            if std14.is_bold_italic {
                 // Times-BoldItalic widths (Adobe Core 14 Fonts AFM).
                 return Some(match code {
                     32 => 250.0,
@@ -3211,7 +3268,7 @@ impl FontInfo {
                     _ => return None,
                 });
             }
-            if name.contains("Italic") {
+            if std14.is_italic {
                 // Times-Italic widths (Adobe Core 14 Fonts AFM).
                 return Some(match code {
                     32 => 250.0,
@@ -3392,7 +3449,7 @@ impl FontInfo {
         }
 
         // Helvetica / Helvetica-Bold standard widths (Adobe AFM metrics)
-        if is_helvetica {
+        if std14.is_helvetica {
             if is_bold {
                 // Helvetica-Bold / Helvetica-BoldOblique widths (Adobe Core 14 Fonts AFM).
                 return Some(match code {
@@ -4724,6 +4781,12 @@ impl FontInfo {
     /// - Table 123 (page 457): ForceBold flag at bit 19 (0x80000)
     /// - Section 9.6.2: StemV field interpretation
     pub fn get_font_weight(&self) -> FontWeight {
+        *self.weight_memo.get_or_init(|| self.compute_font_weight())
+    }
+
+    /// Uncached [`Self::get_font_weight`] body. Everything it reads is fixed at
+    /// font-load time, so `weight_memo` can hold the answer for the font's life.
+    fn compute_font_weight(&self) -> FontWeight {
         // ==================================================================================
         // PRIORITY 1: FontWeight Field (PDF Spec Table 122)
         // ==================================================================================
@@ -4848,8 +4911,10 @@ impl FontInfo {
     ///
     /// This is a heuristic check looking for "Italic" or "Oblique" in the font name.
     pub fn is_italic(&self) -> bool {
-        let name_lower = self.base_font.to_lowercase();
-        name_lower.contains("italic") || name_lower.contains("oblique")
+        *self.italic_memo.get_or_init(|| {
+            let name_lower = self.base_font.to_lowercase();
+            name_lower.contains("italic") || name_lower.contains("oblique")
+        })
     }
 
     /// Check if this is a symbolic font based on FontDescriptor flags.
@@ -6376,6 +6441,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6416,6 +6484,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6459,6 +6530,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6499,6 +6573,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6545,6 +6622,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6592,6 +6672,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6638,6 +6721,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6682,6 +6768,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6824,6 +6913,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -6956,6 +7048,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7006,6 +7101,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7049,6 +7147,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7096,6 +7197,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7139,6 +7243,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7182,6 +7289,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7229,6 +7339,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7272,6 +7385,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7315,6 +7431,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7362,6 +7481,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7404,6 +7526,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7446,6 +7571,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7488,6 +7616,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7530,6 +7661,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7572,6 +7706,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7614,6 +7751,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7656,6 +7796,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7698,6 +7841,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -7988,6 +8134,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -8042,6 +8191,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -8092,6 +8244,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -8152,6 +8307,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -8209,6 +8367,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10386,6 +10547,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10437,6 +10601,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10484,6 +10651,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10529,6 +10699,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10580,6 +10753,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10728,6 +10904,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,

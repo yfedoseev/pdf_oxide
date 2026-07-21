@@ -31,8 +31,10 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
         return Err(Error::Decode("CCITT decompression requires /Columns parameter".to_string()));
     }
 
-    let width = params.columns as u16;
-    let height_opt = params.rows.map(|h| h as u16);
+    // `fax` 0.3 takes u32 dimensions, which is what CcittParams already holds:
+    // the previous `as u16` narrowing silently truncated /Columns > 65535.
+    let width = params.columns;
+    let height_opt = params.rows;
 
     log::debug!(
         "CCITT decompression: {} bytes, {}x{} pixels, K={}, BlackIs1={}",
@@ -110,8 +112,8 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
 /// comply with the CCITT specification.
 fn decompress_with_fax(
     data: &[u8],
-    width: u16,
-    height: Option<u16>,
+    width: u32,
+    height: Option<u32>,
     params: &CcittParams,
 ) -> Result<Vec<u8>> {
     let width_usize = width as usize;
@@ -185,7 +187,7 @@ fn decompress_with_fax(
 fn try_decode_with_fax(
     data: &[u8],
     width: usize,
-    height: Option<u16>,
+    height: Option<u32>,
     params: &CcittParams,
 ) -> Result<Vec<u8>> {
     use fax::decoder;
@@ -198,7 +200,7 @@ fn try_decode_with_fax(
 
     let success = if params.is_group_4() {
         log::debug!("Using Group 4 (T.6) decoder");
-        decoder::decode_g4(bytes_iter, width as u16, height, |transitions: &[u16]| {
+        decoder::decode_g4(bytes_iter, width as u32, height, |transitions: &[u32]| {
             // Convert run-length transitions to pixel bytes
             let row_bytes = transitions_to_bytes(transitions, width);
             output_rows.push(row_bytes);
@@ -206,7 +208,7 @@ fn try_decode_with_fax(
     } else {
         log::debug!("Using Group 3 (T.4) decoder");
         // Group 3 has a different signature - no width/height params in callback
-        decoder::decode_g3(bytes_iter, |transitions: &[u16]| {
+        decoder::decode_g3(bytes_iter, |transitions: &[u32]| {
             // Convert run-length transitions to pixel bytes
             let row_bytes = transitions_to_bytes(transitions, width);
             output_rows.push(row_bytes);
@@ -241,18 +243,26 @@ fn try_decode_with_fax(
 /// - Pixels 0-2: white
 /// - Pixels 3-4: black
 /// - Pixels 5-7: white
-pub(crate) fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8> {
+///
+/// Generic over the transition scalar so both transition producers can share it
+/// without converting a row: the in-house decoder emits `u16`, while the `fax`
+/// crate emits `u32` (widened in fax 0.3). Positions are compared in `usize`,
+/// so neither width is truncated.
+pub(crate) fn transitions_to_bytes<T: Copy + Into<u32>>(
+    transitions: &[T],
+    width: usize,
+) -> Vec<u8> {
     let bytes_per_row = width.div_ceil(8);
     let mut row_bytes = vec![0u8; bytes_per_row];
 
     let mut is_black = false; // Start with white
-    let mut start_pos = 0u16;
+    let mut start_pos: usize = 0;
 
     for &transition_pos in transitions {
-        let transition_pos = transition_pos as usize;
+        let transition_pos = Into::<u32>::into(transition_pos) as usize;
         if is_black {
             // Fill black pixels from start_pos to transition_pos
-            for pixel_idx in start_pos as usize..transition_pos.min(width) {
+            for pixel_idx in start_pos..transition_pos.min(width) {
                 let byte_idx = pixel_idx / 8;
                 let bit_idx = 7 - (pixel_idx % 8);
                 row_bytes[byte_idx] |= 1 << bit_idx;
@@ -260,12 +270,12 @@ pub(crate) fn transitions_to_bytes(transitions: &[u16], width: usize) -> Vec<u8>
         }
         // Switch color for next run
         is_black = !is_black;
-        start_pos = transition_pos as u16;
+        start_pos = transition_pos;
     }
 
     // Handle remaining pixels in the last run
-    if is_black && (start_pos as usize) < width {
-        for pixel_idx in (start_pos as usize)..width {
+    if is_black && start_pos < width {
+        for pixel_idx in start_pos..width {
             let byte_idx = pixel_idx / 8;
             let bit_idx = 7 - (pixel_idx % 8);
             row_bytes[byte_idx] |= 1 << bit_idx;
@@ -386,10 +396,25 @@ mod tests {
         // - White from 5-7 (2 pixels)
         // - Black from 7-8 (1 pixel)
         // Should produce: 0b00111001 = 57 (0x39)
-        let transitions = vec![2, 5, 7];
-        let row = transitions_to_bytes(&transitions, 8);
+        // Exercised for both transition scalars: the in-house decoder emits
+        // u16, the fax crate (0.3+) emits u32, and both share this packer.
+        let row_u16 = transitions_to_bytes(&[2u16, 5, 7], 8);
+        assert_eq!(row_u16.len(), 1);
+        assert_eq!(row_u16[0], 0b00111001);
 
-        assert_eq!(row.len(), 1);
-        assert_eq!(row[0], 0b00111001);
+        let row_u32 = transitions_to_bytes(&[2u32, 5, 7], 8);
+        assert_eq!(row_u32, row_u16, "u32 and u16 transitions must pack identically");
+    }
+
+    /// A transition beyond u16::MAX must not wrap: fax 0.3 widened transitions
+    /// to u32, and positions are compared in usize.
+    #[test]
+    fn test_transitions_to_bytes_beyond_u16() {
+        let width = 70_000usize;
+        // black run from 65_536 to 65_544 - a position that u16 could not hold
+        let row = transitions_to_bytes(&[65_536u32, 65_544], width);
+        assert_eq!(row.len(), width.div_ceil(8));
+        assert_eq!(row[65_536 / 8], 0xFF, "the 8 pixels at 65536.. must be black");
+        assert!(row[..65_536 / 8].iter().all(|&b| b == 0), "everything before must stay white");
     }
 }
