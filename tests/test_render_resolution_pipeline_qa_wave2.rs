@@ -659,11 +659,14 @@ fn qa_text_three_consecutive_tj_type4_separation_capability() {
     let on = render_with_pipeline(&doc, true);
 
     // Pipeline: magenta. Anti-aliased halo around small glyphs blends
-    // magenta with white background — pure-magenta pixels are R=255,B=255
-    // and halo lifts G toward 255 too. Channel SHAPE: R/B >= G + margin.
+    // magenta with white background. Pure process-ink magenta is
+    // #EC008C = (236, 0, 140); averaged with the white halo the ink
+    // trends (~249, ~183, ~222), so R-G ~ 66 and B-G ~ 39 (process
+    // magenta's blue is lower than the old additive B=255). Channel
+    // SHAPE: R/B >= G + margin, well clear of solid black's R=G=B.
     let avg_on = average_ink_rgb(&on, 0, 30, 100, 95).expect("pipeline: magenta ink");
     assert!(
-        avg_on.0 > avg_on.1 + 40.0 && avg_on.2 > avg_on.1 + 40.0,
+        avg_on.0 > avg_on.1 + 25.0 && avg_on.2 > avg_on.1 + 25.0,
         "pipeline: three Tj glyphs under Type 4 Separation must paint magenta-shaped \
          (R,B above G), got ({:.1}, {:.1}, {:.1})",
         avg_on.0,

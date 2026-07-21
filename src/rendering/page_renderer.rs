@@ -6309,9 +6309,11 @@ impl PageRenderer {
                 return (cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
             }
         }
-        // §10.3.5 inverse for the qcms / no-CMM backends. K stays at 0
-        // because the additive-clamp form `(C, M, Y) = (1-R, 1-G, 1-B)`
-        // does not encode ink-coverage in K.
+        // Process-ink separation for the qcms / no-CMM backends: the inverse of
+        // the tetralinear `crate::color::cmyk_to_rgb`, so a pure-RGB paint
+        // mirrored into the CMYK sidecar and composited back round-trips within
+        // the process gamut (an out-of-gamut sRGB paint gamut-compresses). K
+        // stays 0 (no black generation). Replaces the additive `(1-R,1-G,1-B)`.
         //
         // When the document catalog DECLARES an /OutputIntents array
         // but `output_intent_cmyk_profile()` returns `None`, the
@@ -6335,7 +6337,7 @@ impl PageRenderer {
             );
             self.k_zero_warning_emitted = true;
         }
-        (1.0 - r, 1.0 - g, 1.0 - b, 0.0)
+        crate::color::rgb_to_cmyk(r, g, b)
     }
 
     /// Mirror an RGB-source paint into the CMYK sidecar via §11.3.4 +
@@ -7866,7 +7868,7 @@ impl PageRenderer {
             // backend has the channel decomposition. Project to RGBA
             // via the context-aware CMYK→RGB path: consult the
             // document's /OutputIntents CMYK profile when present, fall
-            // back to §10.3.5 additive-clamp otherwise.
+            // back to the process-ink conversion otherwise.
             ResolvedColor::Cmyk { c, m, y, k, a } => {
                 let (r, g, b) =
                     crate::rendering::resolution::color::cmyk_to_rgb_via_intent(c, m, y, k, &ctx);
@@ -9251,14 +9253,17 @@ fn pixmap_paint_for_image_blit(
     paint
 }
 
-/// Convert DeviceCMYK (0.0–1.0) to DeviceRGB (0.0–1.0) per ISO 32000-1:2008
-/// §10.3.5. The additive-clamp formula `R = 1 − min(1, C+K)` is the
-/// spec-mandated fallback when no ICC profile is available.
+/// Convert DeviceCMYK (0.0-1.0) to DeviceRGB (0.0-1.0) using the PROCESS-INK
+/// conversion (`crate::color::cmyk_to_rgb`, tetralinear over the 16 measured ink
+/// corners), NOT the naive additive-clamp `R = 1 - min(1, C+K)`. This unifies
+/// the renderer's DeviceCMYK display with the text/extraction and image paths so
+/// the same CMYK value resolves to the same RGB everywhere (100% K is `#231F20`,
+/// 100% cyan `#00ADEF`). The RGB->CMYK sidecar inverse is
+/// `crate::color::rgb_to_cmyk`, which keeps the overprint round-trip consistent
+/// within the process gamut. A real ICC/OutputIntent CMM still takes precedence
+/// when a profile is available.
 fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
-    let r = 1.0 - (c + k).min(1.0);
-    let g = 1.0 - (m + k).min(1.0);
-    let b = 1.0 - (y + k).min(1.0);
-    (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+    crate::color::cmyk_to_rgb(c, m, y, k)
 }
 
 /// Parse a colour-key `/Mask` array (ISO 32000-1 §8.9.6.4) into per-component
@@ -9911,18 +9916,18 @@ mod tests {
 
     #[test]
     fn test_cmyk_to_rgb_black() {
+        // Process inks (not additive): 100% K is the K ink #231F20, NOT #000000.
         let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
-        assert!((r - 0.0).abs() < 0.001);
-        assert!((g - 0.0).abs() < 0.001);
-        assert!((b - 0.0).abs() < 0.001);
+        let q = |v: f32| (v * 255.0).round() as u8;
+        assert_eq!([q(r), q(g), q(b)], [0x23, 0x1F, 0x20]);
     }
 
     #[test]
     fn test_cmyk_to_rgb_pure_cyan() {
+        // Process inks (not additive): 100% cyan is #00ADEF, NOT #00FFFF.
         let (r, g, b) = cmyk_to_rgb(1.0, 0.0, 0.0, 0.0);
-        assert!((r - 0.0).abs() < 0.001);
-        assert!((g - 1.0).abs() < 0.001);
-        assert!((b - 1.0).abs() < 0.001);
+        let q = |v: f32| (v * 255.0).round() as u8;
+        assert_eq!([q(r), q(g), q(b)], [0x00, 0xAD, 0xEF]);
     }
 
     #[test]
@@ -10135,9 +10140,11 @@ mod tests {
             .expect("Tr=1 stroke side must produce ResolvedColors");
 
         let (r, g, b, _a) = colors.stroke.expect("Tr=1 must populate the stroke side");
+        // Process-ink magenta corner #EC008C = (0.9255, 0, 0.5490); the
+        // legacy 1-tint=0 fallback would put black on the stroke channel.
         assert!(
-            r > 0.78 && g < 0.24 && b > 0.78,
-            "stroke side must be magenta (Type-4 evaluated), \
+            (r - 0.9255).abs() < 0.02 && g < 0.02 && (b - 0.5490).abs() < 0.02,
+            "stroke side must be process-ink magenta (Type-4 evaluated), \
              not the legacy 1-tint=0 black; got ({r}, {g}, {b})"
         );
         // The fill channel must not have been resolved — the helper
@@ -10222,9 +10229,10 @@ mod tests {
             .expect("Type 4 Separation fill must splice through ImageMask variant");
 
         let (r, g, b) = spliced.fill_color_rgb;
+        // Process-ink magenta corner #EC008C = (0.9255, 0, 0.5490).
         assert!(
-            r > 0.78 && g < 0.24 && b > 0.78,
-            "ImageMask fill must be magenta (Type 4 evaluated), not legacy black; got ({r}, {g}, {b})"
+            (r - 0.9255).abs() < 0.02 && g < 0.02 && (b - 0.5490).abs() < 0.02,
+            "ImageMask fill must be process-ink magenta (Type 4 evaluated), not legacy black; got ({r}, {g}, {b})"
         );
         // Stroke side must remain untouched — the variant is fill-only.
         assert_eq!(
@@ -10303,11 +10311,12 @@ mod tests {
             .expect("Type 4 Separation full-tint must resolve to Some(rgba)");
         let (r, g, b, a) = rgba;
         assert!(
-            (r - 1.0).abs() < 1.0e-3
+            (r - 0.9255).abs() < 1.0e-3
                 && g.abs() < 1.0e-3
-                && (b - 1.0).abs() < 1.0e-3
+                && (b - 0.5490).abs() < 1.0e-3
                 && (a - 1.0).abs() < 1.0e-3,
-            "Type 4 Separation at tint=1 must produce magenta RGBA (≈1, 0, 1, 1); got ({r}, {g}, {b}, {a})"
+            "Type 4 Separation at tint=1 must produce process-ink magenta RGBA \
+             (#EC008C ≈ 0.9255, 0, 0.5490, 1); got ({r}, {g}, {b}, {a})"
         );
     }
 
@@ -10350,9 +10359,9 @@ mod tests {
             "DeviceGray must expand the single component to (g, g, g); got ({r}, {g}, {b})"
         );
 
-        // DeviceCMYK: additive-clamp conversion `(1-c-k, 1-m-k,
-        // 1-y-k)` with clamping to [0, 1]. Pure cyan (1, 0, 0, 0)
-        // → RGB(0, 1, 1).
+        // DeviceCMYK: process-ink conversion (tetralinear over the 16
+        // measured ink corners). Pure cyan (1, 0, 0, 0) lands on the
+        // measured cyan corner #00ADEF = (0, 0.6784, 0.9373).
         let cmyk_space = Object::Name("DeviceCMYK".to_string());
         let rgba = renderer
             .pipeline_resolve_components(
@@ -10365,8 +10374,8 @@ mod tests {
             .expect("DeviceCMYK must resolve");
         let (r, g, b, _a) = rgba;
         assert!(
-            r.abs() < 1.0e-3 && (g - 1.0).abs() < 1.0e-3 && (b - 1.0).abs() < 1.0e-3,
-            "DeviceCMYK pure cyan must map to (0, 1, 1) under additive clamp; got ({r}, {g}, {b})"
+            r.abs() < 1.0e-3 && (g - 0.6784).abs() < 1.0e-3 && (b - 0.9373).abs() < 1.0e-3,
+            "DeviceCMYK pure cyan must map to process-ink #00ADEF (0, 0.6784, 0.9373); got ({r}, {g}, {b})"
         );
     }
 

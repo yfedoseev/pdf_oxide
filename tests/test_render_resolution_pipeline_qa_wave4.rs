@@ -731,12 +731,12 @@ fn qa_inline_separation_devicecmyk_type4_capability_pin() {
     );
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
-    // Pipeline evaluates the Type-4 program → CMYK(0, 1, 0, 0) →
-    // RGB(1, 0, 1) magenta.
+    // Pipeline evaluates the Type-4 program -> CMYK(0, 1, 0, 0) ->
+    // process-ink magenta #EC008C = (236, 0, 140).
     let (r_on, g_on, b_on, _) = pixel_at(&on, 5, 50);
     assert!(
-        r_on >= 250 && g_on <= 5 && b_on >= 250,
-        "pipeline path must paint Type-4 magenta at C0 end; got ({r_on}, {g_on}, {b_on})"
+        r_on >= 225 && g_on <= 5 && (125..=155).contains(&b_on),
+        "pipeline path must paint Type-4 process-ink magenta at C0 end; got ({r_on}, {g_on}, {b_on})"
     );
 }
 
@@ -767,11 +767,11 @@ fn qa_iccbased_n4_cmyk_endpoint_pipeline_corrects_inline_truncation() {
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
 
-    // Pipeline path: ICC N=4 → CMYK → RGB(1, 0, 1) magenta.
+    // Pipeline path: ICC N=4 -> CMYK -> process-ink magenta #EC008C = (236, 0, 140).
     let (r_on, g_on, b_on, _) = center_pixel(&on);
     assert!(
-        r_on > 240 && g_on < 20 && b_on > 240,
-        "pipeline must convert ICCBased N=4 /C0 [0 1 0 0] through CMYK→RGB to magenta; \
+        r_on > 225 && g_on < 20 && (125..=155).contains(&b_on),
+        "pipeline must convert ICCBased N=4 /C0 [0 1 0 0] through CMYK->RGB to process-ink magenta; \
          got ({r_on}, {g_on}, {b_on})"
     );
 }
@@ -863,11 +863,11 @@ fn qa_devicen_two_colorant_type4_capability_pin() {
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
 
-    // Pipeline: DeviceN/CMYK/Type-4 → magenta.
+    // Pipeline: DeviceN/CMYK/Type-4 -> process-ink magenta #EC008C = (236, 0, 140).
     let (r_on, g_on, b_on, _) = center_pixel(&on);
     assert!(
-        r_on > 240 && g_on < 20 && b_on > 240,
-        "pipeline DeviceN/CMYK/Type-4 must produce magenta; got ({r_on}, {g_on}, {b_on})"
+        r_on > 225 && g_on < 20 && (125..=155).contains(&b_on),
+        "pipeline DeviceN/CMYK/Type-4 must produce process-ink magenta; got ({r_on}, {g_on}, {b_on})"
     );
 }
 

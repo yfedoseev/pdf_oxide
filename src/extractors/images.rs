@@ -1346,33 +1346,33 @@ fn expand_indexed_to_rgb_with_transform(
     Ok(out)
 }
 
-/// Convert a single CMYK pixel to RGB.
+/// Convert a single DeviceCMYK pixel to RGB.
 ///
-/// Shared conversion math used by both bulk CMYK→RGB and Indexed palette
+/// Shared conversion math used by both bulk CMYK->RGB and Indexed palette
 /// expansion so the two paths cannot drift apart.
-/// Convert one CMYK pixel to RGB using the PDF 32000-1:2008 §10.3.5 formula:
 ///
-///   R = 1 − min(1, C + K)
-///   G = 1 − min(1, M + K)
-///   B = 1 − min(1, Y + K)
-///
-/// This is the spec-mandated fallback used whenever no ICC profile drives the
-/// conversion. For pixels inside an `/ICCBased` colour space a real CMM
-/// (qcms / lcms2) would replace this — tracked separately. Note the spec
-/// formula is strictly additive-then-clamp; a multiplicative `(1-C)(1-K)`
-/// variant is common in imaging stacks but does not match §10.3.5 on
-/// heavily-inked samples.
+/// Uses the PROCESS-INK conversion (`color::cmyk_to_rgb`, tetralinear over the
+/// 16 measured ink corners of the CMYK cube), NOT the naive additive-then-clamp
+/// `R = 1 - min(1, C+K)`. The additive form treats the inks as pure subtractive
+/// primaries and so renders 100% K as `#000000` and 100% cyan as `#00FFFF`;
+/// DeviceCMYK is a *device* space, so the colour is what the inks look like -
+/// 100% K is `#231F20`, 100% cyan `#00ADEF`. This is the same conversion the
+/// text/vector paths already use, so a DeviceCMYK image now matches the colour
+/// of DeviceCMYK text and fills on the same page. For `/ICCBased` CMYK a real
+/// CMM (qcms / lcms2) still takes precedence when a profile is available; this
+/// is the no-profile fallback.
 pub(crate) fn cmyk_pixel_to_rgb(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
-    let c = c as f32 / 255.0;
-    let m = m as f32 / 255.0;
-    let y = y as f32 / 255.0;
-    let k = k as f32 / 255.0;
-
-    let r = ((1.0 - (c + k).min(1.0)) * 255.0).round() as u8;
-    let g = ((1.0 - (m + k).min(1.0)) * 255.0).round() as u8;
-    let b = ((1.0 - (y + k).min(1.0)) * 255.0).round() as u8;
-
-    [r, g, b]
+    let (r, g, b) = crate::color::cmyk_to_rgb(
+        c as f32 / 255.0,
+        m as f32 / 255.0,
+        y as f32 / 255.0,
+        k as f32 / 255.0,
+    );
+    [
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    ]
 }
 
 /// Extract `/WhitePoint` from a Lab colour-space PDF object.
@@ -2238,6 +2238,17 @@ mod indexed_tests {
         let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::CMYK, 1, 1, 8).unwrap();
         let expected = cmyk_pixel_to_rgb(64, 128, 192, 32);
         assert_eq!(out, expected.to_vec());
+    }
+
+    #[test]
+    fn cmyk_pixel_uses_process_inks_not_additive() {
+        // DeviceCMYK images convert via the process-ink corners (matching the
+        // text/vector paths), NOT the naive additive `1 - min(1, C+K)`. 100% K is
+        // the K ink #231F20 (not #000000); process cyan is #00ADEF (not #00FFFF).
+        assert_eq!(cmyk_pixel_to_rgb(0, 0, 0, 255), [0x23, 0x1F, 0x20]);
+        assert_eq!(cmyk_pixel_to_rgb(255, 0, 0, 0), [0x00, 0xAD, 0xEF]);
+        // No ink at all is the paper.
+        assert_eq!(cmyk_pixel_to_rgb(0, 0, 0, 0), [255, 255, 255]);
     }
 
     #[test]

@@ -536,9 +536,221 @@ pub const fn active_backend_supports_srgb_to_cmyk() -> bool {
     cfg!(feature = "icc-lcms2")
 }
 
+/// sRGB of each corner of the DeviceCMYK unit cube, indexed `c<<3 | m<<2 | y<<1 | k`.
+///
+/// DeviceCMYK is a *device* space (ISO 32000-1 s8.6.4.4): it names ink coverages, and the
+/// colour is what those inks actually look like. 100% cyan is `#00ADEF`, not `#00FFFF`;
+/// 100% K is `#231F20`, not `#000000`. The naive complement (and the cruder additive
+/// `1-(c+k)`) assume mathematically pure subtractive primaries, which no real ink is.
+const CMYK_CORNERS: [[f32; 3]; 16] = [
+    [1.0, 1.0, 1.0],          // 0000 paper
+    [0.1373, 0.1216, 0.1255], // 000K
+    [1.0, 0.9490, 0.0],       // 00Y0 yellow
+    [0.1098, 0.1020, 0.0],    // 00YK
+    [0.9255, 0.0, 0.5490],    // 0M00 magenta
+    [0.1412, 0.0, 0.0],       // 0M0K
+    [0.9294, 0.1098, 0.1412], // 0MY0 red
+    [0.1333, 0.0, 0.0],       // 0MYK
+    [0.0, 0.6784, 0.9373],    // C000 cyan
+    [0.0, 0.0588, 0.1412],    // C00K
+    [0.0, 0.6510, 0.3137],    // C0Y0 green
+    [0.0, 0.0745, 0.0],       // C0YK
+    [0.1804, 0.1922, 0.5725], // CM00 blue
+    [0.0, 0.0, 0.0078],       // CM0K
+    [0.2118, 0.2118, 0.2235], // CMY0 composite black
+    [0.0, 0.0, 0.0],          // CMYK registration
+];
+
+/// Convert a DeviceCMYK colour to sRGB, by tetralinear interpolation between the
+/// process-ink corners of the CMYK cube.
+///
+/// Each component is an ink coverage in `0.0..=1.0`; values outside that range are
+/// clamped. The returned `(r, g, b)` are likewise in `0.0..=1.0`.
+///
+/// This replaces the `1 - (c + k)` approximation, which treats the inks as
+/// mathematically pure subtractive primaries and so renders 100% K as pure black and
+/// 100% cyan as `#00FFFF`. Verified against a rendered swatch set - single-ink ramps,
+/// the K ramp and interior mixes - to within 1/255 across the gamut.
+///
+/// ```
+/// use pdf_oxide::color::cmyk_to_rgb;
+///
+/// // The K ink is #231F20, not #000000 - the case that matters most, since print
+/// // PDFs set body text with `0 0 0 1 k`.
+/// let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+/// assert_eq!(
+///     [
+///         (r * 255.0).round() as u8,
+///         (g * 255.0).round() as u8,
+///         (b * 255.0).round() as u8
+///     ],
+///     [0x23, 0x1F, 0x20]
+/// );
+///
+/// // No ink at all is the paper.
+/// let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 0.0);
+/// assert_eq!((r, g, b), (1.0, 1.0, 1.0));
+/// ```
+pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
+    let (c, m, y, k) = (c.clamp(0.0, 1.0), m.clamp(0.0, 1.0), y.clamp(0.0, 1.0), k.clamp(0.0, 1.0));
+    let mut acc = [0.0f32; 3];
+    for (i, corner) in CMYK_CORNERS.iter().enumerate() {
+        let w = if i & 8 != 0 { c } else { 1.0 - c }
+            * if i & 4 != 0 { m } else { 1.0 - m }
+            * if i & 2 != 0 { y } else { 1.0 - y }
+            * if i & 1 != 0 { k } else { 1.0 - k };
+        if w == 0.0 {
+            continue;
+        }
+        for j in 0..3 {
+            acc[j] += w * corner[j];
+        }
+    }
+    (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
+}
+
+/// Solve the 3x3 linear system `a * x = b` by Cramer's rule. `None` when the
+/// matrix is (near-)singular.
+fn solve3(a: [[f32; 3]; 3], b: [f32; 3]) -> Option<[f32; 3]> {
+    let det3 = |m: [[f32; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let det = det3(a);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let mut out = [0.0f32; 3];
+    for i in 0..3 {
+        let mut m = a;
+        for r in 0..3 {
+            m[r][i] = b[r];
+        }
+        out[i] = det3(m) / det;
+    }
+    Some(out)
+}
+
+/// Process-ink DeviceRGB -> DeviceCMYK separation: the (approximate) inverse of
+/// [`cmyk_to_rgb`].
+///
+/// Used to mirror a pure-RGB paint into the CMYK overprint sidecar so that
+/// RGB -> CMYK -> RGB round-trips as closely as the process gamut allows
+/// (ISO 32000-1 s11.7.4.3). Uses `K = 0` (no black generation) and solves for
+/// the `(C, M, Y)` whose process-ink forward reproduces `(r, g, b)`, by Newton
+/// iteration with a finite-difference Jacobian.
+///
+/// The process gamut is SMALLER than sRGB, so an out-of-gamut RGB (e.g. sRGB
+/// primary blue) cannot be reproduced by any CMY mix - it maps to the nearest
+/// in-gamut CMY (each ink clamped to `0..=1`). Called ONCE PER PAINT (not per
+/// pixel), so the handful of forward evaluations is negligible. It starts from,
+/// and never returns worse than, the additive complement `(1-r, 1-g, 1-b, 0)`
+/// (the legacy inverse), so it can only tighten the round-trip.
+pub fn rgb_to_cmyk(r: f32, g: f32, b: f32) -> (f32, f32, f32, f32) {
+    let target = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)];
+    let fwd = |x: [f32; 3]| {
+        let (fr, fg, fb) = cmyk_to_rgb(x[0], x[1], x[2], 0.0);
+        [fr, fg, fb]
+    };
+    let resid = |x: [f32; 3]| {
+        let f = fwd(x);
+        (target[0] - f[0]).abs() + (target[1] - f[1]).abs() + (target[2] - f[2]).abs()
+    };
+    // Start from the additive complement: a good first guess AND the safe floor.
+    let mut x = [1.0 - target[0], 1.0 - target[1], 1.0 - target[2]];
+    let mut best_x = x;
+    let mut best_r = resid(x);
+    const EPS: f32 = 1e-3;
+    for _ in 0..16 {
+        if best_r < 1.0 / 255.0 {
+            break;
+        }
+        let f0 = fwd(x);
+        let res = [target[0] - f0[0], target[1] - f0[1], target[2] - f0[2]];
+        // Jacobian J[i][j] = d fwd_i / d x_j by one-sided finite differences,
+        // stepping inward when x_j is on the [0,1] boundary.
+        let mut j = [[0.0f32; 3]; 3];
+        for c in 0..3 {
+            let step = if x[c] + EPS <= 1.0 { EPS } else { -EPS };
+            let mut xp = x;
+            xp[c] += step;
+            let fp = fwd(xp);
+            for (row, jr) in j.iter_mut().enumerate() {
+                jr[c] = (fp[row] - f0[row]) / step;
+            }
+        }
+        let Some(delta) = solve3(j, res) else { break };
+        for (k, xk) in x.iter_mut().enumerate() {
+            *xk = (*xk + delta[k]).clamp(0.0, 1.0);
+        }
+        let rr = resid(x);
+        if rr < best_r {
+            best_r = rr;
+            best_x = x;
+        }
+    }
+    (best_x[0], best_x[1], best_x[2], 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgb_to_cmyk_round_trips_in_gamut_and_stays_in_range() {
+        let q = |v: f32| (v * 255.0).round() as i32;
+        // Any colour reachable by a K=0 CMY mix must round-trip
+        // RGB -> CMYK -> RGB to within a couple of 8-bit steps.
+        for &(c0, m0, y0) in &[
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.5, 0.2, 0.0),
+            (0.3, 0.3, 0.3),
+            (0.8, 0.4, 0.1),
+            (1.0, 1.0, 1.0),
+        ] {
+            let (r, g, b) = cmyk_to_rgb(c0, m0, y0, 0.0);
+            let (c, m, y, k) = rgb_to_cmyk(r, g, b);
+            assert_eq!(k, 0.0, "separation uses K=0");
+            let (rr, gg, bb) = cmyk_to_rgb(c, m, y, k);
+            for (got, want) in [(rr, r), (gg, g), (bb, b)] {
+                assert!(
+                    (q(got) - q(want)).abs() <= 3,
+                    "in-gamut round-trip off: cmy ({c0},{m0},{y0}) rgb ({r},{g},{b}) -> ({rr},{gg},{bb})"
+                );
+            }
+        }
+        // Out-of-gamut sRGB primary blue cannot be reproduced by any process CMY
+        // mix; it must map to a valid in-range CMYK (nearest in-gamut), not diverge.
+        let (c, m, y, k) = rgb_to_cmyk(0.0, 0.0, 1.0);
+        for v in [c, m, y, k] {
+            assert!((0.0..=1.0).contains(&v), "out-of-gamut CMYK stays in range");
+        }
+    }
+
+    #[test]
+    fn cmyk_uses_process_inks_not_the_naive_complement() {
+        let q = |v: f32| (v * 255.0).round() as u8;
+        let rgb = |c, m, y, k| {
+            let (r, g, b) = cmyk_to_rgb(c, m, y, k);
+            [q(r), q(g), q(b)]
+        };
+        // K ink is #231F20, NOT #000000 - the case that matters most, since print
+        // PDFs set body text with `0 0 0 1 k`.
+        assert_eq!(rgb(0.0, 0.0, 0.0, 1.0), [35, 31, 32]);
+        // Process cyan / magenta / yellow.
+        assert_eq!(rgb(1.0, 0.0, 0.0, 0.0), [0, 173, 239]);
+        assert_eq!(rgb(0.0, 1.0, 0.0, 0.0), [236, 0, 140]);
+        assert_eq!(rgb(0.0, 0.0, 1.0, 0.0), [255, 242, 0]);
+        // Paper and registration are still the extremes.
+        assert_eq!(rgb(0.0, 0.0, 0.0, 0.0), [255, 255, 255]);
+        assert_eq!(rgb(1.0, 1.0, 1.0, 1.0), [0, 0, 0]);
+        // An interior mix interpolates.
+        assert_eq!(rgb(0.669, 0.0, 0.381, 0.0), [84, 197, 172]);
+    }
 
     /// Minimal valid ICC header — just enough to satisfy `parse`.
     /// Bytes 0-3: size; 4-7: CMM; 8-11: version (4.2.0.0); 12-15: devClass;

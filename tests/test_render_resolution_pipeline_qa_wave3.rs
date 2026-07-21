@@ -511,7 +511,7 @@ fn build_pdf_standard_image_indexed(
 /// paints the CMYK pixel data unchanged.
 #[test]
 fn qa_standard_image_cmyk_pass_through_paints_magenta_centre() {
-    // 4x4 CMYK pixels, all (0, 1, 0, 0) → magenta under additive clamp.
+    // 4x4 CMYK pixels, all (0, 1, 0, 0) -> process-ink magenta #EC008C.
     // Each pixel is 4 bytes (one per component).
     let mut pixels = Vec::with_capacity(16 * 4);
     for _ in 0..16 {
@@ -521,12 +521,12 @@ fn qa_standard_image_cmyk_pass_through_paints_magenta_centre() {
     let bytes = build_pdf_standard_image_named_cs(content, 4, 4, 8, &pixels, "DeviceCMYK");
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
-    // CMYK(0, 1, 0, 0) → §10.3.5 additive clamp → R=1, G=0, B=1
-    // (magenta). Pin the centre pixel.
+    // CMYK(0, 1, 0, 0) -> process-ink magenta corner #EC008C =
+    // (236, 0, 140). Pin the centre pixel.
     let (r, g, b, _a) = center_pixel(&on);
     assert!(
-        r > 200 && g < 60 && b > 200,
-        "DeviceCMYK image (0,1,0,0) must render as magenta at centre, got ({r}, {g}, {b})"
+        r > 200 && g < 60 && (110..=170).contains(&b),
+        "DeviceCMYK image (0,1,0,0) must render as process-ink magenta at centre, got ({r}, {g}, {b})"
     );
 }
 
@@ -1046,8 +1046,8 @@ fn qa_form_xobject_with_inner_image_mask_type4_separation_capability_gain() {
     // Pipeline runs the Type 4 program → magenta.
     let (r_on, g_on, b_on, _a) = center_pixel(&on);
     assert!(
-        r_on >= 250 && g_on <= 5 && b_on >= 250,
-        "Form-nested Type 4 Separation ImageMask must paint magenta, got ({r_on}, {g_on}, {b_on})"
+        r_on >= 225 && g_on <= 5 && (125..=155).contains(&b_on),
+        "Form-nested Type 4 Separation ImageMask must paint process-ink magenta, got ({r_on}, {g_on}, {b_on})"
     );
 }
 
@@ -1536,8 +1536,8 @@ fn qa_image_mask_100_paints_type4_separation_capability_at_scale() {
     // (50, 50), 8x8, so centre ≈ (54, 54).
     let (r_on, g_on, b_on, _a) = pixel_at(&on, 54, 54);
     assert!(
-        r_on > 200 && g_on < 60 && b_on > 200,
-        "pipeline 100-paint: tile centre must be magenta, got ({r_on},{g_on},{b_on})"
+        r_on > 200 && g_on < 60 && (110..=170).contains(&b_on),
+        "pipeline 100-paint: tile centre must be process-ink magenta, got ({r_on},{g_on},{b_on})"
     );
 }
 
@@ -1568,8 +1568,8 @@ fn qa_image_mask_devicen_multi_colorant_type4_capability() {
     let on = render_with_pipeline(&doc, true);
     let (r_on, g_on, b_on, _a) = center_pixel(&on);
     assert!(
-        r_on > 200 && g_on < 60 && b_on > 200,
-        "pipeline DeviceN Type-4 ImageMask must paint magenta, got ({r_on},{g_on},{b_on})"
+        r_on > 200 && g_on < 60 && (110..=170).contains(&b_on),
+        "pipeline DeviceN Type-4 ImageMask must paint process-ink magenta, got ({r_on},{g_on},{b_on})"
     );
 }
 

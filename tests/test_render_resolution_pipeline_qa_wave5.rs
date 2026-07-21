@@ -322,7 +322,7 @@ fn qa_wave5_type4_separation_composite_renders_magenta() {
     let pixmap = render(&doc);
     let (r, g, b, _) = center_pixel(&pixmap);
     assert!(
-        r > 240 && g < 20 && b > 240,
+        r > 225 && g < 20 && (125..=155).contains(&b),
         "Type-4 Separation on composite path must render magenta; got ({r}, {g}, {b})"
     );
 }
@@ -351,9 +351,9 @@ fn qa_wave5_type4_separation_composite_renders_magenta() {
 ///
 /// Tracking name: WAVE5-DEFER-COLORRESOLVER-RGBA-ONLY-FOR-COMPOUND-SPACES.
 ///
-/// The pin shape: the composite output is "cyan-coloured RGB
-/// (0, 255, 255)" — bit-exact byte values from the additive-clamp
-/// formula. A follow-up that wires the resolver to emit
+/// The pin shape: the composite output is process-ink cyan
+/// #00ADEF = (0, 173, 239) - the tetralinear cyan corner, NOT the old
+/// additive-clamp (0, 255, 255). A follow-up that wires the resolver to emit
 /// `ResolvedColor::Cmyk` for DeviceCMYK sources would not change this
 /// composite output (the composite backend would still see the
 /// folded RGBA), so the pin survives the deferral closure.
@@ -365,8 +365,8 @@ fn qa_wave5_defer_color_resolver_rgba_only_for_compound_spaces() {
     let pixmap = render(&doc);
     let (r, g, b, a) = center_pixel(&pixmap);
     assert!(
-        r < 5 && g > 250 && b > 250 && a == 255,
-        "DeviceCMYK(1,0,0,0) → additive-clamp RGB(0, 1, 1) → exact bytes (0, 255, 255, 255); \
+        r < 5 && (160..=185).contains(&g) && b > 225 && a == 255,
+        "DeviceCMYK(1,0,0,0) -> process-ink cyan #00ADEF = (0, 173, 239); \
          got ({r}, {g}, {b}, {a})"
     );
 }
@@ -471,7 +471,7 @@ fn qa_wave5_env_var_one_is_inert() {
     // magenta at the centre regardless.
     let (r, g, b, _) = center_pixel(&with_one);
     assert!(
-        r > 240 && g < 20 && b > 240,
+        r > 225 && g < 20 && (125..=155).contains(&b),
         "Type-4 Separation fill must paint magenta; got ({r}, {g}, {b})"
     );
 }
@@ -503,7 +503,7 @@ fn qa_wave5_env_var_zero_is_inert() {
 
     let (r, g, b, _) = center_pixel(&with_zero);
     assert!(
-        r > 240 && g < 20 && b > 240,
+        r > 225 && g < 20 && (125..=155).contains(&b),
         "Type-4 Separation fill must still paint magenta (toggle gone); got ({r}, {g}, {b})"
     );
 }
@@ -691,7 +691,7 @@ fn qa_wave5_pipeline_resolve_paint_gs_path_fill_type4_separation() {
     let pixmap = render(&doc);
     let (r, g, b, _) = center_pixel(&pixmap);
     assert!(
-        r > 240 && g < 20 && b > 240,
+        r > 225 && g < 20 && (125..=155).contains(&b),
         "Type 4 Separation path fill must produce magenta; got ({r}, {g}, {b})"
     );
 }
@@ -802,7 +802,7 @@ fn qa_wave5_pipeline_resolve_components_shading_type4_separation() {
     for x in [5u32, 25, 50, 75, 95] {
         let (r, g, b, _) = pixel_at(&pixmap, x, 50);
         assert!(
-            r > 240 && g < 30 && b > 240,
+            r > 225 && g < 30 && (125..=155).contains(&b),
             "shading endpoint (x={x}): Type-4 Separation must paint magenta; got ({r}, {g}, {b})"
         );
     }
@@ -859,23 +859,25 @@ fn qa_wave5_empty_content_stream_no_panic() {
     assert!(r > 250 && g > 250 && b > 250, "empty page must be white");
 }
 
-/// Probe 24 — DeviceCMYK full black via `0 0 0 1 k`. On an RGB composite
-/// target the resolver folds CMYK → RGB via §10.3.5 additive-clamp.
-/// CMYK(0,0,0,1) → RGB(0, 0, 0) = black. Pin.
+/// Probe 24 - DeviceCMYK full black via `0 0 0 1 k`. On an RGB composite
+/// target the resolver folds CMYK -> RGB via the process-ink converter.
+/// CMYK(0,0,0,1) is the measured K-ink corner #231F20 = (35, 31, 32),
+/// NOT pure black (0, 0, 0) - the exact defect #861 fixes. Pin.
 #[test]
-fn qa_wave5_device_cmyk_full_black_renders_black_on_rgb_target() {
+fn qa_wave5_device_cmyk_full_black_renders_k_ink_on_rgb_target() {
     let content = "0 0 0 1 k\n10 10 80 80 re\nf\n";
     let bytes = build_pdf(content, "");
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let pixmap = render(&doc);
     let (r, g, b, _) = center_pixel(&pixmap);
     assert!(
-        r < 20 && g < 20 && b < 20,
-        "DeviceCMYK(0,0,0,1) must render as black on RGB; got ({r}, {g}, {b})"
+        (25..=50).contains(&r) && (20..=45).contains(&g) && (20..=45).contains(&b),
+        "DeviceCMYK(0,0,0,1) must render as the process-ink K-ink #231F20 on RGB, \
+         not pure black; got ({r}, {g}, {b})"
     );
 }
 
-/// Probe 24b — DeviceCMYK pure cyan `1 0 0 0 k` → RGB(0, 1, 1). Pin.
+/// Probe 24b - DeviceCMYK pure cyan `1 0 0 0 k` -> process-ink #00ADEF = (0, 173, 239). Pin.
 #[test]
 fn qa_wave5_device_cmyk_pure_cyan_renders_rgb_cyan_on_rgb_target() {
     let content = "1 0 0 0 k\n10 10 80 80 re\nf\n";
@@ -884,8 +886,8 @@ fn qa_wave5_device_cmyk_pure_cyan_renders_rgb_cyan_on_rgb_target() {
     let pixmap = render(&doc);
     let (r, g, b, _) = center_pixel(&pixmap);
     assert!(
-        r < 20 && g > 240 && b > 240,
-        "DeviceCMYK(1,0,0,0) must render as cyan on RGB; got ({r}, {g}, {b})"
+        r < 20 && (160..=185).contains(&g) && b > 225,
+        "DeviceCMYK(1,0,0,0) must render as process-ink cyan on RGB; got ({r}, {g}, {b})"
     );
 }
 

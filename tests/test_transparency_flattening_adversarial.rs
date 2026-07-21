@@ -610,24 +610,22 @@ fn fixture_rgb_pure_black_over_cmyk_backdrop() -> Vec<u8> {
 
 #[test]
 fn adversarial_rgb_pure_black_paint_does_not_panic() {
-    // Mechanism: backdrop CMYK(1, 1, 0, 0) renders to RGB(0, 0, 255)
-    // via the §10.3.5 inverse (C, M, Y, K=0) → R = 1−C = 0,
-    // G = 1−M = 0, B = 1−Y = 1. The pure-black RGB(0, 0, 0) paint at
-    // α=0.5 composites over that backdrop with tiny_skia's premul
-    // source-over. The B channel (the only non-zero one in either
-    // operand) lands at byte 127 — tiny_skia's f32→u8 quantisation on
-    // a half-coverage paint over a fully-opaque backdrop bottoms out
-    // at 127 rather than 128 due to round-half-to-even on 127.5.
-    // Probe pins the post-composite RGBA byte-exact AND confirms the
-    // render completes without panic.
+    // Mechanism: backdrop CMYK(1, 1, 0, 0) renders through the
+    // process-ink converter to the measured blue corner
+    // #2E3192 ~ RGB(46, 49, 146), NOT the additive (0, 0, 255). The
+    // pure-black RGB(0, 0, 0) paint at α=0.5 composites over that
+    // backdrop with tiny_skia's premul source-over: result =
+    // 0.5*(0,0,0) + 0.5*(46,49,146) = (23, 25, 73). Probe pins the
+    // post-composite RGBA byte-exact AND confirms the render completes
+    // without panic.
     let rgba = render_rgba(fixture_rgb_pure_black_over_cmyk_backdrop());
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (0, 0, 127, 255),
+        (23, 25, 73, 255),
         "RGB pure-black at α=0.5 over a CMYK(1,1,0,0) backdrop must \
-         render byte-exact (0, 0, 127, 255): the §10.3.5 inverse \
-         drives the backdrop to RGB(0, 0, 255) and tiny_skia's premul \
+         render byte-exact (23, 25, 73, 255): the process-ink converter \
+         drives the backdrop to RGB(46, 49, 146) and tiny_skia's premul \
          source-over blends the pure-black paint at α=0.5 to that. \
          Got ({r}, {g}, {b}, {a})."
     );
@@ -658,27 +656,28 @@ fn fixture_rgb_paint_with_overprint_does_not_mirror() -> Vec<u8> {
 }
 
 #[test]
-fn adversarial_rgb_overprint_paint_skips_mirror_no_panic() {
+fn adversarial_rgb_overprint_paint_gamut_compresses_no_panic() {
     let rgba = render_rgba(fixture_rgb_paint_with_overprint_does_not_mirror());
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
-    // Mechanism: overprint is honoured per-plate; on the composite
-    // RGBA pixmap path the overprint flags have no effect (the
-    // composite path does not implement /OP on RGB-source paints —
-    // see audit suite docstring §). The green RGB(0, 1, 0) paint at
-    // α=0.5 over the white backdrop therefore composites identically
-    // to the no-overprint case: tiny_skia premul source-over of
-    // (0, 127, 0, 127) over (255, 255, 255, 255) yields
-    // (127, 255, 127, 255). The /OP true flag's effect lives entirely
-    // on the sidecar's per-plate output; the composite RGB pixel is
-    // unaffected. This probe pins both the byte-exact composite AND
-    // the no-panic property the test was originally written around.
-    let (r_ref, g_ref, b_ref, a_ref) = (127, 255, 127, 255);
+    // Mechanism: under /OP true the RGB paint is mirrored to CMYK
+    // (`resolve_rgb_paint_to_cmyk` -> `color::rgb_to_cmyk`) and the
+    // composite path projects that CMYK back through the process-ink
+    // `color::cmyk_to_rgb`. The green RGB(0, 1, 0) is OUT of the process
+    // gamut, so the round-trip gamut-compresses it toward the process
+    // green corner rather than reproducing (0, 255, 0). At α=0.5 over
+    // white the composite lands at (127, 209, 143) - close to, but not,
+    // the additive (127, 255, 127). This gamut compression of an
+    // out-of-gamut sRGB paint under overprint is the physically-correct
+    // consequence of unifying the composite path on process inks (the
+    // forward and inverse move together within the gamut). This probe
+    // pins the byte-exact composite AND the no-panic property.
+    let (r_ref, g_ref, b_ref, a_ref) = (127, 209, 143, 255);
     assert_eq!(
         (r, g, b, a),
         (r_ref, g_ref, b_ref, a_ref),
         "RGB paint with /OP true under /ca 0.5: the composite RGB \
          pixmap must be byte-exact ({r_ref}, {g_ref}, {b_ref}, {a_ref}) \
-         — tiny_skia premul source-over of the green α=0.5 paint over \
-         white. Got ({r}, {g}, {b}, {a})."
+         - the out-of-gamut green gamut-compresses through the process-ink \
+         round-trip. Got ({r}, {g}, {b}, {a})."
     );
 }

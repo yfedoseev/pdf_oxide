@@ -289,7 +289,7 @@ qrcode = { version = "0.14", optional = true }
 barcoders = { version = "2.0", optional = true, features = ["image"] }
 
 # Office document creation and export via office_oxide (always required)
-office_oxide = { version = "0.1.6", default-features = false }
+office_oxide = { version = "0.1.7", default-features = false }
 x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 cmpv2 = { version = "0.2", optional = true }

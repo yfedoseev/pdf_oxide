@@ -475,6 +475,11 @@ pub struct PdfDocument {
     /// the second from cache. Cleared by redaction (`erase_region` /
     /// `clear_erase_regions`), the only span-affecting mutation.
     page_spans_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextSpan>>>>,
+    /// Per-page character cache for the unfiltered (`extract_chars`) result.
+    /// `postprocess_spans` needs the same char sequence the public API returns,
+    /// so without this every span extraction re-parses the content stream a
+    /// second time purely to stamp per-glyph x-origins.
+    page_chars_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextChar>>>>,
     /// Cached signatures of running headers/footers detected via cross-page
     /// repetition. A span whose normalized text matches a signature
     /// sits near the top/bottom of the page is treated as an artifact.
@@ -486,7 +491,12 @@ pub struct PdfDocument {
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
     /// would otherwise drop "University of Oklahoma 2009").
-    running_artifact_signatures: Mutex<Option<std::collections::HashMap<String, usize>>>,
+    running_artifact_signatures:
+        Mutex<Option<std::sync::Arc<std::collections::HashMap<String, usize>>>>,
+    /// Document-wide article threads (`/Threads`), parsed once. Reading-order
+    /// resolution consults them per page, and parsing walks the whole page
+    /// tree — so without this the cost per page scaled with the document.
+    article_threads_cache: Mutex<Option<std::sync::Arc<Vec<crate::structure::ArticleThread>>>>,
     /// Memoised result of [`PdfDocument::output_intent_cmyk_profile`].
     ///
     /// The accessor walks `/OutputIntents` and decodes + parses the ICC
@@ -1097,7 +1107,9 @@ impl PdfDocument {
             erase_regions: Mutex::new(HashMap::new()),
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
+            page_chars_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
+            article_threads_cache: Mutex::new(None),
             output_intent_cmyk_profile_cache: Mutex::new(None),
             accumulated_warnings: Mutex::new(Vec::new()),
             warning_sink: crate::extractors::warnings::WarningSink::new(),
@@ -4153,26 +4165,22 @@ impl PdfDocument {
     /// # Ok::<(), pdf_oxide::error::Error>(())
     /// ```
     pub fn page_count(&self) -> Result<usize> {
-        // Try standard method first
-        match self.get_page_count_standard() {
+        // Standard /Count reader, then a manual page-tree scan on failure.
+        let primary: Result<usize> = match self.get_page_count_standard() {
             Ok(count) => {
                 log::debug!("Page count from /Count: {}", count);
                 Ok(count)
             },
-            Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
+            Err(Error::EncryptedPdf) => return Err(Error::EncryptedPdf),
             Err(e) => {
                 // For encrypted PDFs any failure to read the page tree means we
-                // cannot access the content. Scanning would also return Ok(0),
-                // so skip the fallback and surface the real error immediately.
+                // cannot access the content, so surface it immediately.
                 if self.is_encrypted() {
                     log::warn!("Page count failed for encrypted PDF: {}", e);
                     return Err(Error::EncryptedPdf);
                 }
-
                 log::warn!("Failed to get page count from /Count: {}", e);
                 log::info!("Falling back to scanning page tree");
-
-                // Fallback: scan the page tree manually
                 match self.get_page_count_by_scanning() {
                     Ok(count) => {
                         log::info!("Page count from scanning: {}", count);
@@ -4184,7 +4192,41 @@ impl PdfDocument {
                     },
                 }
             },
+        };
+
+        // Enumerator rescue. A count of 0 from the /Count-based readers on a
+        // non-encrypted document is almost always a page tree they could not
+        // resolve - `/Pages` packed inside an object stream, or a deeply nested
+        // `/Pages` -> `/Pages` -> `/Page` tree - not a genuinely empty document.
+        // The /Count readers and `all_page_refs` (which walks `/Pages` -> `/Kids`
+        // via `collect_page_refs`) both MISS such a tree; `get_page` still reaches
+        // every page through its own per-page traversal / `collect_all_pages` bulk
+        // walk, so count by agreeing with what it can actually reach. Gated on a
+        // primary result of 0, so every document the standard reader counts
+        // normally is unchanged.
+        if matches!(primary, Ok(0)) && !self.is_encrypted() {
+            // The /Count readers - and `all_page_refs`, which walks
+            // `/Pages` -> `/Kids` via `collect_page_refs` - miss a page tree
+            // packed inside an object stream. `get_page` still resolves every
+            // such page through its own per-page traversal / `collect_all_pages`
+            // bulk walk, so count by probing it: the definitive agreement with
+            // the pages the rest of the API can actually reach. `get_page` never
+            // calls back into `page_count` (no recursion) and caches each page
+            // (repeat probes are cheap). For an ObjStm-packed tree each `get_page`
+            // can fall back to a full object scan, so counting this way is
+            // O(n * objects) - bounded by the sanity cap, and only ever on an
+            // already-broken document. Only runs when the primary count is 0, so
+            // normally-counted documents are byte-identical.
+            let mut n = 0usize;
+            while n < 1_000_000 && self.get_page(n).is_ok() {
+                n += 1;
+            }
+            if n > 0 {
+                log::info!("Page /Count was 0; enumerated {} pages via get_page", n);
+                return Ok(n);
+            }
         }
+        primary
     }
 
     /// Get the MediaBox of a page (v0.3.14).
@@ -11842,10 +11884,26 @@ impl PdfDocument {
             return;
         }
 
-        let accurate = match self.extract_chars(page_index) {
+        let accurate = match self.cached_page_chars(page_index) {
             Ok(chars) if !chars.is_empty() => chars,
             _ => return,
         };
+
+        // Baseline index: char positions ordered by `origin_y`, so each span's
+        // baseline slice is a binary-searched range rather than a linear scan
+        // over every glyph on the page (that scan made this pass
+        // O(spans x chars) — the dominant per-page cost on long documents).
+        let mut by_y: Vec<u32> = (0..accurate.len() as u32).collect();
+        by_y.sort_by(|&a, &b| {
+            crate::utils::safe_float_cmp(
+                accurate[a as usize].origin_y,
+                accurate[b as usize].origin_y,
+            )
+        });
+        let ys: Vec<f32> = by_y
+            .iter()
+            .map(|&i| accurate[i as usize].origin_y)
+            .collect();
 
         for span in spans.iter_mut() {
             // Rotated-content spans are in the displayed frame (mapped on 90/270)
@@ -11866,14 +11924,33 @@ impl PdfDocument {
 
             // Accurate chars sharing this span's baseline, left-to-right.
             let baseline_tol = 0.6 * span.font_size.max(1.0);
-            let mut line: Vec<&crate::layout::TextChar> = accurate
+            // Chars sharing this span's baseline, left-to-right. The y-sorted
+            // index brackets a candidate range; the exact `abs()` predicate then
+            // selects from it, so the result matches a full linear scan even
+            // where the bracket arithmetic rounds differently. The widened
+            // bracket keeps that range a superset. Ordering by
+            // (origin_x, source index) reproduces the previous stable
+            // filter-then-sort: ties on origin_x keep their `accurate` order.
+            let bracket = baseline_tol + baseline_tol.abs() * 1e-6 + f32::EPSILON;
+            let lo = ys.partition_point(|&y| y < span.bbox.y - bracket);
+            let hi = ys.partition_point(|&y| y <= span.bbox.y + bracket);
+            let mut idx: Vec<u32> = by_y[lo..hi]
                 .iter()
-                .filter(|c| (c.origin_y - span.bbox.y).abs() <= baseline_tol)
+                .copied()
+                .filter(|&i| (accurate[i as usize].origin_y - span.bbox.y).abs() <= baseline_tol)
                 .collect();
-            if line.is_empty() {
+            if idx.is_empty() {
                 continue;
             }
-            line.sort_by(|a, b| crate::utils::safe_float_cmp(a.origin_x, b.origin_x));
+            idx.sort_by(|&a, &b| {
+                crate::utils::safe_float_cmp(
+                    accurate[a as usize].origin_x,
+                    accurate[b as usize].origin_x,
+                )
+                .then(a.cmp(&b))
+            });
+            let line: Vec<&crate::layout::TextChar> =
+                idx.iter().map(|&i| &accurate[i as usize]).collect();
 
             // Greedy per-glyph alignment. Anchor the scan cursor at the accurate
             // char nearest this span's left edge, then walk the span's glyphs,
@@ -15025,19 +15102,36 @@ impl PdfDocument {
     /// collects normalized text that appears in the top/bottom 12% band (and,
     /// on vertical-writing pages, the left/right 12% band), and keeps entries
     /// that recur on >=50% of pages.
+    /// Article threads for this document, parsed once and shared.
+    /// [`crate::structure::parse_article_threads`] walks the entire page tree,
+    /// and reading-order resolution asks for them on every page.
+    pub(crate) fn cached_article_threads(
+        &self,
+    ) -> std::sync::Arc<Vec<crate::structure::ArticleThread>> {
+        if let Some(cached) = self.article_threads_cache.lock_or_recover().as_ref() {
+            return std::sync::Arc::clone(cached);
+        }
+        let threads = std::sync::Arc::new(crate::structure::parse_article_threads(self));
+        *self.article_threads_cache.lock_or_recover() = Some(std::sync::Arc::clone(&threads));
+        threads
+    }
+
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::collections::HashMap<String, usize>> {
+    ) -> Result<std::sync::Arc<std::collections::HashMap<String, usize>>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
-                return Ok(map.clone());
+                // Shared by reference: this runs once per page and the map is
+                // document-wide, so cloning it here scaled with page count.
+                return Ok(std::sync::Arc::clone(map));
             }
         }
         let page_count = self.page_count()?;
         if page_count < 2 {
-            let empty = std::collections::HashMap::new();
-            *self.running_artifact_signatures.lock_or_recover() = Some(empty.clone());
+            let empty = std::sync::Arc::new(std::collections::HashMap::new());
+            *self.running_artifact_signatures.lock_or_recover() =
+                Some(std::sync::Arc::clone(&empty));
             return Ok(empty);
         }
 
@@ -15158,7 +15252,9 @@ impl PdfDocument {
                 (sig, first)
             })
             .collect();
-        *self.running_artifact_signatures.lock_or_recover() = Some(signatures.clone());
+        let signatures = std::sync::Arc::new(signatures);
+        *self.running_artifact_signatures.lock_or_recover() =
+            Some(std::sync::Arc::clone(&signatures));
         Ok(signatures)
     }
 
@@ -16307,7 +16403,29 @@ impl PdfDocument {
     /// Character extraction is typically 30-50% faster than span extraction
     /// because it skips the text grouping and merging logic.
     pub fn extract_chars(&self, page_index: usize) -> Result<Vec<crate::layout::TextChar>> {
-        self.extract_chars_impl(page_index, HashSet::new(), HashSet::new())
+        Ok((*self.cached_page_chars(page_index)?).clone())
+    }
+
+    /// Shared, cached character sequence for a page — identical to what
+    /// [`Self::extract_chars`] returns, minus the clone. Only the unfiltered
+    /// extraction is cached; the layer/ink-filtered variant is keyed on its
+    /// filters and stays uncached.
+    fn cached_page_chars(
+        &self,
+        page_index: usize,
+    ) -> Result<std::sync::Arc<Vec<crate::layout::TextChar>>> {
+        if let Some(cached) = self.page_chars_cache.lock_or_recover().get(&page_index) {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let chars = std::sync::Arc::new(self.extract_chars_impl(
+            page_index,
+            HashSet::new(),
+            HashSet::new(),
+        )?);
+        self.page_chars_cache
+            .lock_or_recover()
+            .insert(page_index, std::sync::Arc::clone(&chars));
+        Ok(chars)
     }
 
     /// Extract characters from a page, excluding content from specified layers and inks.
@@ -16376,7 +16494,7 @@ impl PdfDocument {
             }
         }
 
-        let mut chars = extractor.extract(&content_data)?;
+        let mut chars = extractor.extract_owned(&content_data)?;
 
         chars.sort_by(|a, b| {
             let y_cmp = crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y);
@@ -16503,8 +16621,13 @@ impl PdfDocument {
         // Materialize each span's chars ONCE (to_chars allocates + decodes); the
         // word-clustering loop below reuses chars_per_span instead of calling
         // to_chars a second time per span. Byte-identical, halves to_chars work.
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         if all_chars.is_empty() {
             return Ok(Vec::new());
         }
@@ -16538,7 +16661,7 @@ impl PdfDocument {
             std::collections::HashSet::new();
         let mut words = Vec::new();
         for (span_idx, span) in spans.iter().enumerate() {
-            let span_chars = &chars_per_span[span_idx];
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
@@ -16618,9 +16741,18 @@ impl PdfDocument {
         // not a same-line neighbour — never merge across it. Gated off for
         // RTL text, whose leftward flow is ordinary reading order.
         let mut merged: Vec<Word> = Vec::with_capacity(words.len());
+        // RTL-ness of each entry in `merged`, carried alongside it. `looks_rtl`
+        // scans a whole string, and `prev` below GROWS by `push_str` on every
+        // merge — re-deriving it per iteration made a chain of k merges cost
+        // O(k^2) characters, the same blow-up the backtrack guard above exists
+        // to prevent. It is an `any()` over the chars, so
+        // `looks_rtl(a + b) == looks_rtl(a) || looks_rtl(b)`: maintain it
+        // incrementally instead.
+        let mut merged_rtl: Vec<bool> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
         for (idx, word) in words.into_iter().enumerate() {
             let cur_rotated = rotated_word_indices.contains(&idx);
+            let word_rtl = crate::text::bidi::looks_rtl(&word.text);
             if !cur_rotated && !prev_rotated && !split_boundary_word_indices.contains(&idx) {
                 if let Some(prev) = merged.last_mut() {
                     let gap = word.bbox.x - (prev.bbox.x + prev.bbox.width);
@@ -16628,8 +16760,7 @@ impl PdfDocument {
                     let delta_x = word.bbox.x - prev.bbox.x;
                     let line_h = prev.bbox.height.max(word.bbox.height);
                     let font_size = prev.avg_font_size.max(word.avg_font_size).max(1.0);
-                    let not_rtl = !crate::text::bidi::looks_rtl(&prev.text)
-                        && !crate::text::bidi::looks_rtl(&word.text);
+                    let not_rtl = !merged_rtl.last().copied().unwrap_or(false) && !word_rtl;
                     let is_math_backtrack =
                         y_diff > 1.0 && delta_x <= 0.5 && gap < -font_size && not_rtl;
                     // A LINE WRAP can land at nearly the same y as the line
@@ -16669,11 +16800,15 @@ impl PdfDocument {
                         }
                         prev.text.push_str(&word.text);
                         prev.chars.extend(word.chars);
+                        if let Some(flag) = merged_rtl.last_mut() {
+                            *flag |= word_rtl;
+                        }
                         continue;
                     }
                 }
             }
             merged.push(word);
+            merged_rtl.push(word_rtl);
             prev_rotated = cur_rotated;
         }
 
@@ -16821,8 +16956,13 @@ impl PdfDocument {
             crate::geometry::Rect::new(media_box.0, media_box.1, media_box.2, media_box.3);
 
         // Materialize each span's chars once (see extract_text_as_words).
-        let chars_per_span: Vec<Vec<_>> = spans.iter().map(|s| s.to_chars()).collect();
-        let all_chars: Vec<_> = chars_per_span.iter().flatten().cloned().collect();
+        let mut all_chars: Vec<_> = Vec::new();
+        let mut span_char_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(spans.len());
+        for s in spans.iter() {
+            let start = all_chars.len();
+            all_chars.extend(s.to_chars());
+            span_char_ranges.push(start..all_chars.len());
+        }
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
         let mut params = AdaptiveLayoutParams::from_properties(&props);
@@ -16846,7 +16986,8 @@ impl PdfDocument {
         // are therefore lifted out and each emitted as its own line.
         let mut words: Vec<Word> = Vec::new();
         let mut word_rot_run: Vec<Option<usize>> = Vec::new();
-        for (span_idx, (span, span_chars)) in spans.iter().zip(chars_per_span.iter()).enumerate() {
+        for (span_idx, span) in spans.iter().enumerate() {
+            let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
                 continue;
             }
@@ -17060,10 +17201,19 @@ impl PdfDocument {
     /// This returns the decoded content stream bytes for the specified page.
     /// The content stream contains PDF operators that define the page's appearance.
     pub fn get_page_content_data(&self, page_index: usize) -> Result<Vec<u8>> {
+        Ok((*self.cached_page_content(page_index)?).clone())
+    }
+
+    /// Shared, cached content-stream bytes for a page — the same data
+    /// [`Self::get_page_content_data`] returns, minus the copy. Extraction
+    /// only ever reads the bytes, and a single `extract_words` page touches
+    /// this twice (once for spans, once for chars), so handing back the `Arc`
+    /// avoids copying the decompressed stream on every call.
+    fn cached_page_content(&self, page_index: usize) -> Result<std::sync::Arc<Vec<u8>>> {
         {
             let mut cache = self.page_content_cache.lock_or_recover();
             if let Some(data) = cache.get(&page_index) {
-                return Ok(data.as_ref().clone());
+                return Ok(std::sync::Arc::clone(data));
             }
         }
 
@@ -17081,7 +17231,7 @@ impl PdfDocument {
         let contents_ref = match page_dict.get("Contents") {
             Some(Object::Null) | None => {
                 log::debug!("Page {} has no /Contents (blank page)", page_index);
-                return Ok(Vec::new());
+                return Ok(std::sync::Arc::new(Vec::new()));
             },
             Some(c) => c,
         };
@@ -17172,9 +17322,10 @@ impl PdfDocument {
             String::from_utf8_lossy(&content_data)
         );
 
+        let content_data = std::sync::Arc::new(content_data);
         self.page_content_cache
             .lock_or_recover()
-            .insert(page_index, std::sync::Arc::new(content_data.clone()));
+            .insert(page_index, std::sync::Arc::clone(&content_data));
 
         Ok(content_data)
     }
@@ -17295,11 +17446,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // Simple CMYK to RGB conversion
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -17314,10 +17461,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },
@@ -17879,10 +18023,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -17895,10 +18036,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },
@@ -29063,6 +29201,56 @@ mod tests {
         );
         let doc = PdfDocument::from_bytes(pdf).unwrap();
         assert_eq!(doc.page_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_page_count_rescued_when_count_is_zero_but_pages_exist() {
+        // The motivating broken-/Count case (#909): a `/Pages` node whose `/Count`
+        // says 0 while its `/Kids` hold real pages. An ObjStm-packed `/Pages` tree
+        // that the standard reader cannot resolve reaches `page_count` the same way
+        // - `primary == Ok(0)`. Here the standard reader trusts the literal `/Count`
+        // and returns 0, but `get_page` still walks `/Pages` -> `/Kids` and reaches
+        // every page, so the rescue enumerates them.
+        //
+        // WITHOUT the rescue block this returns 0 (verified: reverting the
+        // document.rs hunk makes this assertion fail with `0 != 3`); WITH it, 3.
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = pdf.len();
+        pdf.extend_from_slice(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 0 >>\nendobj\n",
+        );
+        let mut offs = vec![off1, off2];
+        for n in 3..=5u32 {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+                    n
+                )
+                .as_bytes(),
+            );
+        }
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+        // The standard /Count reader really does report 0 here, so the count of 3
+        // comes entirely from the enumerator rescue (not from the primary path).
+        assert_eq!(
+            doc.get_page_count_standard().unwrap(),
+            0,
+            "fixture must drive the standard reader to 0"
+        );
+        assert_eq!(doc.page_count().unwrap(), 3, "rescue must enumerate the real pages");
     }
 
     // ========================================================================

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::color::cmyk_to_rgb;
 use crate::config::ExtractionProfile;
 use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
@@ -3854,6 +3855,12 @@ impl<'doc> TextExtractor<'doc> {
     /// For most use cases, prefer using `extract_text_spans()` which groups
     /// characters into text spans according to PDF semantics.
     pub fn extract(&mut self, content_stream: &[u8]) -> Result<Vec<TextChar>> {
+        self.extract_into_self(content_stream)?;
+        Ok(self.chars.clone())
+    }
+
+    /// Run the character extraction and leave the result in `self.chars`.
+    fn extract_into_self(&mut self, content_stream: &[u8]) -> Result<()> {
         // Enable character extraction mode
         self.extract_spans = false;
         self.chars.clear();
@@ -3882,7 +3889,17 @@ impl<'doc> TextExtractor<'doc> {
         // at the same Y position have X positions within 2pt of each other.
         self.deduplicate_overlapping_chars();
 
-        Ok(self.chars.clone())
+        Ok(())
+    }
+
+    /// Same extraction as [`Self::extract`], but hands the buffer over instead
+    /// of copying it. Every `TextChar` owns a `font_name` String, so `extract`'s
+    /// clone re-allocates once per glyph — measurable on long documents. Leaves
+    /// `self.chars` empty, so callers that read `char_count`/`chars` afterwards
+    /// must keep using [`Self::extract`].
+    pub fn extract_owned(&mut self, content_stream: &[u8]) -> Result<Vec<TextChar>> {
+        self.extract_into_self(content_stream)?;
+        Ok(std::mem::take(&mut self.chars))
     }
 
     /// Deduplicate overlapping characters on the same line.
@@ -3915,12 +3932,16 @@ impl<'doc> TextExtractor<'doc> {
             return;
         }
 
-        let mut deduplicated = Vec::with_capacity(self.chars.len());
+        let before = self.chars.len();
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
         let mut prev_char: Option<char> = None;
 
-        for ch in self.chars.iter() {
+        // Retained in place: the predicate only looks back at the previously
+        // KEPT glyph, which `retain`'s in-order visit preserves. Building a
+        // second Vec instead deep-cloned every glyph — and `TextChar` owns a
+        // `font_name` String, so that was one malloc per glyph, per page.
+        self.chars.retain(|ch| {
             let y_rounded = ch.bbox.y.round() as i32;
             let x = ch.bbox.x;
 
@@ -3947,7 +3968,6 @@ impl<'doc> TextExtractor<'doc> {
             };
 
             if !should_skip {
-                deduplicated.push(ch.clone());
                 prev_y_rounded = Some(y_rounded);
                 prev_x = Some(x);
                 prev_char = Some(ch.char);
@@ -3959,16 +3979,15 @@ impl<'doc> TextExtractor<'doc> {
                     ch.bbox.y
                 );
             }
-        }
+            !should_skip
+        });
 
         log::debug!(
             "Deduplicated {} overlapping characters ({} -> {} chars)",
-            self.chars.len() - deduplicated.len(),
-            self.chars.len(),
-            deduplicated.len()
+            before - self.chars.len(),
+            before,
+            self.chars.len()
         );
-
-        self.chars = deduplicated;
     }
 
     /// Snap super/subscript glyph spans onto the baseline of an
@@ -9169,22 +9188,6 @@ impl<'doc> TextExtractor<'doc> {
     }
 }
 
-/// Convert DeviceCMYK to DeviceRGB per ISO 32000-1:2008 §10.3.5:
-///
-///   R = 1 − min(1, C + K)
-///   G = 1 − min(1, M + K)
-///   B = 1 − min(1, Y + K)
-///
-/// Spec-mandated additive-clamp fallback for when no ICC profile drives
-/// the conversion. The multiplicative `(1-c)(1-k)` form is common in
-/// imaging libraries but is not what §10.3.5 specifies.
-fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
-    let r = 1.0 - (c + k).min(1.0);
-    let g = 1.0 - (m + k).min(1.0);
-    let b = 1.0 - (y + k).min(1.0);
-    (r, g, b)
-}
-
 impl<'doc> Default for TextExtractor<'doc> {
     fn default() -> Self {
         Self::new()
@@ -9375,6 +9378,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             byte_to_width_table: std::sync::OnceLock::new(),
+            weight_memo: std::sync::OnceLock::new(),
+            italic_memo: std::sync::OnceLock::new(),
+            std14_memo: std::sync::OnceLock::new(),
             diff_glyph_names: std::collections::HashMap::new(),
             wmode: 0,
             cid_vertical_metrics: None,
@@ -10350,14 +10356,14 @@ mod tests {
         let font = create_test_font();
         extractor.add_font("F1".to_string(), font);
 
-        // CMYK: 0 0 0 1 = pure black => RGB (0, 0, 0)
+        // CMYK 0 0 0 1 is the K ink, #231F20 - not #000000.
         let stream = b"BT 0 0 0 1 k /F1 12 Tf 0 0 Td (K) Tj ET";
         let chars = extractor.extract(stream).unwrap();
 
         assert_eq!(chars.len(), 1);
-        assert!((chars[0].color.r - 0.0).abs() < 0.01);
-        assert!((chars[0].color.g - 0.0).abs() < 0.01);
-        assert!((chars[0].color.b - 0.0).abs() < 0.01);
+        assert!((chars[0].color.r - 0.1373).abs() < 0.01);
+        assert!((chars[0].color.g - 0.1216).abs() < 0.01);
+        assert!((chars[0].color.b - 0.1255).abs() < 0.01);
     }
 
     // ========================================================================
@@ -10654,10 +10660,11 @@ mod tests {
 
     #[test]
     fn test_cmyk_to_rgb_black() {
+        // The K ink is #231F20, not #000000 - see color::cmyk_to_rgb.
         let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
-        assert!((r - 0.0).abs() < 0.01);
-        assert!((g - 0.0).abs() < 0.01);
-        assert!((b - 0.0).abs() < 0.01);
+        assert!((r - 0.1373).abs() < 0.01);
+        assert!((g - 0.1216).abs() < 0.01);
+        assert!((b - 0.1255).abs() < 0.01);
     }
 
     #[test]
@@ -10670,25 +10677,28 @@ mod tests {
 
     #[test]
     fn test_cmyk_to_rgb_cyan() {
+        // Process cyan, #00ADEF.
         let (r, g, b) = cmyk_to_rgb(1.0, 0.0, 0.0, 0.0);
         assert!((r - 0.0).abs() < 0.01);
-        assert!((g - 1.0).abs() < 0.01);
-        assert!((b - 1.0).abs() < 0.01);
+        assert!((g - 0.6784).abs() < 0.01);
+        assert!((b - 0.9373).abs() < 0.01);
     }
 
     #[test]
     fn test_cmyk_to_rgb_magenta() {
+        // Process magenta, #EC008C.
         let (r, g, b) = cmyk_to_rgb(0.0, 1.0, 0.0, 0.0);
-        assert!((r - 1.0).abs() < 0.01);
+        assert!((r - 0.9255).abs() < 0.01);
         assert!((g - 0.0).abs() < 0.01);
-        assert!((b - 1.0).abs() < 0.01);
+        assert!((b - 0.5490).abs() < 0.01);
     }
 
     #[test]
     fn test_cmyk_to_rgb_yellow() {
+        // Process yellow, #FFF200.
         let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 1.0, 0.0);
         assert!((r - 1.0).abs() < 0.01);
-        assert!((g - 1.0).abs() < 0.01);
+        assert!((g - 0.9490).abs() < 0.01);
         assert!((b - 0.0).abs() < 0.01);
     }
 
@@ -13149,14 +13159,14 @@ mod tests {
             .unwrap();
         extractor
             .execute_operator_public(Operator::SetFillColor {
-                components: vec![0.0, 0.0, 0.0, 1.0], // pure black
+                components: vec![0.0, 0.0, 0.0, 1.0], // the K ink
             })
             .unwrap();
 
         let state = extractor.state_stack.current();
-        assert!((state.fill_color_rgb.0 - 0.0).abs() < 0.01);
-        assert!((state.fill_color_rgb.1 - 0.0).abs() < 0.01);
-        assert!((state.fill_color_rgb.2 - 0.0).abs() < 0.01);
+        assert!((state.fill_color_rgb.0 - 0.1373).abs() < 0.01);
+        assert!((state.fill_color_rgb.1 - 0.1216).abs() < 0.01);
+        assert!((state.fill_color_rgb.2 - 0.1255).abs() < 0.01);
         assert!(state.fill_color_cmyk.is_some());
     }
 
