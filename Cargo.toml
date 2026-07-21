@@ -85,7 +85,7 @@ include = [
 edition = "2021"
 authors = ["Yury Fedoseev <yfedoseev@gmail.com>"]
 license = "MIT OR Apache-2.0"
-description = "The fastest Rust PDF library with text extraction: 0.8ms mean, 100% pass rate on 3,830 PDFs. 5× faster than pdf_extract, 17× faster than oxidize_pdf. Extract, create, and edit PDFs."
+description = "The fastest Rust PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Text extraction, Markdown/HTML conversion, PDF creation and editing."
 repository = "https://github.com/yfedoseev/pdf_oxide"
 homepage = "https://oxide.fyi"
 documentation = "https://pdf.oxide.fyi/docs/getting-started/rust"
@@ -148,8 +148,9 @@ weezl = "0.2"                                                                  #
 brotli = "8"                                                                   # Brotli compression (PDF 2.0, ISO 32000-2:2020)
 
 # Font parsing
-ttf-parser = "0.25" # TrueType font parser for embedded font cmap tables
-subsetter = "0.2"   # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
+ttf-parser = "0.25" # TrueType/OpenType parsing: embedded-font cmap, glyph outlines, metrics, name records.
+# Unmaintained (RUSTSEC-2026-0192); fontations (skrifa) migration is upstream-gated — rationale in osv-scanner.toml.
+subsetter = "0.2" # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
 # EmbeddedFont to shrink embedded fonts to only the glyphs actually used.
 taffy = { version = "0.12", default-features = false, features = [
     "std",
@@ -174,7 +175,7 @@ unicode-normalization = "0.1"                                # NFC composition o
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
 jpeg-decoder = "0.3"                                                                       # Direct decoder access for CMYK JPEGs (Adobe inversion handling)
 base64 = "0.22"                                                                            # For embedding images as data URIs
-fax = "0.2"                                                                                # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
+fax = "0.3"                                                                                # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
 
 # Encryption support
 aes = "0.9"                                  # AES encryption for PDF 1.6+
@@ -288,7 +289,7 @@ qrcode = { version = "0.14", optional = true }
 barcoders = { version = "2.0", optional = true, features = ["image"] }
 
 # Office document creation and export via office_oxide (always required)
-office_oxide = { version = "0.1.6", default-features = false }
+office_oxide = { version = "0.1.7", default-features = false }
 x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 cmpv2 = { version = "0.2", optional = true }

@@ -43,10 +43,27 @@ ignoreUntil = 2026-09-23
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
 # `ttf-parser` crate: "unmaintained" advisory (informational, not a CVE; no
-# memory-safety or RCE implication — the author has simply stated the crate
-# will receive no further fixes). There is no patched version. We use it only
-# to read embedded-font `cmap` tables; the actively-maintained replacement
-# (`skrifa`, already a dependency for glyph outlines) requires a non-trivial
-# migration of the cmap path. Re-evaluate once that migration lands.
-ignoreUntil = 2026-09-30
+# memory-safety or RCE implication — the author has stated the crate will
+# receive no further fixes; its repo has since moved under the harfbuzz org).
+# There is no patched version.
+#
+# Decision: keep waiting. Removing ttf-parser is NOT achievable by a version
+# bump — it reaches the tree three independent ways:
+#   1. directly — we parse embedded-font cmap tables, glyph outlines, metrics
+#      and name records through it (core font parsing + the render outline
+#      path), ~29 call sites;
+#   2. fontdb (system-fonts) -> ttf-parser — latest fontdb 0.23.0 still depends
+#      on it and ships no skrifa/fontations release;
+#   3. imageproc (ml) -> ab_glyph -> owned_ttf_parser -> ttf-parser — likewise
+#      no fontations-based release exists.
+# The actively-maintained successor is `skrifa`/`read-fonts` (fontations),
+# already in our tree via subsetter (and via harfrust once the shaping
+# migration off rustybuzz lands). Fully clearing this advisory requires porting
+# our direct usage to skrifa AND replacing both fontdb and ab_glyph with
+# fontations-based equivalents — a large, multi-crate migration touching the
+# core font-parsing and render paths, with real regression risk that is
+# disproportionate while the advisory remains informational-only.
+# Re-evaluate when fontdb or ab_glyph ship a fontations backend, or when the
+# standalone font-stack migration is scheduled.
+ignoreUntil = 2026-12-31
 
