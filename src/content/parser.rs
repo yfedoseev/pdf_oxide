@@ -4014,12 +4014,12 @@ mod tests {
 
     #[test]
     fn test_do_resolves_name_when_stray_operands_precede_it() {
-        // Issue #913 repro shape: a `q ... /Name Do Q` sequence whose leading
-        // numeric operands were never consumed by a `cm` (missing/dropped
-        // token, or any other non-conformant producer quirk). Per ISO
-        // 32000-1:2008 §7.8.2 an operator's operand is whatever immediately
-        // precedes it — here that's the Name, not the stray numbers ahead of
-        // it — so Do must still resolve "Overlay", not silently produce "".
+        // A `q ... /Name Do Q` sequence whose leading numeric operands were
+        // never consumed by a `cm` (missing/dropped token, or any other
+        // non-conformant producer quirk). Per ISO 32000-1:2008 §7.8.2 an
+        // operator's operand is whatever immediately precedes it — here
+        // that's the Name, not the stray numbers ahead of it — so Do must
+        // still resolve "Overlay", not silently produce "".
         let stream = b"q 1 0 0 1 20 150 /Overlay Do Q";
         let ops = parse_content_stream_text_only(stream).unwrap();
         assert!(

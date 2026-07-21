@@ -23845,19 +23845,17 @@ mod tests {
         pdf
     }
 
-    /// Build a minimal one-page PDF reproducing issue #913: text painted via
-    /// a Form XObject invoked as `q <6 numbers> /Name Do Q` — deliberately
-    /// missing the `cm` operator token, so the numbers are dangling operands
-    /// with nothing to consume them. Per ISO 32000-1:2008 §7.8.2 an
-    /// operator's operand is whatever immediately precedes it in the stream;
-    /// `Do`'s operand here is still the Name, not the stray numbers ahead of it.
+    /// Build a minimal one-page PDF whose Form XObject is invoked as
+    /// `q <6 numbers> /Name Do Q` — deliberately missing the `cm` operator
+    /// token, so the numbers are dangling operands with nothing to consume
+    /// them. Per ISO 32000-1:2008 §7.8.2 an operator's operand is whatever
+    /// immediately precedes it in the stream; `Do`'s operand here is still
+    /// the Name, not the stray numbers ahead of it.
     ///
     /// `direct_text`: when `Some`, the page's own content stream also draws
-    /// this text directly before invoking the XObject (mirrors the issue's
-    /// case_a_overlay_xobject.pdf); when `None`, the page draws nothing
-    /// itself and all text comes from the XObject (mirrors
-    /// case_b_all_xobject.pdf).
-    fn build_issue_913_xobject_pdf(direct_text: Option<&str>) -> Vec<u8> {
+    /// this text directly before invoking the XObject; when `None`, the page
+    /// draws nothing itself and all text comes from the XObject.
+    fn build_xobject_do_with_orphaned_operands_pdf(direct_text: Option<&str>) -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
 
         let off1 = pdf.len();
@@ -23881,8 +23879,7 @@ mod tests {
             );
         }
         // Deliberately missing `cm`: dangling "1 0 0 1 20 150" operands
-        // directly precede "/Overlay Do" — the exact malformed shape from
-        // issue #913's repro fixtures.
+        // directly precede "/Overlay Do".
         content.extend_from_slice(b"q 1 0 0 1 20 150 /Overlay Do Q");
 
         pdf.extend_from_slice(
@@ -23923,15 +23920,16 @@ mod tests {
         pdf
     }
 
-    /// Regression test for #913 (mixed direct text + overlay XObject, no
-    /// `cm`): both the page's own text and the XObject's overlay text must
-    /// be extracted, matching poppler's and pymupdf's behaviour on the same
-    /// malformed content (both tools resolve `Do`'s name from whatever
-    /// immediately precedes it, discarding the dangling numeric operands
-    /// rather than misreading them as the XObject name).
+    /// A page that draws text directly AND paints an overlay Form XObject
+    /// invoked without a `cm` (dangling operands ahead of the XObject name)
+    /// must extract both the direct text and the XObject's text, matching
+    /// poppler's and pymupdf's behaviour on the same malformed content (both
+    /// tools resolve `Do`'s name from whatever immediately precedes it,
+    /// discarding the dangling numeric operands rather than misreading them
+    /// as the XObject name).
     #[test]
-    fn test_issue_913_overlay_xobject_missing_cm() {
-        let pdf_bytes = build_issue_913_xobject_pdf(Some("base body text"));
+    fn test_direct_and_overlay_xobject_text_both_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_xobject_do_with_orphaned_operands_pdf(Some("base body text"));
         let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
 
         let chars: String = doc
@@ -23954,11 +23952,11 @@ mod tests {
         assert!(plain.contains("overlay text"));
     }
 
-    /// Regression test for #913 (all text via XObject on an otherwise-blank
-    /// page, no `cm`): extraction must not come back empty.
+    /// A page with no direct content of its own, whose only text comes from
+    /// a Form XObject invoked without a `cm`, must not extract as empty.
     #[test]
-    fn test_issue_913_all_text_via_xobject_missing_cm() {
-        let pdf_bytes = build_issue_913_xobject_pdf(None);
+    fn test_xobject_only_page_text_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_xobject_do_with_orphaned_operands_pdf(None);
         let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
 
         let chars: String = doc
@@ -23975,9 +23973,9 @@ mod tests {
 
     /// Build a minimal one-page PDF where XObject "Outer" invokes a second
     /// XObject "Inner" (both via the same malformed missing-`cm` `Do` shape
-    /// as [`build_issue_913_xobject_pdf`]), and "Inner" is where the actual
-    /// text lives. Covers the issue's suggested nested-XObject case.
-    fn build_issue_913_nested_xobject_pdf() -> Vec<u8> {
+    /// as [`build_xobject_do_with_orphaned_operands_pdf`]), and "Inner" is
+    /// where the actual text lives.
+    fn build_nested_xobject_do_with_orphaned_operands_pdf() -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
 
         let off1 = pdf.len();
@@ -24047,12 +24045,12 @@ mod tests {
         pdf
     }
 
-    /// Regression test for #913 (nested XObjects, no `cm` at either level):
-    /// recursion into a Form XObject invoked by another Form XObject must
-    /// still resolve each `Do`'s operand correctly.
+    /// Recursion into a Form XObject invoked by another Form XObject, with
+    /// no `cm` at either level, must still resolve each `Do`'s operand
+    /// correctly and extract the innermost text.
     #[test]
-    fn test_issue_913_nested_xobject_missing_cm() {
-        let pdf_bytes = build_issue_913_nested_xobject_pdf();
+    fn test_nested_xobject_text_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_nested_xobject_do_with_orphaned_operands_pdf();
         let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
 
         let text = doc.extract_text(0).unwrap();
