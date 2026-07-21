@@ -72,7 +72,7 @@ dev = [
     "pytest-cov>=4.0",
     # Type checking (optional)
     "mypy>=1.0",
-    "ty>=0.0.15",
+    "ty>=0.0.61",
     # Build tool for Python bindings
     "maturin>=1.0,<2.0",
 ]
@@ -82,14 +82,14 @@ benchmark = [
     "borb>=3.0.4",
     "pymupdf>=1.24.11",
     "pymupdf4llm>=0.0.17",
-    "pdfplumber>=0.11.5",
+    "pdfplumber>=0.11.10",
     "pypdf>=5.9.0",
     "pypdfium2>=5.3.0",
     "pdfminer-six>=20231228",
     "playa-pdf>=1.0.0",
 ]
-seg-edgar = ["sec-edgar-downloader>=5.0.3"]
-convert-models = ["torch>=2.4.1", "onnxruntime>=1.20.1", "transformers>=4.46.3"]
+seg-edgar = ["sec-edgar-downloader>=5.1.0"]
+convert-models = ["torch>=2.13.0", "onnxruntime>=1.20.1", "transformers>=5.14.1"]
 inspect-tj-array = ["pymupdf>=1.24.11"]
 check-pdf-structure = ["pypdf"]
 analyze-pdf-spacing = ["pymupdf>=1.24.11"]
