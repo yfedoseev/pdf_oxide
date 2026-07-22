@@ -2888,9 +2888,9 @@ dependencies = [
 
 [[package]]
 name = "office_oxide"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7150eeae2b40a6926717058d0575ee2f48a36806725376a2ff6b2e69b61c88e9"
+checksum = "317c254cebe5b87c74a0fbd84e889d51ec0c4db885fa5aca98700ad85fd9ec5f"
 dependencies = [
  "atoi_simd",
  "encoding_rs",
