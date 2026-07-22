@@ -1841,7 +1841,7 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
           MISSING=0
           while IFS= read -r sha; do
-            if ! git log -1 --pretty=full "$sha" | grep -q "^Signed-off-by:"; then
+            if ! git log -1 --format=%B "$sha" | grep -q "^Signed-off-by:"; then
               echo "::error::Commit $sha is missing a Signed-off-by trailer"
               MISSING=$((MISSING+1))
             fi
