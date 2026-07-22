@@ -499,20 +499,21 @@ mod tests {
         let cmd = pipeline.resolve(&intent, &ctx, None).unwrap();
         // Separation with a DeviceCMYK alternate now emits Cmyk so the
         // per-plate router has the channel decomposition. Project to
-        // RGBA here and pin the expected magenta.
+        // RGBA through the same composite converter the renderer uses
+        // (process-ink `cmyk_to_rgb_via_intent`) and pin the process-ink
+        // magenta corner #EC008C = (0.9255, 0, 0.5490).
         let (r, g, b, a) = match cmd.color {
             ResolvedColor::Rgba { r, g, b, a } => (r, g, b, a),
             ResolvedColor::Cmyk { c, m, y, k, a } => {
-                let rr = (1.0 - (c + k).min(1.0)).clamp(0.0, 1.0);
-                let gg = (1.0 - (m + k).min(1.0)).clamp(0.0, 1.0);
-                let bb = (1.0 - (y + k).min(1.0)).clamp(0.0, 1.0);
+                let (rr, gg, bb) =
+                    crate::rendering::resolution::color::cmyk_to_rgb_via_intent(c, m, y, k, &ctx);
                 (rr, gg, bb, a)
             },
             other => panic!("expected Rgba or Cmyk; got {other:?}"),
         };
-        assert!((r - 1.0).abs() < 1e-3);
-        assert!((g - 0.0).abs() < 1e-3);
-        assert!((b - 1.0).abs() < 1e-3);
-        assert!((a - 1.0).abs() < 1e-3);
+        assert!((r - 0.9255).abs() < 1e-3, "r={r}");
+        assert!((g - 0.0).abs() < 1e-3, "g={g}");
+        assert!((b - 0.5490).abs() < 1e-3, "b={b}");
+        assert!((a - 1.0).abs() < 1e-3, "a={a}");
     }
 }

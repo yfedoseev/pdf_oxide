@@ -981,6 +981,30 @@ fn pixel_at(rgba: &[u8], x: u32, y: u32) -> (u8, u8, u8, u8) {
     (rgba[off], rgba[off + 1], rgba[off + 2], rgba[off + 3])
 }
 
+/// Expected 8-bit RGB for a DeviceCMYK quadruple under the **process-ink**
+/// converter (`pdf_oxide::color::cmyk_to_rgb`, tetralinear over the 16
+/// measured ink corners) - the conversion the composite renderer now
+/// takes when there is no usable `/OutputIntents` CMYK profile.
+///
+/// This replaces the old ISO 32000-1:2008 §10.3.5 additive-clamp
+/// `1 - min(1, C+K)` fallback: an identical CMYK value now resolves the
+/// same whether it is a vector fill, a raster image, or extracted text.
+/// The opaque-vector fill path rounds each channel `round(v * 255)` (the
+/// same rounding the prior byte-exact additive pins relied on), so this
+/// helper is byte-for-byte what the renderer must emit for a fully
+/// covered opaque CMYK fill.
+fn process_ink_rgb(c: f32, m: f32, y: f32, k: f32) -> (u8, u8, u8) {
+    let (r, g, b) = pdf_oxide::color::cmyk_to_rgb(c, m, y, k);
+    ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+}
+
+/// [`process_ink_rgb`] plus a fully-opaque alpha, for the `pixel_at`
+/// 4-tuple comparisons.
+fn process_ink_rgba(c: f32, m: f32, y: f32, k: f32) -> (u8, u8, u8, u8) {
+    let (r, g, b) = process_ink_rgb(c, m, y, k);
+    (r, g, b, 255)
+}
+
 // ===========================================================================
 // Phase 2 positive test
 // ===========================================================================
@@ -1079,7 +1103,7 @@ fn device_cmyk_paint_with_output_intent_renders_via_icc_not_additive_clamp() {
 /// some other ICC profile (or that flipped the precedence rules) would
 /// surface here as the wrong colour.
 #[test]
-fn device_cmyk_paint_without_output_intent_renders_additive_clamp() {
+fn device_cmyk_paint_without_output_intent_renders_process_inks() {
     let pdf = build_pdf_cmyk_without_output_intent();
     let doc = PdfDocument::from_bytes(pdf).expect("open synthetic PDF");
     // Cross-check the catalog has no OutputIntent — if it did, this
@@ -1093,15 +1117,14 @@ fn device_cmyk_paint_without_output_intent_renders_additive_clamp() {
     let rgba = render_rgba(&doc);
     let (r, g, b, _a) = pixel_at(&rgba, 50, 50);
 
-    // CMYK(0.25, 0, 0, 0) → additive-clamp:
-    //   R = 1 - (0.25 + 0) = 0.75 → 191
-    //   G = 1 - (0.00 + 0) = 1.00 → 255
-    //   B = 1 - (0.00 + 0) = 1.00 → 255
+    // CMYK(0.25, 0, 0, 0) with no usable OutputIntent -> process-ink
+    // fallback: 0.75*paper + 0.25*cyan corner. Pin it to the canonical
+    // converter byte-for-byte (NOT the old additive-clamp (191, 255, 255)).
     assert_eq!(
         (r, g, b),
-        (191, 255, 255),
-        "without /OutputIntents the §10.3.5 additive-clamp fallback must \
-         be preserved byte-for-byte; got ({r}, {g}, {b})"
+        process_ink_rgb(0.25, 0.0, 0.0, 0.0),
+        "without /OutputIntents the composite render must use the process-ink \
+         fallback byte-for-byte; got ({r}, {g}, {b})"
     );
 }
 
@@ -1224,7 +1247,7 @@ fn output_intent_constant_clut_is_invariant_across_rendering_intents() {
 /// OutputIntent fixture produces, so a malformed `/OutputIntents`
 /// degrades gracefully.
 #[test]
-fn output_intent_with_unparseable_profile_falls_through_to_additive_clamp() {
+fn output_intent_with_unparseable_profile_falls_through_to_process_inks() {
     // Header-only profile: parses through `IccProfile::parse` (which
     // only validates the 128-byte header), but qcms refuses at build
     // time because there's no tag table. Mirrors the stub the in-source
@@ -1253,9 +1276,9 @@ fn output_intent_with_unparseable_profile_falls_through_to_additive_clamp() {
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (191u8, 255, 255, 255),
-        "unparseable OutputIntent profile must fall through to §10.3.5 byte-exact; \
-         got ({r},{g},{b},{a})"
+        process_ink_rgba(0.25, 0.0, 0.0, 0.0),
+        "unparseable OutputIntent profile must fall through to the process-ink converter \
+         byte-exact; got ({r},{g},{b},{a})"
     );
 }
 
@@ -1298,13 +1321,13 @@ fn output_intent_with_mismatched_icc_header_colour_space_is_rejected_at_parse() 
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (191u8, 255, 255, 255),
-        "mismatched-header OutputIntent must fall through to §10.3.5; got ({r},{g},{b},{a})"
+        process_ink_rgba(0.25, 0.0, 0.0, 0.0),
+        "mismatched-header OutputIntent must fall through to the process-ink converter; got ({r},{g},{b},{a})"
     );
 }
 
 // ===========================================================================
-// QA: helper-level consistency (§10.3.5 source-of-truth probe)
+// QA: helper-level consistency (process-ink source-of-truth probe)
 // ===========================================================================
 
 /// Pin that `crate::extractors::images::cmyk_pixel_to_rgb` and the
@@ -1315,15 +1338,15 @@ fn output_intent_with_mismatched_icc_header_colour_space_is_rejected_at_parse() 
 /// `cmyk_to_rgb_via_intent_falls_back_when_profile_has_no_cmm`. Verified
 /// here at the public-API level by routing both paths through a known
 /// CMYK input and comparing byte-for-byte. If a future refactor diverges
-/// the two §10.3.5 implementations, the fallback path inside qcms's
+/// the two process-ink implementations, the fallback path inside qcms's
 /// no-CMM arm could disagree with the resolver's bare-fallback arm even
-/// though both intend the spec formula.
+/// though both intend the same conversion.
 ///
 /// The probe iterates over a handful of representative inputs — pure
 /// process inks, the test fixture's input, and a few interior CMYK
 /// quadruples. Every input must agree.
 #[test]
-fn additive_clamp_consistency_between_extractors_helper_and_no_output_intent_arm() {
+fn process_ink_consistency_between_extractors_helper_and_no_output_intent_arm() {
     use pdf_oxide::color::{IccProfile, RenderingIntent, Transform};
     use std::sync::Arc;
 
@@ -1340,18 +1363,22 @@ fn additive_clamp_consistency_between_extractors_helper_and_no_output_intent_arm
     let prof = Arc::new(IccProfile::parse(header_only, 4).expect("parse"));
     let t = Transform::new_srgb_target(prof, RenderingIntent::RelativeColorimetric);
 
-    // The §10.3.5 formula in plain Rust — re-derived here so we don't
-    // import the crate-private helper. Both the Transform no-CMM arm
-    // and the resolver fallback must agree with this.
-    fn spec_additive_clamp(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
-        let cf = c as f32 / 255.0;
-        let mf = m as f32 / 255.0;
-        let yf = y as f32 / 255.0;
-        let kf = k as f32 / 255.0;
-        let r = ((1.0 - (cf + kf).min(1.0)) * 255.0).round() as u8;
-        let g = ((1.0 - (mf + kf).min(1.0)) * 255.0).round() as u8;
-        let b = ((1.0 - (yf + kf).min(1.0)) * 255.0).round() as u8;
-        [r, g, b]
+    // The process-ink converter via the public API. Both the Transform
+    // no-CMM arm (which devolves to `images::cmyk_pixel_to_rgb`) and the
+    // resolver fallback route through the same `color::cmyk_to_rgb`, so
+    // both must agree with this byte-for-byte.
+    fn spec_process_ink(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
+        let (r, g, b) = pdf_oxide::color::cmyk_to_rgb(
+            c as f32 / 255.0,
+            m as f32 / 255.0,
+            y as f32 / 255.0,
+            k as f32 / 255.0,
+        );
+        [
+            (r * 255.0).round() as u8,
+            (g * 255.0).round() as u8,
+            (b * 255.0).round() as u8,
+        ]
     }
 
     for (c, m, y, k) in [
@@ -1365,10 +1392,10 @@ fn additive_clamp_consistency_between_extractors_helper_and_no_output_intent_arm
         (200, 100, 50, 25),
     ] {
         let from_transform = t.convert_cmyk_pixel(c, m, y, k);
-        let from_spec = spec_additive_clamp(c, m, y, k);
+        let from_spec = spec_process_ink(c, m, y, k);
         assert_eq!(
             from_transform, from_spec,
-            "Transform no-CMM fallback must agree with §10.3.5 spec on CMYK({c},{m},{y},{k}); \
+            "Transform no-CMM fallback must agree with the process-ink converter on CMYK({c},{m},{y},{k}); \
              transform={from_transform:?}, spec={from_spec:?}"
         );
     }
@@ -1652,37 +1679,24 @@ fn page_level_default_gray_routes_bare_device_gray_through_override() {
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     // The Separation tint transform `{ 0.0 exch 0.0 0.0 }` consumes the
     // single gray-component input and emits CMYK(0, gray, 0, 0). For
-    // gray=0.5 the alternate is CMYK(0, 0.5, 0, 0) → §10.3.5 produces
-    // R=1, G=1-0.5=0.5, B=1. The 0.5 channel rounds to 128 (round-half-
-    // up via Rust f32 → u8 cast at the pixel-writer boundary). The
-    // R=255, B=255 channels and the M-only behaviour are the
-    // discriminating signal — they are byte-exact and would be
-    // ABSENT if the override was bypassed (literal gray would produce
-    // RGB(128, 128, 128) with no magenta channel).
+    // gray=0.5 the alternate is CMYK(0, 0.5, 0, 0), which the process-ink
+    // converter projects to a magenta-ish RGB (high R, mid B) - distinct
+    // from the literal gray RGB(128, 128, 128) a bypassed override would
+    // leave. R and B are the discriminating channels (G is 128 either
+    // way); pin the full tuple to the canonical converter.
+    let want = process_ink_rgb(0.0, 0.5, 0.0, 0.0);
     assert_eq!(
-        r, 255,
-        "/DefaultGray override → Separation magenta projection must produce R=255 \
-         (additive-clamp of CMYK(0,0.5,0,0) leaves R=1.0); got ({r},{g},{b},{a}). \
-         (128,*,*) means the override was bypassed and the literal gray landed."
+        (r, g, b),
+        want,
+        "/DefaultGray override -> Separation magenta projection must produce the \
+         process-ink RGB {want:?} (high R, mid B); got ({r},{g},{b},{a}). \
+         RGB(128,128,128) would mean the override was bypassed and the literal \
+         gray landed."
     );
-    assert_eq!(
-        b, 255,
-        "/DefaultGray override → Separation magenta projection must produce B=255; \
-         got ({r},{g},{b},{a})"
-    );
-    // tiny-skia's f32 → u8 conversion at color.rs:444 is
-    // `(c * 255.0 + 0.5) as u8` — round-half-up via truncation. For
-    // c=0.5 that's 0.5 * 255.0 + 0.5 = 128.0 → 128, deterministic
-    // across platforms and tiny-skia builds. Earlier rounds asserted
-    // a (120..=130) tolerance against a supposed platform-dependent
-    // rounding; the actual conversion is exact, so pin the byte.
-    assert_eq!(
-        g, 128,
-        "/DefaultGray override → Separation magenta projection must produce \
-         G=128 (additive-clamp of CMYK(0,0.5,0,0) gives G=0.5; tiny-skia's \
-         f32→u8 conversion is (c*255.0+0.5) as u8 = 128, deterministic); \
-         got G={g}, full pixel ({r},{g},{b},{a}). G=255 would mean no \
-         magenta — override bypassed."
+    assert!(
+        r > 200 && b > 160 && b < 230,
+        "discriminating channels must show the magenta projection (R high, B mid), \
+         not gray 128; got ({r},{g},{b},{a})"
     );
     assert_eq!(a, 255, "alpha=1 paint must be fully opaque; got a={a}");
 }
@@ -2312,7 +2326,7 @@ fn output_intent_perceptual_vs_absolute_colorimetric_produces_different_rgb() {
 /// ```
 ///
 /// **Negative-pin commit `fda9b6f`:**
-/// The negative pin (`*_without_output_intent_renders_additive_clamp`)
+/// The negative pin (`*_without_output_intent_renders_process_inks`)
 /// is a regression guard, not a failing test. Verified by planting the
 /// commit's test on its parent `656c119`: it passed even there because
 /// the no-OutputIntent fallback was the shipped behaviour. The impl
@@ -2328,7 +2342,7 @@ fn qa_tdd_discipline_verification_report() {
     // by referencing the two test functions whose behaviour the report
     // describes.
     let _ = device_cmyk_paint_with_output_intent_renders_via_icc_not_additive_clamp;
-    let _ = device_cmyk_paint_without_output_intent_renders_additive_clamp;
+    let _ = device_cmyk_paint_without_output_intent_renders_process_inks;
 }
 
 // ===========================================================================
@@ -2539,7 +2553,7 @@ fn separation_type4_alt_devicecmyk_composite_routes_through_output_intent() {
 /// into a no-OutputIntent fixture (which would imply some hard-coded
 /// CMM hung around the renderer rather than the configured route).
 #[test]
-fn separation_type4_alt_devicecmyk_without_output_intent_renders_additive_clamp() {
+fn separation_type4_alt_devicecmyk_without_output_intent_renders_process_inks() {
     // Inline-build a PDF identical to
     // `build_pdf_separation_type4_devicecmyk_with_output_intent` but
     // without /OutputIntents. Object IDs shift down by one because the
@@ -2599,9 +2613,9 @@ fn separation_type4_alt_devicecmyk_without_output_intent_renders_additive_clamp(
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (255u8, 0, 255, 255),
+        process_ink_rgba(0.0, 1.0, 0.0, 0.0),
         "Separation Type-4 /DeviceCMYK alternate without /OutputIntents must \
-         fall through to §10.3.5 additive-clamp of CMYK(0,1,0,0) = (255,0,255); \
+         fall through to the process-ink converter for CMYK(0,1,0,0) (magenta #EC008C); \
          got ({r},{g},{b},{a})"
     );
 }
@@ -3538,9 +3552,9 @@ fn qa_round4_branding_green_mark_routes_through_output_intent() {
         let (r, g, b, a) = pixel_at(&rgba, 50, 50);
         assert_eq!(
             (r, g, b, a),
-            (166u8, 230, 0, 255),
-            "without /OutputIntents the green-mark CMYK build must produce the §10.3.5 \
-             additive-clamp value RGB(166, 230, 0) — vivid lime. This is the pre-#97 \
+            process_ink_rgba(0.30, 0.05, 0.95, 0.05),
+            "without /OutputIntents the green-mark CMYK build must produce the \
+             process-ink value for CMYK(0.30, 0.05, 0.95, 0.05) - the no-OI \
              baseline; got ({r},{g},{b},{a})"
         );
     }
@@ -3659,7 +3673,7 @@ fn qa_round4_real_branding_fixture_honest_gap() {
 /// accept N=3 would route CMYK bytes through an RGB profile and either
 /// panic at qcms's channel-count assert or emit garbage RGB.
 #[test]
-fn output_intent_n3_rgb_profile_rejected_at_reader_falls_through_to_additive_clamp() {
+fn output_intent_n3_rgb_profile_rejected_at_reader_falls_through_to_process_inks() {
     // Build a PDF whose /OutputIntents entry declares /N 3 on its
     // /DestOutputProfile stream. The body bytes don't have to parse as a
     // real RGB ICC profile because the accessor filters on /N before it
@@ -3711,8 +3725,8 @@ fn output_intent_n3_rgb_profile_rejected_at_reader_falls_through_to_additive_cla
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (191u8, 255, 255, 255),
-        "an N=3 OutputIntent must fall through to §10.3.5 additive-clamp \
+        process_ink_rgba(0.25, 0.0, 0.0, 0.0),
+        "an N=3 OutputIntent must fall through to the process-ink converter \
          byte-for-byte for /DeviceCMYK paint; got ({r},{g},{b},{a})"
     );
 }
@@ -3750,9 +3764,9 @@ fn output_intent_with_outputcondition_string_only_no_destoutputprofile_falls_thr
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (191u8, 255, 255, 255),
-        "a /OutputCondition-only entry must fall through to §10.3.5 \
-         additive-clamp byte-for-byte; got ({r},{g},{b},{a})"
+        process_ink_rgba(0.25, 0.0, 0.0, 0.0),
+        "a /OutputCondition-only entry must fall through to the process-ink \
+         converter byte-for-byte; got ({r},{g},{b},{a})"
     );
 }
 
@@ -3845,7 +3859,7 @@ fn output_intent_array_picks_first_cmyk_entry_skipping_rgb() {
 /// the entry is skipped, and the renderer falls through to §10.3.5.
 ///
 /// This is distinct from the header-only probe at
-/// `output_intent_with_unparseable_profile_falls_through_to_additive_clamp`:
+/// `output_intent_with_unparseable_profile_falls_through_to_process_inks`:
 /// that probe pins fall-through happens INSIDE `Transform::convert_cmyk_pixel`
 /// (the header parses, qcms refuses to build the CMM). This probe pins the
 /// earlier rejection where `IccProfile::parse` returns None up front — no
@@ -3873,9 +3887,9 @@ fn output_intent_malformed_iccbased_stream_falls_through() {
     let (r, g, b, a) = pixel_at(&rgba, 50, 50);
     assert_eq!(
         (r, g, b, a),
-        (191u8, 255, 255, 255),
+        process_ink_rgba(0.25, 0.0, 0.0, 0.0),
         "a malformed /DestOutputProfile stream (sub-header-length garbage) \
-         must fall through to §10.3.5 additive-clamp byte-for-byte without \
+         must fall through to the process-ink converter byte-for-byte without \
          panicking; got ({r},{g},{b},{a})"
     );
 }

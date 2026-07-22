@@ -13,7 +13,7 @@
 //!   and `DeviceGray` alternates as well.
 //! - **ICCBased** colour spaces. The resolver delegates to the
 //!   [`crate::color::Transform`] CMM when the `icc` feature is on and falls
-//!   back to the §10.3.5 additive-clamp formula otherwise. This is the same
+//!   back to the process-ink conversion otherwise. This is the same
 //!   path image extraction uses, so we re-use [`crate::color`] rather than
 //!   carrying a second copy of the conversion code.
 //! - **Indexed** colour spaces. The resolver follows the index into the base
@@ -125,7 +125,7 @@ impl ColorResolver {
         // render). Return None so the caller falls through to the
         // device-family path (`device_to_rgba`), which routes CMYK
         // through `cmyk_to_rgb_via_intent` and so consults
-        // `/OutputIntents` when present, or §10.3.5 additive-clamp
+        // `/OutputIntents` when present, or the process-ink conversion
         // when not.
         if space.as_name().is_none() && space.as_array().is_none() {
             return Ok(None);
@@ -634,7 +634,7 @@ fn three_as_rgb(components: &[f32], alpha: f32) -> ResolvedColor {
 
 /// Emit `ResolvedColor::Rgba` from a 4-component CMYK via the
 /// context-aware CMYK→RGB path: the document's `/OutputIntents` CMYK
-/// profile when present, otherwise §10.3.5 additive-clamp. Used by
+/// profile when present, otherwise the process-ink conversion. Used by
 /// the Separation / DeviceN alternate-CMYK projection — the per-plate
 /// routing for those sources is governed by the source colour space,
 /// not the alternate's CMYK decomposition, so the alt is composite-
@@ -649,7 +649,7 @@ fn four_as_cmyk(components: &[f32], alpha: f32, ctx: &ResolutionContext) -> Reso
 /// for genuine DeviceCMYK / ICCBased N=4 sources. The per-plate
 /// router consumes this directly (process-ink routing + OPM=1 zero-
 /// component rule); the composite path projects to RGBA via the
-/// §10.3.5 additive-clamp formula in `run_pipeline_for_logical`.
+/// process-ink `cmyk_to_rgb_via_intent` in `run_pipeline_for_logical`.
 fn four_as_cmyk_native(components: &[f32], alpha: f32) -> ResolvedColor {
     ResolvedColor::Cmyk {
         c: components[0].clamp(0.0, 1.0),
@@ -660,17 +660,20 @@ fn four_as_cmyk_native(components: &[f32], alpha: f32) -> ResolvedColor {
     }
 }
 
-/// ISO 32000-1:2008 §10.3.5 additive-clamp DeviceCMYK → DeviceRGB.
+/// DeviceCMYK → DeviceRGB via the PROCESS-INK conversion
+/// (`crate::color::cmyk_to_rgb`, tetralinear over the 16 measured ink
+/// corners), NOT the naive §10.3.5 additive clamp `R = 1 - min(1, C+K)`.
 ///
-/// Mirrors the helper in `page_renderer.rs:2555`. We duplicate it here
-/// deliberately so the resolver has no compile-time dependency on the
-/// existing renderer; a follow-up will collapse the two callers onto a
-/// single shared helper as part of the renderer-migration work.
+/// This is the no-OutputIntent fallback of the composite render path
+/// (`run_pipeline_for_logical` → `cmyk_to_rgb_via_intent`), so it must
+/// agree with the renderer's own `page_renderer::cmyk_to_rgb`, the image
+/// pixel path (`extractors::images::cmyk_pixel_to_rgb`) and the
+/// text/extraction path (`document.rs`/`text.rs`): the same CMYK value
+/// resolves to the same RGB everywhere (100% K is `#231F20`, 100% cyan
+/// `#00ADEF`). A real ICC/OutputIntent CMM still takes precedence when a
+/// profile is available (see `cmyk_to_rgb_via_intent`).
 fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
-    let r = 1.0 - (c + k).min(1.0);
-    let g = 1.0 - (m + k).min(1.0);
-    let b = 1.0 - (y + k).min(1.0);
-    (r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+    crate::color::cmyk_to_rgb(c, m, y, k)
 }
 
 /// Context-aware CMYK → RGB convergence.
@@ -694,9 +697,10 @@ fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
 ///
 /// 2. `ctx.output_intent_cmyk` is `None` — the document didn't
 ///    declare a CMYK OutputIntent (or one is present but couldn't be
-///    parsed). Falls through to the spec's §10.3.5 additive-clamp
-///    formula. This is the byte-for-byte fallback the renderer
-///    shipped before OutputIntent threading landed.
+///    parsed). Falls through to the process-ink `cmyk_to_rgb`
+///    (`crate::color::cmyk_to_rgb`), the same conversion the renderer,
+///    image and extraction paths use, so a DeviceCMYK colour resolves
+///    identically whether or not a broken OutputIntent is present.
 ///
 /// **Black-Point Compensation (BPC) and rendering-intent caveats:**
 /// qcms 0.3.0 does not implement BPC and, for CMYK sources, silently
@@ -994,17 +998,18 @@ mod tests {
 
     /// Assert resolved colour matches expected RGBA. Accepts either
     /// `ResolvedColor::Rgba` directly or `ResolvedColor::Cmyk`
-    /// projected via the §10.3.5 additive-clamp formula (the resolver
-    /// now emits Cmyk for Separation / DeviceN sources with a CMYK
-    /// alternate so per-plate backends see the channel decomposition;
-    /// composite consumers project on demand).
+    /// projected via the same process-ink `cmyk_to_rgb` the composite
+    /// render path uses (the resolver now emits Cmyk for Separation /
+    /// DeviceN sources with a CMYK alternate so per-plate backends see
+    /// the channel decomposition; composite consumers project on
+    /// demand). Projecting through the engine's own converter keeps the
+    /// expected RGB in this helper consistent with what the renderer
+    /// actually paints for the same CMYK plates.
     fn assert_rgba(c: ResolvedColor, r: f32, g: f32, b: f32, a: f32) {
         let (rr, gg, bb, aa) = match c {
             ResolvedColor::Rgba { r, g, b, a } => (r, g, b, a),
             ResolvedColor::Cmyk { c, m, y, k, a } => {
-                let rr = (1.0 - (c + k).min(1.0)).clamp(0.0, 1.0);
-                let gg = (1.0 - (m + k).min(1.0)).clamp(0.0, 1.0);
-                let bb = (1.0 - (y + k).min(1.0)).clamp(0.0, 1.0);
+                let (rr, gg, bb) = super::cmyk_to_rgb(c, m, y, k);
                 (rr, gg, bb, a)
             },
             other => panic!("expected Rgba or Cmyk; got {other:?}"),
@@ -1036,14 +1041,28 @@ mod tests {
     }
 
     #[test]
-    fn resolves_device_cmyk_via_additive_clamp() {
-        // CMYK(1,0,0,0) → RGB(0,1,1) per §10.3.5.
+    fn resolves_device_cmyk_via_process_inks() {
+        // DeviceCMYK composites through the process-ink converter
+        // (`crate::color::cmyk_to_rgb`, tetralinear over the 16 measured
+        // ink corners), NOT the §10.3.5 additive clamp. 100% cyan lands
+        // on the measured corner `#00ADEF` = (0.0, 0.6784, 0.9373), not
+        // (0, 1, 1). The resolver emits `Cmyk` (for per-plate routing);
+        // the composite projection is `cmyk_to_rgb_via_intent`, whose
+        // no-OutputIntent fallback is the process-ink path.
         let doc = fixture_doc();
         let spaces = HashMap::new();
         let resolver = ColorResolver::new();
         let lc = LogicalColor::Device(DeviceColor::Cmyk(1.0, 0.0, 0.0, 0.0));
         let c = resolver.resolve(&lc, &ctx(&doc, &spaces), 1.0).unwrap();
-        assert_rgba(c, 0.0, 1.0, 1.0, 1.0);
+        let (cc, m, y, k, a) = match c {
+            ResolvedColor::Cmyk { c, m, y, k, a } => (c, m, y, k, a),
+            other => panic!("expected Cmyk; got {other:?}"),
+        };
+        let (r, g, b) = super::cmyk_to_rgb_via_intent(cc, m, y, k, &ctx(&doc, &spaces));
+        assert!((r - 0.0).abs() < 1e-3, "r: got {r}, want 0.0");
+        assert!((g - 0.6784).abs() < 1e-3, "g: got {g}, want 0.6784");
+        assert!((b - 0.9373).abs() < 1e-3, "b: got {b}, want 0.9373");
+        assert!((a - 1.0).abs() < 1e-3, "a: got {a}, want 1.0");
     }
 
     #[test]
@@ -1064,7 +1083,8 @@ mod tests {
     fn separation_with_type2_cmyk_alternate_uses_function() {
         // /Separation /SpotInk /DeviceCMYK
         //   << /FunctionType 2 /N 1 /C0 [0 0 0 0] /C1 [0 1 0 0] /Domain [0 1] /Range [0 1 0 1 0 1 0 1] >>
-        // tint=1 must produce CMYK(0,1,0,0) → RGB(1,0,1) (magenta).
+        // tint=1 must produce CMYK(0,1,0,0), the process-ink magenta
+        // corner #EC008C = (0.9255, 0, 0.5490).
         let mut func_dict: HashMap<String, Object> = HashMap::new();
         func_dict.insert("FunctionType".into(), Object::Integer(2));
         func_dict.insert("N".into(), Object::Integer(1));
@@ -1103,8 +1123,8 @@ mod tests {
             components: smallvec::smallvec![1.0],
         };
         let c = resolver.resolve(&lc, &ctx(&doc, &spaces), 1.0).unwrap();
-        // CMYK(0,1,0,0) → R=1-0=1, G=1-1=0, B=1-0=1
-        assert_rgba(c, 1.0, 0.0, 1.0, 1.0);
+        // CMYK(0,1,0,0) -> process-ink magenta corner (0.9255, 0, 0.5490)
+        assert_rgba(c, 0.9255, 0.0, 0.5490, 1.0);
     }
 
     #[test]
@@ -1178,7 +1198,7 @@ mod tests {
             components: smallvec::smallvec![1.0],
         };
         let c = resolver.resolve(&lc, &ctx(&doc, &spaces), 1.0).unwrap();
-        assert_rgba(c, 1.0, 0.0, 1.0, 1.0);
+        assert_rgba(c, 0.9255, 0.0, 0.5490, 1.0);
     }
 
     #[test]
@@ -1317,7 +1337,9 @@ mod tests {
             components: smallvec::smallvec![1.0, 0.0, 0.0, 0.0],
         };
         let c = resolver.resolve(&lc, &ctx(&doc, &spaces), 1.0).unwrap();
-        assert_rgba(c, 0.0, 1.0, 1.0, 1.0);
+        // ICCBased N=4 falls back to DeviceCMYK; CMYK(1,0,0,0) composites
+        // through the process-ink converter to the cyan corner #00ADEF.
+        assert_rgba(c, 0.0, 0.6784, 0.9373, 1.0);
     }
 
     #[test]
@@ -1337,19 +1359,20 @@ mod tests {
     }
 
     #[test]
-    fn cmyk_to_rgb_via_intent_with_no_output_intent_matches_additive_clamp() {
-        // The fallback arm is the spec's §10.3.5 formula. Pin one
-        // representative quadruple byte-exact so a regression that
-        // re-routed the no-OutputIntent path through some other
-        // conversion would surface here.
+    fn cmyk_to_rgb_via_intent_with_no_output_intent_uses_process_inks() {
+        // The fallback arm is the process-ink `cmyk_to_rgb`. Pin one
+        // representative quadruple so a regression that re-routed the
+        // no-OutputIntent path through some other conversion (e.g. back
+        // to the §10.3.5 additive clamp) would surface here. CMYK(0.25,
+        // 0, 0, 0) interpolates 0.75·paper + 0.25·cyan corner =
+        // (0.75, 0.9196, 0.9843).
         let doc = fixture_doc();
         let spaces = HashMap::new();
         let ctx = ResolutionContext::new(&doc, &spaces);
-        // CMYK(0.25, 0, 0, 0) → R=0.75, G=1.0, B=1.0.
         let (r, g, b) = super::cmyk_to_rgb_via_intent(0.25, 0.0, 0.0, 0.0, &ctx);
-        assert!((r - 0.75).abs() < 1e-6);
-        assert!((g - 1.0).abs() < 1e-6);
-        assert!((b - 1.0).abs() < 1e-6);
+        assert!((r - 0.75).abs() < 1e-4, "r: got {r}, want 0.75");
+        assert!((g - 0.9196).abs() < 1e-4, "g: got {g}, want 0.9196");
+        assert!((b - 0.9843).abs() < 1e-4, "b: got {b}, want 0.9843");
     }
 
     #[cfg(any(feature = "icc-qcms", feature = "icc-lcms2"))]
@@ -1358,7 +1381,7 @@ mod tests {
         // The header-only stub profile parses (IccProfile::parse accepts
         // the 128-byte header) but qcms refuses to build a Transform
         // from it because there's no tag table. The wrapper devolves to
-        // §10.3.5 internally — the helper must agree byte-for-byte with
+        // its no-CMM fallback internally — the helper must agree with
         // the no-OutputIntent path on the same input. This is the
         // shape a real but malformed /OutputIntents profile would take.
         let doc = fixture_doc();
@@ -1374,14 +1397,15 @@ mod tests {
         );
         let ctx = ResolutionContext::new(&doc, &spaces).with_output_intent(Some(&profile));
         let (r, g, b) = super::cmyk_to_rgb_via_intent(0.25, 0.0, 0.0, 0.0, &ctx);
-        // HONEST_GAP: this byte-exact agreement depends on
-        // crate::color::Transform::convert_cmyk_pixel matching
-        // crate::extractors::images::cmyk_pixel_to_rgb on the §10.3.5
-        // path. If those two diverge in the future the helper here
-        // could disagree with the no-OutputIntent arm even though
-        // both intended to run the spec fallback.
+        // The no-CMM fallback of `convert_cmyk_pixel` routes through
+        // `crate::extractors::images::cmyk_pixel_to_rgb`, which is now
+        // the process-ink `crate::color::cmyk_to_rgb` — the same
+        // conversion the no-OutputIntent arm takes. So both arms agree
+        // on the process-ink value for CMYK(0.25,0,0,0) ≈
+        // (0.75, 0.9196, 0.9843); the 8-bit CMM round-trip widens the
+        // tolerance slightly.
         assert!((r - 0.75).abs() < 0.01, "got r={r}");
-        assert!((g - 1.0).abs() < 0.01, "got g={g}");
-        assert!((b - 1.0).abs() < 0.01, "got b={b}");
+        assert!((g - 0.9196).abs() < 0.01, "got g={g}");
+        assert!((b - 0.9843).abs() < 0.01, "got b={b}");
     }
 }

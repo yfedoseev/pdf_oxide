@@ -4165,26 +4165,22 @@ impl PdfDocument {
     /// # Ok::<(), pdf_oxide::error::Error>(())
     /// ```
     pub fn page_count(&self) -> Result<usize> {
-        // Try standard method first
-        match self.get_page_count_standard() {
+        // Standard /Count reader, then a manual page-tree scan on failure.
+        let primary: Result<usize> = match self.get_page_count_standard() {
             Ok(count) => {
                 log::debug!("Page count from /Count: {}", count);
                 Ok(count)
             },
-            Err(Error::EncryptedPdf) => Err(Error::EncryptedPdf),
+            Err(Error::EncryptedPdf) => return Err(Error::EncryptedPdf),
             Err(e) => {
                 // For encrypted PDFs any failure to read the page tree means we
-                // cannot access the content. Scanning would also return Ok(0),
-                // so skip the fallback and surface the real error immediately.
+                // cannot access the content, so surface it immediately.
                 if self.is_encrypted() {
                     log::warn!("Page count failed for encrypted PDF: {}", e);
                     return Err(Error::EncryptedPdf);
                 }
-
                 log::warn!("Failed to get page count from /Count: {}", e);
                 log::info!("Falling back to scanning page tree");
-
-                // Fallback: scan the page tree manually
                 match self.get_page_count_by_scanning() {
                     Ok(count) => {
                         log::info!("Page count from scanning: {}", count);
@@ -4196,7 +4192,41 @@ impl PdfDocument {
                     },
                 }
             },
+        };
+
+        // Enumerator rescue. A count of 0 from the /Count-based readers on a
+        // non-encrypted document is almost always a page tree they could not
+        // resolve - `/Pages` packed inside an object stream, or a deeply nested
+        // `/Pages` -> `/Pages` -> `/Page` tree - not a genuinely empty document.
+        // The /Count readers and `all_page_refs` (which walks `/Pages` -> `/Kids`
+        // via `collect_page_refs`) both MISS such a tree; `get_page` still reaches
+        // every page through its own per-page traversal / `collect_all_pages` bulk
+        // walk, so count by agreeing with what it can actually reach. Gated on a
+        // primary result of 0, so every document the standard reader counts
+        // normally is unchanged.
+        if matches!(primary, Ok(0)) && !self.is_encrypted() {
+            // The /Count readers - and `all_page_refs`, which walks
+            // `/Pages` -> `/Kids` via `collect_page_refs` - miss a page tree
+            // packed inside an object stream. `get_page` still resolves every
+            // such page through its own per-page traversal / `collect_all_pages`
+            // bulk walk, so count by probing it: the definitive agreement with
+            // the pages the rest of the API can actually reach. `get_page` never
+            // calls back into `page_count` (no recursion) and caches each page
+            // (repeat probes are cheap). For an ObjStm-packed tree each `get_page`
+            // can fall back to a full object scan, so counting this way is
+            // O(n * objects) - bounded by the sanity cap, and only ever on an
+            // already-broken document. Only runs when the primary count is 0, so
+            // normally-counted documents are byte-identical.
+            let mut n = 0usize;
+            while n < 1_000_000 && self.get_page(n).is_ok() {
+                n += 1;
+            }
+            if n > 0 {
+                log::info!("Page /Count was 0; enumerated {} pages via get_page", n);
+                return Ok(n);
+            }
         }
+        primary
     }
 
     /// Get the MediaBox of a page (v0.3.14).
@@ -17416,11 +17446,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // Simple CMYK to RGB conversion
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -17435,10 +17461,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },
@@ -18000,10 +18023,7 @@ impl PdfDocument {
                     extractor.set_stroke_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetStrokeCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().stroke_color_rgb = (r, g, b);
                     extractor.set_stroke_color(Color::new(r, g, b));
                 },
@@ -18016,10 +18036,7 @@ impl PdfDocument {
                     extractor.set_fill_color(Color::new(gray, gray, gray));
                 },
                 Operator::SetFillCmyk { c, m, y, k } => {
-                    // ISO 32000-1:2008 §10.3.5: DeviceCMYK → DeviceRGB.
-                    let r = 1.0 - (c + k).min(1.0);
-                    let g = 1.0 - (m + k).min(1.0);
-                    let b = 1.0 - (y + k).min(1.0);
+                    let (r, g, b) = crate::color::cmyk_to_rgb(c, m, y, k);
                     state_stack.current_mut().fill_color_rgb = (r, g, b);
                     extractor.set_fill_color(Color::new(r, g, b));
                 },
@@ -23966,6 +23983,218 @@ mod tests {
         pdf
     }
 
+    /// Build a minimal one-page PDF whose Form XObject is invoked as
+    /// `q <6 numbers> /Name Do Q` — deliberately missing the `cm` operator
+    /// token, so the numbers are dangling operands with nothing to consume
+    /// them. Per ISO 32000-1:2008 §7.8.2 an operator's operand is whatever
+    /// immediately precedes it in the stream; `Do`'s operand here is still
+    /// the Name, not the stray numbers ahead of it.
+    ///
+    /// `direct_text`: when `Some`, the page's own content stream also draws
+    /// this text directly before invoking the XObject; when `None`, the page
+    /// draws nothing itself and all text comes from the XObject.
+    fn build_xobject_do_with_orphaned_operands_pdf(direct_text: Option<&str>) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Overlay 6 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        let mut content = Vec::new();
+        if let Some(text) = direct_text {
+            content.extend_from_slice(
+                format!("BT /F1 12 Tf 1 0 0 1 20 250 Tm ({text}) Tj ET\n").as_bytes(),
+            );
+        }
+        // Deliberately missing `cm`: dangling "1 0 0 1 20 150" operands
+        // directly precede "/Overlay Do".
+        content.extend_from_slice(b"q 1 0 0 1 20 150 /Overlay Do Q");
+
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(&content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+              /Encoding /WinAnsiEncoding >>\nendobj\n",
+        );
+
+        let off6 = pdf.len();
+        let xobj_content = b"BT /F1 12 Tf 1 0 0 1 10 12 Tm (overlay text) Tj ET";
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Length {} >>\nstream\n",
+                xobj_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(xobj_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 7\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5, off6] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        pdf
+    }
+
+    /// A page that draws text directly AND paints an overlay Form XObject
+    /// invoked without a `cm` (dangling operands ahead of the XObject name)
+    /// must extract both the direct text and the XObject's text, matching
+    /// poppler's and pymupdf's behaviour on the same malformed content (both
+    /// tools resolve `Do`'s name from whatever immediately precedes it,
+    /// discarding the dangling numeric operands rather than misreading them
+    /// as the XObject name).
+    #[test]
+    fn test_direct_and_overlay_xobject_text_both_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_xobject_do_with_orphaned_operands_pdf(Some("base body text"));
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let chars: String = doc
+            .extract_chars(0)
+            .unwrap()
+            .iter()
+            .map(|c| c.char)
+            .collect();
+        assert!(chars.contains("base body text"), "missing direct text: {chars:?}");
+        assert!(chars.contains("overlay text"), "missing XObject text: {chars:?}");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("base body text"));
+        assert!(text.contains("overlay text"));
+
+        let plain = doc
+            .to_plain_text(0, &crate::converters::ConversionOptions::default())
+            .unwrap();
+        assert!(plain.contains("base body text"));
+        assert!(plain.contains("overlay text"));
+    }
+
+    /// A page with no direct content of its own, whose only text comes from
+    /// a Form XObject invoked without a `cm`, must not extract as empty.
+    #[test]
+    fn test_xobject_only_page_text_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_xobject_do_with_orphaned_operands_pdf(None);
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let chars: String = doc
+            .extract_chars(0)
+            .unwrap()
+            .iter()
+            .map(|c| c.char)
+            .collect();
+        assert_eq!(chars, "overlay text");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("overlay text"), "extract_text came back empty: {text:?}");
+    }
+
+    /// Build a minimal one-page PDF where XObject "Outer" invokes a second
+    /// XObject "Inner" (both via the same malformed missing-`cm` `Do` shape
+    /// as [`build_xobject_do_with_orphaned_operands_pdf`]), and "Inner" is
+    /// where the actual text lives.
+    fn build_nested_xobject_do_with_orphaned_operands_pdf() -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let off2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+        let off3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] \
+              /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Outer 6 0 R >> >> >>\nendobj\n",
+        );
+
+        let off4 = pdf.len();
+        let content = b"q 1 0 0 1 0 0 /Outer Do Q";
+        pdf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off5 = pdf.len();
+        pdf.extend_from_slice(
+            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+              /Encoding /WinAnsiEncoding >>\nendobj\n",
+        );
+
+        let off6 = pdf.len();
+        // "Outer" invokes "Inner" — same malformed missing-`cm` shape, one level deeper.
+        let outer_content = b"q 1 0 0 1 10 10 /Inner Do Q";
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 300] \
+                  /Resources << /XObject << /Inner 7 0 R >> >> /Length {} >>\nstream\n",
+                outer_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(outer_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let off7 = pdf.len();
+        let inner_content = b"BT /F1 12 Tf 1 0 0 1 10 12 Tm (nested text) Tj ET";
+        pdf.extend_from_slice(
+            format!(
+                "7 0 obj\n<< /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Length {} >>\nstream\n",
+                inner_content.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(inner_content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 8\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in [off1, off2, off3, off4, off5, off6, off7] {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+
+        pdf
+    }
+
+    /// Recursion into a Form XObject invoked by another Form XObject, with
+    /// no `cm` at either level, must still resolve each `Do`'s operand
+    /// correctly and extract the innermost text.
+    #[test]
+    fn test_nested_xobject_text_extracted_with_orphaned_do_operands() {
+        let pdf_bytes = build_nested_xobject_do_with_orphaned_operands_pdf();
+        let doc = PdfDocument::from_bytes(pdf_bytes).expect("parse repro pdf");
+
+        let text = doc.extract_text(0).unwrap();
+        assert!(text.contains("nested text"), "nested XObject text missing: {text:?}");
+    }
+
     // #572: a corrupt/zero startxref forces full-file xref reconstruction.
     // Because reconstruction already scans the whole file for every
     // uncompressed object, the document must pre-seed its object-scan cache
@@ -28972,6 +29201,56 @@ mod tests {
         );
         let doc = PdfDocument::from_bytes(pdf).unwrap();
         assert_eq!(doc.page_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_page_count_rescued_when_count_is_zero_but_pages_exist() {
+        // The motivating broken-/Count case (#909): a `/Pages` node whose `/Count`
+        // says 0 while its `/Kids` hold real pages. An ObjStm-packed `/Pages` tree
+        // that the standard reader cannot resolve reaches `page_count` the same way
+        // - `primary == Ok(0)`. Here the standard reader trusts the literal `/Count`
+        // and returns 0, but `get_page` still walks `/Pages` -> `/Kids` and reaches
+        // every page, so the rescue enumerates them.
+        //
+        // WITHOUT the rescue block this returns 0 (verified: reverting the
+        // document.rs hunk makes this assertion fail with `0 != 3`); WITH it, 3.
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let off1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let off2 = pdf.len();
+        pdf.extend_from_slice(
+            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 0 >>\nendobj\n",
+        );
+        let mut offs = vec![off1, off2];
+        for n in 3..=5u32 {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(
+                format!(
+                    "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+                    n
+                )
+                .as_bytes(),
+            );
+        }
+        let xref_off = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n");
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offs {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        let doc = PdfDocument::from_bytes(pdf).unwrap();
+        // The standard /Count reader really does report 0 here, so the count of 3
+        // comes entirely from the enumerator rescue (not from the primary path).
+        assert_eq!(
+            doc.get_page_count_standard().unwrap(),
+            0,
+            "fixture must drive the standard reader to 0"
+        );
+        assert_eq!(doc.page_count().unwrap(), 3, "rescue must enumerate the real pages");
     }
 
     // ========================================================================

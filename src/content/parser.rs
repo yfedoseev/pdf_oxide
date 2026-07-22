@@ -1987,7 +1987,15 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
 
         // XObject
         "Do" => {
-            let name = get_name(&operands, 0).unwrap_or("").to_string();
+            // Per ISO 32000-1:2008 §7.8.2, operands "shall immediately precede"
+            // their operator and none "shall be left over" once it executes.
+            // Do takes exactly one operand (the XObject name); if stray operands
+            // accumulated ahead of it (e.g. a dropped/malformed `cm` before this
+            // `Do`), the name is still the one immediately preceding the operator,
+            // i.e. the LAST element, not necessarily the first.
+            let name = get_name(&operands, operands.len().saturating_sub(1))
+                .unwrap_or("")
+                .to_string();
             Operator::Do { name }
         },
 
@@ -3442,7 +3450,9 @@ fn parse_text_operator_fast(input: &[u8]) -> Option<(&[u8], Operator)> {
                         Operator::SetExtGState { dict_name }
                     },
                     b"Do" => {
-                        let name = match &operands[0] {
+                        // See the nom-parser "Do" arm in `build_operator` for why
+                        // this reads the last operand, not operands[0].
+                        let name = match &operands[op_count.saturating_sub(1)] {
                             Some(FastOperand::Name(n)) => n.clone(),
                             _ => String::new(),
                         };
@@ -4000,6 +4010,30 @@ mod tests {
         assert!(matches!(ops[1], Operator::Cm { .. }));
         assert!(matches!(ops[2], Operator::Do { ref name } if name == "Im1"));
         assert!(matches!(ops[3], Operator::RestoreState));
+    }
+
+    #[test]
+    fn test_do_resolves_name_when_stray_operands_precede_it() {
+        // A `q ... /Name Do Q` sequence whose leading numeric operands were
+        // never consumed by a `cm` (missing/dropped token, or any other
+        // non-conformant producer quirk). Per ISO 32000-1:2008 §7.8.2 an
+        // operator's operand is whatever immediately precedes it — here
+        // that's the Name, not the stray numbers ahead of it — so Do must
+        // still resolve "Overlay", not silently produce "".
+        let stream = b"q 1 0 0 1 20 150 /Overlay Do Q";
+        let ops = parse_content_stream_text_only(stream).unwrap();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Operator::Do { ref name } if name == "Overlay")),
+            "expected a Do operator naming \"Overlay\", got: {:?}",
+            ops
+        );
+
+        // Same stream through the full parser (used when ink exclusion is active).
+        let ops_full = parse_content_stream(stream).unwrap();
+        assert!(ops_full
+            .iter()
+            .any(|op| matches!(op, Operator::Do { ref name } if name == "Overlay")));
     }
 
     #[test]
