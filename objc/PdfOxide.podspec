@@ -14,7 +14,7 @@
 # rule is added here — that wiring is intentionally left to the release tooling).
 Pod::Spec.new do |spec|
   spec.name         = 'PdfOxide'
-  spec.version      = '0.3.74'
+  spec.version      = '0.3.75'
   spec.summary      = 'The fastest Objective-C PDF library — 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs.'
   spec.description  = <<-DESC
     Objective-C bindings over the pdf_oxide C ABI. NSObject wrappers (POXDocument,

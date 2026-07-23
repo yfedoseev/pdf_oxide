@@ -2,9 +2,47 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [Unreleased]
+## [0.3.75] - 2026-07-23
+
+> Rendering-accuracy and extraction-fidelity release. DeviceCMYK now renders through measured process inks; page rotation (including `/Rotate 270` and negative values) and Separation/DeviceN tint transforms are honoured; inline images and CMYK/CCITT image decoding are corrected; Form-XObject text no longer goes missing; Tagged PDFs can be read in structure order; and a large text-extraction performance pass lands, alongside a dependency modernization (rustybuzz→harfrust, office_oxide 0.1.8).
+
+### Added
+
+- **`ReadingOrder::Structure`** — order a Tagged PDF by a pre-order traversal of its `/StructTreeRoot` (ISO 32000-1 §14.8.2.3), fixing table and complex-layout order where a geometric XY-cut guesses; falls back to `ColumnAware` when the structure tree is absent or not trustworthy (#877).
+- **Mapping provenance** — `extract_spans` reports which ISO 32000-1 §9.10.2 tier (ToUnicode / encoding / heuristic) produced each span's text, surfaced across all bindings (#893).
+- **`extract_spans_filtered_with_reading_order`** — reading-order extraction combined with optional-content (OCG) and ink-coverage filtering (#883).
+- **Type 0 (sampled) and Type 3 (stitching) tint-transform evaluation** in the renderer for Separation/DeviceN colours (#849).
+- **CJK vertical-writing running header/footer detection** — recognizes folios in the left/right side bands on tategaki pages (#889).
+- `resolve_named_destination` is now public (#881); a `remove_artifacts` markdown-conversion example (#845).
 
 ### Fixed
+
+**Rendering**
+
+- **DeviceCMYK rendered via the naive `1−(C+K)` additive clamp** — now converts through measured SWOP-style process inks across every composite / vector / text / image path, so `0 0 0 1 k` black renders `#231F20` and process cyan renders `#00ADEF` instead of over-saturated additive values (#861).
+- **`/Rotate 270` rendered MIRRORED rather than rotated**; negative `/Rotate` values were mishandled (`%` instead of `rem_euclid`); real `/Rotate` and indirect Separation alternates are now resolved correctly (#862, #848, #854).
+
+**Text extraction**
+
+- **Form-XObject (`Do`) text went missing when stray operands preceded the name** — a dropped/malformed `cm` left dangling numeric operands, so `Do` read `operands[0]` (a stray number) and resolved to an empty name; it now reads the operand *immediately preceding* the operator per ISO 32000-1 §7.8.2 (#914).
+- **Pages were lost when `/Count`-based page counting returned 0** — now recovered by walking the page tree (#909).
+- **Inline images (`BI`/`ID`/`EI`) were parsed but never decoded** — `/Subtype` is now supplied and the Table 92 abbreviated keys/values expanded (#863).
+- Unique `/PlacedPDF` bodies are kept instead of suppressed (#896); spans entirely outside the MediaBox are dropped from `extract_spans_with_reading_order` (#894); the top-level fill colour set before `BT` is preserved (`scn`/`cs`/`rg` no longer dropped) (#857).
+- Running-header/footer detection now requires position-consistency before removing repeated text as chrome, and recognizes non-Latin folio digits (#888, #887).
+
+**Images**
+
+- `/Decode [1 0]` is honoured for 1-bit CCITT/DeviceGray images (#856); the jpeg-decoder Adobe inversion is undone for CMYK JPEGs (#855).
+
+**Recovery / parsing**
+
+- A truncated file that lost its own Catalog is recovered by rebuilding one from the surviving pages (#890); a file padded after `%%EOF` is no longer rejected outright as 0 pages (#875).
+
+**Fonts**
+
+- The referenced `/Encoding /Differences` is folded into the font identity hash, and subset choice in `extract_embedded_fonts` is made deterministic (#878, #853).
+
+**Writer**
 
 - **Coloured text on a registered embedded font rendered black — `FluentPageBuilder::inline_color` (and any `TextStyle.color`) was silently dropped for embedded fonts** — `PdfWriter::add_element` routed embedded-font text through the deliberately colour-agnostic `add_embedded_text` (the HTML painter sets and resets the fill colour around its own calls) without ever emitting the element's fill colour, so no `rg` operator reached the content stream and the glyphs painted in whatever fill colour was last set (default black). The base-14 path (`add_text_content`) always emits `rg` from `style.color`; the embedded path now matches it by emitting `fill_color` before the glyph run. No restore is needed — every text element sets its own colour, mirroring the base-14 branch's "always set explicitly" contract.
 
@@ -12,9 +50,22 @@ All notable changes to PDFOxide are documented here.
 
 - **`extract_words` / `extract_text` spent most of their time re-deriving per-glyph facts that cannot change (#882)** — text extraction asked each font for its weight and slant once per *glyph*, inside the show-text loop. Both answers are name-derived: the weight lowercases the base font name (allocating) and runs up to a dozen substring searches, and the slant lowercases it again for two more — so a 13,234-page document repeated ~14 substring scans and 2 allocations 48.7M times for a value fixed at font-load. A sampling profile put `str::contains` and friends at ~38% of all samples. The Standard-14 width lookup had the same shape, re-stripping the subset prefix and re-scanning the 15-name table per glyph purely to choose a width table. Both are now resolved once per font and memoized, mirroring the existing byte-width-table memo. Alongside: `postprocess_spans` rescanned every glyph on the page per span to find its baseline (O(spans × chars) — now a bracketed y-sorted index); the page's characters were re-parsed for span post-processing and re-copied on every access (now cached and shared); the word and line paths materialized every glyph twice; article threads — a document-wide parse that walks the whole page tree — were re-parsed *per page*; the glyph dedup rebuilt the whole array to drop a handful; and the word-merge loop re-derived RTL-ness from an accumulating buffer, costing O(k²) characters per merge chain (the exact blow-up the backtrack guard above it exists to prevent). Measured on the reporter's PDFs: `extract_words` 156.9s → ~121s and `extract_spans` 88.7s → ~54s on a 13,234-page document; `extract_text` 6.03s → 3.94s on a 2,124-page one. Output is byte-identical — verified across a 419-PDF corpus for `extract_spans`/`extract_chars`/`extract_words`/`extract_text_lines` (including geometry and per-glyph x-offsets) and for text/markdown/HTML.
 
+### Changed / Dependencies
+
+- **Text shaping migrated from `rustybuzz` to `harfrust`** (#899); `fax` 0.2 → 0.3 (#873); the `ttf-parser` migration decision for RUSTSEC-2026-0192 is documented (#900).
+- `office_oxide` bumped to 0.1.8 (#904, #932). A combined dependency roundup (crates + CI actions + Go), plus routine crate and CI-action bumps (#931, #907, #898, #872, #869, #870, #871, #864, #865, #866, #867, #868, #874, #891).
+- Test/CI stability: the flaky `structured_warnings` round-trip test is fixed (#912); misc test guards and binding-format fixes (#846, #897, #880).
+
+### Contributors
+
+The majority of this release was contributed by **@ajbufort** — rendering (`/Rotate` handling and Separation/DeviceN tint transforms #848, #849, #854, #862; DeviceCMYK process inks #861), image decode (#855, #856), text extraction (#857, #863, #894, #896, #909), fonts (#853, #878), recovery/parsing (#875, #890), and reading-order / span filtering (#877, #881, #883). Additional fixes from **@norbusan** (#911) and **@ultrasaurus** (#845, #846). Thank you!
+
 Issues reported by:
 
-- **@ankursri494** — #882 (`extract_words`/`extract_text` slower than `extract_spans` on large PDFs)
+- **@ankursri494** — #882 (`extract_words`/`extract_text` far slower than `extract_spans` on large PDFs)
+- **@tobocop2** — #876 (signal to callers when a page's text cannot be extracted)
+- **@ultrasaurus** — #879 (`remove_footers` removed real content on IRS forms)
+- **@norbusan** — #913 (text inside a Form XObject missing from extraction)
 
 ## [0.3.74] - 2026-07-13
 

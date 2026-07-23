@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide-wasm",
-  "version": "0.3.74",
+  "version": "0.3.75",
   "description": "The fastest WebAssembly PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Zero-dependency for Node.js, browsers, and edge runtimes: text extraction, Markdown/HTML conversion, search, form filling, creation, and editing.",
   "license": "MIT OR Apache-2.0",
   "repository": {
