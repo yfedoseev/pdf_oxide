@@ -73,7 +73,7 @@ impl DecodeParams {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CcittParams {
     /// Group indicator:
-    /// -1 = Group 4 (pure 2D, default)
+    ///  <0 = Group 4 (pure 2D)
     ///  0 = Group 3 (1-D)
     ///  >0 = Group 3 (2-D with specified K)
     pub k: i64,
@@ -110,9 +110,9 @@ impl Default for CcittParams {
 }
 
 impl CcittParams {
-    /// Check if this is Group 4 encoding (K = -1)
+    /// Check if this is Group 4 encoding (`K < 0`).
     pub fn is_group_4(&self) -> bool {
-        self.k == -1
+        self.k < 0
     }
 
     /// Check if this is Group 3 encoding
@@ -418,6 +418,16 @@ mod tests {
         assert_eq!(params.columns, 1);
         assert_eq!(params.colors, 1);
         assert_eq!(params.bits_per_component, 8);
+    }
+
+    #[test]
+    fn negative_k_values_select_group_4() {
+        let params = CcittParams {
+            k: -2,
+            ..Default::default()
+        };
+        assert!(params.is_group_4());
+        assert!(!params.is_group_3());
     }
 
     /// A producer may declare `/Predictor 12` and still write tag 0 (None)

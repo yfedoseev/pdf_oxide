@@ -4349,6 +4349,191 @@ impl PageRenderer {
         Ok(())
     }
 
+    /// Return CCITT parameters for an ImageMask stream, if present.
+    ///
+    /// `/DecodeParms` arrays are positionally aligned with `/Filter`
+    /// arrays. CCITT must be the final filter: earlier ASCII/Flate wrappers
+    /// have already been removed by `decode_stream_with_encryption`, while a
+    /// later filter would incorrectly receive still-compressed fax data from
+    /// the stream decoder's intentional CCITT pass-through.
+    fn image_mask_ccitt_params(
+        dict: &HashMap<String, Object>,
+        width: u32,
+        height: u32,
+        doc: &PdfDocument,
+    ) -> Result<Option<crate::decoders::CcittParams>> {
+        let (ccitt_index, filter_count) = match dict.get("Filter") {
+            Some(Object::Name(name)) if Self::is_ccitt_filter(name) => (0, 1),
+            Some(Object::Array(filters)) => {
+                let Some(index) = filters
+                    .iter()
+                    .position(|filter| filter.as_name().is_some_and(Self::is_ccitt_filter))
+                else {
+                    return Ok(None);
+                };
+                (index, filters.len())
+            },
+            _ => return Ok(None),
+        };
+
+        if ccitt_index + 1 != filter_count {
+            return Err(Error::Image(
+                "CCITTFaxDecode must be the final ImageMask filter".to_string(),
+            ));
+        }
+        if width > u16::MAX as u32 {
+            return Err(Error::Image(format!(
+                "CCITT ImageMask width {width} exceeds decoder limit {}",
+                u16::MAX
+            )));
+        }
+
+        let resolved_params = dict
+            .get("DecodeParms")
+            .map(|params| {
+                let resolved = doc.resolve_object(params).map_err(|error| {
+                    Error::Image(format!("Unable to resolve CCITT ImageMask /DecodeParms: {error}"))
+                })?;
+                if params.as_reference().is_some() && matches!(&resolved, Object::Null) {
+                    return Err(Error::Image(
+                        "Unable to resolve CCITT ImageMask /DecodeParms: reference resolved to null"
+                            .to_string(),
+                    ));
+                }
+                Ok(resolved)
+            })
+            .transpose()?;
+        let selected_params = match resolved_params {
+            Some(Object::Array(params)) => params
+                .get(ccitt_index)
+                .map(|params| {
+                    let resolved = doc.resolve_object(params).map_err(|error| {
+                        Error::Image(format!(
+                            "Unable to resolve CCITT ImageMask /DecodeParms array entry: {error}"
+                        ))
+                    })?;
+                    if params.as_reference().is_some() && matches!(&resolved, Object::Null) {
+                        return Err(Error::Image(
+                            "Unable to resolve CCITT ImageMask /DecodeParms array entry: reference resolved to null"
+                                .to_string(),
+                        ));
+                    }
+                    Ok(resolved)
+                })
+                .transpose()?,
+            other => other,
+        };
+        let params_obj = selected_params.as_ref();
+        let params_dict = match params_obj {
+            None | Some(Object::Null) => None,
+            Some(params) => Some(params.as_dict().ok_or_else(|| {
+                Error::Image("CCITT ImageMask /DecodeParms must be a dictionary".to_string())
+            })?),
+        };
+        if params_dict
+            .and_then(|decode_params| decode_params.get("K"))
+            .is_some_and(|value| value.as_integer().is_none())
+        {
+            return Err(Error::Image(
+                "CCITT ImageMask /DecodeParms /K must be an integer".to_string(),
+            ));
+        }
+        Self::validate_ccitt_mask_dimension(params_dict, "Columns", width)?;
+        Self::validate_ccitt_mask_dimension(params_dict, "Rows", height)?;
+
+        let mut params = crate::object::extract_ccitt_params_with_width(params_obj, Some(width))
+            .unwrap_or_else(|| crate::decoders::CcittParams {
+                // ISO 32000-1 Table 11: absent /K defaults to Group 3 1-D.
+                k: 0,
+                columns: width,
+                rows: Some(height),
+                ..Default::default()
+            });
+        let has_explicit_k = params_obj
+            .and_then(Object::as_dict)
+            .is_some_and(|decode_params| decode_params.contains_key("K"));
+        if !has_explicit_k {
+            // The shared parser currently carries a historical Group 4
+            // default; enforce the PDF filter default at this renderer
+            // boundary without changing other image-extraction behaviour.
+            params.k = 0;
+        }
+        // Width and Height are authoritative for an Image XObject. Explicit
+        // mismatches were rejected above; normalise omitted values here.
+        params.columns = width;
+        params.rows = Some(height);
+        Ok(Some(params))
+    }
+
+    fn validate_ccitt_mask_dimension(
+        params: Option<&HashMap<String, Object>>,
+        key: &str,
+        expected: u32,
+    ) -> Result<()> {
+        let Some(value) = params.and_then(|decode_params| decode_params.get(key)) else {
+            return Ok(());
+        };
+        let integer = value.as_integer().ok_or_else(|| {
+            Error::Image(format!("CCITT ImageMask /DecodeParms /{key} must be an integer"))
+        })?;
+        let actual = u32::try_from(integer).map_err(|_| {
+            Error::Image(format!("CCITT ImageMask /DecodeParms /{key} must be positive"))
+        })?;
+        if actual == 0 {
+            return Err(Error::Image(format!(
+                "CCITT ImageMask /DecodeParms /{key} must be positive"
+            )));
+        }
+        if actual != expected {
+            return Err(Error::Image(format!(
+                "CCITT ImageMask /DecodeParms /{key} {actual} does not match image dimension {expected}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn is_ccitt_filter(name: &str) -> bool {
+        name.eq_ignore_ascii_case("CCITTFaxDecode") || name.eq_ignore_ascii_case("CCF")
+    }
+
+    fn image_mask_layout(
+        dict: &HashMap<String, Object>,
+    ) -> Result<(u32, u32, usize, usize, usize)> {
+        let dimension = |key: &str| -> Result<u32> {
+            let value = dict
+                .get(key)
+                .and_then(Object::as_integer)
+                .ok_or_else(|| Error::Image(format!("ImageMask missing /{key}")))?;
+            let dimension = u32::try_from(value)
+                .map_err(|_| Error::Image(format!("ImageMask /{key} must be positive")))?;
+            if dimension == 0 {
+                return Err(Error::Image(format!("ImageMask /{key} must be positive")));
+            }
+            Ok(dimension)
+        };
+
+        let width = dimension("Width")?;
+        let height = dimension("Height")?;
+        let width_usize = usize::try_from(width)
+            .map_err(|_| Error::Image("ImageMask /Width exceeds platform limits".to_string()))?;
+        let height_usize = usize::try_from(height)
+            .map_err(|_| Error::Image("ImageMask /Height exceeds platform limits".to_string()))?;
+        let pixel_count = width_usize
+            .checked_mul(height_usize)
+            .ok_or_else(|| Error::Image("ImageMask pixel count overflow".to_string()))?;
+        let rgba_len = pixel_count
+            .checked_mul(4)
+            .ok_or_else(|| Error::Image("ImageMask RGBA size overflow".to_string()))?;
+        let row_bytes = width_usize
+            .checked_add(7)
+            .ok_or_else(|| Error::Image("ImageMask row size overflow".to_string()))?
+            / 8;
+        let expected = row_bytes
+            .checked_mul(height_usize)
+            .ok_or_else(|| Error::Image("ImageMask packed size overflow".to_string()))?;
+        Ok((width, height, row_bytes, expected, rgba_len))
+    }
+
     /// Render an Image XObject with `/ImageMask true` — a 1-bit stencil
     /// painted with the current fill colour.
     ///
@@ -4361,13 +4546,10 @@ impl PageRenderer {
     /// routing that fill through the resolution pipeline, so this
     /// helper consumes whatever `gs` it is handed without re-resolving.
     ///
-    /// Only the minimum necessary to make the stencil paintable is
-    /// implemented here: 1-bit raw samples (no CCITT decode), default
-    /// and inverted `/Decode` polarities, bilinear/bicubic resampling
+    /// Supports raw 1-bit samples and CCITT Group 3/4 streams, default
+    /// and inverted `/Decode` polarities, and bilinear/bicubic resampling
     /// chosen by the image-space-to-user-space scale (matches
-    /// `render_image`). CCITT-compressed inline masks are out of scope
-    /// for wave 3 — they share the colour-resolution path and gain the
-    /// same pipeline routing as soon as their decode is added.
+    /// `render_image`).
     fn render_image_mask(
         &mut self,
         pixmap: &mut Pixmap,
@@ -4382,19 +4564,7 @@ impl PageRenderer {
             .as_dict()
             .ok_or_else(|| Error::Image("ImageMask XObject is not a stream".to_string()))?;
 
-        let width = dict
-            .get("Width")
-            .and_then(|o| o.as_integer())
-            .ok_or_else(|| Error::Image("ImageMask missing /Width".to_string()))?
-            as u32;
-        let height = dict
-            .get("Height")
-            .and_then(|o| o.as_integer())
-            .ok_or_else(|| Error::Image("ImageMask missing /Height".to_string()))?
-            as u32;
-        if width == 0 || height == 0 {
-            return Ok(());
-        }
+        let (width, height, row_bytes, expected, rgba_len) = Self::image_mask_layout(dict)?;
 
         // PDF §8.9.6.4: ImageMask BitsPerComponent must be 1 when present.
         // Some producers omit it; default to 1.
@@ -4406,8 +4576,8 @@ impl PageRenderer {
             return Err(Error::Image(format!("ImageMask requires BitsPerComponent 1, got {bpc}")));
         }
 
-        // /Decode array: [0 1] means bit 1 = opaque (default); [1 0]
-        // inverts. Other forms are spec-illegal for ImageMask.
+        // /Decode array: [0 1] means sample 0 paints (default); [1 0]
+        // means sample 1 paints. Other forms are spec-illegal for ImageMask.
         let invert = match dict.get("Decode") {
             Some(Object::Array(arr)) if arr.len() >= 2 => {
                 let first = match &arr[0] {
@@ -4420,11 +4590,25 @@ impl PageRenderer {
             _ => false,
         };
 
-        let raw = if let Some(r) = obj_ref {
+        let mut raw = if let Some(r) = obj_ref {
             doc.decode_stream_with_encryption(xobject, r)?
         } else {
             xobject.decode_stream_data()?
         };
+        if let Some(params) = Self::image_mask_ccitt_params(dict, width, height, doc)? {
+            raw = crate::extractors::ccitt_bilevel::decompress_ccitt(&raw, &params)?;
+
+            // The shared CCITT image decoder normalises packed rows to
+            // 0=white, 1=black. An ImageMask needs the actual PDF sample
+            // values instead: with the CCITT default `/BlackIs1 false`,
+            // 0 means black and 1 means white; `/BlackIs1 true` reverses
+            // that mapping. `decompress_ccitt` already applies BlackIs1
+            // while normalising, so one final inversion recovers the sample
+            // values consumed by the independent `/Decode` mapping below.
+            for byte in &mut raw {
+                *byte = !*byte;
+            }
+        }
 
         // Stencil pixels → premultiplied RGBA, applying the fill colour
         // to each opaque sample. Rows are packed MSB-first; each row is
@@ -4445,8 +4629,6 @@ impl PageRenderer {
             .round()
             .clamp(0.0, 255.0) as u8;
 
-        let row_bytes = (width as usize + 7) / 8;
-        let expected = row_bytes * height as usize;
         if raw.len() < expected {
             return Err(Error::Image(format!(
                 "ImageMask stream too short: {} bytes for {}x{} (expected {})",
@@ -4457,7 +4639,10 @@ impl PageRenderer {
             )));
         }
 
-        let mut rgba: Vec<u8> = vec![0u8; (width * height * 4) as usize];
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(rgba_len)
+            .map_err(|_| Error::Image(format!("Unable to allocate {rgba_len} ImageMask bytes")))?;
+        rgba.resize(rgba_len, 0);
         for y in 0..height {
             let row_off = (y as usize) * row_bytes;
             for x in 0..width {
@@ -4466,7 +4651,7 @@ impl PageRenderer {
                 let bit = (raw[byte_idx] >> bit_idx) & 1 == 1;
                 let opaque = if invert { bit } else { !bit };
                 if opaque {
-                    let off = ((y * width + x) * 4) as usize;
+                    let off = ((y as usize * width as usize) + x as usize) * 4;
                     rgba[off] = pr;
                     rgba[off + 1] = pg;
                     rgba[off + 2] = pb;
@@ -9820,6 +10005,179 @@ fn intersect_with_inherited(
 mod tests {
     use super::*;
     use crate::object::Object;
+
+    fn pdf_doc_with_extra_object(extra: Option<&[u8]>) -> PdfDocument {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        let mut append = |number: usize, body: &[u8]| {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        };
+        append(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        append(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        append(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>");
+        if let Some(body) = extra {
+            append(4, body);
+        }
+        let xref = pdf.len();
+        let object_count = offsets.len() + 1;
+        pdf.extend_from_slice(format!("xref\n0 {object_count}\n0000000000 65535 f \n").as_bytes());
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size {object_count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        PdfDocument::from_bytes(pdf).expect("open minimal PDF")
+    }
+
+    fn minimal_pdf_doc() -> PdfDocument {
+        pdf_doc_with_extra_object(None)
+    }
+
+    fn image_mask_dict(width: i64, height: i64) -> HashMap<String, Object> {
+        HashMap::from([
+            ("Width".to_string(), Object::Integer(width)),
+            ("Height".to_string(), Object::Integer(height)),
+        ])
+    }
+
+    fn ccitt_mask_dict(
+        width: i64,
+        height: i64,
+        columns: i64,
+        rows: i64,
+    ) -> HashMap<String, Object> {
+        let mut dict = image_mask_dict(width, height);
+        dict.insert("Filter".to_string(), Object::Name("CCITTFaxDecode".to_string()));
+        dict.insert(
+            "DecodeParms".to_string(),
+            Object::Dictionary(HashMap::from([
+                ("K".to_string(), Object::Integer(-1)),
+                ("Columns".to_string(), Object::Integer(columns)),
+                ("Rows".to_string(), Object::Integer(rows)),
+            ])),
+        );
+        dict
+    }
+
+    #[test]
+    fn image_mask_layout_rejects_non_positive_dimensions_before_allocation() {
+        let negative = PageRenderer::image_mask_layout(&image_mask_dict(-1, 1));
+        assert!(matches!(negative, Err(Error::Image(message)) if message.contains("positive")));
+
+        let zero = PageRenderer::image_mask_layout(&image_mask_dict(1, 0));
+        assert!(matches!(zero, Err(Error::Image(message)) if message.contains("positive")));
+    }
+
+    #[test]
+    fn image_mask_layout_accepts_large_valid_dimensions_without_allocating() {
+        let layout =
+            PageRenderer::image_mask_layout(&image_mask_dict(5_000, 4_000)).expect("valid layout");
+        assert_eq!(layout, (5_000, 4_000, 625, 2_500_000, 80_000_000));
+    }
+
+    #[test]
+    fn ccitt_image_mask_rejects_width_beyond_decoder_limit() {
+        let dict = ccitt_mask_dict(65_536, 1, 65_536, 1);
+        let doc = minimal_pdf_doc();
+        let result = PageRenderer::image_mask_ccitt_params(&dict, 65_536, 1, &doc);
+        assert!(matches!(result, Err(Error::Image(message)) if message.contains("decoder limit")));
+    }
+
+    #[test]
+    fn ccitt_image_mask_rejects_dimension_mismatches() {
+        let columns = ccitt_mask_dict(8, 1, 7, 1);
+        let doc = minimal_pdf_doc();
+        let result = PageRenderer::image_mask_ccitt_params(&columns, 8, 1, &doc);
+        assert!(matches!(result, Err(Error::Image(message)) if message.contains("/Columns 7")));
+
+        let rows = ccitt_mask_dict(8, 1, 8, 2);
+        let result = PageRenderer::image_mask_ccitt_params(&rows, 8, 1, &doc);
+        assert!(matches!(result, Err(Error::Image(message)) if message.contains("/Rows 2")));
+    }
+
+    #[test]
+    fn ccitt_image_mask_rejects_invalid_k_and_accepts_all_negative_k_values() {
+        let doc = minimal_pdf_doc();
+        let mut invalid = ccitt_mask_dict(8, 1, 8, 1);
+        let Some(Object::Dictionary(invalid_params)) = invalid.get_mut("DecodeParms") else {
+            panic!("decode parameters must be a dictionary");
+        };
+        invalid_params.insert("K".to_string(), Object::Name("invalid".to_string()));
+        let result = PageRenderer::image_mask_ccitt_params(&invalid, 8, 1, &doc);
+        assert!(
+            matches!(result, Err(Error::Image(message)) if message.contains("/K must be an integer"))
+        );
+
+        let mut negative = ccitt_mask_dict(8, 1, 8, 1);
+        let Some(Object::Dictionary(negative_params)) = negative.get_mut("DecodeParms") else {
+            panic!("decode parameters must be a dictionary");
+        };
+        negative_params.insert("K".to_string(), Object::Integer(-2));
+        let params = PageRenderer::image_mask_ccitt_params(&negative, 8, 1, &doc)
+            .expect("valid parameters")
+            .expect("CCITT parameters");
+        assert!(params.is_group_4());
+        assert_eq!(params.k, -2);
+    }
+
+    #[test]
+    fn ccitt_image_mask_rejects_dangling_and_wrong_type_decode_params_references() {
+        let mut dangling = ccitt_mask_dict(8, 1, 8, 1);
+        dangling.insert("DecodeParms".to_string(), Object::Reference(ObjectRef::new(99, 0)));
+        let error = PageRenderer::image_mask_ccitt_params(&dangling, 8, 1, &minimal_pdf_doc())
+            .expect_err("dangling reference must fail");
+        assert!(
+            matches!(&error, Error::Image(message) if message.contains("Unable to resolve")),
+            "unexpected dangling-reference error: {error:?}"
+        );
+
+        let mut dangling_array = ccitt_mask_dict(8, 1, 8, 1);
+        dangling_array.insert(
+            "Filter".to_string(),
+            Object::Array(vec![
+                Object::Name("ASCIIHexDecode".to_string()),
+                Object::Name("CCITTFaxDecode".to_string()),
+            ]),
+        );
+        dangling_array.insert(
+            "DecodeParms".to_string(),
+            Object::Array(vec![Object::Null, Object::Reference(ObjectRef::new(99, 0))]),
+        );
+        let error =
+            PageRenderer::image_mask_ccitt_params(&dangling_array, 8, 1, &minimal_pdf_doc())
+                .expect_err("dangling array entry must fail");
+        assert!(
+            matches!(&error, Error::Image(message) if message.contains("array entry")),
+            "unexpected dangling array-entry error: {error:?}"
+        );
+
+        let mut wrong_type = ccitt_mask_dict(8, 1, 8, 1);
+        wrong_type.insert("DecodeParms".to_string(), Object::Reference(ObjectRef::new(4, 0)));
+        let doc = pdf_doc_with_extra_object(Some(b"42"));
+        let result = PageRenderer::image_mask_ccitt_params(&wrong_type, 8, 1, &doc);
+        assert!(
+            matches!(result, Err(Error::Image(message)) if message.contains("must be a dictionary"))
+        );
+    }
+
+    #[test]
+    fn ccitt_image_mask_rejects_non_final_filter() {
+        let mut dict = ccitt_mask_dict(8, 1, 8, 1);
+        dict.insert(
+            "Filter".to_string(),
+            Object::Array(vec![
+                Object::Name("CCITTFaxDecode".to_string()),
+                Object::Name("ASCIIHexDecode".to_string()),
+            ]),
+        );
+        let result = PageRenderer::image_mask_ccitt_params(&dict, 8, 1, &minimal_pdf_doc());
+        assert!(matches!(result, Err(Error::Image(message)) if message.contains("final")));
+    }
 
     #[test]
     fn test_color_key_mask_range_logic() {
