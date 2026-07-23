@@ -224,7 +224,13 @@ impl TextSpan {
         // carry the real text-space positions, so they do not accumulate the
         // TJ-kerning drift that prefix-summing `char_widths` from `bbox.x`
         // produces. Only taken when the offsets cover every glyph exactly.
-        if self.char_x_offsets.len() == char_count {
+        const OFFSET_BBOX_TOLERANCE: f32 = 0.5;
+        let offsets_fit_bbox = self.char_x_offsets.iter().all(|&x| {
+            x.is_finite()
+                && x >= self.bbox.x - OFFSET_BBOX_TOLERANCE
+                && x <= self.bbox.x + self.bbox.width + OFFSET_BBOX_TOLERANCE
+        });
+        if self.char_x_offsets.len() == char_count && offsets_fit_bbox {
             let has_widths = self.char_widths.len() == char_count;
             let offsets = &self.char_x_offsets;
             return self
@@ -1065,6 +1071,25 @@ mod tests {
         assert!((chars[0].bbox.x - 0.0).abs() < 0.001);
         assert!((chars[1].bbox.x - 10.0).abs() < 0.001);
         assert!((chars[2].bbox.x - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_to_chars_out_of_bounds_offsets_fall_back_to_span_geometry() {
+        let span = TextSpan {
+            text: "1".to_string(),
+            bbox: Rect::new(216.0, 315.0, 4.0, 7.0),
+            char_widths: vec![4.0],
+            // A repeated digit elsewhere on the same baseline was incorrectly
+            // stamped onto this superscript run.
+            char_x_offsets: vec![252.0],
+            ..TextSpan::default()
+        };
+
+        let chars = span.to_chars();
+
+        assert_eq!(chars.len(), 1);
+        assert!((chars[0].origin_x - 216.0).abs() < 0.001);
+        assert!((chars[0].bbox.width - 4.0).abs() < 0.001);
     }
 
     #[test]

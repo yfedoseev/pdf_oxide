@@ -2973,15 +2973,16 @@ fn assign_spans_to_intersection_grid(
         }
     }
 
-    // Assign text spans to grid cells based on center point.
+    // Assign text spans to grid cells based on center point. Prefer the exact
+    // interval before applying snap tolerance: expanding every interval makes
+    // points near an internal boundary match both neighbours, and `find()`
+    // would always bias them into the earlier row or column.
     let mut grid_spans: Vec<Vec<Vec<usize>>> = vec![vec![Vec::new(); num_cols]; num_rows];
     for (idx, span) in spans.iter().enumerate() {
         let cx = span.bbox.center().x;
         let cy = span.bbox.center().y;
-        // Find column: center must be within [xs[c], xs[c+1]]
-        let col_idx = (0..num_cols).find(|&c| cx >= xs[c] - SNAP_TOL && cx <= xs[c + 1] + SNAP_TOL);
-        // Find row: center must be within [ys[r], ys[r+1]]
-        let row_idx = (0..num_rows).find(|&r| cy >= ys[r] - SNAP_TOL && cy <= ys[r + 1] + SNAP_TOL);
+        let col_idx = grid_interval_for_point(cx, xs);
+        let row_idx = grid_interval_for_point(cy, ys);
         if let (Some(ci), Some(ri)) = (col_idx, row_idx) {
             if grid_has_cell[ri][ci] {
                 grid_spans[ri][ci].push(idx);
@@ -3052,6 +3053,31 @@ fn assign_spans_to_intersection_grid(
     }
 
     Some((table_rows, row_cell_span_indices))
+}
+
+/// Return the grid interval containing `point`.
+///
+/// Internal boundaries are half-open and belong to the interval on their
+/// right. Snap tolerance is reserved for points just outside the grid, where
+/// there is no neighbouring interval to compete for ownership.
+fn grid_interval_for_point(point: f32, boundaries: &[f32]) -> Option<usize> {
+    let interval_count = boundaries.len().checked_sub(1)?;
+    if interval_count == 0 || !point.is_finite() {
+        return None;
+    }
+
+    if point < boundaries[0] {
+        return (boundaries[0] - point <= SNAP_TOL).then_some(0);
+    }
+    if point > boundaries[interval_count] {
+        return (point - boundaries[interval_count] <= SNAP_TOL).then_some(interval_count - 1);
+    }
+
+    (0..interval_count).find(|&index| {
+        point >= boundaries[index]
+            && (point < boundaries[index + 1]
+                || (index + 1 == interval_count && point <= boundaries[index + 1]))
+    })
 }
 
 /// Row splitting, form-artifact stripping, empty-row splitting, and bbox
@@ -4353,6 +4379,65 @@ mod tests {
             x_max: x + 3.0,
             span_indices: Vec::new(),
         }
+    }
+
+    #[test]
+    fn grid_interval_prefers_exact_side_near_internal_boundary() {
+        let boundaries = [0.0, 40.0, 70.0, 100.0];
+
+        assert_eq!(grid_interval_for_point(68.5, &boundaries), Some(1));
+        assert_eq!(grid_interval_for_point(71.0, &boundaries), Some(2));
+        assert_eq!(grid_interval_for_point(70.0, &boundaries), Some(2));
+        assert_eq!(grid_interval_for_point(-2.0, &boundaries), Some(0));
+        assert_eq!(grid_interval_for_point(102.0, &boundaries), Some(2));
+        assert_eq!(grid_interval_for_point(104.0, &boundaries), None);
+    }
+
+    #[test]
+    fn intersection_grid_keeps_superscripts_and_boundary_text_in_their_cells() {
+        let group_cells = [
+            IntersectionCell {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 40.0,
+                y2: 20.0,
+            },
+            IntersectionCell {
+                x1: 40.0,
+                y1: 0.0,
+                x2: 70.0,
+                y2: 20.0,
+            },
+            IntersectionCell {
+                x1: 70.0,
+                y1: 0.0,
+                x2: 100.0,
+                y2: 20.0,
+            },
+        ];
+        let spans = vec![
+            create_test_span("273", 10.0, 5.0, 27.0, 10.0),
+            create_test_span("1", 37.0, 5.0, 2.0, 6.0),
+            create_test_span("83", 45.0, 5.0, 21.0, 10.0),
+            create_test_span("2", 66.0, 5.0, 2.0, 6.0),
+            // Its center is one point into the third cell but within SNAP_TOL
+            // of the second cell's right boundary.
+            create_test_span("Europe", 66.0, 5.0, 10.0, 10.0),
+        ];
+
+        let (rows, _) = assign_spans_to_intersection_grid(
+            &group_cells,
+            &[0.0, 40.0, 70.0, 100.0],
+            &[0.0, 20.0],
+            3,
+            &spans,
+        )
+        .expect("synthetic grid should be valid");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cells[0].text, "2731");
+        assert_eq!(rows[0].cells[1].text, "832");
+        assert_eq!(rows[0].cells[2].text, "Europe");
     }
 
     #[test]
