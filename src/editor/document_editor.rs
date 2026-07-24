@@ -2643,19 +2643,25 @@ impl DocumentEditor {
                                         Object::Reference(ObjectRef::new(*redacted_id, 0));
                                     // If overlay-additions already appended a second stream to
                                     // Contents earlier in this save (DOM edits to a source page
-                                    // via `save_page`, #940), swap only the *original* content
-                                    // reference for the redacted one and keep the addition —
-                                    // an unconditional overwrite here would orphan it.
-                                    let contents_value = if overlay_additions_id.is_some() {
-                                        match new_dict.get("Contents").cloned() {
-                                            Some(Object::Array(mut arr)) if !arr.is_empty() => {
-                                                arr[0] = redacted_ref;
-                                                Object::Array(arr)
-                                            },
-                                            _ => redacted_ref,
-                                        }
-                                    } else {
-                                        redacted_ref
+                                    // via `save_page`, #940), keep that addition but replace
+                                    // *all* original content references with the single redacted
+                                    // stream — not just entry 0. `redacted_ref` already carries
+                                    // the fully redacted, concatenated content of every original
+                                    // stream (`get_page_content_bytes` concatenates a multi-entry
+                                    // `/Contents` array before redacting it), so any other
+                                    // original entries left in the array would be pure
+                                    // duplicates, and every one of them is dropped from the
+                                    // output as an orphan (`redacted_orphan_ids`) regardless —
+                                    // leaving them referenced here produces a dangling
+                                    // `/Contents` entry that strict readers reject (#799, #941).
+                                    // We know the addition's object id directly, so there's no
+                                    // need to infer it positionally from the array.
+                                    let contents_value = match overlay_additions_id {
+                                        Some(additions_id) => Object::Array(vec![
+                                            redacted_ref,
+                                            Object::Reference(ObjectRef::new(additions_id, 0)),
+                                        ]),
+                                        None => redacted_ref,
                                     };
                                     new_dict.insert("Contents".to_string(), contents_value);
                                     new_dict.remove("Annots");
