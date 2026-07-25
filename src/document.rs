@@ -475,6 +475,14 @@ pub struct PdfDocument {
     /// the second from cache. Cleared by redaction (`erase_region` /
     /// `clear_erase_regions`), the only span-affecting mutation.
     page_spans_cache: Mutex<BoundedEntryCache<usize, std::sync::Arc<Vec<crate::layout::TextSpan>>>>,
+    /// Per-page lightweight search index (page text + span bounding boxes,
+    /// no fonts/glyph widths) built lazily by `search()`/`search_page()` and
+    /// reused across repeated calls on the same document. Unlike
+    /// `page_spans_cache` this is never size-bounded/evicted — search never
+    /// reads font/glyph data, so retaining every page's projection is far
+    /// cheaper than retaining every page's full `TextSpan`s would be.
+    /// Cleared alongside `page_spans_cache` wherever spans are invalidated.
+    search_index: Mutex<HashMap<usize, std::sync::Arc<crate::search::SearchPageIndex>>>,
     /// Per-page character cache for the unfiltered (`extract_chars`) result.
     /// `postprocess_spans` needs the same char sequence the public API returns,
     /// so without this every span extraction re-parses the content stream a
@@ -1107,6 +1115,7 @@ impl PdfDocument {
             erase_regions: Mutex::new(HashMap::new()),
             page_content_cache: Mutex::new(BoundedEntryCache::new(64)),
             page_spans_cache: Mutex::new(BoundedEntryCache::new(8)),
+            search_index: Mutex::new(HashMap::new()),
             page_chars_cache: Mutex::new(BoundedEntryCache::new(8)),
             running_artifact_signatures: Mutex::new(None),
             article_threads_cache: Mutex::new(None),
@@ -6509,6 +6518,7 @@ impl PdfDocument {
             .push(rect);
         // Redaction changes a page's spans; drop the span cache.
         self.page_spans_cache.lock_or_recover().clear();
+        self.search_index.lock_or_recover().clear();
         Ok(())
     }
 
@@ -6516,6 +6526,7 @@ impl PdfDocument {
     pub fn clear_erase_regions(&self, page_index: usize) -> Result<()> {
         self.erase_regions.lock_or_recover().remove(&page_index);
         self.page_spans_cache.lock_or_recover().clear();
+        self.search_index.lock_or_recover().clear();
         Ok(())
     }
 
@@ -11266,6 +11277,44 @@ impl PdfDocument {
             .lock_or_recover()
             .insert(page_index, std::sync::Arc::new(spans.clone()));
         Ok(spans)
+    }
+
+    /// Get (building and caching if needed) the lightweight search index for
+    /// one page. Backs `search()`/`search_page()` — see `search_index` field
+    /// docs for why this is a separate, unbounded cache from
+    /// `page_spans_cache`.
+    pub(crate) fn search_page_index(
+        &self,
+        page_index: usize,
+    ) -> Result<std::sync::Arc<crate::search::SearchPageIndex>> {
+        if let Some(cached) = self.search_index.lock_or_recover().get(&page_index) {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let spans = self.extract_spans(page_index)?;
+        let index = std::sync::Arc::new(crate::search::SearchPageIndex::from_spans(&spans));
+        self.search_index
+            .lock_or_recover()
+            .insert(page_index, std::sync::Arc::clone(&index));
+        Ok(index)
+    }
+
+    /// Build the search index for every page up front.
+    ///
+    /// `search()` builds this lazily one page at a time as needed, so calling
+    /// this is optional — it exists for callers who want the first `search()`
+    /// call to be as fast as the rest, at the cost of paying full-document
+    /// extraction immediately instead of spread across the first sweep.
+    pub fn prepare_search(&self) -> Result<()> {
+        for page_index in 0..self.page_count()? {
+            self.search_page_index(page_index)?;
+        }
+        Ok(())
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// `search()`/`search_page()` will rebuild it lazily on next use.
+    pub fn clear_search_index(&self) {
+        self.search_index.lock_or_recover().clear();
     }
 
     fn extract_spans_filtered(
@@ -24467,6 +24516,72 @@ mod tests {
         );
 
         pdf
+    }
+
+    /// Repeated `search_page_index()` calls (what `search()`/`search_page()`
+    /// use internally) must reuse the cached index instead of re-extracting
+    /// and rebuilding it every time — the whole point of the search index
+    /// (issue: `search()` re-extracted the full document on every call).
+    /// Redaction (`erase_region`) changes a page's spans, so it must
+    /// invalidate the cached index the same way it already invalidates
+    /// `page_spans_cache`.
+    #[test]
+    fn search_index_reused_across_calls_and_invalidated_by_redaction() {
+        let content = b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (Hello World) Tj ET";
+        let pdf = build_minimal_pdf_with_font(content);
+        let doc = PdfDocument::from_bytes(pdf).expect("open pdf");
+
+        let first = doc.search_page_index(0).expect("build search index");
+        let second = doc.search_page_index(0).expect("reuse search index");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "a second search_page_index() call should hit the cache, not rebuild"
+        );
+
+        doc.erase_region(0, crate::geometry::Rect::new(0.0, 0.0, 10.0, 10.0))
+            .expect("erase_region");
+        let third = doc.search_page_index(0).expect("rebuild after redaction");
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &third),
+            "erase_region must invalidate the cached search index"
+        );
+    }
+
+    /// `clear_search_index()` is the caller-facing escape hatch for dropping
+    /// the (otherwise unbounded) search index to reclaim memory.
+    #[test]
+    fn clear_search_index_forces_rebuild() {
+        let content = b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (Hello World) Tj ET";
+        let pdf = build_minimal_pdf_with_font(content);
+        let doc = PdfDocument::from_bytes(pdf).expect("open pdf");
+
+        let first = doc.search_page_index(0).expect("build search index");
+        doc.clear_search_index();
+        let second = doc.search_page_index(0).expect("rebuild after clear");
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &second),
+            "clear_search_index() should force the next call to rebuild"
+        );
+    }
+
+    /// `prepare_search()` must populate the index for every page so a
+    /// subsequent full-document `search()` sweep hits cache on every page,
+    /// not just the last few (the failure mode `search()`'s own bounded
+    /// `page_spans_cache` has for documents with more than 8 pages).
+    #[test]
+    fn prepare_search_populates_every_page() {
+        let pdf = build_multi_page_pdf(10);
+        let doc = PdfDocument::from_bytes(pdf).expect("open pdf");
+
+        doc.prepare_search().expect("prepare_search");
+        for page in 0..10 {
+            let a = doc.search_page_index(page).expect("indexed page");
+            let b = doc.search_page_index(page).expect("still cached");
+            assert!(
+                std::sync::Arc::ptr_eq(&a, &b),
+                "page {page} should already be cached by prepare_search()"
+            );
+        }
     }
 
     /// Regression test: a content stream with a degenerate CTM (`a == 0`)
