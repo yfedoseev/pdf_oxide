@@ -13,7 +13,7 @@
 
 use crate::decoders::{CcittParams, StreamDecoder};
 use crate::error::{Error, Result};
-use crate::extractors::ccitt_bilevel::transitions_to_bytes;
+use crate::extractors::ccitt_bilevel::{append_transition_row, transitions_to_bytes};
 
 /// CCITTFaxDecode stream filter (pass-through).
 ///
@@ -64,9 +64,9 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
 
     let bytes_per_row = (width as usize).div_ceil(8);
     let mut reader = BitReader::new(data);
-    let mut reference: Vec<u16> = Vec::new(); // imaginary all-white line above row 0
-    let mut current: Vec<u16> = Vec::new();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes_per_row * params.rows.unwrap_or(0) as usize);
+    let mut reference = transition_buffer(width)?; // imaginary all-white line above row 0
+    let mut current = transition_buffer(width)?;
+    let mut out = packed_output_buffer(bytes_per_row, params.rows)?;
     let mut decoded_rows = 0usize;
     let mut byte_align = params.encoded_byte_align;
     let mut recovered = false;
@@ -97,6 +97,11 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         current.clear();
         match decode_row_g4(&mut reader, &reference, width, &mut current) {
             RowStatus::EndOfBlock => break, // clean EOFB
+            RowStatus::AllocationFailed => {
+                return Err(Error::Decode(
+                    "Unable to grow CCITT row transition buffer".to_string(),
+                ));
+            },
             RowStatus::Error => {
                 if decoded_rows >= 1 {
                     recovered = true; // keep the rows we have; do NOT blank the page
@@ -105,7 +110,7 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
                 return Err(Error::Decode("CCITT: stream undecodable from first row".to_string()));
             },
             RowStatus::Ok => {
-                out.extend_from_slice(&transitions_to_bytes(&current, width as usize));
+                append_transition_row(&mut out, &current, width as usize)?;
                 std::mem::swap(&mut reference, &mut current);
                 decoded_rows += 1;
             },
@@ -114,8 +119,14 @@ pub fn decode(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
 
     // Pad missing trailing rows with white when the height is known.
     if let Some(h) = params.rows {
-        let white_row = vec![0u8; bytes_per_row];
+        let white_row = transitions_to_bytes::<u16>(&[], width as usize)?;
         while out.len() / bytes_per_row.max(1) < h as usize {
+            out.try_reserve(white_row.len()).map_err(|_| {
+                Error::Decode(format!(
+                    "Unable to grow CCITT output by {} padding bytes",
+                    white_row.len()
+                ))
+            })?;
             out.extend_from_slice(&white_row);
         }
     }
@@ -143,9 +154,9 @@ fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
     let two_dimensional = params.k > 0;
     let bytes_per_row = (width as usize).div_ceil(8);
     let mut reader = BitReader::new(data);
-    let mut reference: Vec<u16> = Vec::new(); // imaginary all-white line above row 0
-    let mut current: Vec<u16> = Vec::new();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes_per_row * params.rows.unwrap_or(0) as usize);
+    let mut reference = transition_buffer(width)?; // imaginary all-white line above row 0
+    let mut current = transition_buffer(width)?;
+    let mut out = packed_output_buffer(bytes_per_row, params.rows)?;
     let mut decoded_rows = 0usize;
     let mut byte_align = params.encoded_byte_align;
     let mut recovered = false;
@@ -194,6 +205,11 @@ fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         };
         match status {
             RowStatus::EndOfBlock => break,
+            RowStatus::AllocationFailed => {
+                return Err(Error::Decode(
+                    "Unable to grow CCITT row transition buffer".to_string(),
+                ));
+            },
             RowStatus::Error => {
                 if decoded_rows >= 1 {
                     recovered = true; // keep decoded rows; do NOT blank the page
@@ -204,7 +220,7 @@ fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
                 ));
             },
             RowStatus::Ok => {
-                out.extend_from_slice(&transitions_to_bytes(&current, width as usize));
+                append_transition_row(&mut out, &current, width as usize)?;
                 std::mem::swap(&mut reference, &mut current);
                 decoded_rows += 1;
             },
@@ -212,8 +228,14 @@ fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
     }
 
     if let Some(h) = params.rows {
-        let white_row = vec![0u8; bytes_per_row];
+        let white_row = transitions_to_bytes::<u16>(&[], width as usize)?;
         while out.len() / bytes_per_row.max(1) < h as usize {
+            out.try_reserve(white_row.len()).map_err(|_| {
+                Error::Decode(format!(
+                    "Unable to grow CCITT output by {} padding bytes",
+                    white_row.len()
+                ))
+            })?;
             out.extend_from_slice(&white_row);
         }
     }
@@ -226,6 +248,31 @@ fn decode_g3(data: &[u8], params: &CcittParams) -> Result<CcittDecoded> {
         rows_decoded: decoded_rows,
         recovered_partial: recovered,
     })
+}
+
+fn packed_output_buffer(bytes_per_row: usize, rows: Option<u32>) -> Result<Vec<u8>> {
+    let Some(rows) = rows else {
+        return Ok(Vec::new());
+    };
+    let rows = usize::try_from(rows)
+        .map_err(|_| Error::Decode("CCITT row count exceeds platform limits".to_string()))?;
+    let capacity = bytes_per_row
+        .checked_mul(rows)
+        .ok_or_else(|| Error::Decode("CCITT packed output size overflow".to_string()))?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(capacity).map_err(|_| {
+        Error::Decode(format!("Unable to allocate {capacity} bytes for CCITT packed output"))
+    })?;
+    Ok(output)
+}
+
+fn transition_buffer(width: u16) -> Result<Vec<u16>> {
+    let capacity = width as usize;
+    let mut transitions = Vec::new();
+    transitions.try_reserve_exact(capacity).map_err(|_| {
+        Error::Decode(format!("Unable to allocate {capacity} CCITT row transitions"))
+    })?;
+    Ok(transitions)
 }
 
 /// Decode one Group 3 1-D (Modified Huffman) row: runs alternate white→black
@@ -251,7 +298,9 @@ fn decode_row_g3_1d(reader: &mut BitReader, width: u16, current: &mut Vec<u16>) 
         if a1 >= width {
             break; // final run reaches the right edge; no trailing flip to push
         }
-        current.push(a1);
+        if !try_push_transition(current, a1) {
+            return RowStatus::AllocationFailed;
+        }
         a0 = a1;
         white = !white;
     }
@@ -483,6 +532,15 @@ enum RowStatus {
     Ok,
     EndOfBlock,
     Error,
+    AllocationFailed,
+}
+
+fn try_push_transition(transitions: &mut Vec<u16>, position: u16) -> bool {
+    if transitions.try_reserve(1).is_err() {
+        return false;
+    }
+    transitions.push(position);
+    true
 }
 
 /// Decode one G4 (T.6) row relative to `reference`, pushing color-flip column
@@ -522,8 +580,8 @@ fn decode_row_g4(
                     break; // malformed → end the line, keep what we have
                 }
                 let a1 = a1i as u16;
-                if a1 < width {
-                    current.push(a1);
+                if a1 < width && !try_push_transition(current, a1) {
+                    return RowStatus::AllocationFailed;
                 }
                 black = !black;
                 a0 = a1;
@@ -548,13 +606,15 @@ fn decode_row_g4(
                     Some(v) => v,
                     None => return RowStatus::Error,
                 };
-                if a1 < width {
-                    current.push(a1);
+                if a1 < width && !try_push_transition(current, a1) {
+                    return RowStatus::AllocationFailed;
                 }
                 if a2 >= width {
                     break;
                 }
-                current.push(a2);
+                if !try_push_transition(current, a2) {
+                    return RowStatus::AllocationFailed;
+                }
                 a0 = a2;
             },
             Mode::Extension => return RowStatus::Error,
@@ -706,6 +766,20 @@ mod tests {
         let d = p(params, "001 1000 11 1").unwrap();
         // pixels: white[0..3) black[3..5) white[5..8) ⇒ 0b00011000 = 0x18
         assert_eq!(d.data, vec![0b0001_1000]);
+    }
+
+    #[test]
+    fn g4_negative_k_with_unknown_rows_grows_output_fallibly() {
+        let params = CcittParams {
+            k: -2,
+            columns: 8,
+            rows: None,
+            ..Default::default()
+        };
+        let d = p(params, "001 1000 11 1 000000000001").unwrap();
+        assert_eq!(d.rows_decoded, 1);
+        assert_eq!(d.data, vec![0b0001_1000]);
+        assert!(!d.recovered_partial);
     }
 
     #[test]
@@ -889,5 +963,11 @@ mod tests {
         assert_eq!(g3.data, g4.data);
         // And it is not a degenerate all-white decode.
         assert!(g3.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn packed_output_buffer_rejects_size_overflow() {
+        let result = packed_output_buffer(usize::MAX, Some(2));
+        assert!(matches!(result, Err(Error::Decode(message)) if message.contains("size overflow")));
     }
 }

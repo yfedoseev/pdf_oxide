@@ -424,9 +424,12 @@ impl PyPdfDocument {
 
     /// Erase both header and footer content.
     fn erase_artifacts(&mut self, page: usize) -> PyResult<()> {
+        self.ensure_editor()?;
         self.inner
             .erase_artifacts(page)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to erase artifacts: {}", e)))
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to erase artifacts: {}", e)))?;
+        self.sync_editor_erasures()?;
+        Ok(())
     }
 
     /// Focus extraction on a region.

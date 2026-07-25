@@ -99,8 +99,20 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 params.encoded_byte_align,
                 e
             );
-            let expected_bytes = params.rows.unwrap_or(1) as usize * (width as usize).div_ceil(8);
-            Ok(vec![0; expected_bytes.max((width as usize).div_ceil(8))])
+            let bytes_per_row = (width as usize).div_ceil(8);
+            let rows = usize::try_from(params.rows.unwrap_or(1)).map_err(|_| {
+                Error::Decode("CCITT row count exceeds platform limits".to_string())
+            })?;
+            let expected_bytes = rows
+                .checked_mul(bytes_per_row)
+                .ok_or_else(|| Error::Decode("CCITT fallback size overflow".to_string()))?;
+            let fallback_len = expected_bytes.max(bytes_per_row);
+            let mut fallback = Vec::new();
+            fallback.try_reserve_exact(fallback_len).map_err(|_| {
+                Error::Decode(format!("Unable to allocate {fallback_len} bytes for CCITT fallback"))
+            })?;
+            fallback.resize(fallback_len, 0);
+            Ok(fallback)
         },
     }
 }
@@ -140,11 +152,16 @@ fn decompress_with_fax(
     }
 
     // If that failed, try stripping leading zeros (common in some PDFs)
-    let trimmed_data = data
+    let first_nonzero = data
         .iter()
-        .skip_while(|b| **b == 0)
-        .copied()
-        .collect::<Vec<_>>();
+        .position(|byte| *byte != 0)
+        .unwrap_or(data.len());
+    let trimmed_len = data.len() - first_nonzero;
+    let mut trimmed_data = Vec::new();
+    trimmed_data.try_reserve_exact(trimmed_len).map_err(|_| {
+        Error::Decode(format!("Unable to allocate {trimmed_len} bytes for trimmed CCITT input"))
+    })?;
+    trimmed_data.extend_from_slice(&data[first_nonzero..]);
 
     if trimmed_data.len() < data.len() && !trimmed_data.is_empty() {
         log::debug!(
@@ -192,37 +209,65 @@ fn try_decode_with_fax(
 ) -> Result<Vec<u8>> {
     use fax::decoder;
 
-    let mut output_rows = Vec::new();
     let bytes_per_row = width.div_ceil(8);
+    let max_rows = height.map(|rows| rows as usize);
+    let mut output = Vec::new();
+    if let Some(rows) = max_rows {
+        let capacity = bytes_per_row
+            .checked_mul(rows)
+            .ok_or_else(|| Error::Decode("CCITT fax output size overflow".to_string()))?;
+        output.try_reserve_exact(capacity).map_err(|_| {
+            Error::Decode(format!("Unable to allocate {capacity} bytes for CCITT fax output"))
+        })?;
+    }
+    let mut rows_decoded = 0usize;
 
     // Use fax crate's decoder which is more lenient with malformed EOFB
     let bytes_iter = data.iter().copied();
 
     let success = if params.is_group_4() {
         log::debug!("Using Group 4 (T.6) decoder");
-        decoder::decode_g4(bytes_iter, width as u32, height, |transitions: &[u32]| {
-            // Convert run-length transitions to pixel bytes
-            let row_bytes = transitions_to_bytes(transitions, width);
-            output_rows.push(row_bytes);
-        })
+        let mut callback_error = None;
+        let success =
+            decoder::decode_g4(bytes_iter, width as u32, height, |transitions: &[u32]| {
+                if callback_error.is_none() && max_rows.is_none_or(|rows| rows_decoded < rows) {
+                    if let Err(error) = append_transition_row(&mut output, transitions, width) {
+                        callback_error = Some(error);
+                        return;
+                    }
+                    rows_decoded += 1;
+                }
+            });
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        success
     } else {
         log::debug!("Using Group 3 (T.4) decoder");
         // Group 3 has a different signature - no width/height params in callback
-        decoder::decode_g3(bytes_iter, |transitions: &[u32]| {
-            // Convert run-length transitions to pixel bytes
-            let row_bytes = transitions_to_bytes(transitions, width);
-            output_rows.push(row_bytes);
-        })
+        let mut callback_error = None;
+        let success = decoder::decode_g3(bytes_iter, |transitions: &[u32]| {
+            if callback_error.is_none() && max_rows.is_none_or(|rows| rows_decoded < rows) {
+                if let Err(error) = append_transition_row(&mut output, transitions, width) {
+                    callback_error = Some(error);
+                    return;
+                }
+                rows_decoded += 1;
+            }
+        });
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        success
     };
 
     // Check if decoder succeeded and returned data
-    if success.is_some() && !output_rows.is_empty() {
-        let output = output_rows.into_iter().flatten().collect::<Vec<u8>>();
+    if success.is_some() && !output.is_empty() {
         log::debug!(
             "CCITT decompression successful: {} bytes input -> {} bytes output ({} rows)",
             data.len(),
             output.len(),
-            output.len() / bytes_per_row
+            rows_decoded
         );
         Ok(output)
     } else if success.is_some() {
@@ -251,9 +296,13 @@ fn try_decode_with_fax(
 pub(crate) fn transitions_to_bytes<T: Copy + Into<u32>>(
     transitions: &[T],
     width: usize,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let bytes_per_row = width.div_ceil(8);
-    let mut row_bytes = vec![0u8; bytes_per_row];
+    let mut row_bytes = Vec::new();
+    row_bytes.try_reserve_exact(bytes_per_row).map_err(|_| {
+        Error::Decode(format!("Unable to allocate {bytes_per_row} bytes for a CCITT row"))
+    })?;
+    row_bytes.resize(bytes_per_row, 0);
 
     let mut is_black = false; // Start with white
     let mut start_pos: usize = 0;
@@ -282,7 +331,20 @@ pub(crate) fn transitions_to_bytes<T: Copy + Into<u32>>(
         }
     }
 
-    row_bytes
+    Ok(row_bytes)
+}
+
+pub(crate) fn append_transition_row<T: Copy + Into<u32>>(
+    output: &mut Vec<u8>,
+    transitions: &[T],
+    width: usize,
+) -> Result<()> {
+    let row = transitions_to_bytes(transitions, width)?;
+    output.try_reserve(row.len()).map_err(|_| {
+        Error::Decode(format!("Unable to grow CCITT output by {} bytes", row.len()))
+    })?;
+    output.extend_from_slice(&row);
+    Ok(())
 }
 
 /// Decompresses CCITT Group 4 encoded data (legacy API for backwards compatibility).
@@ -398,11 +460,11 @@ mod tests {
         // Should produce: 0b00111001 = 57 (0x39)
         // Exercised for both transition scalars: the in-house decoder emits
         // u16, the fax crate (0.3+) emits u32, and both share this packer.
-        let row_u16 = transitions_to_bytes(&[2u16, 5, 7], 8);
+        let row_u16 = transitions_to_bytes(&[2u16, 5, 7], 8).expect("pack u16 row");
         assert_eq!(row_u16.len(), 1);
         assert_eq!(row_u16[0], 0b00111001);
 
-        let row_u32 = transitions_to_bytes(&[2u32, 5, 7], 8);
+        let row_u32 = transitions_to_bytes(&[2u32, 5, 7], 8).expect("pack u32 row");
         assert_eq!(row_u32, row_u16, "u32 and u16 transitions must pack identically");
     }
 
@@ -412,7 +474,7 @@ mod tests {
     fn test_transitions_to_bytes_beyond_u16() {
         let width = 70_000usize;
         // black run from 65_536 to 65_544 - a position that u16 could not hold
-        let row = transitions_to_bytes(&[65_536u32, 65_544], width);
+        let row = transitions_to_bytes(&[65_536u32, 65_544], width).expect("pack wide row");
         assert_eq!(row.len(), width.div_ceil(8));
         assert_eq!(row[65_536 / 8], 0xFF, "the 8 pixels at 65536.. must be black");
         assert!(row[..65_536 / 8].iter().all(|&b| b == 0), "everything before must stay white");

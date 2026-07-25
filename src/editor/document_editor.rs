@@ -2639,10 +2639,31 @@ impl DocumentEditor {
                                     (&destructive_redaction, final_page_obj.as_dict())
                                 {
                                     let mut new_dict = page_dict.clone();
-                                    new_dict.insert(
-                                        "Contents".to_string(),
-                                        Object::Reference(ObjectRef::new(*redacted_id, 0)),
-                                    );
+                                    let redacted_ref =
+                                        Object::Reference(ObjectRef::new(*redacted_id, 0));
+                                    // If overlay-additions already appended a second stream to
+                                    // Contents earlier in this save (DOM edits to a source page
+                                    // via `save_page`, #940), keep that addition but replace
+                                    // *all* original content references with the single redacted
+                                    // stream — not just entry 0. `redacted_ref` already carries
+                                    // the fully redacted, concatenated content of every original
+                                    // stream (`get_page_content_bytes` concatenates a multi-entry
+                                    // `/Contents` array before redacting it), so any other
+                                    // original entries left in the array would be pure
+                                    // duplicates, and every one of them is dropped from the
+                                    // output as an orphan (`redacted_orphan_ids`) regardless —
+                                    // leaving them referenced here produces a dangling
+                                    // `/Contents` entry that strict readers reject (#799, #941).
+                                    // We know the addition's object id directly, so there's no
+                                    // need to infer it positionally from the array.
+                                    let contents_value = match overlay_additions_id {
+                                        Some(additions_id) => Object::Array(vec![
+                                            redacted_ref,
+                                            Object::Reference(ObjectRef::new(additions_id, 0)),
+                                        ]),
+                                        None => redacted_ref,
+                                    };
+                                    new_dict.insert("Contents".to_string(), contents_value);
                                     new_dict.remove("Annots");
                                     final_page_obj = Object::Dictionary(new_dict);
                                 }
@@ -4141,6 +4162,28 @@ impl DocumentEditor {
             let added: Vec<ContentElement> = page.added_children().to_vec();
             if !added.is_empty() {
                 self.overlay_additions.insert(page_index, added);
+            }
+
+            // Pre-existing content that was edited/removed via the DOM can't be
+            // captured by the overlay above (it was never "added" — see
+            // `PdfPage::pending_erasures`), so destructively redact it from the
+            // real content stream instead of silently dropping the edit.
+            let erasures = page.pending_erasures().to_vec();
+            if !erasures.is_empty() {
+                let regions = self.redaction_regions.entry(page_index).or_default();
+                for bbox in &erasures {
+                    regions.push(crate::redaction::RedactionRegion::from_rect(
+                        bbox.x,
+                        bbox.y,
+                        bbox.x + bbox.width,
+                        bbox.y + bbox.height,
+                        None,
+                    ));
+                }
+                self.apply_redactions_destructive_for_page(
+                    page_index,
+                    &crate::redaction::RedactionOptions::default(),
+                )?;
             }
         } else {
             // Freshly created page — replace the entire content stream.
@@ -6814,67 +6857,83 @@ impl DocumentEditor {
         &mut self,
         opts: crate::redaction::RedactionOptions,
     ) -> Result<crate::redaction::RedactionReport> {
-        use crate::redaction::{redact_content_stream, RedactionRegion, RegionSet};
         let mut pages: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         pages.extend(self.apply_redactions_pages.iter().copied());
         pages.extend(self.redaction_regions.keys().copied());
 
         let mut total = crate::redaction::RedactionReport::default();
         for src in pages {
-            let mut rs = RegionSet::new(src);
-            for rd in self.get_redaction_data(src)? {
-                rs.push(RedactionRegion::from_rect(
-                    rd.rect[0],
-                    rd.rect[1],
-                    rd.rect[2],
-                    rd.rect[3],
-                    Some(rd.color),
-                ));
-            }
-            if let Some(progs) = self.redaction_regions.get(&src) {
-                for r in progs {
-                    rs.push(*r);
-                }
-            }
-            if rs.is_empty() {
-                continue;
-            }
-            let content = self.get_page_content_bytes(src)?;
-            if content.is_empty() {
-                continue;
-            }
-            let fonts = self.build_page_font_metrics(src)?;
-            let (bytes, rep) = redact_content_stream(&content, &rs, &opts, &fonts)?;
-            // Record the original /Contents object ids so the save path
-            // hard-drops them (G6) — the secret must not survive even as
-            // an orphaned, GC-missed object.
-            if let Ok(page_ref) = self.source.get_page_ref(src) {
-                if let Ok(page_obj) = self.source.load_object(page_ref) {
-                    if let Some(d) = page_obj.as_dict() {
-                        match d.get("Contents") {
-                            Some(Object::Reference(r)) => {
-                                self.redacted_orphan_ids.insert(r.id);
-                            },
-                            Some(Object::Array(arr)) => {
-                                for it in arr {
-                                    if let Object::Reference(r) = it {
-                                        self.redacted_orphan_ids.insert(r.id);
-                                    }
-                                }
-                            },
-                            _ => {},
-                        }
-                    }
-                }
-            }
-            self.redacted_content.insert(src, bytes);
-            self.apply_redactions_pages.insert(src);
+            let rep = self.apply_redactions_destructive_for_page(src, &opts)?;
             total.regions += rep.regions;
             total.glyphs_removed += rep.glyphs_removed;
             total.bytes_removed += rep.bytes_removed;
         }
         self.is_modified = true;
         Ok(total)
+    }
+
+    /// Destructively apply queued redactions (programmatic rectangles +
+    /// source `/Redact` annotations) for a single source page. Shared by
+    /// [`apply_redactions_destructive`] (all queued pages) and `save_page`
+    /// (DOM edits to pre-existing content on one page).
+    ///
+    /// [`apply_redactions_destructive`]: DocumentEditor::apply_redactions_destructive
+    fn apply_redactions_destructive_for_page(
+        &mut self,
+        src: usize,
+        opts: &crate::redaction::RedactionOptions,
+    ) -> Result<crate::redaction::RedactionReport> {
+        use crate::redaction::{redact_content_stream, RedactionRegion, RegionSet};
+        let mut rs = RegionSet::new(src);
+        for rd in self.get_redaction_data(src)? {
+            rs.push(RedactionRegion::from_rect(
+                rd.rect[0],
+                rd.rect[1],
+                rd.rect[2],
+                rd.rect[3],
+                Some(rd.color),
+            ));
+        }
+        if let Some(progs) = self.redaction_regions.get(&src) {
+            for r in progs {
+                rs.push(*r);
+            }
+        }
+        if rs.is_empty() {
+            return Ok(crate::redaction::RedactionReport::default());
+        }
+        let content = self.get_page_content_bytes(src)?;
+        if content.is_empty() {
+            return Ok(crate::redaction::RedactionReport::default());
+        }
+        let fonts = self.build_page_font_metrics(src)?;
+        let (bytes, rep) = redact_content_stream(&content, &rs, opts, &fonts)?;
+        // Record the original /Contents object ids so the save path
+        // hard-drops them (G6) — the secret must not survive even as
+        // an orphaned, GC-missed object.
+        if let Ok(page_ref) = self.source.get_page_ref(src) {
+            if let Ok(page_obj) = self.source.load_object(page_ref) {
+                if let Some(d) = page_obj.as_dict() {
+                    match d.get("Contents") {
+                        Some(Object::Reference(r)) => {
+                            self.redacted_orphan_ids.insert(r.id);
+                        },
+                        Some(Object::Array(arr)) => {
+                            for it in arr {
+                                if let Object::Reference(r) = it {
+                                    self.redacted_orphan_ids.insert(r.id);
+                                }
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
+        self.redacted_content.insert(src, bytes);
+        self.apply_redactions_pages.insert(src);
+        self.is_modified = true;
+        Ok(rep)
     }
 
     /// Standalone document sanitization without geometric redaction

@@ -947,6 +947,12 @@ pub struct PdfPage {
     /// `None` means the page was freshly created (full content replacement on save).
     /// `Some(n)` means children at index >= n were added by the caller (overlay on save).
     original_child_count: Option<usize>,
+    /// Bounding boxes of pre-existing (source-loaded) content invalidated by
+    /// DOM edits (`set_text`, `remove_element`). `save_page` cannot re-serialize
+    /// the original content stream (see `original_child_count`), so these boxes
+    /// are destructively redacted from it instead — otherwise such edits would
+    /// be silently dropped on save.
+    pending_erasures: Vec<crate::geometry::Rect>,
 }
 
 impl PdfPage {
@@ -967,6 +973,7 @@ impl PdfPage {
             annotations: Vec::new(),
             annotations_modified: false,
             original_child_count: None,
+            pending_erasures: Vec::new(),
         };
         page.rebuild_element_map();
         page
@@ -991,6 +998,7 @@ impl PdfPage {
             annotations,
             annotations_modified: false,
             original_child_count: Some(original_child_count),
+            pending_erasures: Vec::new(),
         };
         page.rebuild_element_map();
         page
@@ -1012,6 +1020,47 @@ impl PdfPage {
         match self.original_child_count {
             Some(n) => &self.root.children[n.min(self.root.children.len())..],
             None => &self.root.children,
+        }
+    }
+
+    /// Bounding boxes of pre-existing content invalidated by DOM edits
+    /// (`set_text`, `remove_element`) that `save_page` must destructively
+    /// redact from the source content stream.
+    pub fn pending_erasures(&self) -> &[Rect] {
+        &self.pending_erasures
+    }
+
+    /// Whether top-level child `idx` is part of the content this page was
+    /// loaded with (as opposed to appended afterwards via `add_text` et al).
+    fn is_original_index(&self, idx: usize) -> bool {
+        matches!(self.original_child_count, Some(n) if idx < n)
+    }
+
+    /// If `path` refers to pre-existing (source-loaded) content, queue its
+    /// original bounding box for destructive redaction and, when the new
+    /// text is non-empty, mirror the edit as a new top-level overlay element
+    /// so it survives `save_page`'s overlay-only save path for loaded pages.
+    fn record_original_text_edit(&mut self, path: &ElementPath) {
+        let Some(&top_level_idx) = path.path.first() else {
+            return;
+        };
+        if !self.is_original_index(top_level_idx) {
+            return;
+        }
+        let Some(ContentElement::Text(text)) = self.get_element_by_path(path) else {
+            return;
+        };
+        let text = text.clone();
+        self.pending_erasures.push(text.bbox);
+        if !text.text.is_empty() {
+            // Append incrementally (mirroring `add_text`) rather than calling
+            // `rebuild_element_map`, which would mint fresh IDs for every
+            // existing element and silently strand any ID a caller is holding.
+            let overlay = text;
+            let new_id = ElementId::new();
+            let new_path = ElementPath::new().with_child(self.root.children.len());
+            self.root.children.push(ContentElement::Text(overlay));
+            self.element_map.insert(new_id, new_path);
         }
     }
 
@@ -1261,6 +1310,7 @@ impl PdfPage {
         if let Some(path) = self.element_map.get(&id).cloned() {
             self.modify_text_by_path(&path, f)?;
             self.dirty_elements.insert(id);
+            self.record_original_text_edit(&path);
         }
         Ok(())
     }
@@ -1700,6 +1750,19 @@ impl PdfPage {
             if path.path.len() == 1 {
                 let idx = path.path[0];
                 if idx < self.root.children.len() {
+                    // Pre-existing content removed from a source-loaded page can't
+                    // be dropped by simply omitting it from `root.children`: the
+                    // overlay-save path in `save_page` never re-serializes the
+                    // original content stream, so the removed element would still
+                    // be present in the saved output. Queue it for destructive
+                    // redaction instead, and shrink the original/added boundary so
+                    // the remaining original elements are still recognized as such.
+                    if self.is_original_index(idx) {
+                        self.pending_erasures.push(self.root.children[idx].bbox());
+                        if let Some(n) = self.original_child_count.as_mut() {
+                            *n -= 1;
+                        }
+                    }
                     self.root.children.remove(idx);
                     self.dirty_elements.remove(&id);
                     // Rebuild element map since indices have shifted
