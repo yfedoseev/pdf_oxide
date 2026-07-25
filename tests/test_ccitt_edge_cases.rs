@@ -61,8 +61,8 @@ mod ccitt_edge_cases {
                             println!("\n  Testing fax decoder with leading zeros stripped:");
                             test_fax_decoder_on_data(
                                 &pixels[leading_zeros..],
-                                image.width() as u16,
-                                Some(image.height() as u16),
+                                image.width(),
+                                Some(image.height()),
                                 &format!("Image {} (zeros stripped)", idx),
                             );
                         } else {
@@ -77,7 +77,7 @@ mod ccitt_edge_cases {
         }
     }
 
-    fn test_fax_decoder_on_data(data: &[u8], width: u16, height: Option<u16>, _label: &str) {
+    fn test_fax_decoder_on_data(data: &[u8], width: u32, height: Option<u32>, _label: &str) {
         use fax::decoder;
 
         let mut output_count = 0;
