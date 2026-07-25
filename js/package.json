@@ -1,6 +1,6 @@
 {
   "name": "pdf-oxide",
-  "version": "0.3.74",
+  "version": "0.3.75",
   "type": "module",
   "description": "The fastest Node.js PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Prebuilt native bindings, no build toolchain: text extraction, Markdown/HTML conversion, PDF creation and editing.",
   "main": "lib/index.js",

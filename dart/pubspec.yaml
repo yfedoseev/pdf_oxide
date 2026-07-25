@@ -1,6 +1,6 @@
 name: pdf_oxide
 description: The fastest Dart/Flutter PDF library — 5× faster than the industry leaders, 100% pass rate on 3,830 PDFs. Text, Markdown & HTML extraction plus PDF creation via dart:ffi.
-version: 0.3.74
+version: 0.3.75
 repository: https://github.com/yfedoseev/pdf_oxide
 homepage: https://github.com/yfedoseev/pdf_oxide
 issue_tracker: https://github.com/yfedoseev/pdf_oxide/issues

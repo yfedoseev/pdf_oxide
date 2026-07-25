@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pdf_oxide"
-version = "0.3.74"
+version = "0.3.75"
 description = "The fastest Python PDF library — 0.8ms mean, 5× faster than the industry leaders, 100% pass rate on 3,830 real-world PDFs. Text extraction, Markdown/HTML conversion, PDF creation and editing."
 readme = "README.md"
 requires-python = ">=3.9"
