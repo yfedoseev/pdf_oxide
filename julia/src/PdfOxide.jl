@@ -252,7 +252,7 @@ end
 
 """PDF version as `(major, minor)`."""
 function version(d::PdfDocument)
-    maj = Ref{UInt8}(0);
+    maj = Ref{UInt8}(0)
     min = Ref{UInt8}(0)
     ccall(
         (:pdf_document_get_version, LIB),
@@ -419,9 +419,9 @@ for (jl_fn, c_fn) in (
     (:_bbox_line, :pdf_oxide_line_get_bbox),
 )
     @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
-        x = Ref{Float32}(0);
+        x = Ref{Float32}(0)
         y = Ref{Float32}(0)
-        w = Ref{Float32}(0);
+        w = Ref{Float32}(0)
         h = Ref{Float32}(0)
         code = Ref{Int32}(0)
         ccall(
@@ -754,9 +754,9 @@ for (jl_fn, c_fn) in (
     (:_bbox_search, :pdf_oxide_search_result_get_bbox),
 )
     @eval function $jl_fn(list::Ptr{Cvoid}, index::Integer, op::String)
-        x = Ref{Float32}(0);
+        x = Ref{Float32}(0)
         y = Ref{Float32}(0)
-        w = Ref{Float32}(0);
+        w = Ref{Float32}(0)
         h = Ref{Float32}(0)
         code = Ref{Int32}(0)
         ccall(
@@ -931,7 +931,7 @@ function embedded_images(d::PdfDocument, page::Integer)
             bpc = _i32_image_bpc(list, i, "embedded_images")
             fmt = _str_image_format(list, i, "embedded_images")
             cs = _str_image_colorspace(list, i, "embedded_images")
-            dlen = Ref{Int32}(0);
+            dlen = Ref{Int32}(0)
             dcode = Ref{Int32}(0)
             dptr = ccall(
                 (:pdf_oxide_image_get_data, LIB),
@@ -1129,7 +1129,7 @@ mutable struct RenderedImage
             ccall((:pdf_rendered_image_free, LIB), Cvoid, (Ptr{Cvoid},), h)
             throw(PdfOxideError(hcode[], "render"))
         end
-        dlen = Ref{Int32}(0);
+        dlen = Ref{Int32}(0)
         dcode = Ref{Int32}(0)
         dptr = ccall(
             (:pdf_get_rendered_image_data, LIB),
@@ -1300,7 +1300,7 @@ end
 
 """Serialize the built PDF to a `Vector{UInt8}`."""
 function to_bytes(p::Pdf)
-    len = Ref{Int32}(0);
+    len = Ref{Int32}(0)
     code = Ref{Int32}(0)
     ptr = ccall(
         (:pdf_save_to_bytes, LIB),
@@ -6288,13 +6288,13 @@ function highlight_quad_point(
 )
     list = _open_annotations(d, page, "highlight_quad_point")
     try
-        x1 = Ref{Float32}(0);
+        x1 = Ref{Float32}(0)
         y1 = Ref{Float32}(0)
-        x2 = Ref{Float32}(0);
+        x2 = Ref{Float32}(0)
         y2 = Ref{Float32}(0)
-        x3 = Ref{Float32}(0);
+        x3 = Ref{Float32}(0)
         y3 = Ref{Float32}(0)
-        x4 = Ref{Float32}(0);
+        x4 = Ref{Float32}(0)
         y4 = Ref{Float32}(0)
         code = Ref{Int32}(0)
         ccall(
@@ -6409,9 +6409,9 @@ end
 
 """The `index`-th element's bounding box as a `Bbox`."""
 function element_rect(l::ElementList, index::Integer)
-    x = Ref{Float32}(0);
+    x = Ref{Float32}(0)
     y = Ref{Float32}(0)
-    w = Ref{Float32}(0);
+    w = Ref{Float32}(0)
     h = Ref{Float32}(0)
     code = Ref{Int32}(0)
     ccall(
