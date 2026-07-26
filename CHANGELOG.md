@@ -2,6 +2,50 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.76] - 2026-07-26
+
+> Redaction/editor persistence and rendering-accuracy release: DOM edits and `add_text()` overlays on source-loaded pages now survive `save()` without leaving dangling `/Contents` references; multi-input (DeviceN) Type 0 tint transforms, non-CCITT 1-bit images, and inline images render correctly; CCITT `/ImageMask` XObjects decode instead of misreading compressed data as raw stencil rows; spatial table-cell ownership is corrected at singleton-span and boundary cases; and repeated `search()` calls on the same document are no longer `O(searches × full extraction)`. The Java binding gains PDF/A conversion, completing coverage across every first-party language binding.
+
+### Added
+
+- **PDF/A conversion exposed in the Java binding**, with idiomatic Kotlin/Scala/Clojure facades (`PdfAConverter`, `ConversionResult`/`ConversionAction`/`ActionType`/`ConversionError` in `fyi.oxide.pdf.compliance`) — completes PDF/A conversion coverage across every first-party binding (#948).
+
+### Fixed
+
+**Editor / redaction persistence**
+
+- **`PdfDocument.save()` silently discarded DOM edits (`set_text()`, `remove_element()`, `erase_header()`/`erase_footer()`/`erase_artifacts()`) made to a page loaded from an existing PDF** — the overlay-merge path that reconciles DOM edits back into a page's `/Contents` on save had a defect that dropped the edit entirely; edits made via the DOM API now persist through `save()`/`save_page()` (#940).
+- **A page whose original `/Contents` was already a multi-entry array (ISO 32000-1 §7.7.3.3) kept a dangling reference to its other original streams after destructive redaction** — the merge step that replaces `/Contents` with the redacted stream assumed a single original stream at array position 0; it now replaces every original content reference, keeping only genuine overlay/addition streams. The same defect class was independently hit through two different triggers: `set_text()`/`remove_element()` on a page whose `/Contents` was already an array, and `add_text()` combined with `apply_redactions_destructive()` on the same page (#940, #941, #799).
+- **`add_text()` overlay font registered under the raw font name while the content stream emitted the `map_font_name()`-transformed name**, leaving a dangling `/Tf` resource for bold/italic overlays, generic family names (`Arial`, `sans-serif`), and Symbol/ZapfDingbats — registration now keys off the exact name the `Tf` operator emits, and `/Resources`/`/Resources/Font` are resolved through indirect references (common for pages loaded from existing documents) (#941).
+- **`save_page()` discarded overlay text staged by a prior `save_page()` call on the same page** — `overlay_additions` now accumulates across calls instead of being overwritten (#941).
+
+**Rendering**
+
+- **CCITT Group 3/4 `/ImageMask` XObjects were treated as raw stencil rows instead of decoded** — compressed fax data is now actually decompressed; `DecodeParms`/filter-chain handling, `K < 0` Group 4 semantics, and allocation on oversized/malformed input are also corrected (#935, #939).
+- **Separation/DeviceN colour spaces with a genuinely multi-channel (N>1) Type 0 (sampled) tint transform rendered black or dropped shapes entirely** — the sampled-function evaluator only ever handled a single input dimension, forwarding just the first `scn` operand and silently falling back to `gray = 1 − components[0]`; it now performs full N-dimensional multilinear interpolation across the sample grid (ISO 32000-1 §7.10.2's general algorithm, of which the prior 1-D case is the N=1 special case), gated by a `MAX_SAMPLED_FUNCTION_DIMS = 8` bound against a pathological `/Size` array (#849, #859).
+- **Non-CCITT 1-bit `/DeviceGray` images (uncompressed or `FlateDecode`) were force-fed through the CCITT decompressor and silently dropped when decompression failed** — the CCITT path is now gated on the XObject's filter actually being `CCITTFaxDecode`; the non-CCITT case is unpacked directly, folding `/Decode [1 0]` inversion the same way the CCITT path already does (#860).
+- **Inline images (`BI…ID…EI`) were parsed and classified as a paint operator but never actually painted** — the renderer's operator dispatch had no match arm for `Operator::InlineImage`; it now expands the abbreviated dictionary keys and routes through the same `render_image`/`render_image_mask` path used for `Do`-invoked image XObjects (#860).
+- **Spatial table-cell ownership misattributed text near cell boundaries** — stale per-glyph offsets outside a text span's bounding box are now rejected for singleton spans, and exact half-open internal grid intervals keep superscripts and boundary-adjacent text in their correct geometric cell; outer-edge tolerance near the table boundary is unchanged (#937, #938).
+
+### Performance
+
+- **Repeated `search()`/`search_page()` calls on the same document re-extracted and re-postprocessed every page's full spans on every call** — a multi-pattern scan over one document cost `O(searches × full extraction)` with no benefit from repetition, since the existing span cache is bounded to 8 entries. An unbounded, lighter-weight per-page search index (page text + span bounding boxes only, no font/glyph data) is now built lazily on first use and reused across calls; `prepare_search()`/`clear_search_index()` give callers control over eager population and memory reclamation. Measured: repeat `search()` calls on a 60-page document dropped from ~30ms to ~20-50µs per call after the first (#936).
+
+### Changed / Dependencies
+
+- Test/CI stability: two `ocr`-feature-gated CCITT diagnostic test files still called `fax` 0.2's `u16` `decode_g4` signature after the crate's 0.3 API bump (`u32`), breaking `cargo clippy --all-targets --features rendering,barcodes,signatures,ocr` — exactly the combo CONTRIBUTING.md's recommended pre-commit hook uses (#945).
+
+### Contributors
+
+Rendering fixes from **@Goldziher** — CCITT `/ImageMask` decoding (#935, #939) and spatial table-cell ownership (#937, #938). Redaction/overlay persistence from **@thomnico** — the `add_text()`/destructive-redaction interaction (#941, #799, superseding an earlier iteration). Thank you!
+
+Issues reported by:
+
+- **@lightedlogic** — #940 (`save()` doesn't persist DOM edits made via `set_text()`/`remove_element()`)
+- **@ankursri494** — #936 (repeated `search()` calls on the same document don't get faster)
+- **@ultrasaurus** — #945 (recommended pre-commit hook fails on `main`)
+- **@bfchiheb** — #947 (PDF/A conversion missing from the Java binding)
+
 ## [0.3.75] - 2026-07-23
 
 > Rendering-accuracy and extraction-fidelity release. DeviceCMYK now renders through measured process inks; page rotation (including `/Rotate 270` and negative values) and Separation/DeviceN tint transforms are honoured; inline images and CMYK/CCITT image decoding are corrected; Form-XObject text no longer goes missing; Tagged PDFs can be read in structure order; and a large text-extraction performance pass lands, alongside a dependency modernization (rustybuzz→harfrust, office_oxide 0.1.8).
