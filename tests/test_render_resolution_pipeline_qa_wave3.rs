@@ -697,23 +697,16 @@ fn qa_standard_image_iccbased_n4_pass_through_paints_visible_ink() {
 // ===========================================================================
 // Probes 13-14 — Inline images (`BI ... ID ... EI`).
 //
-// Inline images are an entirely separate parse path. The wave-3 commit
-// only touches the `Operator::Do` arm; inline images flow through
-// `Operator::InlineImage` which the renderer DOES NOT IMPLEMENT —
-// `page_renderer.rs` has no `Operator::InlineImage` arm. So:
-//
-//   - inline images render as nothing (transparent / unchanged page);
-//   - inline ImageMasks therefore can't be filled via the pipeline
-//     (capability gap, not a regression).
-//
-// These probes PIN the current behaviour. If a future wave wires up
-// `Operator::InlineImage`, both should start failing — at which point
-// the new arm needs its own pipeline routing for `/IM true`.
+// Inline images are an entirely separate parse path from `Do`-invoked
+// XObjects. `Operator::InlineImage` now has its own dispatch arm in
+// `page_renderer.rs` that expands the abbreviated dictionary keys and
+// routes through the same `render_image`/`render_image_mask` functions
+// the `Do` arm uses, so both an inline ImageMask and a standard inline
+// image now paint correctly.
 // ===========================================================================
 
 /// Build a one-page PDF whose content stream is a literal byte slice
-/// (so callers can embed non-ASCII inline-image data). The renderer
-/// doesn't dispatch `Operator::InlineImage` today; this is a gap pin.
+/// (so callers can embed non-ASCII inline-image data).
 fn build_pdf_inline_image_bytes(content_ops: &[u8]) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(b"%PDF-1.4\n");
@@ -743,16 +736,10 @@ fn build_pdf_inline_image_bytes(content_ops: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Probe 13 — Inline ImageMask via `BI ... ID ... EI`. Pin the current
-/// behaviour: the renderer does NOT dispatch `Operator::InlineImage`,
-/// so the page is blank.
-///
-/// If a future wave adds inline-image support, this test will fail —
-/// at which point the new arm needs its own pipeline routing for
-/// `/IM true` to match the `Do` arm's behaviour. Tracked as
-/// **WAVE-3-GAP-INLINE**.
+/// Probe 13 — Inline ImageMask via `BI ... ID ... EI` paints with the
+/// current fill colour, same as a `Do`-invoked ImageMask.
 #[test]
-fn qa_inline_image_mask_renderer_gap_pin() {
+fn qa_inline_image_mask_paints_with_current_fill_colour() {
     // Inline ImageMask: 1x1, /BPC 1, /IM true, one zero byte (opaque
     // under default Decode). Surround with a fill colour set first.
     //
@@ -766,25 +753,19 @@ fn qa_inline_image_mask_renderer_gap_pin() {
     let bytes = build_pdf_inline_image_bytes(&content);
     let doc = PdfDocument::from_bytes(bytes).expect("PDF parses");
     let on = render_with_pipeline(&doc, true);
-    // Pin the gap: the page must be all white. If a future wave wires
-    // up InlineImage rendering and forgets to route the fill through
-    // the pipeline, this stops being all-white at the centre and the
-    // pin fires.
     let (r, g, b, _a) = center_pixel(&on);
     assert_eq!(
         (r, g, b),
-        (255, 255, 255),
-        "inline ImageMask currently goes unrendered (renderer gap); \
-         WAVE-3-GAP-INLINE must remain until InlineImage is wired up"
+        (255, 0, 0),
+        "inline ImageMask must paint the current fill colour (red), got ({r}, {g}, {b})"
     );
 }
 
-/// Probe 14 — Inline standard (non-mask) image. Same gap: the renderer
-/// doesn't dispatch `Operator::InlineImage`. Pin all-white centre.
+/// Probe 14 — Inline standard (non-mask) image paints its own sample
+/// data, same as a `Do`-invoked standard image.
 #[test]
-fn qa_inline_standard_image_renderer_gap_pin() {
-    // 1x1 DeviceGray, BPC 8, single byte 0x80 → mid-grey. Without
-    // dispatch, the page is blank.
+fn qa_inline_standard_image_paints_sample_data() {
+    // 1x1 DeviceGray, BPC 8, single byte 0x80 → mid-grey.
     let mut content: Vec<u8> = Vec::new();
     content.extend_from_slice(b"q\n80 0 0 80 10 10 cm\n");
     content.extend_from_slice(b"BI /W 1 /H 1 /BPC 8 /CS /G ID ");
@@ -796,8 +777,8 @@ fn qa_inline_standard_image_renderer_gap_pin() {
     let (r, g, b, _a) = center_pixel(&on);
     assert_eq!(
         (r, g, b),
-        (255, 255, 255),
-        "inline standard image currently goes unrendered (renderer gap)"
+        (128, 128, 128),
+        "inline standard image must paint its own sample data (mid-grey), got ({r}, {g}, {b})"
     );
 }
 
