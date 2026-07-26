@@ -5,7 +5,9 @@
 (ns pdf-oxide.core-test
   (:require [clojure.test :refer [deftest is]]
             [pdf-oxide.core :as pdf])
-  (:import [fyi.oxide.pdf.geometry BBox]))
+  (:import [fyi.oxide.pdf.geometry BBox]
+           [fyi.oxide.pdf.compliance PdfALevel]
+           [fyi.oxide.pdf.exception PdfUnsupportedException]))
 
 (defn sample-pdf ^bytes []
   (with-open [p (pdf/from-markdown "# Alpha Heading\n\nHello world from the Clojure facade. Beta gamma.\n")]
@@ -80,6 +82,15 @@
   (with-open [d (pdf/open (sample-pdf))]
     (let [t (pdf/auto-text (pdf/auto-extractor d))]
       (is (or (.contains t "Hello") (.contains t "Alpha"))))))
+
+(deftest convert-to-pdf-a-round-trip
+  (let [result (pdf/convert-to-pdf-a (sample-pdf) PdfALevel/A_2B)]
+    (is (> (count (.convertedPdf result)) 100))
+    (with-open [d (pdf/open (.convertedPdf result))]
+      (is (= 1 (pdf/page-count d))))))
+
+(deftest convert-to-pdf-a-rejects-pdf-a-4
+  (is (thrown? PdfUnsupportedException (pdf/convert-to-pdf-a (sample-pdf) PdfALevel/A_4))))
 
 (deftest explicit-close
   ;; `close` is the escape hatch for non-with-open usage.

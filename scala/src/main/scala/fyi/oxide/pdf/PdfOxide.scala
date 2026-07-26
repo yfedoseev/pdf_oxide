@@ -13,7 +13,7 @@ package fyi.oxide.pdf
 
 import fyi.oxide.pdf.annotation.Annotation
 import fyi.oxide.pdf.auto.AutoResult
-import fyi.oxide.pdf.compliance.ValidationViolation
+import fyi.oxide.pdf.compliance.{ConversionAction, ConversionError, ConversionResult, ValidationViolation}
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.image.ExtractedImage
 import fyi.oxide.pdf.search.SearchMatch
@@ -62,6 +62,15 @@ extension (r: AutoResult)
 /** ValidationViolation: optional page index as `Option[Int]`. */
 extension (v: ValidationViolation)
   def pageIndexOption: Option[Int] = v.pageIndex.toOption.map(_.intValue)
+
+/** ConversionAction: optional fixed-error code as `Option[String]`. */
+extension (a: ConversionAction)
+  def fixedErrorCodeOption: Option[String] = a.fixedErrorCode.toOption
+
+/** ConversionResult: action/error audit trails as `Seq`. */
+extension (r: ConversionResult)
+  def actionsSeq: Seq[ConversionAction] = r.actions.asScala.toSeq
+  def errorsSeq: Seq[ConversionError] = r.errors.asScala.toSeq
 
 // NB: the Java binding also defines DocumentInfo / XmpMetadata / SearchOptions
 // value types, but no API method currently produces or consumes them, so this

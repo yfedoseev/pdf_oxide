@@ -5,7 +5,8 @@
 package fyi.oxide.pdf
 
 import fyi.oxide.pdf.annotation.{Annotation, AnnotationType}
-import fyi.oxide.pdf.compliance.ValidationViolation
+import fyi.oxide.pdf.compliance.{ActionType, ConversionAction, PdfALevel, ValidationViolation}
+import fyi.oxide.pdf.exception.PdfUnsupportedException
 import fyi.oxide.pdf.form.{FormField, FormFieldType}
 import fyi.oxide.pdf.geometry.BBox
 import org.scalatest.funsuite.AnyFunSuite
@@ -55,6 +56,17 @@ class ApiCoverageSpec extends AnyFunSuite:
       assert(matches.nonEmpty)
       assert(matches.head.text.contains("Hello"))
 
+  test("PdfAConverter round-trip"):
+    val result = PdfAConverter.convert(samplePdf(), PdfALevel.A_2B)
+    assert(result.convertedPdf().length > 100)
+    Using.resource(PdfDocument.open(result.convertedPdf()))(doc => assert(doc.pageCount() == 1))
+    assert(result.actionsSeq != null) // List -> Seq
+    assert(result.errorsSeq != null)
+
+  test("PdfAConverter rejects PDF/A-4"):
+    assertThrows[PdfUnsupportedException]:
+      PdfAConverter.convert(samplePdf(), PdfALevel.A_4)
+
   test("render page"):
     Using.resource(PdfDocument.open(samplePdf())): doc =>
       assert(doc.render(0).length > 100)
@@ -103,3 +115,9 @@ class ApiCoverageSpec extends AnyFunSuite:
   test("ValidationViolation Option extension"):
     assert(ValidationViolation("RULE-1", "desc", 3).pageIndexOption.contains(3))
     assert(ValidationViolation("RULE-2", "desc", null).pageIndexOption.isEmpty)
+
+  test("ConversionAction Option extension"):
+    val withCode = ConversionAction(ActionType.EMBEDDED_FONT, "desc", "XMP-002")
+    assert(withCode.fixedErrorCodeOption.contains("XMP-002"))
+    val bare = ConversionAction(ActionType.EMBEDDED_FONT, "desc", null)
+    assert(bare.fixedErrorCodeOption.isEmpty)

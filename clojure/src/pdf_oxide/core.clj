@@ -6,7 +6,8 @@
 ;; `with-open` for deterministic cleanup.
 (ns pdf-oxide.core
   (:refer-clojure :exclude [chars]) ; pdf/chars (page glyphs) intentionally shadows clojure.core/chars
-  (:import [fyi.oxide.pdf Pdf PdfDocument PdfPage DocumentEditor AutoExtractor]
+  (:import [fyi.oxide.pdf Pdf PdfDocument PdfPage DocumentEditor AutoExtractor PdfAConverter]
+           [fyi.oxide.pdf.compliance PdfALevel]
            [java.util Optional]))
 
 (defn- opt->nil
@@ -78,6 +79,13 @@
 ;; ── Auto extraction ─────────────────────────────────────────────────────────
 (defn auto-extractor ^AutoExtractor [^PdfDocument doc] (AutoExtractor/of doc))
 (defn auto-text [^AutoExtractor ax] (.extractText ax))
+
+;; ── Compliance ────────────────────────────────────────────────────────────--
+(defn convert-to-pdf-a
+  "Convert `pdf-bytes` to the PDF/A conformance `level` (a fyi.oxide.pdf.compliance.PdfALevel
+  constant, e.g. PdfALevel/A_2B). Returns a ConversionResult."
+  ^fyi.oxide.pdf.compliance.ConversionResult [pdf-bytes ^PdfALevel level]
+  (PdfAConverter/convert pdf-bytes level))
 
 ;; ── Lifecycle (prefer `with-open`; these are escape hatches) ─────────────────
 (defn close [resource] (.close ^java.lang.AutoCloseable resource))

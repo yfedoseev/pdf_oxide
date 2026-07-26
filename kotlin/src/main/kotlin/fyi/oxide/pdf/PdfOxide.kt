@@ -15,6 +15,7 @@ package fyi.oxide.pdf
 
 import fyi.oxide.pdf.annotation.Annotation
 import fyi.oxide.pdf.auto.AutoResult
+import fyi.oxide.pdf.compliance.ConversionAction
 import fyi.oxide.pdf.compliance.ValidationViolation
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.geometry.BBox
@@ -59,6 +60,11 @@ fun AutoResult.htmlOrNull(): String? = html().orElse(null)
 
 /** Page index the violation applies to, or `null` for document-level rules. */
 fun ValidationViolation.pageIndexOrNull(): Int? = pageIndex().orElse(null)
+
+// ── ConversionAction (Optional -> nullable) ─────────────────────────────────
+
+/** The error code this action fixed, or `null` if it didn't fix a specific error. */
+fun ConversionAction.fixedErrorCodeOrNull(): String? = fixedErrorCode().orElse(null)
 
 // NB: the Java binding also defines DocumentInfo / XmpMetadata / SearchOptions
 // value types, but no API method currently produces or consumes them, so this

@@ -6,6 +6,8 @@ package fyi.oxide.pdf
 
 import fyi.oxide.pdf.annotation.Annotation
 import fyi.oxide.pdf.annotation.AnnotationType
+import fyi.oxide.pdf.compliance.ActionType
+import fyi.oxide.pdf.compliance.PdfALevel
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.form.FormFieldType
 import fyi.oxide.pdf.geometry.BBox
@@ -80,6 +82,19 @@ class ApiCoverageTest {
         }
     }
 
+    @Test fun pdfAConverterRoundTrip() {
+        val result = PdfAConverter.convert(sampleBytes(), PdfALevel.A_2B)
+        assertTrue(result.convertedPdf().size > 100)
+        PdfDocument.open(result.convertedPdf()).use { doc -> assertEquals(1, doc.pageCount()) }
+    }
+
+    @Test fun pdfAConverterRejectsPdfA4() {
+        assertTrue(
+            runCatching { PdfAConverter.convert(sampleBytes(), PdfALevel.A_4) }
+                .exceptionOrNull() is fyi.oxide.pdf.exception.PdfUnsupportedException,
+        )
+    }
+
     @Test fun documentEditorRoundTrip() {
         DocumentEditor.open(sampleBytes()).use { ed ->
             assertTrue(ed.isOpen)
@@ -141,5 +156,16 @@ class ApiCoverageTest {
             fyi.oxide.pdf.compliance
                 .ValidationViolation("RULE-2", "desc", null)
         assertNull(docLevel.pageIndexOrNull())
+    }
+
+    @Test fun conversionActionOrNull() {
+        val withCode =
+            fyi.oxide.pdf.compliance
+                .ConversionAction(ActionType.EMBEDDED_FONT, "desc", "XMP-002")
+        assertEquals("XMP-002", withCode.fixedErrorCodeOrNull())
+        val bare =
+            fyi.oxide.pdf.compliance
+                .ConversionAction(ActionType.EMBEDDED_FONT, "desc", null)
+        assertNull(bare.fixedErrorCodeOrNull())
     }
 }
