@@ -72,6 +72,7 @@ pub mod redaction;
 pub mod split;
 
 // ---- Phase 4 (security surface) ----
+pub mod conversion;
 pub mod policy;
 pub mod signatures_pades;
 pub mod validator;
