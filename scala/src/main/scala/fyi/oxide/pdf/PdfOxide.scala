@@ -13,7 +13,12 @@ package fyi.oxide.pdf
 
 import fyi.oxide.pdf.annotation.Annotation
 import fyi.oxide.pdf.auto.AutoResult
-import fyi.oxide.pdf.compliance.{ConversionAction, ConversionError, ConversionResult, ValidationViolation}
+import fyi.oxide.pdf.compliance.{
+  ConversionAction,
+  ConversionError,
+  ConversionResult,
+  ValidationViolation
+}
 import fyi.oxide.pdf.form.FormField
 import fyi.oxide.pdf.image.ExtractedImage
 import fyi.oxide.pdf.search.SearchMatch

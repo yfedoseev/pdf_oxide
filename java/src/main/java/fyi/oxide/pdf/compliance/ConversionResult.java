@@ -34,10 +34,9 @@ public final class ConversionResult {
         this.success = success;
         this.level = Objects.requireNonNull(level, "level");
         this.convertedPdf = Objects.requireNonNull(convertedPdf, "convertedPdf").clone();
-        this.actions = Collections.unmodifiableList(
-                new java.util.ArrayList<>(Objects.requireNonNull(actions, "actions")));
-        this.errors = Collections.unmodifiableList(
-                new java.util.ArrayList<>(Objects.requireNonNull(errors, "errors")));
+        this.actions =
+                Collections.unmodifiableList(new java.util.ArrayList<>(Objects.requireNonNull(actions, "actions")));
+        this.errors = Collections.unmodifiableList(new java.util.ArrayList<>(Objects.requireNonNull(errors, "errors")));
     }
 
     public boolean success() {
