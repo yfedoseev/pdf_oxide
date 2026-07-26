@@ -442,19 +442,51 @@ impl PdfImage {
             ImageData::Raw { pixels, format } => {
                 if self.bits_per_component == 1
                     && matches!(self.color_space, ColorSpace::DeviceGray)
+                    && self.ccitt_params.is_some()
                 {
-                    let params =
-                        self.ccitt_params
-                            .clone()
-                            .unwrap_or_else(|| crate::decoders::CcittParams {
-                                columns: self.width,
-                                rows: Some(self.height),
-                                ..Default::default()
-                            });
+                    // Only genuinely CCITT-filtered images reach here — see
+                    // `extract_image_from_xobject`, which sets `ccitt_params`
+                    // solely when the XObject's `/Filter` is CCITTFaxDecode.
+                    let Some(params) = self.ccitt_params.clone() else {
+                        unreachable!("guarded by ccitt_params.is_some() above")
+                    };
 
                     let decompressed = ccitt_bilevel::decompress_ccitt(pixels, &params)?;
                     let grayscale =
                         ccitt_bilevel::bilevel_to_grayscale(&decompressed, self.width, self.height);
+
+                    image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
+                        self.width,
+                        self.height,
+                        grayscale,
+                    )
+                    .ok_or_else(|| Error::Decode("Invalid image dimensions".to_string()))
+                    .map(image::DynamicImage::ImageLuma8)
+                } else if self.bits_per_component == 1
+                    && matches!(self.color_space, ColorSpace::DeviceGray)
+                {
+                    // Non-CCITT 1-bit DeviceGray: the stream is already fully
+                    // decoded (Flate/LZW/ASCII/no filter) to raw packed bits,
+                    // one row per `ceil(width / 8)` bytes, MSB first. /Decode
+                    // inversion (if any) was already folded into the bits by
+                    // `extract_image_from_xobject`, so unpack with fixed
+                    // ISO 32000-1 §8.9.5.2 Table 90 default semantics: sample
+                    // bit 0 -> component 0.0 (black), bit 1 -> component 1.0
+                    // (white).
+                    let row_bytes = (self.width as usize).div_ceil(8);
+                    let mut grayscale =
+                        Vec::with_capacity(self.width as usize * self.height as usize);
+                    for row in 0..self.height as usize {
+                        let row_start = row * row_bytes;
+                        for col in 0..self.width as usize {
+                            let byte_idx = row_start + col / 8;
+                            let bit = pixels
+                                .get(byte_idx)
+                                .map(|b| (b >> (7 - (col % 8))) & 1)
+                                .unwrap_or(1);
+                            grayscale.push(if bit == 0 { 0x00 } else { 0xFF });
+                        }
+                    }
 
                     image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(
                         self.width,
@@ -844,6 +876,10 @@ pub fn extract_image_from_xobject(
         .iter()
         .any(|n| n.eq_ignore_ascii_case("JPXDecode"));
 
+    let is_ccitt = filter_names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case("CCITTFaxDecode"));
+
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
     } else if is_jpx {
@@ -903,6 +939,18 @@ pub fn extract_image_from_xobject(
                     .chunks_exact(2)
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))
                     .collect()
+            } else if bits_per_component == 1
+                && color_space == ColorSpace::DeviceGray
+                && !is_ccitt
+                && decode_array_inverts_1bpc(dict.get("Decode"))
+            {
+                // Fold a non-default /Decode [1 0] into the packed bits here,
+                // the same way the CCITT branch below folds it into
+                // `black_is_1`, so `to_dynamic_image` can unpack with fixed
+                // (non-inverted) bit semantics regardless of /Decode. Flipping
+                // every bit of a 1-bpp buffer is a plain byte-wise NOT; the
+                // unused row-padding bits get flipped too but are never read.
+                decoded_data.iter().map(|b| !b).collect()
             } else {
                 decoded_data
             };
@@ -938,7 +986,7 @@ pub fn extract_image_from_xobject(
     }
     image.set_rendering_intent(rendering_intent);
 
-    if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray {
+    if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray && is_ccitt {
         if let Some(mut ccitt_params) =
             crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width))
         {
@@ -3545,5 +3593,110 @@ mod ccitt_decode_array_polarity_tests {
     fn decode_0_1_is_a_no_op() {
         let (white, black) = white_black_counts(&ccitt_xobject(Some([0, 1])));
         assert_eq!((white, black), white_black_counts(&ccitt_xobject(None)));
+    }
+}
+
+/// Regression coverage for the non-CCITT 1-bit `/DeviceGray` image path:
+/// a raw packed-bit image (no `/Filter`, or `/Filter /FlateDecode`) used
+/// to be unconditionally force-fed through the CCITT decompressor
+/// (`to_dynamic_image`'s single `bits_per_component == 1 &&
+/// DeviceGray` branch had no filter check), which fails to decode
+/// already-unpacked bits as if they were CCITT-compressed data and drops
+/// the image entirely. `/ImageMask` variants of the same filters were
+/// unaffected (they go through the separate `render_image_mask` bit
+/// unpacker), which is why the bug only showed on plain (non-mask)
+/// images.
+#[cfg(test)]
+mod non_ccitt_1bpc_devicegray_tests {
+    use super::*;
+    use crate::object::Object;
+    use std::collections::HashMap;
+
+    /// 8x3 raw packed-bit image: rows 0-1 all-black, row 2 black with a
+    /// 2-pixel-wide white notch at columns 3-4 (mirrors the CCITT
+    /// polarity tests' pattern for an easy visual cross-check). Under the
+    /// default `/Decode [0 1]`, sample bit 0 -> black, bit 1 -> white.
+    fn black_majority_rows() -> [u8; 3] {
+        [0x00, 0x00, 0x18]
+    }
+
+    /// Build a minimal 1-bit `/DeviceGray` image XObject wrapping
+    /// `black_majority_rows`, either uncompressed or FlateDecode-filtered,
+    /// with an optional `/Decode` override.
+    fn devicegray_1bpc_xobject(flate: bool, decode: Option<[i64; 2]>) -> Object {
+        let raw: Vec<u8> = black_majority_rows().to_vec();
+        let (filter, data) = if flate {
+            use flate2::write::ZlibEncoder;
+            use flate2::Compression;
+            use std::io::Write;
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&raw).expect("flate-compress test bitmap");
+            (Some("FlateDecode"), encoder.finish().expect("finish flate stream"))
+        } else {
+            (None, raw)
+        };
+
+        let mut dict = HashMap::new();
+        dict.insert("Subtype".to_string(), Object::Name("Image".to_string()));
+        dict.insert("Width".to_string(), Object::Integer(8));
+        dict.insert("Height".to_string(), Object::Integer(3));
+        dict.insert("BitsPerComponent".to_string(), Object::Integer(1));
+        dict.insert("ColorSpace".to_string(), Object::Name("DeviceGray".to_string()));
+        if let Some(f) = filter {
+            dict.insert("Filter".to_string(), Object::Name(f.to_string()));
+        }
+        if let Some([lo, hi]) = decode {
+            dict.insert(
+                "Decode".to_string(),
+                Object::Array(vec![Object::Integer(lo), Object::Integer(hi)]),
+            );
+        }
+
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::from(data),
+        }
+    }
+
+    fn white_black_counts(xobject: &Object) -> (u32, u32) {
+        let img = extract_image_from_xobject(None, xobject, None, None)
+            .expect("decode hand-built non-CCITT 1bpc test image");
+        let luma = img
+            .to_dynamic_image()
+            .expect("decode non-CCITT 1bpc test image pixels")
+            .into_luma8();
+        let white = luma.iter().filter(|&&v| v == 0xFF).count() as u32;
+        let black = luma.iter().filter(|&&v| v == 0x00).count() as u32;
+        (white, black)
+    }
+
+    /// Before the fix this failed outright (the CCITT decompressor
+    /// rejects raw packed bits as malformed input), not just mis-decoded.
+    #[test]
+    fn uncompressed_1bpc_devicegray_decodes_without_ccitt() {
+        let (white, black) = white_black_counts(&devicegray_1bpc_xobject(false, None));
+        assert_eq!(white + black, 24);
+        assert_eq!(black, 22, "22 of 24 pixels are black per the hand-built bitmap");
+        assert_eq!(white, 2, "the 2-pixel notch at row 2 cols 3-4 is white");
+    }
+
+    #[test]
+    fn flate_decoded_1bpc_devicegray_decodes_without_ccitt() {
+        let (white, black) = white_black_counts(&devicegray_1bpc_xobject(true, None));
+        assert_eq!(white + black, 24);
+        assert_eq!(black, 22);
+        assert_eq!(white, 2);
+    }
+
+    /// `/Decode [1 0]` inverts polarity for the non-CCITT path exactly
+    /// like it does for CCITT (ISO 32000-1 §8.9.5.2 Table 90) — the
+    /// bug's fallback path always produced a fully dropped image, so
+    /// there was no polarity to even get wrong before this fix.
+    #[test]
+    fn decode_1_0_inverts_polarity_on_non_ccitt_path() {
+        let (white, black) = white_black_counts(&devicegray_1bpc_xobject(true, Some([1, 0])));
+        assert_eq!(white + black, 24);
+        assert_eq!(white, 22, "polarity inverted: majority is now white");
+        assert_eq!(black, 2, "the notch is now the black pixels");
     }
 }

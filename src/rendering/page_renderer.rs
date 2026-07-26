@@ -2929,6 +2929,44 @@ impl PageRenderer {
                     }
                 },
 
+                // Inline image (`BI ... ID <data> EI`) — §8.9.7. Unlike a
+                // `Do`-invoked image XObject, the pixel data sits directly in
+                // the content stream (no indirect object, so no encryption
+                // and no `/SMask` or `/Mask`, both of which the spec only
+                // allows as indirect references). Expand the abbreviated
+                // dictionary keys/values into the same shape
+                // `extract_image_from_xobject` expects, wrap it in a
+                // synthetic `Object::Stream`, and paint it through the same
+                // `render_image`/`render_image_mask` used for `Do` images.
+                Operator::InlineImage { dict, data } => {
+                    if excluded_layer_depth == 0 {
+                        let gs_clone = gs_stack.current().clone();
+                        let transform = combine_transforms(base_transform, &gs_clone.ctm);
+                        let clip = clip_stack.last().and_then(|c| c.as_ref());
+                        let expanded =
+                            crate::extractors::images::expand_inline_image_dict((**dict).clone());
+                        let is_image_mask = expanded
+                            .get("ImageMask")
+                            .map(|o| matches!(o, Object::Boolean(true)))
+                            .unwrap_or(false);
+                        let synthetic = Object::Stream {
+                            dict: expanded,
+                            data: bytes::Bytes::from(data.clone()),
+                        };
+                        if is_image_mask {
+                            if let Err(e) = self.render_image_mask(
+                                pixmap, &synthetic, None, transform, doc, clip, &gs_clone,
+                            ) {
+                                log::warn!("Skipping unrenderable inline ImageMask: {}", e);
+                            }
+                        } else if let Err(e) = self.render_image(
+                            pixmap, &synthetic, None, transform, doc, clip, None, None, &gs_clone,
+                        ) {
+                            log::warn!("Skipping unrenderable inline image: {}", e);
+                        }
+                    }
+                },
+
                 // Text positioning
                 Operator::Td { tx, ty } => {
                     if in_text_object {
