@@ -391,17 +391,17 @@ impl ColorResolver {
     /// `[/DeviceN names altCS tintTransform attrs?]`. The tint transform is
     /// a PDF function dict whose `FunctionType` selects:
     ///
-    /// - **Type 0** (sampled): not handled here; falls through to
-    ///   first-as-gray (matches existing inline behaviour). Wiring Type 0
-    ///   would require the sampled-function evaluator which is not yet in
-    ///   the tree.
+    /// - **Type 0** (sampled): N-dimensional multilinear interpolation over
+    ///   the sample grid (see [`evaluate_type0_sampled`]) — handles both the
+    ///   common 1-input Separation shape and genuinely multi-channel
+    ///   DeviceN tint transforms.
     /// - **Type 2** (exponential): closed-form interpolation between `/C0`
     ///   and `/C1` with exponent `/N`. The existing inline path only handles
     ///   `N=1` against `DeviceCMYK` altCS; we generalise to any `N` and to
     ///   `DeviceRGB`/`DeviceGray` altCS as well.
-    /// - **Type 3** (stitching): not handled here.
+    /// - **Type 3** (stitching): single-input by spec; picks the matching
+    ///   sub-function and delegates.
     /// - **Type 4** (calculator): evaluated via [`crate::functions::Program`].
-    ///   This is the wiring the PR #630 case proves works.
     fn resolve_separation_or_devicen(
         &self,
         arr: &[Object],
@@ -495,11 +495,15 @@ impl ColorResolver {
         let alt_cs_name = alt_cs_resolved.as_name();
 
         let altspace_values: Vec<f32> = match func_type {
-            0 | 3 => match evaluate_tint_function(ctx, &func_resolved, components[0], 0) {
+            // Type 0 honours every input component (a multi-channel
+            // DeviceN's sampled tint transform is genuinely N-dimensional);
+            // Type 3 stitching is single-input by spec and only consults
+            // the first component internally.
+            0 | 3 => match evaluate_tint_function(ctx, &func_resolved, components, 0) {
                 Some(v) => v,
-                // Outside the supported envelope (multi-dimensional Type 0,
-                // exotic bit depths, malformed Domain, over-deep nesting):
-                // keep the long-standing fallback rather than guess.
+                // Outside the supported envelope (exotic bit depths,
+                // malformed Domain, over-deep nesting): keep the
+                // long-standing fallback rather than guess.
                 None => return Ok(invert_tint_fallback(components, alpha)),
             },
             2 => evaluate_type2(func_dict, components[0]),
@@ -811,15 +815,18 @@ fn evaluate_type4(func_obj: &Object, components: &[f32]) -> Result<Vec<f32>> {
     Ok(out.into_iter().map(|v| v as f32).collect())
 }
 
-/// Evaluate a single-input tint-transform function of Type 0, 2, 3 or 4
-/// (SS 7.10). Used for the Separation / 1-input DeviceN path; `depth` caps
+/// Evaluate a tint-transform function of Type 0, 2, 3 or 4 (SS 7.10) against
+/// one or more inputs. Used for the Separation / DeviceN path; `depth` caps
 /// Type 3 nesting so a self-referential /Functions array cannot recurse
-/// unboundedly. Returns `None` for anything outside the supported envelope so
-/// the caller can apply its established fallback instead of guessing.
+/// unboundedly. Types 2 and 3 are single-input by spec (SS 7.10.3, 7.10.4)
+/// and only ever consult `inputs[0]`; Type 0 honours the full input vector
+/// so multi-channel DeviceN tint transforms sample all their dimensions.
+/// Returns `None` for anything outside the supported envelope so the caller
+/// can apply its established fallback instead of guessing.
 fn evaluate_tint_function(
     ctx: &ResolutionContext,
     func_resolved: &Object,
-    x: f32,
+    inputs: &[f32],
     depth: usize,
 ) -> Option<Vec<f32>> {
     const MAX_TINT_DEPTH: usize = 4;
@@ -828,31 +835,46 @@ fn evaluate_tint_function(
     }
     let dict = func_resolved.as_dict()?;
     let func_type = dict.get("FunctionType").and_then(|o| o.as_integer())?;
+    let x0 = inputs.first().copied().unwrap_or(0.0);
     match func_type {
-        0 => evaluate_type0_sampled(func_resolved, x),
-        2 => Some(evaluate_type2(dict, x)),
-        3 => evaluate_type3_stitching(ctx, dict, x, depth),
-        4 => evaluate_type4(func_resolved, &[x]).ok(),
+        0 => evaluate_type0_sampled(func_resolved, inputs),
+        2 => Some(evaluate_type2(dict, x0)),
+        3 => evaluate_type3_stitching(ctx, dict, x0, depth),
+        4 => evaluate_type4(func_resolved, inputs).ok(),
         _ => None,
     }
 }
 
-/// Evaluate a Type 0 (sampled) function for ONE input (SS 7.10.2) - the common
-/// Separation tint-transform shape: 1-D `/Size`, 8- or 16-bit samples, linear
-/// interpolation between the two adjacent samples, outputs mapped through
-/// `/Range`. Returns `None` outside that envelope (multi-dimensional input,
-/// other bit depths, a non-default `/Encode`/`/Decode`, malformed `/Domain`,
-/// or a truncated / oversized sample stream).
-fn evaluate_type0_sampled(func_obj: &Object, x: f32) -> Option<Vec<f32>> {
+/// Cap on the number of sampled-function input dimensions we'll evaluate.
+/// Real-world DeviceN colorant counts top out around 8 (see the inline-cap
+/// comment in `resolution/intent.rs`); `2^8 = 256` corner samples per
+/// evaluation keeps multilinear interpolation cheap while still covering
+/// every DeviceN tint transform seen in practice. A `/Size` array longer
+/// than this is rejected rather than allocating `2^N` corners for an
+/// attacker-controlled `N`.
+const MAX_SAMPLED_FUNCTION_DIMS: usize = 8;
+
+/// Evaluate a Type 0 (sampled) function (SS 7.10.2) for one or more inputs:
+/// N-dimensional multilinear interpolation across the `2^N` sample-grid
+/// corners nearest the input point, 8- or 16-bit samples, outputs mapped
+/// through `/Range`. The common Separation / single-channel-DeviceN shape
+/// is the N=1 case, which reduces to the same two-sample linear
+/// interpolation this function always used. Returns `None` outside the
+/// supported envelope (other bit depths, a non-default `/Encode`/`/Decode`,
+/// malformed `/Domain`/`/Size`, a dimension count that doesn't match the
+/// number of inputs, more dimensions than [`MAX_SAMPLED_FUNCTION_DIMS`], or
+/// a truncated / oversized sample stream).
+fn evaluate_type0_sampled(func_obj: &Object, inputs: &[f32]) -> Option<Vec<f32>> {
     let Object::Stream { dict, .. } = func_obj else {
         return None;
     };
     let size = dict.get("Size").and_then(|o| o.as_array())?;
-    if size.len() != 1 {
-        return None; // 1-D input only
+    let n_dims = size.len();
+    if n_dims == 0 || n_dims != inputs.len() || n_dims > MAX_SAMPLED_FUNCTION_DIMS {
+        return None;
     }
-    let n_samples = object_to_f64(size.first()?) as usize;
-    if n_samples == 0 {
+    let sizes: Vec<usize> = size.iter().map(object_to_f64).map(|v| v as usize).collect();
+    if sizes.contains(&0) {
         return None;
     }
     let bps = dict
@@ -878,29 +900,71 @@ fn evaluate_type0_sampled(func_obj: &Object, x: f32) -> Option<Vec<f32>> {
         .and_then(|o| o.as_array())
         .map(|a| array_to_pairs(a))
         .unwrap_or_default();
-    let (d0, d1) = domain.first().map(|p| (p[0], p[1])).unwrap_or((0.0, 1.0));
-    if !(d0.is_finite() && d1.is_finite() && d0 <= d1) {
-        return None; // f64::clamp panics on NaN bounds or min > max
+    // /Domain is required by spec (one pair per input dimension); the N=1
+    // case additionally tolerates an absent /Domain (defaulting to [0 1])
+    // to preserve exactly the leniency this function always had for the
+    // common single-input shape.
+    let domain: Vec<[f64; 2]> = if domain.len() == n_dims {
+        domain
+    } else if n_dims == 1 && domain.is_empty() {
+        vec![[0.0, 1.0]]
+    } else {
+        return None;
+    };
+    for [d0, d1] in &domain {
+        if !(d0.is_finite() && d1.is_finite() && d0 <= d1) {
+            return None; // f64::clamp panics on NaN bounds or min > max
+        }
     }
+
     let raw = func_obj.decode_stream_data().ok()?;
     let bytes_per = if bps == 8 { 1usize } else { 2 };
-    let needed = n_samples.checked_mul(n_out)?.checked_mul(bytes_per)?;
+    let total_samples = sizes
+        .iter()
+        .try_fold(1usize, |acc, &s| acc.checked_mul(s))?;
+    let needed = total_samples.checked_mul(n_out)?.checked_mul(bytes_per)?;
     if raw.len() < needed {
         return None;
     }
     let max = if bps == 8 { 255.0 } else { 65535.0 };
-    let t = (x as f64).clamp(d0, d1);
-    let span = d1 - d0;
-    let pos = if span <= f64::EPSILON {
-        0.0
-    } else {
-        (t - d0) / span * (n_samples - 1) as f64
-    };
-    let i = (pos.floor() as usize).min(n_samples - 1);
-    let j = (i + 1).min(n_samples - 1);
-    let frac = pos - i as f64;
-    let sample = |s: usize, k: usize| -> f64 {
-        let at = (s * n_out + k) * bytes_per;
+
+    // Per-dimension: clamp the input to its domain and compute the two
+    // bracketing sample indices plus the interpolation fraction between
+    // them, exactly like the single-input case did per-dimension.
+    struct DimPos {
+        i0: usize,
+        i1: usize,
+        frac: f64,
+    }
+    let mut dims = Vec::with_capacity(n_dims);
+    for d in 0..n_dims {
+        let [d0, d1] = domain[d];
+        let n_samples = sizes[d];
+        let t = (inputs[d] as f64).clamp(d0, d1);
+        let span = d1 - d0;
+        let pos = if span <= f64::EPSILON {
+            0.0
+        } else {
+            (t - d0) / span * (n_samples - 1) as f64
+        };
+        let i0 = (pos.floor() as usize).min(n_samples - 1);
+        let i1 = (i0 + 1).min(n_samples - 1);
+        let frac = pos - i0 as f64;
+        dims.push(DimPos { i0, i1, frac });
+    }
+
+    // Sample layout per SS 7.10.2: the first input dimension varies fastest
+    // ("Sample(0,0,...), Sample(1,0,...), Sample(2,0,...), ..."), so stride
+    // 0 is 1 and each subsequent dimension's stride is the product of all
+    // earlier /Size entries.
+    let mut strides = vec![1usize; n_dims];
+    for d in 1..n_dims {
+        strides[d] = strides[d - 1] * sizes[d - 1];
+    }
+
+    let sample_at = |idx: &[usize], k: usize| -> f64 {
+        let flat: usize = (0..n_dims).map(|d| idx[d] * strides[d]).sum();
+        let at = (flat * n_out + k) * bytes_per;
         let v = if bps == 8 {
             raw[at] as f64
         } else {
@@ -909,15 +973,32 @@ fn evaluate_type0_sampled(func_obj: &Object, x: f32) -> Option<Vec<f32>> {
         let [r0, r1] = range[k];
         r0 + v * (r1 - r0)
     };
-    Some(
-        (0..n_out)
-            .map(|k| {
-                let a = sample(i, k);
-                let b = sample(j, k);
-                (a + frac * (b - a)) as f32
-            })
-            .collect(),
-    )
+
+    // Multilinear interpolation: blend the 2^n_dims corners of the grid
+    // cell containing the input point, weighted by the product of each
+    // dimension's (1-frac)/frac depending on which side of that corner sits.
+    let corner_count = 1usize << n_dims;
+    let mut out = vec![0f64; n_out];
+    let mut idx = vec![0usize; n_dims];
+    for corner in 0..corner_count {
+        let mut weight = 1.0f64;
+        for d in 0..n_dims {
+            if (corner >> d) & 1 == 0 {
+                idx[d] = dims[d].i0;
+                weight *= 1.0 - dims[d].frac;
+            } else {
+                idx[d] = dims[d].i1;
+                weight *= dims[d].frac;
+            }
+        }
+        if weight == 0.0 {
+            continue;
+        }
+        for (k, acc) in out.iter_mut().enumerate() {
+            *acc += weight * sample_at(&idx, k);
+        }
+    }
+    Some(out.into_iter().map(|v| v as f32).collect())
 }
 
 /// Evaluate a Type 3 (stitching) function for ONE input (SS 7.10.4): pick the
@@ -963,7 +1044,7 @@ fn evaluate_type3_stitching(
         e0 + (t - lo) / (hi - lo) * (e1 - e0)
     };
     let sub = ctx.doc.resolve_object(funcs.get(k)?).ok()?;
-    evaluate_tint_function(ctx, &sub, u as f32, depth + 1)
+    evaluate_tint_function(ctx, &sub, &[u as f32], depth + 1)
 }
 
 /// Flatten a `[min1 max1 min2 max2 ...]` PDF array into `[[min, max], ...]`.
@@ -1254,6 +1335,136 @@ mod tests {
             !(r < 0.01 && g < 0.01 && b < 0.01),
             "full-tint Type-4 spot must not render solid black; got ({r}, {g}, {b})"
         );
+    }
+
+    #[test]
+    fn type0_sampled_function_single_dimension_matches_prior_linear_interpolation() {
+        // Pins the pre-existing single-input behaviour exactly: 3 samples
+        // over Domain [0 1], input 0.25 sits 50% of the way between sample
+        // 0 (0/255) and sample 1 (128/255).
+        let mut func_dict: HashMap<String, Object> = HashMap::new();
+        func_dict.insert("FunctionType".into(), Object::Integer(0));
+        func_dict
+            .insert("Domain".into(), Object::Array(vec![Object::Integer(0), Object::Integer(1)]));
+        func_dict
+            .insert("Range".into(), Object::Array(vec![Object::Integer(0), Object::Integer(1)]));
+        func_dict.insert("Size".into(), Object::Array(vec![Object::Integer(3)]));
+        func_dict.insert("BitsPerSample".into(), Object::Integer(8));
+        let func_obj = Object::Stream {
+            dict: func_dict,
+            data: vec![0u8, 128, 255].into(),
+        };
+        let out = super::evaluate_type0_sampled(&func_obj, &[0.25]).expect("in supported envelope");
+        assert_eq!(out.len(), 1);
+        let expected = 0.5 * (128.0 / 255.0);
+        assert!((out[0] - expected).abs() < 1e-4, "got {}, want {}", out[0], expected);
+    }
+
+    #[test]
+    fn type0_sampled_function_two_dimensional_input_uses_all_components() {
+        // A genuinely 2-D sampled function (Size [2 2]): the sample only
+        // takes a non-zero value at the (1,1) grid corner. Feeding inputs
+        // [0.25, 0.75] must land at 0.25*0.75 = 0.1875 — the bilinear
+        // weight of that corner — which is impossible to produce from
+        // `components[0]` alone (a single-input reading would ignore the
+        // second component entirely and could never reach a component-1
+        // dependent value).
+        let mut func_dict: HashMap<String, Object> = HashMap::new();
+        func_dict.insert("FunctionType".into(), Object::Integer(0));
+        func_dict.insert(
+            "Domain".into(),
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+            ]),
+        );
+        func_dict
+            .insert("Range".into(), Object::Array(vec![Object::Integer(0), Object::Integer(1)]));
+        func_dict
+            .insert("Size".into(), Object::Array(vec![Object::Integer(2), Object::Integer(2)]));
+        func_dict.insert("BitsPerSample".into(), Object::Integer(8));
+        // Sample order per SS 7.10.2 (dim 0 fastest): (0,0) (1,0) (0,1) (1,1).
+        let func_obj = Object::Stream {
+            dict: func_dict,
+            data: vec![0u8, 0, 0, 255].into(),
+        };
+        let out =
+            super::evaluate_type0_sampled(&func_obj, &[0.25, 0.75]).expect("in supported envelope");
+        assert_eq!(out.len(), 1);
+        assert!((out[0] - 0.1875).abs() < 1e-4, "got {}, want 0.1875", out[0]);
+
+        // Sanity: the OLD single-input fallback formula (1 - components[0])
+        // would have produced 0.75 here — a different value — confirming
+        // this assertion actually exercises the second input dimension
+        // rather than coincidentally matching the discarded-component path.
+        assert!((out[0] - 0.75).abs() > 1e-3);
+    }
+
+    #[test]
+    fn devicen_two_channel_type0_tint_transform_resolves_via_all_components() {
+        // End-to-end: a DeviceN colour space with 2 named channels and a
+        // Type 0 (sampled) tint transform, resolved through the full
+        // Separation/DeviceN pipeline exactly as a `scn` operator would
+        // drive it. Mirrors the structure of real-world multi-channel
+        // DeviceN spot-colour PDFs (a sampled tint transform over an N>1
+        // colorant set).
+        let mut func_dict: HashMap<String, Object> = HashMap::new();
+        func_dict.insert("FunctionType".into(), Object::Integer(0));
+        func_dict.insert(
+            "Domain".into(),
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+            ]),
+        );
+        func_dict.insert(
+            "Range".into(),
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+                Object::Integer(0),
+                Object::Integer(1),
+            ]),
+        );
+        func_dict
+            .insert("Size".into(), Object::Array(vec![Object::Integer(2), Object::Integer(2)]));
+        func_dict.insert("BitsPerSample".into(), Object::Integer(8));
+        // 3 output channels (R, G, B on the DeviceRGB alternate), 4 grid
+        // corners. Only the (1,1) corner (both inputs at their max) is
+        // pure red; every other corner is black.
+        #[rustfmt::skip]
+        let samples: Vec<u8> = vec![
+            0, 0, 0,       // (0,0)
+            0, 0, 0,       // (1,0)
+            0, 0, 0,       // (0,1)
+            255, 0, 0,     // (1,1)
+        ];
+        let func_obj = Object::Stream {
+            dict: func_dict,
+            data: samples.into(),
+        };
+        let arr = vec![
+            Object::Name("DeviceN".into()),
+            Object::Array(vec![Object::Name("Alpha".into()), Object::Name("Beta".into())]),
+            Object::Name("DeviceRGB".into()),
+            func_obj,
+        ];
+        let space = Object::Array(arr);
+        let doc = fixture_doc();
+        let spaces = HashMap::new();
+        let resolver = ColorResolver::new();
+        let lc = LogicalColor::Spaced {
+            space: &space,
+            components: smallvec::smallvec![1.0, 1.0],
+        };
+        let c = resolver.resolve(&lc, &ctx(&doc, &spaces), 1.0).unwrap();
+        assert_rgba(c, 1.0, 0.0, 0.0, 1.0);
     }
 
     #[test]
