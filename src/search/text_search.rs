@@ -87,6 +87,31 @@ impl SearchOptions {
     }
 }
 
+/// Lightweight per-page search index: page text plus per-span bounding
+/// boxes, no font names or per-character widths.
+///
+/// `compute_match_bbox` only ever needs whole-span boxes, so search never
+/// touches the rest of a [`TextSpan`] — caching this projection instead of
+/// the full spans is cheap enough to retain for every page across repeated
+/// `search()` calls on the same document (see `PdfDocument::search_index`).
+pub(crate) struct SearchPageIndex {
+    full_text: String,
+    span_positions: Vec<(usize, usize, usize)>,
+    span_boxes: Vec<Rect>,
+}
+
+impl SearchPageIndex {
+    pub(crate) fn from_spans(spans: &[TextSpan]) -> Self {
+        let (full_text, span_positions) = TextSearcher::build_text_with_positions(spans);
+        let span_boxes = spans.iter().map(|s| s.bbox).collect();
+        Self {
+            full_text,
+            span_positions,
+            span_boxes,
+        }
+    }
+}
+
 /// Text searcher for PDF documents.
 pub struct TextSearcher;
 
@@ -141,21 +166,20 @@ impl TextSearcher {
         regex: &Regex,
         options: &SearchOptions,
     ) -> Result<Vec<SearchResult>> {
-        // Extract text spans from the page using the document's built-in method
-        let spans = doc.extract_spans(page)?;
-
-        // Build a concatenated text and track span positions
-        let (full_text, span_positions) = Self::build_text_with_positions(&spans);
+        // Reuse the page's cached search index (page text + span boxes) if a
+        // prior search() built it, instead of re-extracting the page.
+        let index = doc.search_page_index(page)?;
 
         let mut results = Vec::new();
 
-        for mat in regex.find_iter(&full_text) {
+        for mat in regex.find_iter(&index.full_text) {
             let start = mat.start();
             let end = mat.end();
             let matched_text = mat.as_str().to_string();
 
             // Find the spans that contain this match
-            let (bbox, span_boxes) = Self::compute_match_bbox(start, end, &spans, &span_positions);
+            let (bbox, span_boxes) =
+                Self::compute_match_bbox(start, end, &index.span_boxes, &index.span_positions);
 
             results.push(SearchResult {
                 page,
@@ -220,31 +244,31 @@ impl TextSearcher {
     fn compute_match_bbox(
         match_start: usize,
         match_end: usize,
-        spans: &[TextSpan],
+        span_boxes: &[Rect],
         span_positions: &[(usize, usize, usize)],
     ) -> (Rect, Vec<Rect>) {
-        let mut span_boxes = Vec::new();
+        let mut matched_boxes = Vec::new();
         let mut combined_bbox: Option<Rect> = None;
 
         for &(span_start, span_end, span_idx) in span_positions {
             // Check if this span overlaps with the match
             if span_start < match_end && span_end > match_start {
-                let span = &spans[span_idx];
+                let bbox = span_boxes[span_idx];
 
                 // For simplicity, use the whole span's bbox
                 // A more sophisticated implementation would compute character-level boxes
-                span_boxes.push(span.bbox);
+                matched_boxes.push(bbox);
 
-                if let Some(ref mut bbox) = combined_bbox {
+                if let Some(ref mut combined) = combined_bbox {
                     // Expand bbox to include this span
-                    *bbox = bbox.union(&span.bbox);
+                    *combined = combined.union(&bbox);
                 } else {
-                    combined_bbox = Some(span.bbox);
+                    combined_bbox = Some(bbox);
                 }
             }
         }
 
-        (combined_bbox.unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0)), span_boxes)
+        (combined_bbox.unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0)), matched_boxes)
     }
 }
 

@@ -31,4 +31,5 @@
 
 mod text_search;
 
+pub(crate) use text_search::SearchPageIndex;
 pub use text_search::{SearchOptions, SearchResult, TextSearcher};

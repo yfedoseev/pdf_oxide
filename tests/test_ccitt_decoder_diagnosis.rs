@@ -80,17 +80,16 @@ mod ccitt_decoder_diagnosis {
     fn test_fax_decoder_directly(data: &[u8], width: u32, height: u32, img_idx: usize) {
         use fax::decoder;
 
-        let width_u16 = width as u16;
-        let height_opt = Some(height as u16);
+        let height_opt = Some(height);
 
-        println!("  - Width: {}, Height: {}", width_u16, height_opt.unwrap_or(0));
+        println!("  - Width: {}, Height: {}", width, height_opt.unwrap_or(0));
         println!("  - Input data size: {} bytes", data.len());
 
         // Test 1: Standard Group 4 with default parameters
         println!("\n  Test 1: Standard Group 4 decode");
         let mut output = Vec::new();
         let bytes_iter = data.iter().copied();
-        let result = decoder::decode_g4(bytes_iter, width_u16, height_opt, |line| {
+        let result = decoder::decode_g4(bytes_iter, width, height_opt, |line| {
             // Count transitions to see if decoder is being called
             output.extend_from_slice(&line);
         });
