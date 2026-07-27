@@ -268,6 +268,27 @@ namespace PdfOxide.Tests
             Assert.Empty(results);
         }
 
+        [Fact]
+        public void PrepareSearch_Then_SearchAll_Finds_Term()
+        {
+            using var tmp = WriteTempPdf("PREPAREDMARKER");
+            using var doc = PdfDocument.Open(tmp);
+            doc.PrepareSearch();
+            var results = doc.SearchAll("PREPAREDMARKER");
+            Assert.True(results.Length > 0);
+        }
+
+        [Fact]
+        public void ClearSearchIndex_Then_SearchAll_Still_Finds_Term()
+        {
+            using var tmp = WriteTempPdf("CLEAREDMARKER");
+            using var doc = PdfDocument.Open(tmp);
+            doc.PrepareSearch();
+            doc.ClearSearchIndex();
+            var results = doc.SearchAll("CLEAREDMARKER");
+            Assert.True(results.Length > 0);
+        }
+
         // ── DocumentBuilder extras ────────────────────────────────────────────
 
         [Fact]

@@ -5825,6 +5825,14 @@ namespace PdfOxide.Internal
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_document_prepare_search(IntPtr handle, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int pdf_document_clear_search_index(IntPtr handle, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int pdf_oxide_search_result_count(IntPtr results);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]

@@ -1005,6 +1005,38 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>
+        /// Builds the search index for every page up front, instead of the lazy
+        /// per-page build <see cref="SearchAll"/>/<see cref="SearchPage"/> otherwise do on first use.
+        /// </summary>
+        public void PrepareSearch()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                NativeMethods.pdf_document_prepare_search(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>
+        /// Drops the cached search index, if any, freeing its memory.
+        /// <see cref="SearchAll"/>/<see cref="SearchPage"/> rebuild it lazily on next use.
+        /// </summary>
+        public void ClearSearchIndex()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                NativeMethods.pdf_document_clear_search_index(_handle.Ptr, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         // One FFI crossing → Rust serializes the entire result list to JSON →
         // System.Text.Json decodes it. Matches the Go binding pattern and is
         // O(1) FFI calls instead of O(count × 4) per-field calls.
