@@ -2,6 +2,18 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [0.3.77] - 2026-07-27
+
+> Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust.
+
+### Added
+
+- **`prepare_search()`/`clear_search_index()` exposed across every language binding** — callers can now build the search-index cache at a controlled point instead of paying for it on the first `search()` call, and free it before heavy extraction on the same document object, from any binding, not just Rust. Also fills in a pre-existing gap in the PHP binding, which had no public `search()` method at all (#952).
+
+### Contributors
+
+Issue reported by **@ankursri494** — #952 (`prepare_search()`/`clear_search_index()` missing from every binding but Rust). Thank you!
+
 ## [0.3.76] - 2026-07-26
 
 > Redaction/editor persistence and rendering-accuracy release: DOM edits and `add_text()` overlays on source-loaded pages now survive `save()` without leaving dangling `/Contents` references; multi-input (DeviceN) Type 0 tint transforms, non-CCITT 1-bit images, and inline images render correctly; CCITT `/ImageMask` XObjects decode instead of misreading compressed data as raw stencil rows; spatial table-cell ownership is corrected at singleton-span and boundary cases; and repeated `search()` calls on the same document are no longer `O(searches × full extraction)`. The Java binding gains PDF/A conversion, completing coverage across every first-party language binding.

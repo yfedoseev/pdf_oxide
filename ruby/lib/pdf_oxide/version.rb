@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module PdfOxide
-  VERSION = '0.3.76'
+  VERSION = '0.3.77'
 end
