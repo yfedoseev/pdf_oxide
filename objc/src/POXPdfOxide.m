@@ -895,6 +895,28 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     return POXTakeSearchResults(list);
 }
 
+- (BOOL)prepareSearch:(NSError**)error {
+    int32_t code = 0;
+    pdf_document_prepare_search(_handle, &code);
+    if (code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"prepareSearch");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)clearSearchIndex:(NSError**)error {
+    int32_t code = 0;
+    pdf_document_clear_search_index(_handle, &code);
+    if (code != 0) {
+        if (error)
+            *error = POXMakeError(code, @"clearSearchIndex");
+        return NO;
+    }
+    return YES;
+}
+
 - (NSString*)searchJson:(NSInteger)page
                    term:(NSString*)term
           caseSensitive:(BOOL)caseSensitive

@@ -236,6 +236,14 @@ typedef struct {
                                    caseSensitive:(BOOL)caseSensitive
                                            error:(NSError**)error;
 
+/// Builds the search index for every page up front, instead of the lazy
+/// per-page build `search`/`searchAll` otherwise do on first use.
+- (BOOL)prepareSearch:(NSError**)error;
+
+/// Drops the cached search index, if any, freeing its memory.
+/// `search`/`searchAll` rebuild it lazily on next use.
+- (BOOL)clearSearchIndex:(NSError**)error;
+
 /// Phase-3 page rendering (page index is 0-based; format 0 = PNG).
 - (nullable POXRenderedImage*)renderPage:(NSInteger)pageIndex
                                   format:(int32_t)format

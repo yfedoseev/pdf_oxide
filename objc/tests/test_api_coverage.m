@@ -161,6 +161,20 @@ int main(void) {
                 CHECK([allHits[0].text containsString:@"Alpha"]);
                 CHECK(allHits[0].page >= 0);
             }
+
+            NSError* pse = nil;
+            CHECK([doc prepareSearch:&pse]); // prepareSearch
+            NSArray<POXSearchResult*>* preparedHits = [doc searchAll:@"Alpha"
+                                                       caseSensitive:NO
+                                                               error:&err];
+            CHECK(preparedHits != nil && preparedHits.count > 0);
+
+            NSError* cse = nil;
+            CHECK([doc clearSearchIndex:&cse]); // clearSearchIndex
+            NSArray<POXSearchResult*>* clearedHits = [doc searchAll:@"Alpha"
+                                                      caseSensitive:NO
+                                                              error:&err];
+            CHECK(clearedHits != nil && clearedHits.count > 0);
         }
 
         // ── authenticate (wrong password on unencrypted doc returns a bool) ──
