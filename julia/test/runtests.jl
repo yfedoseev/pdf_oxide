@@ -142,6 +142,12 @@ end
         @test hits[1].page >= 0
         @test hits[1].bbox isa Bbox
     end
+    let
+        prepare_search(doc)                        # prepare_search
+        @test !isempty(search_all(doc, "Alpha", false))
+        clear_search_index(doc)                     # clear_search_index
+        @test !isempty(search_all(doc, "Alpha", false))
+    end
 
     # ── Phase-3 rendering ─────────────────────────────────────────────────────
     let img = render_page(doc, 0)                  # render_page (PNG default)

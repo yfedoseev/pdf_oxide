@@ -19,6 +19,7 @@ export Bbox, Char, Word, TextLine, Table
 export extract_chars, extract_words, extract_text_lines, extract_tables, cell
 export Font, Image, Annotation, Path, SearchResult
 export embedded_fonts, embedded_images, page_annotations, extract_paths, search, search_all
+export prepare_search, clear_search_index
 export RenderedImage,
     render_page,
     renderPage,
@@ -1051,6 +1052,36 @@ function search_all(d::PdfDocument, term::AbstractString, caseSensitive::Bool)
     )
     list == C_NULL && throw(PdfOxideError(code[], "search_all"))
     return _search_results(list, "search_all")
+end
+
+"""Build the search index for every page up front, instead of the lazy
+per-page build `search`/`search_all` otherwise do on first use."""
+function prepare_search(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ccall(
+        (:pdf_document_prepare_search, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "prepare_search"))
+    return nothing
+end
+
+"""Drop the cached search index, if any, freeing its memory. `search`/
+`search_all` rebuild it lazily on next use."""
+function clear_search_index(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ccall(
+        (:pdf_document_clear_search_index, LIB),
+        Int32,
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "clear_search_index"))
+    return nothing
 end
 
 # ── Page ────────────────────────────────────────────────────────────────────────
