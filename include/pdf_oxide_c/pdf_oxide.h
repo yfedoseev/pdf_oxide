@@ -1192,6 +1192,24 @@ FfiSearchResults *pdf_document_search_all(PdfDocument *handle,
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Build the search index for every page up front, instead of the lazy
+ * per-page build `pdf_document_search_page`/`pdf_document_search_all`
+ * otherwise do on first use. Returns 0 on success, -1 on error.
+ */
+int32_t pdf_document_prepare_search(PdfDocument *handle, int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Drop the cached search index, if any, freeing its memory.
+ * `pdf_document_search_page`/`pdf_document_search_all` rebuild it lazily
+ * on next use.
+ */
+int32_t pdf_document_clear_search_index(PdfDocument *handle, int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
 int32_t pdf_oxide_search_result_count(const FfiSearchResults *results);
 #endif
 

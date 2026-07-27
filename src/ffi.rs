@@ -2136,6 +2136,49 @@ pub extern "C" fn pdf_document_search_all(
     }
 }
 
+/// Build the search index for every page up front, instead of the lazy
+/// per-page build `pdf_document_search_page`/`pdf_document_search_all`
+/// otherwise do on first use. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn pdf_document_prepare_search(
+    handle: *mut PdfDocument,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let doc = handle_ref(handle);
+    match doc.prepare_search() {
+        Ok(()) => {
+            set_error(error_code, ERR_SUCCESS);
+            0
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            -1
+        },
+    }
+}
+
+/// Drop the cached search index, if any, freeing its memory.
+/// `pdf_document_search_page`/`pdf_document_search_all` rebuild it lazily
+/// on next use.
+#[no_mangle]
+pub extern "C" fn pdf_document_clear_search_index(
+    handle: *mut PdfDocument,
+    error_code: *mut i32,
+) -> i32 {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return -1;
+    }
+    let doc = handle_ref(handle);
+    doc.clear_search_index();
+    set_error(error_code, ERR_SUCCESS);
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_search_result_count(results: *const FfiSearchResults) -> i32 {
     if results.is_null() {
