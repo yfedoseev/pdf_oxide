@@ -16,8 +16,7 @@ use PdfOxide\PdfDocument;
 /**
  * Core functional test-parity suite (PHP) — mirrors the shared cross-language
  * spec (docs/releases/plans/v0.3.61/core-test-parity-spec.md) with the
- * idiomatic PHP API. Every binding asserts the same behaviors. (Search has no
- * single PHP-core method, matching the Rust reference, so it is omitted here.)
+ * idiomatic PHP API. Every binding asserts the same behaviors.
  */
 final class CoreParityTest extends IntegrationTestCase
 {
@@ -93,5 +92,15 @@ final class CoreParityTest extends IntegrationTestCase
     public function testVersionConstant(): void
     {
         $this->assertSame('0.3.76', Pdf::VERSION);
+    }
+
+    public function testSearchReturnsArray(): void
+    {
+        $doc = PdfDocument::open($this->fixture('simple.pdf'));
+        try {
+            $this->assertIsArray($doc->search('the'));
+        } finally {
+            $doc->close();
+        }
     }
 }

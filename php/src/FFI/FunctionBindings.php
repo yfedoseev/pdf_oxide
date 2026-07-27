@@ -253,6 +253,32 @@ class FunctionBindings
     }
 
     /**
+     * Build the search index for every page up front, instead of the
+     * lazy per-page build search/searchPage otherwise do on first use.
+     *
+     * @param CData $handle The document handle
+     */
+    public function pdfDocumentPrepareSearch(CData $handle): void
+    {
+        $errorCode = $this->ffi->new('int');
+        $this->ffi->pdf_document_prepare_search($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_prepare_search');
+    }
+
+    /**
+     * Drop the cached search index, if any, freeing its memory.
+     * search/searchPage rebuild it lazily on next use.
+     *
+     * @param CData $handle The document handle
+     */
+    public function pdfDocumentClearSearchIndex(CData $handle): void
+    {
+        $errorCode = $this->ffi->new('int');
+        $this->ffi->pdf_document_clear_search_index($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_clear_search_index');
+    }
+
+    /**
      * Get embedded fonts from a page.
      *
      * @param CData $handle The document handle

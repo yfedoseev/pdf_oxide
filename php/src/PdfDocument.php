@@ -233,6 +233,50 @@ final class PdfDocument
         return MarkdownConverter::toHtml($this, $pageIndex);
     }
 
+    // ───────────────────────── search ──────────────────────
+
+    /**
+     * Search the whole document for `$term`.
+     *
+     * @return array<int, array{page: int, text: string, bbox: array{x: float, y: float, width: float, height: float}}>
+     */
+    public function search(string $term, bool $caseSensitive = false): array
+    {
+        $resultsHandle = $this->bindings->pdfDocumentSearchAll($this->requireHandle(), $term, $caseSensitive);
+        try {
+            $count = $this->bindings->oxideSearchResultCount($resultsHandle);
+            $matches = [];
+            for ($i = 0; $i < $count; $i++) {
+                $matches[] = [
+                    'page' => $this->bindings->oxideSearchResultGetPage($resultsHandle, $i),
+                    'text' => $this->bindings->oxideSearchResultGetText($resultsHandle, $i),
+                    'bbox' => $this->bindings->oxideSearchResultGetBbox($resultsHandle, $i),
+                ];
+            }
+            return $matches;
+        } finally {
+            $this->bindings->oxideSearchResultFree($resultsHandle);
+        }
+    }
+
+    /**
+     * Build the search index for every page up front, instead of the
+     * lazy per-page build {@see search()} otherwise does on first use.
+     */
+    public function prepareSearch(): void
+    {
+        $this->bindings->pdfDocumentPrepareSearch($this->requireHandle());
+    }
+
+    /**
+     * Drop the cached search index, if any, freeing its memory.
+     * {@see search()} rebuilds it lazily on next use.
+     */
+    public function clearSearchIndex(): void
+    {
+        $this->bindings->pdfDocumentClearSearchIndex($this->requireHandle());
+    }
+
     // ───────────────────── page iteration ──────────────────
 
     /**

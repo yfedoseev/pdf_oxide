@@ -328,6 +328,10 @@ FfiSearchResults *pdf_document_search_all(PdfDocument *handle,
                                           bool case_sensitive,
                                           int32_t *error_code);
 
+int32_t pdf_document_prepare_search(PdfDocument *handle, int32_t *error_code);
+
+int32_t pdf_document_clear_search_index(PdfDocument *handle, int32_t *error_code);
+
 int32_t pdf_oxide_search_result_count(const FfiSearchResults *results);
 
 char *pdf_oxide_search_result_get_text(const FfiSearchResults *results,

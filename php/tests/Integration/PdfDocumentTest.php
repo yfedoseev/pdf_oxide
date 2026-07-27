@@ -11,6 +11,7 @@ namespace PdfOxide\Tests\Integration;
 
 use PdfOxide\Exceptions\InvalidStateException;
 use PdfOxide\Exceptions\IoException;
+use PdfOxide\Pdf;
 use PdfOxide\PdfDocument;
 
 /**
@@ -113,5 +114,36 @@ final class PdfDocumentTest extends IntegrationTestCase
     {
         $text = PdfDocument::extractTextOnce($this->fixture('simple.pdf'));
         $this->assertIsString($text);
+    }
+
+    public function testPrepareSearchThenSearchFindsTerm(): void
+    {
+        $pdf = Pdf::fromText('PREPAREDMARKER');
+        $bytes = $pdf->save();
+        $pdf->close();
+        $doc = PdfDocument::openBytes($bytes);
+        try {
+            $doc->prepareSearch();
+            $matches = $doc->search('PREPAREDMARKER');
+            $this->assertNotEmpty($matches);
+        } finally {
+            $doc->close();
+        }
+    }
+
+    public function testClearSearchIndexThenSearchStillFindsTerm(): void
+    {
+        $pdf = Pdf::fromText('CLEAREDMARKER');
+        $bytes = $pdf->save();
+        $pdf->close();
+        $doc = PdfDocument::openBytes($bytes);
+        try {
+            $doc->prepareSearch();
+            $doc->clearSearchIndex();
+            $matches = $doc->search('CLEAREDMARKER');
+            $this->assertNotEmpty($matches);
+        } finally {
+            $doc->close();
+        }
     }
 }
