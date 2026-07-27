@@ -28,6 +28,15 @@ fn main() {
         eprintln!("Invalid regex: {}", e);
         process::exit(1);
     });
+
+    // Build the per-page search index for every page up front, instead of
+    // the lazy per-page build TextSearcher::search_page() otherwise does on
+    // first use. Worth it here since we're about to search every page anyway.
+    doc.prepare_search().unwrap_or_else(|e| {
+        eprintln!("Failed to prepare search index: {}", e);
+        process::exit(1);
+    });
+
     let opts = SearchOptions::default();
     let mut total = 0;
     for i in 0..pages {
@@ -42,4 +51,8 @@ fn main() {
         }
     }
     println!("\nFound {} total matches.", total);
+
+    // Free the cached search index now that we're done searching — useful
+    // before heavy extraction work on the same document object.
+    doc.clear_search_index();
 }

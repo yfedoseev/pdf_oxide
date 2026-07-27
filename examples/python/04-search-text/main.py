@@ -18,6 +18,11 @@ def main():
     pages = doc.page_count()
     print(f'Searching for "{query}" in {path} ({pages} pages)...\n')
 
+    # Build the per-page search index for every page up front, instead of
+    # paying for it lazily on the first search_page()/search() call. Worth
+    # it here since we're about to search every page anyway.
+    doc.prepare_search()
+
     total = 0
     pages_with_hits = 0
 
@@ -33,6 +38,10 @@ def main():
         print()
 
     print(f"Found {total} total matches across {pages_with_hits} pages.")
+
+    # Free the cached search index now that we're done searching — useful
+    # before heavy extraction work on the same document object.
+    doc.clear_search_index()
 
 
 if __name__ == "__main__":

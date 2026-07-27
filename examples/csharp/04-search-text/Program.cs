@@ -16,6 +16,11 @@ using var doc = PdfDocument.Open(path);
 var pages = doc.PageCount;
 Console.WriteLine($"Searching for \"{query}\" in {path} ({pages} pages)...\n");
 
+// Build the per-page search index for every page up front, instead of
+// paying for it lazily on the first SearchPage()/SearchAll() call. Worth
+// it here since we're about to search every page anyway.
+doc.PrepareSearch();
+
 var total = 0;
 var pagesWithHits = 0;
 
@@ -35,4 +40,8 @@ for (int i = 0; i < pages; i++)
 }
 
 Console.WriteLine($"Found {total} total matches across {pagesWithHits} pages.");
+
+// Free the cached search index now that we're done searching — useful
+// before heavy extraction work on the same document object.
+doc.ClearSearchIndex();
 return 0;
