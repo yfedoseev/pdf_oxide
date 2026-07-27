@@ -189,6 +189,27 @@ func TestPurego_Search(t *testing.T) {
 	}
 }
 
+func TestPurego_PrepareAndClearSearchIndex(t *testing.T) {
+	requireLib(t)
+	doc, err := Open(makePDF(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer doc.Close()
+	if err := doc.PrepareSearch(); err != nil {
+		t.Fatalf("PrepareSearch: %v", err)
+	}
+	if hits, err := doc.SearchAll("test", false); err != nil || len(hits) == 0 {
+		t.Fatalf("SearchAll after PrepareSearch: hits=%d err=%v", len(hits), err)
+	}
+	if err := doc.ClearSearchIndex(); err != nil {
+		t.Fatalf("ClearSearchIndex: %v", err)
+	}
+	if hits, err := doc.SearchAll("test", false); err != nil || len(hits) == 0 {
+		t.Fatalf("SearchAll after ClearSearchIndex: hits=%d err=%v", len(hits), err)
+	}
+}
+
 func TestPurego_PageSize(t *testing.T) {
 	requireLib(t)
 	doc, err := Open(makePDF(t))

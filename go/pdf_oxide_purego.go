@@ -189,6 +189,8 @@ var (
 	ffiPdfOxideElementsToJSON        func(elements uintptr, errCode *int32) *byte
 	ffiPdfDocumentSearchPage         func(handle uintptr, pageIndex int32, term string, caseSensitive bool, errCode *int32) uintptr
 	ffiPdfDocumentSearchAll          func(handle uintptr, term string, caseSensitive bool, errCode *int32) uintptr
+	ffiPdfDocumentPrepareSearch      func(handle uintptr, errCode *int32) int32
+	ffiPdfDocumentClearSearchIndex   func(handle uintptr, errCode *int32) int32
 	ffiPdfOxideSearchResultFree      func(handle uintptr)
 	ffiPdfOxideSearchResultsToJSON   func(results uintptr, errCode *int32) *byte
 
@@ -302,6 +304,8 @@ func registerFFI(lib uintptr) {
 	r(&ffiPdfOxideElementsToJSON, "pdf_oxide_elements_to_json")
 	r(&ffiPdfDocumentSearchPage, "pdf_document_search_page")
 	r(&ffiPdfDocumentSearchAll, "pdf_document_search_all")
+	r(&ffiPdfDocumentPrepareSearch, "pdf_document_prepare_search")
+	r(&ffiPdfDocumentClearSearchIndex, "pdf_document_clear_search_index")
 	r(&ffiPdfOxideSearchResultFree, "pdf_oxide_search_result_free")
 	r(&ffiPdfOxideSearchResultsToJSON, "pdf_oxide_search_results_to_json")
 
@@ -1021,6 +1025,36 @@ func (doc *PdfDocument) SearchAll(term string, caseSensitive bool) ([]SearchResu
 		return nil, err
 	}
 	return out, nil
+}
+
+// PrepareSearch builds the search index for every page up front, instead
+// of the lazy per-page build SearchPage/SearchAll otherwise do on first use.
+func (doc *PdfDocument) PrepareSearch() error {
+	if err := doc.acquireRead(); err != nil {
+		return err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	ffiPdfDocumentPrepareSearch(doc.handle, &ec)
+	if ec != 0 {
+		return ffiErrorFromInt(int(ec))
+	}
+	return nil
+}
+
+// ClearSearchIndex drops the cached search index, if any, freeing its
+// memory. SearchPage/SearchAll rebuild it lazily on next use.
+func (doc *PdfDocument) ClearSearchIndex() error {
+	if err := doc.acquireRead(); err != nil {
+		return err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	ffiPdfDocumentClearSearchIndex(doc.handle, &ec)
+	if ec != 0 {
+		return ffiErrorFromInt(int(ec))
+	}
+	return nil
 }
 
 // ─── Page dimensions ─────────────────────────────────────────────────────────

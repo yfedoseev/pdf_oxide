@@ -326,6 +326,39 @@ func TestSearchAll_MissingTerm_ReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestPrepareSearch_ThenSearchFindsTerm(t *testing.T) {
+	doc, cleanup := openCovDoc(t, "PREPAREDMARKER")
+	defer cleanup()
+	if err := doc.PrepareSearch(); err != nil {
+		t.Fatalf("PrepareSearch: %v", err)
+	}
+	results, err := doc.SearchAll("PREPAREDMARKER", false)
+	if err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+}
+
+func TestClearSearchIndex_ThenSearchStillFindsTerm(t *testing.T) {
+	doc, cleanup := openCovDoc(t, "CLEAREDMARKER")
+	defer cleanup()
+	if err := doc.PrepareSearch(); err != nil {
+		t.Fatalf("PrepareSearch: %v", err)
+	}
+	if err := doc.ClearSearchIndex(); err != nil {
+		t.Fatalf("ClearSearchIndex: %v", err)
+	}
+	results, err := doc.SearchAll("CLEAREDMARKER", false)
+	if err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+}
+
 // ── Merge ──────────────────────────────────────────────────────────────────────
 
 func TestMerge_ProducesCombinedPDF(t *testing.T) {

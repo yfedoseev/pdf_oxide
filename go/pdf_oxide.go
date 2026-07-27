@@ -82,6 +82,8 @@ extern void pdf_free(void* handle);
 // Search FFI declarations
 extern void* pdf_document_search_page(void* handle, int32_t page_index, const char* search_term, bool case_sensitive, int* error_code);
 extern void* pdf_document_search_all(void* handle, const char* search_term, bool case_sensitive, int* error_code);
+extern int32_t pdf_document_prepare_search(void* handle, int* error_code);
+extern int32_t pdf_document_clear_search_index(void* handle, int* error_code);
 extern char* pdf_oxide_search_results_to_json(const void* results, int* error_code);
 extern void pdf_oxide_search_result_free(void* handle);
 
@@ -1610,6 +1612,38 @@ func (doc *PdfDocument) SearchAll(searchTerm string, caseSensitive bool) ([]Sear
 	defer C.pdf_oxide_search_result_free(handle)
 
 	return decodeSearchResults(handle)
+}
+
+// PrepareSearch builds the search index for every page up front, instead
+// of the lazy per-page build SearchPage/SearchAll otherwise do on first use.
+func (doc *PdfDocument) PrepareSearch() error {
+	if err := doc.acquireRead(); err != nil {
+		return err
+	}
+	defer doc.mu.Unlock()
+
+	var errorCode C.int
+	C.pdf_document_prepare_search(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return ffiError(errorCode)
+	}
+	return nil
+}
+
+// ClearSearchIndex drops the cached search index, if any, freeing its
+// memory. SearchPage/SearchAll rebuild it lazily on next use.
+func (doc *PdfDocument) ClearSearchIndex() error {
+	if err := doc.acquireRead(); err != nil {
+		return err
+	}
+	defer doc.mu.Unlock()
+
+	var errorCode C.int
+	C.pdf_document_clear_search_index(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return ffiError(errorCode)
+	}
+	return nil
 }
 
 func decodeSearchResults(handle unsafe.Pointer) ([]SearchResult, error) {
