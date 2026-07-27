@@ -89,6 +89,23 @@ RSpec.describe PdfOxide::PdfDocument do
     end
   end
 
+  describe '#prepare_search and #clear_search_index' do
+    it 'prepare_search then search still finds the term' do
+      PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|
+        doc.prepare_search
+        expect(doc.search('the')).to be_a(Array)
+      end
+    end
+
+    it 'clear_search_index then search still finds the term' do
+      PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|
+        doc.prepare_search
+        doc.clear_search_index
+        expect(doc.search('the')).to be_a(Array)
+      end
+    end
+  end
+
   describe '#form_fields' do
     it 'returns an Array (possibly empty) without raising' do
       PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|

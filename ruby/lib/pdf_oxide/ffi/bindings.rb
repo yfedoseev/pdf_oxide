@@ -92,6 +92,8 @@ module PdfOxide
 
       attach_function :pdf_document_search_page, %i[pointer string int32 bool pointer], :pointer
       attach_function :pdf_document_search_all, %i[pointer string bool pointer], :pointer
+      attach_function :pdf_document_prepare_search, %i[pointer pointer], :int32
+      attach_function :pdf_document_clear_search_index, %i[pointer pointer], :int32
       attach_function :pdf_oxide_search_result_count, [:pointer], :int32
       # Each accessor takes the results handle + index + an int32* error
       # buffer. The trailing pointer is REQUIRED — omitting it caused

@@ -206,6 +206,24 @@ module PdfOxide
       parse_search_results(results)
     end
 
+    # Build the search index for every page up front, instead of the
+    # lazy per-page build {#search} otherwise does on first use.
+    def prepare_search
+      err = ::FFI::MemoryPointer.new(:int32)
+      Bindings.pdf_document_prepare_search(handle, err)
+      raise_for_code(err.read_int32, 'prepare_search')
+      nil
+    end
+
+    # Drop the cached search index, if any, freeing its memory.
+    # {#search} rebuilds it lazily on next use.
+    def clear_search_index
+      err = ::FFI::MemoryPointer.new(:int32)
+      Bindings.pdf_document_clear_search_index(handle, err)
+      raise_for_code(err.read_int32, 'clear_search_index')
+      nil
+    end
+
     # @return [Array<Hash>] AcroForm fields as an array of `{name:, value:, type:, page:}`
     #   hashes.  v0.3.55 limitation: per-field `page` is -1 because
     #   pdf_oxide's form extractor doesn't yet surface per-field page
