@@ -675,6 +675,20 @@ pub const Document = struct {
         return collectSearchResults(alloc, list);
     }
 
+    /// Build the search index for every page up front, instead of the lazy
+    /// per-page build `search`/`searchAll` otherwise do on first use.
+    pub fn prepareSearch(self: Document) Error!void {
+        var code: i32 = 0;
+        if (c.pdf_document_prepare_search(self.handle, &code) != 0) return fail(code);
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// `search`/`searchAll` rebuild it lazily on next use.
+    pub fn clearSearchIndex(self: Document) Error!void {
+        var code: i32 = 0;
+        if (c.pdf_document_clear_search_index(self.handle, &code) != 0) return fail(code);
+    }
+
     /// Free a slice returned by `search`/`searchAll`.
     pub fn freeSearchResults(alloc: std.mem.Allocator, results: []SearchResult) void {
         for (results) |sr| alloc.free(sr.text);
@@ -4435,6 +4449,18 @@ test "Document: phase-2 extraction (fonts/images/annotations/paths/search)" {
     try testing.expect(all_hits.len > 0);
     try testing.expect(std.mem.indexOf(u8, all_hits[0].text, "Alpha") != null);
     try testing.expect(all_hits[0].page >= 0);
+
+    // prepareSearch: builds the index up front; searchAll still finds hits
+    try doc.prepareSearch();
+    const prepared_hits = try doc.searchAll(a, "Alpha", false);
+    defer Document.freeSearchResults(a, prepared_hits);
+    try testing.expect(prepared_hits.len > 0);
+
+    // clearSearchIndex: drops the cache; searchAll rebuilds it lazily
+    try doc.clearSearchIndex();
+    const cleared_hits = try doc.searchAll(a, "Alpha", false);
+    defer Document.freeSearchResults(a, cleared_hits);
+    try testing.expect(cleared_hits.len > 0);
 }
 
 test "Document: phase-3 page rendering (renderPage/renderPageZoom/renderPageThumbnail)" {
