@@ -117,6 +117,17 @@ void main() {
       expect(hits.first.text, contains('Alpha'));
       expect(hits.first.page, greaterThanOrEqualTo(0));
     });
+    test('prepareSearch then searchAll finds term', () {
+      doc.prepareSearch();
+      final hits = doc.searchAll('Alpha', false);
+      expect(hits, isNotEmpty);
+    });
+    test('clearSearchIndex then searchAll still finds term', () {
+      doc.prepareSearch();
+      doc.clearSearchIndex();
+      final hits = doc.searchAll('Alpha', false);
+      expect(hits, isNotEmpty);
+    });
 
     // Phase 3 — page rendering. The sample doc has a single page (index 0).
     test('renderPage', () {

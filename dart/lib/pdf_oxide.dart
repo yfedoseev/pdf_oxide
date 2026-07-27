@@ -103,6 +103,10 @@ typedef _SearchAllC = Pointer<Void> Function(
     Pointer<Void>, Pointer<Utf8>, Bool, Pointer<Int32>);
 typedef _SearchAllD = Pointer<Void> Function(
     Pointer<Void>, Pointer<Utf8>, bool, Pointer<Int32>);
+typedef _PrepareSearchC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _PrepareSearchD = int Function(Pointer<Void>, Pointer<Int32>);
+typedef _ClearSearchIndexC = Int32 Function(Pointer<Void>, Pointer<Int32>);
+typedef _ClearSearchIndexD = int Function(Pointer<Void>, Pointer<Int32>);
 
 // page rendering (Phase 3). Render entry points open an FfiRenderedImage handle
 // (NULL on error); accessors read width/height/data; `pdf_save_rendered_image`
@@ -667,6 +671,11 @@ class _Native {
             'pdf_document_search_page'),
         searchAll = lib.lookupFunction<_SearchAllC, _SearchAllD>(
             'pdf_document_search_all'),
+        prepareSearch = lib.lookupFunction<_PrepareSearchC, _PrepareSearchD>(
+            'pdf_document_prepare_search'),
+        clearSearchIndex =
+            lib.lookupFunction<_ClearSearchIndexC, _ClearSearchIndexD>(
+                'pdf_document_clear_search_index'),
         searchResultCount = lib.lookupFunction<_ListCountC, _ListCountD>(
             'pdf_oxide_search_result_count'),
         searchResultGetText = lib.lookupFunction<_ListStrC, _ListStrD>(
@@ -1457,6 +1466,8 @@ class _Native {
   // search
   final _SearchPageD searchPage;
   final _SearchAllD searchAll;
+  final _PrepareSearchD prepareSearch;
+  final _ClearSearchIndexD clearSearchIndex;
   final _ListCountD searchResultCount;
   final _ListStrD searchResultGetText;
   final _ListI32D searchResultGetPage;
@@ -3074,6 +3085,32 @@ class PdfDocument implements Finalizable {
       return _readSearch(list, 'searchAll');
     } finally {
       calloc.free(cTerm);
+      calloc.free(code);
+    }
+  }
+
+  /// Build the search index for every page up front, instead of the lazy
+  /// per-page build [search]/[searchAll] otherwise do on first use.
+  void prepareSearch() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final result = _n.prepareSearch(_handle, code);
+      if (result != 0) throw PdfOxideError(code.value, 'prepareSearch');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// Drop the cached search index, if any, freeing its memory.
+  /// [search]/[searchAll] rebuild it lazily on next use.
+  void clearSearchIndex() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      final result = _n.clearSearchIndex(_handle, code);
+      if (result != 0) throw PdfOxideError(code.value, 'clearSearchIndex');
+    } finally {
       calloc.free(code);
     }
   }
