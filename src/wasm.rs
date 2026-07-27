@@ -1163,6 +1163,31 @@ impl WasmPdfDocument {
             .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
     }
 
+    /// Build the search index for every page up front, instead of the lazy
+    /// per-page build `search()`/`searchPage()` otherwise do on first use.
+    #[wasm_bindgen(js_name = "prepareSearch")]
+    pub fn prepare_search(&mut self) -> Result<(), JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        inner
+            .prepare_search()
+            .map_err(|e| JsValue::from_str(&format!("prepare_search failed: {}", e)))
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// `search()`/`searchPage()` rebuild it lazily on next use.
+    #[wasm_bindgen(js_name = "clearSearchIndex")]
+    pub fn clear_search_index(&mut self) -> Result<(), JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        inner.clear_search_index();
+        Ok(())
+    }
+
     // ========================================================================
     // Group 6: Image Info (read-only metadata)
     // ========================================================================
@@ -6304,6 +6329,25 @@ mod tests {
         let mut doc = doc_from_text("Hello");
         let result = doc.search_page(999, "Hello", None, Some(true), None, None);
         let _ = result;
+    }
+
+    #[test]
+    #[cfg(target_arch = "wasm32")]
+    fn test_prepare_search_then_search_finds_term() {
+        let mut doc = doc_from_text("Hello prepared searchable term");
+        assert!(doc.prepare_search().is_ok());
+        let result = doc.search("prepared", None, Some(true), None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[cfg(target_arch = "wasm32")]
+    fn test_clear_search_index_then_search_still_finds_term() {
+        let mut doc = doc_from_text("Hello cleared searchable term");
+        assert!(doc.prepare_search().is_ok());
+        assert!(doc.clear_search_index().is_ok());
+        let result = doc.search("cleared", None, Some(true), None, None);
+        assert!(result.is_ok());
     }
 
     // ========================================================================
