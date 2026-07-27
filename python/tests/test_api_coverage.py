@@ -579,6 +579,25 @@ class TestSearch:
         results = doc.search("ZZZNOTPRESENTZZZ")
         assert results == [] or len(results) == 0
 
+    def test_prepare_search_then_search_finds_term(self):
+        data = Pdf.from_markdown("PREPAREDMARKER").to_bytes()
+        doc = PdfDocument.from_bytes(data)
+        doc.prepare_search()
+        results = doc.search("PREPAREDMARKER")
+        assert len(results) > 0
+
+    def test_clear_search_index_then_search_still_finds_term(self):
+        data = Pdf.from_markdown("CLEAREDMARKER").to_bytes()
+        doc = PdfDocument.from_bytes(data)
+        doc.prepare_search()
+        doc.clear_search_index()
+        results = doc.search("CLEAREDMARKER")
+        assert len(results) > 0
+
+    def test_clear_search_index_without_prepare_does_not_raise(self):
+        doc = _make_simple_doc()
+        doc.clear_search_index()
+
 
 # ── PdfDocument: page mutations ───────────────────────────────────────────────
 

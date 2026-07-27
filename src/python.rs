@@ -1966,6 +1966,20 @@ impl PyPdfDocument {
         Ok(list.into())
     }
 
+    /// Build the search index for every page up front, instead of the lazy
+    /// per-page build `search()`/`search_page()` otherwise do on first use.
+    fn prepare_search(&self) -> PyResult<()> {
+        self.inner
+            .prepare_search()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// `search()`/`search_page()` rebuild it lazily on next use.
+    fn clear_search_index(&self) {
+        self.inner.clear_search_index();
+    }
+
     /// Extract images metadata.
     #[pyo3(signature = (page, region=None))]
     fn extract_images(
