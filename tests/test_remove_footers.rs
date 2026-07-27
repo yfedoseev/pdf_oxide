@@ -326,3 +326,142 @@ fn remove_footers_preserves_footnote_sharing_baseline_with_page_number() {
         );
     }
 }
+
+/// Build a PDF where a varying-digit page-number footer sits alone on its
+/// line on every page EXCEPT one, where an incidental, page-unique snippet
+/// lands close enough (within the column-gap threshold) to merge onto the
+/// same line. `chrome` renders the footer's content-stream snippet(s) for a
+/// given (1-indexed) page number — a single span for `"Page N"`, or
+/// multiple adjacent spans to simulate chrome split across spans (e.g.
+/// OCR'd "Page" / "N"). `incidental` is the raw content-stream snippet for
+/// the incidental content, emitted only on `merge_on_page`.
+fn build_incidental_neighbor_footer_pdf(
+    page_count: usize,
+    merge_on_page: usize,
+    incidental: &str,
+    chrome: impl Fn(usize) -> String,
+) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut off = vec![0usize; 4 + page_count * 2];
+
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+    let kids: String = (0..page_count)
+        .map(|i| format!("{} 0 R", 5 + i * 2))
+        .collect::<Vec<_>>()
+        .join(" ");
+    obj(
+        &mut buf,
+        &mut off,
+        2,
+        &format!("<< /Type /Pages /Kids [{kids}] /Count {page_count} >>"),
+    );
+    obj(
+        &mut buf,
+        &mut off,
+        3,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
+
+    for i in 0..page_count {
+        let content_id = 4 + i * 2;
+        let page_id = 5 + i * 2;
+        let incidental_snippet = if i == merge_on_page { incidental } else { "" };
+        let content = format!(
+            "BT /F1 12 Tf 1 0 0 1 72 400 Tm (Body text placeholder) Tj ET\n\
+             {incidental_snippet}\
+             {}",
+            chrome(i + 1)
+        );
+        stream(&mut buf, &mut off, content_id, content.as_bytes());
+        obj(
+            &mut buf,
+            &mut off,
+            page_id,
+            &format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>"
+            ),
+        );
+    }
+
+    let xref_off = buf.len();
+    let total_objs = off.len();
+    buf.extend_from_slice(format!("xref\n0 {}\n", total_objs).as_bytes());
+    buf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &off[1..] {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+    }
+    buf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            total_objs, xref_off
+        )
+        .as_bytes(),
+    );
+    buf
+}
+
+/// Does incidental content merging into the SAME group as genuine chrome
+/// cause that page's chrome to escape removal, since the merged per-page
+/// literal ("Note Page #") no longer matches the cross-page-recurring
+/// signature ("Page #") that every other (unmerged) page shares?
+#[test]
+fn remove_footers_strips_page_num_span_keeps_incidental_content() {
+    // "Note" at x=355 (10pt font, ~20pt wide, ends ~375) sits 25pt from
+    // "Page N" at x=400 — inside the (font_size * 3.0).max(30.0) = 30pt
+    // column-gap threshold, so group_band_lines merges them into one group
+    // on this page only.
+    let incidental = "BT /F1 10 Tf 1 0 0 1 355 30 Tm (Note) Tj ET\n";
+    let chrome = |n: usize| format!("BT /F1 10 Tf 1 0 0 1 400 30 Tm (Page {n}) Tj ET\n");
+    let bytes = build_incidental_neighbor_footer_pdf(6, 2, incidental, chrome);
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+
+    doc.remove_footers(0.5).unwrap();
+
+    for page in 1..6 {
+        let text = doc.extract_text(page).unwrap();
+        assert!(
+            !text.contains(&format!("Page {}", page + 1)),
+            "page {page}: page-number footer survived: {text:?}"
+        );
+    }
+}
+
+/// Similar to above test, but the chrome itself is split into two spans
+/// ("Page" / "N") the way OCR text commonly comes out, with a
+/// space-sized gap between them (font-relative).
+#[test]
+fn remove_footers_strips_split_page_num_keeps_incidental_content() {
+    let incidental = "BT /F1 10 Tf 1 0 0 1 355 30 Tm (Note) Tj ET\n";
+    // 10pt Helvetica: "Page" is ~4 chars wide (~20pt); a space-sized gap at
+    // this font size is ~2.8pt (Helvetica space advance is 278/1000 em).
+    let chrome = |n: usize| {
+        format!(
+            "BT /F1 10 Tf 1 0 0 1 400 30 Tm (Page) Tj ET\n\
+             BT /F1 10 Tf 1 0 0 1 422.8 30 Tm ({n}) Tj ET\n"
+        )
+    };
+    let bytes = build_incidental_neighbor_footer_pdf(6, 2, incidental, chrome);
+    let doc = PdfDocument::from_bytes(bytes).unwrap();
+
+    doc.remove_footers(0.5).unwrap();
+
+    for page in 1..6 {
+        let text = doc.extract_text(page).unwrap();
+        assert!(
+            !text.contains(&format!("Page{}", page + 1)),
+            "page {page}: split-span page-number footer survived: {text:?}"
+        );
+        assert!(
+            !text.contains(&format!("Page {}", page + 1)),
+            "page {page}: split-span page-number footer survived: {text:?}"
+        );
+    }
+
+    let merged_page_text = doc.extract_text(2).unwrap();
+    assert!(
+        merged_page_text.contains("Note"),
+        "page 2: incidental content wrongly removed: {merged_page_text:?}"
+    );
+}

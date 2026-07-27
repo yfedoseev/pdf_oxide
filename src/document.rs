@@ -15628,10 +15628,18 @@ impl PdfDocument {
             if signatures.is_empty() {
                 continue;
             }
-            let Some(sig) = span_line_sig.get(&idx) else {
-                continue;
-            };
-            if let Some(&first_seen_on) = signatures.get(sig) {
+            // Match on the span's whole-line signature first. If that
+            // misses, fall back to the span's own isolated signature — this
+            // rescues chrome that merged into the same line group as incidental
+            // content on this particular page (making the whole line group
+            // signature unique to this page) but is registered as a
+            // recurring signature from the pages where it stood alone.
+            let solo_sig = Self::normalize_artifact_signature(trimmed);
+            let first_seen_on = span_line_sig
+                .get(&idx)
+                .and_then(|sig| signatures.get(sig))
+                .or_else(|| signatures.get(&solo_sig));
+            if let Some(&first_seen_on) = first_seen_on {
                 // Keep the first appearance — it's usually the document
                 // cover-page title that got classified as chrome only
                 // because later pages repeat it as a running header (B3).
