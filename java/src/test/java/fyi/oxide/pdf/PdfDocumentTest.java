@@ -339,6 +339,27 @@ class PdfDocumentTest {
     }
 
     @Test
+    void prepareSearchThenSearchFindsTerm() {
+        Path hello = fixturesDir.resolve("hello_structure.pdf");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(hello), "hello_structure.pdf not present");
+        try (PdfDocument doc = PdfDocument.open(hello)) {
+            doc.prepareSearch();
+            assertThat(doc.search("Hello")).isNotEmpty();
+        }
+    }
+
+    @Test
+    void clearSearchIndexThenSearchStillFindsTerm() {
+        Path hello = fixturesDir.resolve("hello_structure.pdf");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(hello), "hello_structure.pdf not present");
+        try (PdfDocument doc = PdfDocument.open(hello)) {
+            doc.prepareSearch();
+            doc.clearSearchIndex();
+            assertThat(doc.search("Hello")).isNotEmpty();
+        }
+    }
+
+    @Test
     void formFieldsReturnsNonNullList() {
         Path simple = fixturesDir.resolve("simple.pdf");
         try (PdfDocument doc = PdfDocument.open(simple)) {

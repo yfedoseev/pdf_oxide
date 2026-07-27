@@ -320,6 +320,23 @@ public final class PdfDocument implements AutoCloseable {
     }
 
     /**
+     * Build the search index for every page up front, instead of the
+     * lazy per-page build {@link #search(String)} otherwise does on
+     * first use.
+     */
+    public void prepareSearch() {
+        nativePrepareSearch(checkHandle());
+    }
+
+    /**
+     * Drop the cached search index, if any, freeing its memory.
+     * {@link #search(String)} rebuilds it lazily on next use.
+     */
+    public void clearSearchIndex() {
+        nativeClearSearchIndex(checkHandle());
+    }
+
+    /**
      * Convenience: convert this document to Markdown. Equivalent to
      * {@link MarkdownConverter#toMarkdown(PdfDocument)}.
      */
@@ -545,4 +562,8 @@ public final class PdfDocument implements AutoCloseable {
 
     private static native java.util.List<fyi.oxide.pdf.search.SearchMatch> nativeSearch(
             long handle, String pattern, boolean caseInsensitive, boolean literal, int maxResults);
+
+    private static native void nativePrepareSearch(long handle);
+
+    private static native void nativeClearSearchIndex(long handle);
 }

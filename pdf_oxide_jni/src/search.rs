@@ -60,6 +60,53 @@ pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeSearch<'local>(
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `nativePrepareSearch` — build the search index for every page up
+/// front, instead of the lazy per-page build `nativeSearch` otherwise
+/// does on first use.
+///
+/// # Safety
+///
+/// JVM-invoked. `handle` must be a valid `PdfDocument` pointer.
+#[no_mangle]
+pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativePrepareSearch<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    let _ = env
+        .with_env(|env| -> Result<(), JniError> {
+            // SAFETY: handle checked by JNI panic-barrier; Java's AtomicLong checkHandle guarantees non-null + valid pointer.
+            let doc = unsafe { doc_ref(handle) };
+            if let Err(e) = doc.prepare_search() {
+                throw_pdf(env, &e)?;
+            }
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>();
+}
+
+/// `nativeClearSearchIndex` — drop the cached search index, if any,
+/// freeing its memory. `nativeSearch` rebuilds it lazily on next use.
+///
+/// # Safety
+///
+/// JVM-invoked. `handle` must be a valid `PdfDocument` pointer.
+#[no_mangle]
+pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeClearSearchIndex<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    let _ = env
+        .with_env(|_env| -> Result<(), JniError> {
+            // SAFETY: handle checked by JNI panic-barrier; Java's AtomicLong checkHandle guarantees non-null + valid pointer.
+            let doc = unsafe { doc_ref(handle) };
+            doc.clear_search_index();
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>();
+}
+
 fn build_search_match_list<'local>(
     env: &mut jni::Env<'local>,
     results: &[pdf_oxide::search::SearchResult],

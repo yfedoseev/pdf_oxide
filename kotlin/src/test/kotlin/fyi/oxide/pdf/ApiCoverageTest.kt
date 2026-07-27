@@ -76,6 +76,15 @@ class ApiCoverageTest {
         }
     }
 
+    @Test fun prepareAndClearSearchIndex() {
+        PdfDocument.open(sampleBytes()).use { doc ->
+            doc.prepareSearch()
+            assertTrue(doc.search("Hello").isNotEmpty())
+            doc.clearSearchIndex()
+            assertTrue(doc.search("Hello").isNotEmpty())
+        }
+    }
+
     @Test fun renderPage() {
         PdfDocument.open(sampleBytes()).use { doc ->
             assertTrue(doc.render(0).size > 100)

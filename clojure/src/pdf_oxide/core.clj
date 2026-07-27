@@ -52,6 +52,14 @@
 (defn search
   "Search the document; returns a vector of SearchMatch."
   [^PdfDocument doc ^String query] (vec (.search doc query)))
+(defn prepare-search
+  "Build the search index for every page up front, instead of the lazy
+  per-page build `search` otherwise does on first use."
+  [^PdfDocument doc] (.prepareSearch doc))
+(defn clear-search-index
+  "Drop the cached search index, if any, freeing its memory. `search`
+  rebuilds it lazily on next use."
+  [^PdfDocument doc] (.clearSearchIndex doc))
 (defn page ^PdfPage [^PdfDocument doc idx] (.page doc (int idx)))
 (defn pages [^PdfDocument doc] (vec (.pages doc)))
 

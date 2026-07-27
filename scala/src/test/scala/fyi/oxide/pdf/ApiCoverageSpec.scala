@@ -56,6 +56,13 @@ class ApiCoverageSpec extends AnyFunSuite:
       assert(matches.nonEmpty)
       assert(matches.head.text.contains("Hello"))
 
+  test("PdfDocument prepareSearch / clearSearchIndex"):
+    Using.resource(PdfDocument.open(samplePdf())): doc =>
+      doc.prepareSearch()
+      assert(doc.searchSeq("Hello").nonEmpty)
+      doc.clearSearchIndex()
+      assert(doc.searchSeq("Hello").nonEmpty)
+
   test("PdfAConverter round-trip"):
     val result = PdfAConverter.convert(samplePdf(), PdfALevel.A_2B)
     assert(result.convertedPdf().length > 100)

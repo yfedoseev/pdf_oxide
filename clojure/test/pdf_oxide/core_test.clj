@@ -59,6 +59,13 @@
       (is (.contains (.text (first ms)) "Hello")))
     (is (vector? (pdf/form-fields d)))))
 
+(deftest prepare-and-clear-search-index
+  (with-open [d (pdf/open (sample-pdf))]
+    (pdf/prepare-search d)
+    (is (seq (pdf/search d "Hello")))
+    (pdf/clear-search-index d)
+    (is (seq (pdf/search d "Hello")))))
+
 (deftest render-page
   (with-open [d (pdf/open (sample-pdf))]
     (is (> (count (pdf/render d 0)) 100))
