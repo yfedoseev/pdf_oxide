@@ -177,6 +177,35 @@ export class SearchManager {
   }
 
   /**
+   * Builds the search index for every page up front, instead of the
+   * lazy per-page build `search`/`searchAll` otherwise do on first use.
+   *
+   * @example
+   * ```typescript
+   * manager.prepareSearch();
+   * for (const pattern of patterns) {
+   *   const hits = manager.searchAll(pattern);
+   * }
+   * ```
+   */
+  prepareSearch(): void {
+    this._document.prepareSearch();
+  }
+
+  /**
+   * Drops the cached search index, if any, freeing its memory.
+   * `search`/`searchAll` rebuild it lazily on next use.
+   *
+   * @example
+   * ```typescript
+   * manager.clearSearchIndex();
+   * ```
+   */
+  clearSearchIndex(): void {
+    this._document.clearSearchIndex();
+  }
+
+  /**
    * Checks if text exists in a page
    * @param searchText - Text to search for
    * @param pageIndex - Zero-based page index

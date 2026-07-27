@@ -580,6 +580,25 @@ class PdfDocumentImpl {
     return native.searchAll(this._handle, query, caseSensitive);
   }
 
+  /**
+   * Build the search index for every page up front, instead of the
+   * lazy per-page build `searchPage`/`searchAll` otherwise do on
+   * first use.
+   */
+  prepareSearch(): void {
+    this.ensureOpen();
+    native.prepareSearch(this._handle);
+  }
+
+  /**
+   * Drop the cached search index, if any, freeing its memory.
+   * `searchPage`/`searchAll` rebuild it lazily on next use.
+   */
+  clearSearchIndex(): void {
+    this.ensureOpen();
+    native.clearSearchIndex(this._handle);
+  }
+
   getFormFields(): any {
     this.ensureOpen();
     return native.getFormFields(this._handle);

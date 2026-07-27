@@ -147,6 +147,8 @@ extern "C" {
   extern char* pdf_document_to_markdown_all(void* handle, int* error_code);
   extern void* pdf_document_search_page(void* handle, const char* text, int32_t page_index, int case_sensitive, int* error_code);
   extern void* pdf_document_search_all(void* handle, const char* text, int case_sensitive, int* error_code);
+  extern int32_t pdf_document_prepare_search(void* handle, int* error_code);
+  extern int32_t pdf_document_clear_search_index(void* handle, int* error_code);
   extern void* pdf_document_get_embedded_fonts(void* handle, int32_t page_index, int* error_code);
   extern void* pdf_document_get_embedded_images(void* handle, int32_t page_index, int* error_code);
   extern void* pdf_document_get_page_annotations(void* handle, int32_t page_index, int* error_code);
@@ -1092,6 +1094,44 @@ Napi::Value SearchAll(const Napi::CallbackInfo& info) {
   }
 
   return Napi::External<void>::New(env, results);
+}
+
+Napi::Value PrepareSearch(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 1 || !info[0].IsExternal()) {
+    throw Napi::TypeError::New(env, "invalid arguments: (handle)");
+  }
+
+  LOCK_DOC(info, handle);
+  int errorCode = 0;
+
+  pdf_document_prepare_search(handle, &errorCode);
+
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "prepareSearch failed: " + getErrorMessage(errorCode));
+  }
+
+  return env.Undefined();
+}
+
+Napi::Value ClearSearchIndex(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 1 || !info[0].IsExternal()) {
+    throw Napi::TypeError::New(env, "invalid arguments: (handle)");
+  }
+
+  LOCK_DOC(info, handle);
+  int errorCode = 0;
+
+  pdf_document_clear_search_index(handle, &errorCode);
+
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "clearSearchIndex failed: " + getErrorMessage(errorCode));
+  }
+
+  return env.Undefined();
 }
 
 Napi::Value SearchResultCount(const Napi::CallbackInfo& info) {
@@ -4308,6 +4348,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // Search Operations
   exports.Set("searchPage", Napi::Function::New(env, SearchPage));
   exports.Set("searchAll", Napi::Function::New(env, SearchAll));
+  exports.Set("prepareSearch", Napi::Function::New(env, PrepareSearch));
+  exports.Set("clearSearchIndex", Napi::Function::New(env, ClearSearchIndex));
   exports.Set("searchResultCount", Napi::Function::New(env, SearchResultCount));
   exports.Set("searchResultFree", Napi::Function::New(env, SearchResultFree));
 

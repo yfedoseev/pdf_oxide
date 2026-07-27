@@ -452,6 +452,36 @@ test('DocumentEditor.mergeFrom increases page count', { skip: !DocumentEditor },
   }
 });
 
+// ── Search index control ──────────────────────────────────────────────────────
+
+test('prepareSearch then searchAll returns results without throwing', { skip }, () => {
+  const buf = Buffer.from(Pdf.fromMarkdown('PREPAREDMARKER').saveToBytes());
+  const doc = PdfDocument.openFromBuffer(buf);
+  try {
+    doc.prepareSearch();
+    // searchAll returns an opaque native handle on this binding (see
+    // core-parity's "search returns results without throwing") — assert
+    // it doesn't throw and yields a value, not a decoded shape.
+    const results = doc.searchAll('PREPAREDMARKER');
+    assert.ok(results !== undefined && results !== null);
+  } finally {
+    doc.close();
+  }
+});
+
+test('clearSearchIndex then searchAll still returns results without throwing', { skip }, () => {
+  const buf = Buffer.from(Pdf.fromMarkdown('CLEAREDMARKER').saveToBytes());
+  const doc = PdfDocument.openFromBuffer(buf);
+  try {
+    doc.prepareSearch();
+    doc.clearSearchIndex();
+    const results = doc.searchAll('CLEAREDMARKER');
+    assert.ok(results !== undefined && results !== null);
+  } finally {
+    doc.close();
+  }
+});
+
 // ── Signatures (unsigned PDF) ─────────────────────────────────────────────────
 
 test('signatureCount returns 0 for unsigned PDF', { skip }, () => {
