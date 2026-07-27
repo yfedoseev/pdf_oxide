@@ -742,8 +742,15 @@ jobs:
           #     a vendored CMM — legitimate feature growth, so the
           #     ceiling is raised rather than §11 gated off wasm32, same
           #     precedent the v0.3.48 / v0.3.52 bumps followed.
-          # Ceiling leaves ~6% headroom above the ~15.05 MB #674 baseline.
-          max_kb=16384
+          #   #952 ~16.01 MB: `prepareSearch()`/`clearSearchIndex()` land
+          #     on `WasmPdfDocument` — two new wasm-bindgen exports (thin
+          #     wrappers over the existing core `PdfDocument` methods
+          #     added in #944) so JS callers can control the search-index
+          #     cache like every other binding, not just Rust. Small but
+          #     real growth from the added exports' wasm-bindgen glue —
+          #     same precedent the v0.3.48 / v0.3.52 / #674 bumps followed.
+          # Ceiling leaves ~6% headroom above the ~16.01 MB #952 baseline.
+          max_kb=17408
           if [ "$after_kb" -gt "$max_kb" ]; then
             echo "::error::wasm bundle ${after_kb} KB exceeds ceiling ${max_kb} KB"
             exit 1
