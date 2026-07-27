@@ -155,6 +155,16 @@ defmodule PdfOxideTest do
       assert a.page >= 0
     end
 
+    test "prepare_search + clear_search_index", %{doc: doc} do
+      assert :ok = PdfOxide.prepare_search(doc)
+      assert {:ok, prepared} = PdfOxide.search_all(doc, "Alpha", false)
+      assert length(prepared) > 0
+
+      assert :ok = PdfOxide.clear_search_index(doc)
+      assert {:ok, cleared} = PdfOxide.search_all(doc, "Alpha", false)
+      assert length(cleared) > 0
+    end
+
     test "authenticate returns a bool", %{doc: doc} do
       assert {:ok, result} = PdfOxide.authenticate(doc, "")
       assert is_boolean(result)

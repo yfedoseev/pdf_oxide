@@ -724,6 +724,30 @@ static ERL_NIF_TERM doc_search_all(ErlNifEnv *env, int argc, const ERL_NIF_TERM 
     return search_results_term(env, list);
 }
 
+/* Build the search index for every page up front, instead of the lazy
+ * per-page build doc_search_page/doc_search_all otherwise do on first use. */
+static ERL_NIF_TERM doc_prepare_search(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    pdf_document_prepare_search(r->h, &code);
+    return code == 0 ? enif_make_atom(env, "ok") : err_tuple(env, code);
+}
+
+/* Drop the cached search index, if any, freeing its memory. doc_search_page/
+ * doc_search_all rebuild it lazily on next use. */
+static ERL_NIF_TERM doc_clear_search_index(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    DocRes *r;
+    if (!enif_get_resource(env, a[0], DOC_RES, (void **)&r)) return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    int32_t code = 0;
+    pdf_document_clear_search_index(r->h, &code);
+    return code == 0 ? enif_make_atom(env, "ok") : err_tuple(env, code);
+}
+
 /* ── page rendering (phase 3) ────────────────────────────────────────────────
  * Each render returns an FfiRenderedImage handle (NULL on error). The handle is
  * wrapped in an IMG_RES resource whose destructor frees it via
@@ -4536,6 +4560,8 @@ static ErlNifFunc funcs[] = {
     {"doc_extract_paths", 2, doc_extract_paths, DIRTY},
     {"doc_search_page", 4, doc_search_page, DIRTY},
     {"doc_search_all", 3, doc_search_all, DIRTY},
+    {"doc_prepare_search", 1, doc_prepare_search, DIRTY},
+    {"doc_clear_search_index", 1, doc_clear_search_index, DIRTY},
     {"doc_render_page", 3, doc_render_page, DIRTY},
     {"doc_render_page_zoom", 4, doc_render_page_zoom, DIRTY},
     {"doc_render_page_thumbnail", 4, doc_render_page_thumbnail, DIRTY},

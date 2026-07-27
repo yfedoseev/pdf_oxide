@@ -44,6 +44,8 @@ defmodule PdfOxide.Native do
   def doc_extract_paths(_doc, _page), do: nif_error()
   def doc_search_page(_doc, _page, _term, _case_sensitive), do: nif_error()
   def doc_search_all(_doc, _term, _case_sensitive), do: nif_error()
+  def doc_prepare_search(_doc), do: nif_error()
+  def doc_clear_search_index(_doc), do: nif_error()
   def doc_render_page(_doc, _page_index, _format), do: nif_error()
   def doc_render_page_zoom(_doc, _page_index, _zoom, _format), do: nif_error()
   def doc_render_page_thumbnail(_doc, _page_index, _size, _format), do: nif_error()

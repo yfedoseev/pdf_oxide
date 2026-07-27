@@ -501,6 +501,18 @@ defmodule PdfOxide do
   defp to_search_result({text, page, x, y, w, h}),
     do: %SearchResult{text: text, page: page, bbox: %Bbox{x: x, y: y, width: w, height: h}}
 
+  @doc """
+  Builds the search index for every page up front, instead of the lazy
+  per-page build `search/4`/`search_all/3` otherwise do on first use.
+  """
+  def prepare_search(%Document{ref: ref}), do: Native.doc_prepare_search(ref)
+
+  @doc """
+  Drops the cached search index, if any, freeing its memory.
+  `search/4`/`search_all/3` rebuild it lazily on next use.
+  """
+  def clear_search_index(%Document{ref: ref}), do: Native.doc_clear_search_index(ref)
+
   # ── page rendering (phase 3) ─────────────────────────────────────────────────
   @doc """
   Render a (0-based) `page_index` to a `RenderedImage`. `format` is an image
