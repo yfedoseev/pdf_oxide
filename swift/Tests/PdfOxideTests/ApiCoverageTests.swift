@@ -145,6 +145,16 @@ final class ApiCoverageTests: XCTestCase {
         _ = allHits[0].bbox
     }
 
+    func testPrepareAndClearSearchIndex() throws {
+        let doc = try Document.openFromBytes(try samplePdf())
+
+        try doc.prepareSearch()  // prepareSearch
+        XCTAssertFalse(try doc.searchAll("Alpha", false).isEmpty)
+
+        try doc.clearSearchIndex()  // clearSearchIndex
+        XCTAssertFalse(try doc.searchAll("Alpha", false).isEmpty)
+    }
+
     // ── Phase-3 page rendering ───────────────────────────────────────────────
     func testRenderPage() throws {
         let doc = try Document.openFromBytes(try samplePdf())

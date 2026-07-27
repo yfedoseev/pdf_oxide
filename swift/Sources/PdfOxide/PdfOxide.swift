@@ -635,6 +635,26 @@ public final class Document {
         return try collectSearchResults(list, "searchAll")
     }
 
+    /// Build the search index for every page up front, instead of the lazy
+    /// per-page build ``search`` / ``searchAll`` otherwise do on first use.
+    public func prepareSearch() throws {
+        var code: Int32 = 0
+        pdf_document_prepare_search(try ptr(), &code)
+        if code != 0 {
+            throw PdfOxideError(code: code, op: "prepareSearch")
+        }
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// ``search`` / ``searchAll`` rebuild it lazily on next use.
+    public func clearSearchIndex() throws {
+        var code: Int32 = 0
+        pdf_document_clear_search_index(try ptr(), &code)
+        if code != 0 {
+            throw PdfOxideError(code: code, op: "clearSearchIndex")
+        }
+    }
+
     // ── Phase-3 page rendering ───────────────────────────────────────────────
 
     /// Render a (0-based) page to an image. `format` is 0=PNG (default), 1=JPEG.
