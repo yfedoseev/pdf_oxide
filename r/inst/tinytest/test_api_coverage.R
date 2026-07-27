@@ -115,6 +115,13 @@ expect_true(length(hits_all) > 0)
 expect_true(grepl("Alpha", hits_all[[1]]$text))
 expect_true(hits_all[[1]]$page >= 0)
 
+pdf_prepare_search(doc)                                 # pdf_prepare_search
+hits_prepared <- pdf_search_all(doc, "Alpha", FALSE)
+expect_true(length(hits_prepared) > 0)
+pdf_clear_search_index(doc)                             # pdf_clear_search_index
+hits_cleared <- pdf_search_all(doc, "Alpha", FALSE)
+expect_true(length(hits_cleared) > 0)
+
 # ── Phase-3 page rendering ────────────────────────────────────────────────────
 img <- pdf_render_page(doc, 0)                          # pdf_render_page (PNG)
 expect_inherits(img, "pdfoxide_rendered_image")

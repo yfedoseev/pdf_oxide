@@ -275,6 +275,26 @@ pdf_search_all <- function(doc, term, case_sensitive = FALSE) {
   .Call(C_r_doc_search_all, doc, term, isTRUE(case_sensitive))
 }
 
+#' Build the search index for every page up front, instead of the lazy
+#' per-page build [pdf_search()]/[pdf_search_all()] otherwise do on first use.
+#'
+#' @param doc A `pdfoxide_document`.
+#' @return `NULL`, invisibly.
+#' @export
+pdf_prepare_search <- function(doc) {
+  invisible(.Call(C_r_doc_prepare_search, doc))
+}
+
+#' Drop the cached search index, if any, freeing its memory.
+#' [pdf_search()]/[pdf_search_all()] rebuild it lazily on next use.
+#'
+#' @param doc A `pdfoxide_document`.
+#' @return `NULL`, invisibly.
+#' @export
+pdf_clear_search_index <- function(doc) {
+  invisible(.Call(C_r_doc_clear_search_index, doc))
+}
+
 # ── Phase-3 page rendering ────────────────────────────────────────────────────
 
 #' Render a (0-based) page to a raster image.

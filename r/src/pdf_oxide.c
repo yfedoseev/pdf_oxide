@@ -639,6 +639,24 @@ SEXP r_doc_search_all(SEXP ext, SEXP term, SEXP case_sensitive) {
     return search_results_to_list(list, "search_all");
 }
 
+/* Build the search index for every page up front, instead of the lazy
+ * per-page build search()/search_all() otherwise do on first use. */
+SEXP r_doc_prepare_search(SEXP ext) {
+    int32_t code = 0;
+    pdf_document_prepare_search(doc_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "prepare_search");
+    return R_NilValue;
+}
+
+/* Drop the cached search index, if any, freeing its memory. search()/
+ * search_all() rebuild it lazily on next use. */
+SEXP r_doc_clear_search_index(SEXP ext) {
+    int32_t code = 0;
+    pdf_document_clear_search_index(doc_ptr(ext), &code);
+    if (code != 0) pdfox_raise(code, "clear_search_index");
+    return R_NilValue;
+}
+
 /* ── Phase-3 page rendering ───────────────────────────────────────────────────
  * The FfiRenderedImage handle is wrapped in its own external pointer (with a
  * finalizer that calls pdf_rendered_image_free) so the GC frees it. The R-level
@@ -3605,6 +3623,8 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_extract_paths, 2),
     CDEF(r_doc_search, 4),
     CDEF(r_doc_search_all, 3),
+    CDEF(r_doc_prepare_search, 1),
+    CDEF(r_doc_clear_search_index, 1),
     CDEF(r_doc_render_page, 3),
     CDEF(r_doc_render_page_zoom, 4),
     CDEF(r_doc_render_page_thumbnail, 4),
