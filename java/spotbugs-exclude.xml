@@ -18,4 +18,25 @@
         <Package name="fyi.oxide.pdf.exception"/>
         <Bug pattern="CT_CONSTRUCTOR_THROW"/>
     </Match>
+    <!--
+      EI_EXPOSE_REP: AutoExtractor.document()/PdfPage.parent() intentionally
+      return the shared PdfDocument instance itself, not a defensive copy —
+      PdfDocument is a native-handle-backed resource callers are meant to
+      re-acquire and keep sharing (its own Javadoc calls this out), not a
+      value object to clone. This finding only started firing once
+      PdfDocument gained a clearSearchIndex() method: SpotBugs' EI_EXPOSE_REP
+      heuristic treats any type with a `clear*`-named method as "mutable"
+      and then flags every unrelated external getter that returns it,
+      regardless of what that getter itself does.
+    -->
+    <Match>
+        <Class name="fyi.oxide.pdf.AutoExtractor"/>
+        <Method name="document"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+    <Match>
+        <Class name="fyi.oxide.pdf.PdfPage"/>
+        <Method name="parent"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
 </FindBugsFilter>
