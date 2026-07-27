@@ -723,6 +723,26 @@ class Document {
         return collect_search_results(list, "Document::search_all");
     }
 
+    /// Build the search index for every page up front, instead of the lazy
+    /// per-page build search()/search_all() otherwise do on first use.
+    void prepare_search() const {
+        int32_t code = 0;
+        pdf_document_prepare_search(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Document::prepare_search");
+        }
+    }
+
+    /// Drop the cached search index, if any, freeing its memory.
+    /// search()/search_all() rebuild it lazily on next use.
+    void clear_search_index() const {
+        int32_t code = 0;
+        pdf_document_clear_search_index(ptr(), &code);
+        if (code != 0) {
+            throw Error(code, "Document::clear_search_index");
+        }
+    }
+
     /// Render a page (0-based) to an image. `format` is 0=PNG (default), 1=JPEG.
     RenderedImage render_page(int page_index, int format = 0) const {
         int32_t code = 0;

@@ -186,6 +186,11 @@ int main() {
             CHECK(allHits[0].page >= 0);
             (void)allHits[0].bbox;
         }
+
+        doc.prepare_search(); // prepare_search
+        CHECK(!doc.search_all("Alpha", false).empty());
+        doc.clear_search_index(); // clear_search_index
+        CHECK(!doc.search_all("Alpha", false).empty());
     }
 
     // ── Phase-3 page rendering ───────────────────────────────────────────
