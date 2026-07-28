@@ -5738,7 +5738,11 @@ impl PdfDocument {
                 let all_content = crate::structure::traverse_structure_tree_all_pages(struct_tree);
                 *self.structure_content_cache.lock_or_recover() = Some(all_content);
             }
-            self.extract_text_structure_order_cached_with_spans(page_index, all_spans)?
+            self.extract_text_structure_order_cached_with_spans(
+                page_index,
+                all_spans,
+                options.include_artifacts,
+            )?
         } else {
             // Untagged or Suspects=true PDF: use page content
             // (geometric) order. Apply struct-tree-scope `/ActualText`
@@ -6094,10 +6098,13 @@ impl PdfDocument {
             }
 
             // Drop content marked /Artifact (PDF Spec ISO 32000-1:2008
-            // §14.8.2.2 — headers, footers, page numbers, decorations).
-            // Untagged-PDF running-header detection runs at document
-            // level and feeds the same artifact_type flag.
-            spans.retain(|s| s.artifact_type.is_none());
+            // §14.8.2.2 — headers, footers, page numbers, decorations) —
+            // unless the caller opted in via `options.include_artifacts`
+            // (default true). Untagged-PDF running-header detection
+            // runs at document level and feeds the same artifact_type flag.
+            if !options.include_artifacts {
+                spans.retain(|s| s.artifact_type.is_none());
+            }
 
             // RTL correction
             Self::reverse_rtl_visual_order_runs(&mut spans);
@@ -10996,6 +11003,7 @@ impl PdfDocument {
         &self,
         page_index: usize,
         all_spans: Vec<TextSpan>,
+        include_artifacts: bool,
     ) -> Result<String> {
         log::debug!("Extracting text using cached structure order for page {}", page_index);
 
@@ -11006,17 +11014,22 @@ impl PdfDocument {
         }
 
         // Drop content marked /Artifact (PDF Spec ISO 32000-1:2008
-        // §14.8.2.2 — headers, footers, page numbers, decorations).
-        // The geometric branch in `assemble_text_from_spans` applies
-        // the same filter; tagged PDFs taking the structure-order path
-        // must honour it too, otherwise artifact spans (including any
-        // MC-scope `/ActualText` replacements inside an `/Artifact`
+        // §14.8.2.2 — headers, footers, page numbers, decorations) —
+        // unless the caller opted in via `include_artifacts` (default
+        // true). The geometric branch in `assemble_text_from_spans`
+        // applies the same filter; tagged PDFs taking the structure-order
+        // path must honour it too, otherwise artifact spans (including
+        // any MC-scope `/ActualText` replacements inside an `/Artifact`
         // BDC) leak into output. Untagged-PDF running-header
         // detection runs at document level and feeds the same flag.
-        let all_spans: Vec<TextSpan> = all_spans
-            .into_iter()
-            .filter(|s| s.artifact_type.is_none())
-            .collect();
+        let all_spans: Vec<TextSpan> = if include_artifacts {
+            all_spans
+        } else {
+            all_spans
+                .into_iter()
+                .filter(|s| s.artifact_type.is_none())
+                .collect()
+        };
 
         // Step 2: Build MCID → Vec<TextSpan> map
         let mut mcid_map: HashMap<u32, Vec<TextSpan>> = HashMap::new();

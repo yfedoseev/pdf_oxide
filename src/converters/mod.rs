@@ -350,6 +350,19 @@ pub struct ConversionOptions {
     ///
     /// Default: `true`. Set `false` to keep scanned pages blank.
     pub annotate_skipped_pages: bool,
+
+    /// Include spans tagged `/Artifact` (running headers/footers, page
+    /// numbers, watermarks; ISO 32000-1:2008 §14.8.2.2.1) in the output.
+    ///
+    /// Default **`true`** for backward compatibility with pre-0.3.42
+    /// behavior — the same rationale already shipped on
+    /// [`crate::document::PdfDocument::extract_words_with_thresholds`] /
+    /// `extract_text_lines`: flipping the default would surface as a
+    /// content regression on PDFs whose running-artifact heuristic
+    /// over-triggers on real content (e.g. a repeated footer that carries
+    /// a section identifier, not just decoration). Set `false` to get the
+    /// spec-correct behavior (artifact-tagged spans excluded).
+    pub include_artifacts: bool,
 }
 
 impl Default for ConversionOptions {
@@ -392,6 +405,7 @@ impl Default for ConversionOptions {
             include_region: None,
             expand_ligatures: false,
             annotate_skipped_pages: true,
+            include_artifacts: true,
         }
     }
 }

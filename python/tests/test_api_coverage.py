@@ -558,6 +558,44 @@ class TestConversion:
         assert "ALLMARKER" in text
 
 
+# ── PdfDocument: /Artifact content inclusion ────────────────────────────────
+
+
+def _artifact_footer_doc():
+    from pdf_oxide import Footer, PageTemplate
+
+    template = PageTemplate().footer(Footer.center("SECTION-01-79-00"))
+    data = Pdf.from_markdown_with_template("ARTIFACTBODY", template).to_bytes()
+    return PdfDocument.from_bytes(data)
+
+
+class TestArtifactContentInclusion:
+    def test_extract_text_includes_artifact_footer_by_default(self):
+        doc = _artifact_footer_doc()
+        text = doc.extract_text(0)
+        assert "SECTION-01-79-00" in text
+
+    def test_extract_text_can_still_exclude_artifacts(self):
+        doc = _artifact_footer_doc()
+        text = doc.extract_text(0, include_artifacts=False)
+        assert "SECTION-01-79-00" not in text
+
+    def test_to_markdown_includes_artifact_footer_by_default(self):
+        doc = _artifact_footer_doc()
+        md = doc.to_markdown(0)
+        assert "SECTION-01-79-00" in md
+
+    def test_to_markdown_can_still_exclude_artifacts(self):
+        doc = _artifact_footer_doc()
+        md = doc.to_markdown(0, include_artifacts=False)
+        assert "SECTION-01-79-00" not in md
+
+    def test_to_plain_text_includes_artifact_footer_by_default(self):
+        doc = _artifact_footer_doc()
+        text = doc.to_plain_text(0)
+        assert "SECTION-01-79-00" in text
+
+
 # ── PdfDocument: search ───────────────────────────────────────────────────────
 
 

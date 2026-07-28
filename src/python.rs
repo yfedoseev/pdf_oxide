@@ -275,13 +275,22 @@ impl PyPdfDocument {
     ///         The scoped (``region``) and filtered (``exclude_*``) paths run
     ///         their normal pipeline and ignore this flag, since those surfaces
     ///         are already scoped and lack a table-detection hot spot.
+    ///     include_artifacts (bool, optional): Include content tagged
+    ///         `/Artifact` (running headers/footers, page numbers,
+    ///         watermarks; ISO 32000-1:2008 §14.8.2.2.1). Default **True**,
+    ///         matching `extract_words`/`extract_text_lines` — flipping the
+    ///         default would surface as a content regression on PDFs whose
+    ///         running-artifact heuristic over-triggers on real content
+    ///         (e.g. a repeated footer that carries a section identifier).
+    ///         Pass `False` to get the spec-correct behavior. Like
+    ///         `extract_tables`, applies to whole-page extraction only.
     ///
     /// Note:
     ///     When ``exclude_layers`` or ``exclude_inks`` are specified, the same
     ///     full text assembly pipeline is used (structure-tree ordering, table
     ///     detection, column detection) — excluded content is simply removed
     ///     before assembly.
-    #[pyo3(signature = (page, region=None, exclude_layers=None, exclude_inks=None, extract_tables=true))]
+    #[pyo3(signature = (page, region=None, exclude_layers=None, exclude_inks=None, extract_tables=true, include_artifacts=true))]
     fn extract_text(
         &mut self,
         page: usize,
@@ -289,6 +298,7 @@ impl PyPdfDocument {
         exclude_layers: Option<Vec<String>>,
         exclude_inks: Option<Vec<String>>,
         extract_tables: bool,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         let has_filters = exclude_layers.is_some() || exclude_inks.is_some();
         let layers: HashSet<String> = exclude_layers.unwrap_or_default().into_iter().collect();
@@ -324,14 +334,10 @@ impl PyPdfDocument {
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to extract filtered text: {}", e))
                 })
-        } else if extract_tables {
-            self.inner
-                .extract_text(page)
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to extract text: {}", e)))
         } else {
-            // Opt-out path: skip the table-detection sweep for speed.
             let options = crate::converters::ConversionOptions {
-                extract_tables: false,
+                extract_tables,
+                include_artifacts,
                 ..Default::default()
             };
             self.inner
@@ -1024,7 +1030,13 @@ impl PyPdfDocument {
     }
 
     /// Convert page to plain text.
-    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None))]
+    ///
+    /// Args:
+    ///     include_artifacts (bool, optional): Include content tagged
+    ///         `/Artifact` (running headers/footers, page numbers,
+    ///         watermarks; ISO 32000-1:2008 §14.8.2.2.1). Default **True**
+    ///         — see `PdfDocument.extract_text` for the full rationale.
+    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, include_artifacts=true))]
     fn to_plain_text(
         &mut self,
         page: usize,
@@ -1032,6 +1044,7 @@ impl PyPdfDocument {
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -1039,6 +1052,7 @@ impl PyPdfDocument {
             extract_tables: true,
             include_images,
             image_output_dir,
+            include_artifacts,
             ..Default::default()
         };
 
@@ -1048,13 +1062,18 @@ impl PyPdfDocument {
     }
 
     /// Convert all pages to plain text.
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None))]
+    ///
+    /// Args:
+    ///     include_artifacts (bool, optional): See `PdfDocument.extract_text`.
+    ///         Default **True**.
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, include_artifacts=true))]
     fn to_plain_text_all(
         &mut self,
         preserve_layout: bool,
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -1062,6 +1081,7 @@ impl PyPdfDocument {
             extract_tables: true,
             include_images,
             image_output_dir,
+            include_artifacts,
             ..Default::default()
         };
 
@@ -1071,7 +1091,11 @@ impl PyPdfDocument {
     }
 
     /// Convert page to Markdown.
-    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true))]
+    ///
+    /// Args:
+    ///     include_artifacts (bool, optional): See `PdfDocument.extract_text`.
+    ///         Default **True**.
+    #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true, include_artifacts=true))]
     fn to_markdown(
         &mut self,
         page: usize,
@@ -1081,6 +1105,7 @@ impl PyPdfDocument {
         image_output_dir: Option<String>,
         embed_images: bool,
         include_form_fields: bool,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -1090,6 +1115,7 @@ impl PyPdfDocument {
             image_output_dir,
             embed_images,
             include_form_fields,
+            include_artifacts,
             ..Default::default()
         };
 
@@ -1099,6 +1125,11 @@ impl PyPdfDocument {
     }
 
     /// Convert page to HTML.
+    ///
+    /// Note: unlike `extract_text`/`to_markdown`/`to_plain_text`, this
+    /// always includes content tagged `/Artifact` — there is no
+    /// `include_artifacts` toggle here because there is nothing to
+    /// toggle off.
     #[pyo3(signature = (page, preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true))]
     fn to_html(
         &mut self,
@@ -1127,7 +1158,11 @@ impl PyPdfDocument {
     }
 
     /// Convert all pages to Markdown.
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true))]
+    ///
+    /// Args:
+    ///     include_artifacts (bool, optional): See `PdfDocument.extract_text`.
+    ///         Default **True**.
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true, include_artifacts=true))]
     fn to_markdown_all(
         &mut self,
         preserve_layout: bool,
@@ -1136,6 +1171,7 @@ impl PyPdfDocument {
         image_output_dir: Option<String>,
         embed_images: bool,
         include_form_fields: bool,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         let options = RustConversionOptions {
             preserve_layout,
@@ -1145,6 +1181,7 @@ impl PyPdfDocument {
             image_output_dir,
             embed_images,
             include_form_fields,
+            include_artifacts,
             ..Default::default()
         };
 
@@ -3140,7 +3177,7 @@ impl PyDocPage {
     fn text(&self, py: Python<'_>) -> PyResult<String> {
         self.doc
             .borrow_mut(py)
-            .extract_text(self.page_index, None, None, None, true)
+            .extract_text(self.page_index, None, None, None, true, true)
     }
 
     #[getter]
@@ -3207,7 +3244,8 @@ impl PyDocPage {
             .extract_paths(py, self.page_index, None)
     }
 
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true))]
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, embed_images=true, include_form_fields=true, include_artifacts=true))]
+    #[allow(clippy::too_many_arguments)]
     fn markdown(
         &self,
         py: Python<'_>,
@@ -3217,6 +3255,7 @@ impl PyDocPage {
         image_output_dir: Option<String>,
         embed_images: bool,
         include_form_fields: bool,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         self.doc.borrow_mut(py).to_markdown(
             self.page_index,
@@ -3226,10 +3265,11 @@ impl PyDocPage {
             image_output_dir,
             embed_images,
             include_form_fields,
+            include_artifacts,
         )
     }
 
-    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None))]
+    #[pyo3(signature = (preserve_layout=false, detect_headings=true, include_images=false, image_output_dir=None, include_artifacts=true))]
     fn plain_text(
         &self,
         py: Python<'_>,
@@ -3237,6 +3277,7 @@ impl PyDocPage {
         detect_headings: bool,
         include_images: bool,
         image_output_dir: Option<String>,
+        include_artifacts: bool,
     ) -> PyResult<String> {
         self.doc.borrow_mut(py).to_plain_text(
             self.page_index,
@@ -3244,6 +3285,7 @@ impl PyDocPage {
             detect_headings,
             include_images,
             image_output_dir,
+            include_artifacts,
         )
     }
 
@@ -3753,7 +3795,7 @@ impl PyPdfPageRegion {
     }
     fn extract_text(&self, py: Python<'_>) -> PyResult<String> {
         let mut d = self.doc.bind(py).borrow_mut();
-        d.extract_text(self.page_index, Some(self.bbox()), None, None, true)
+        d.extract_text(self.page_index, Some(self.bbox()), None, None, true, true)
     }
     fn extract_words(&self, py: Python<'_>) -> PyResult<Vec<PyWord>> {
         let mut d = self.doc.bind(py).borrow_mut();

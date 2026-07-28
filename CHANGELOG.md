@@ -4,15 +4,24 @@ All notable changes to PDFOxide are documented here.
 
 ## [0.3.77] - 2026-07-27
 
-> Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust.
+> Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
 
 ### Added
 
 - **`prepare_search()`/`clear_search_index()` exposed across every language binding** — callers can now build the search-index cache at a controlled point instead of paying for it on the first `search()` call, and free it before heavy extraction on the same document object, from any binding, not just Rust. Also fills in a pre-existing gap in the PHP binding, which had no public `search()` method at all (#952).
+- **`include_artifacts` option on `extract_text()`/`to_markdown()`/`to_markdown_all()`/`to_plain_text()`/`to_plain_text_all()`** (Python; `ConversionOptions.include_artifacts` in Rust) — matches the `include_artifacts` parameter `extract_words()`/`extract_text_lines()` already had, default `true`.
+
+### Fixed
+
+- **`extract_text()`, `to_markdown()`/`to_markdown_all()`, and `to_plain_text()` unconditionally dropped content tagged `/Artifact`** (ISO 32000-1:2008 §14.8.2.2.1 — running headers/footers, page numbers, watermarks), with no override, unlike `extract_words()`/`extract_text_lines()` which already defaulted to including artifact-tagged content for backward compatibility. On documents that tag a repeated footer carrying real information (e.g. a section identifier on every page of an engineering spec) as an artifact, this silently dropped that content from the vast majority of pages. All five methods now default to including artifact-tagged content, with `include_artifacts=False` available for the spec-correct exclusion behavior (#954).
 
 ### Contributors
 
-Issue reported by **@ankursri494** — #952 (`prepare_search()`/`clear_search_index()` missing from every binding but Rust). Thank you!
+Issues reported by:
+- **@ankursri494** — #952 (`prepare_search()`/`clear_search_index()` missing from every binding but Rust)
+- **@tealtonyplanhub** — #954 (`extract_text()` silently drops `/Artifact`-tagged content with no override)
+
+Thank you!
 
 ## [0.3.76] - 2026-07-26
 

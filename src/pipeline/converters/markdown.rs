@@ -1431,8 +1431,10 @@ impl MarkdownOutputConverter {
         let list_x_levels = Self::list_marker_x_levels(&sorted);
 
         for (idx, span) in sorted.iter().enumerate() {
-            // Skip artifacts (pagination, headers, footers)
-            if span.span.artifact_type.is_some() {
+            // Skip artifacts (pagination, headers, footers) unless the
+            // caller opted in via `config.output.include_artifacts`
+            // (default true).
+            if !config.output.include_artifacts && span.span.artifact_type.is_some() {
                 continue;
             }
 

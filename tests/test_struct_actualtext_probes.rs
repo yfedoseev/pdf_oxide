@@ -1248,7 +1248,16 @@ fn probe34_actualtext_on_artifact_mc_does_not_leak() {
         );
     }
 
-    let extracted = doc.extract_text(0).expect("extract_text");
+    // extract_text() defaults to include_artifacts=true (matching
+    // extract_words/extract_text_lines), so request exclusion explicitly
+    // to test the artifact_type-propagation property this probe pins.
+    let opts = ConversionOptions {
+        include_artifacts: false,
+        ..Default::default()
+    };
+    let extracted = doc
+        .extract_text_with_options(0, &opts)
+        .expect("extract_text_with_options");
     // Per the extractor's artifact filtering, neither the raw 'X' nor
     // the ActualText replacement ("ar") should be emitted.
     assert!(
@@ -1306,7 +1315,16 @@ fn probe34b_vanilla_artifact_raw_glyph_pin_behaviour() {
             i, s.text, s.mcid, s.artifact_type
         );
     }
-    let extracted = doc.extract_text(0).expect("extract_text");
+    // extract_text() defaults to include_artifacts=true (matching
+    // extract_words/extract_text_lines), so request exclusion explicitly
+    // to test the artifact_type-propagation property this probe pins.
+    let opts = ConversionOptions {
+        include_artifacts: false,
+        ..Default::default()
+    };
+    let extracted = doc
+        .extract_text_with_options(0, &opts)
+        .expect("extract_text_with_options");
     // Pin: raw artifact glyphs must NOT appear in extracted text.
     // The downstream filter retains only spans with
     // `artifact_type.is_none()`. If raw glyphs leak, the Tj-span
@@ -1873,4 +1891,138 @@ fn probe41_same_mcid_fragments_merge_to_single_word() {
         "same-MCID fragments must still merge to 'Hello'; got spans={:?}",
         texts
     );
+}
+
+// =============================================================
+// extract_text / to_markdown / to_plain_text default to including
+// /Artifact-tagged content.
+//
+// extract_words()/extract_text_lines() already defaulted
+// include_artifacts=true for backward compatibility; extract_text(),
+// to_markdown(), and to_plain_text() unconditionally dropped artifact
+// content instead, with no override — silently losing real content on
+// PDFs that tag a repeated footer (e.g. a section identifier) as an
+// artifact. A tagged page took the structure-order drop
+// (`extract_text_structure_order_cached_with_spans`); an untagged page
+// took the geometric drop (`assemble_text_from_spans`'s else arm) —
+// both are now gated on `ConversionOptions::include_artifacts`
+// (default true).
+// =============================================================
+
+fn fixture_tagged_page_with_artifact_footer() -> Vec<u8> {
+    let content = b"BT\n/F1 12 Tf\n50 700 Td\n(Body text) Tj\nET\n\
+                    BT\n/F1 12 Tf\n50 50 Td\n\
+                    /Artifact << /Type /Pagination /Subtype /Footer >> BDC\n\
+                    (SECTION-01-79-00) Tj\n\
+                    EMC\nET\n"
+        .to_vec();
+    let mut b = PdfBuilder::new();
+    b.add_page_content(content);
+    // Minimal structure tree (no MCID references needed by the artifact
+    // itself — artifacts are not part of the logical structure tree) —
+    // just enough to make `struct_tree_trustworthy()` return `Some`, so
+    // this fixture exercises the structure-order path.
+    let _doc = b.add_elem(Elem::new(8, "Document", 7));
+    b.build()
+}
+
+fn fixture_untagged_page_with_artifact_footer() -> Vec<u8> {
+    let content = b"BT\n/F1 12 Tf\n50 700 Td\n(Body text) Tj\nET\n\
+                    BT\n/F1 12 Tf\n50 50 Td\n\
+                    /Artifact << /Type /Pagination /Subtype /Footer >> BDC\n\
+                    (SECTION-01-79-00) Tj\n\
+                    EMC\nET\n"
+        .to_vec();
+    // `PdfBuilder` always emits a `/StructTreeRoot`, so a genuinely
+    // struct-tree-free fixture isn't expressible here — `.suspects()`
+    // is the spec-correct way (§14.7.1 /MarkInfo /Suspects) to force
+    // `struct_tree_trustworthy()` to fall back to the geometric path,
+    // which is the branch this fixture needs to exercise.
+    let mut b = PdfBuilder::new().suspects();
+    b.add_page_content(content);
+    let _doc = b.add_elem(Elem::new(8, "Document", 7));
+    b.build()
+}
+
+#[test]
+fn extract_text_includes_artifact_footer_by_default_tagged() {
+    let doc = PdfDocument::from_bytes(fixture_tagged_page_with_artifact_footer()).expect("open");
+    let text = doc.extract_text(0).expect("extract_text");
+    assert!(
+        text.contains("SECTION-01-79-00"),
+        "extract_text() must include /Artifact content by default, got {:?}",
+        text
+    );
+}
+
+#[test]
+fn extract_text_includes_artifact_footer_by_default_untagged() {
+    let doc = PdfDocument::from_bytes(fixture_untagged_page_with_artifact_footer()).expect("open");
+    let text = doc.extract_text(0).expect("extract_text");
+    assert!(
+        text.contains("SECTION-01-79-00"),
+        "extract_text() must include /Artifact content by default on an \
+         untagged PDF too, got {:?}",
+        text
+    );
+}
+
+#[test]
+fn extract_text_with_options_can_still_exclude_artifacts() {
+    let opts = ConversionOptions {
+        include_artifacts: false,
+        ..Default::default()
+    };
+    for pdf in [
+        fixture_tagged_page_with_artifact_footer(),
+        fixture_untagged_page_with_artifact_footer(),
+    ] {
+        let doc = PdfDocument::from_bytes(pdf).expect("open");
+        let text = doc
+            .extract_text_with_options(0, &opts)
+            .expect("extract_text_with_options");
+        assert!(
+            !text.contains("SECTION-01-79-00"),
+            "include_artifacts=false must still exclude /Artifact content, got {:?}",
+            text
+        );
+    }
+}
+
+#[test]
+fn to_markdown_includes_artifact_footer_by_default() {
+    let opts = ConversionOptions::default();
+    for pdf in [
+        fixture_tagged_page_with_artifact_footer(),
+        fixture_untagged_page_with_artifact_footer(),
+    ] {
+        let doc = PdfDocument::from_bytes(pdf).expect("open");
+        let md = doc.to_markdown(0, &opts).expect("to_markdown");
+        assert!(
+            md.contains("SECTION-01-79-00"),
+            "to_markdown() must include /Artifact content by default, got {:?}",
+            md
+        );
+    }
+}
+
+#[test]
+fn to_plain_text_includes_artifact_footer_by_default_on_both_paths() {
+    // Before this fix, to_plain_text's "safety" was accidental: only the
+    // untagged (geometric) path skipped the drop; a trustworthy-tagged
+    // page took the same structure-order drop as extract_text. Pin both.
+    let opts = ConversionOptions::default();
+    for pdf in [
+        fixture_tagged_page_with_artifact_footer(),
+        fixture_untagged_page_with_artifact_footer(),
+    ] {
+        let doc = PdfDocument::from_bytes(pdf).expect("open");
+        let text = doc.to_plain_text(0, &opts).expect("to_plain_text");
+        assert!(
+            text.contains("SECTION-01-79-00"),
+            "to_plain_text() must include /Artifact content by default on \
+             both tagged and untagged PDFs, got {:?}",
+            text
+        );
+    }
 }

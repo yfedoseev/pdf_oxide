@@ -97,6 +97,7 @@ impl DocumentType {
                 image_output_dir: None,
                 embed_images: true,
                 include_form_fields: true,
+                include_artifacts: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: true, // Aggressive hyphenation
@@ -124,6 +125,7 @@ impl DocumentType {
                 image_output_dir: None,
                 embed_images: true,
                 include_form_fields: true,
+                include_artifacts: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: true,
@@ -151,6 +153,7 @@ impl DocumentType {
                 image_output_dir: None,
                 embed_images: true,
                 include_form_fields: true,
+                include_artifacts: true,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
             enable_hyphenation_reconstruction: true, // Essential for novels
@@ -178,6 +181,7 @@ impl DocumentType {
                 image_output_dir: None,
                 embed_images: true,
                 include_form_fields: true,
+                include_artifacts: true,
             },
             word_boundary_mode: WordBoundaryMode::Primary,
             enable_hyphenation_reconstruction: false, // Not applicable to CJK
@@ -205,6 +209,7 @@ impl DocumentType {
                 image_output_dir: None,
                 embed_images: true,
                 include_form_fields: true,
+                include_artifacts: true,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker,
             enable_hyphenation_reconstruction: false, // Different rules
@@ -528,6 +533,7 @@ impl TextPipelineConfig {
                 image_output_dir: opts.image_output_dir.clone(),
                 embed_images: opts.embed_images,
                 include_form_fields: opts.include_form_fields,
+                include_artifacts: opts.include_artifacts,
             },
             word_boundary_mode: WordBoundaryMode::Tiebreaker, // Keep old behavior compatible
             enable_hyphenation_reconstruction: true,
@@ -1112,6 +1118,13 @@ pub struct OutputConfig {
     ///
     /// Default: true
     pub include_form_fields: bool,
+
+    /// Include spans tagged `/Artifact` (running headers/footers, page
+    /// numbers, watermarks; ISO 32000-1:2008 §14.8.2.2.1) in the output.
+    ///
+    /// Default: true (backward compatibility; see
+    /// [`crate::converters::ConversionOptions::include_artifacts`]).
+    pub include_artifacts: bool,
 }
 
 impl Default for OutputConfig {
@@ -1125,6 +1138,7 @@ impl Default for OutputConfig {
             image_output_dir: None,
             embed_images: true,
             include_form_fields: true,
+            include_artifacts: true,
         }
     }
 }
