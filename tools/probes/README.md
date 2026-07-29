@@ -19,3 +19,4 @@ documentation surface, which these are not.
 - `probe_text_coverage.rs` — content-preservation sanity check
 - `analyze_office_conversion.rs` — broader corpus-wide conversion stats
 - `time_one.rs` — page-count summary helper
+- `probe_remove_artifacts_corpus.rs` — removed counts/chars, post-removal hash
