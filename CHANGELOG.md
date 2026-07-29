@@ -2,6 +2,19 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Large-format CAD/construction drawing sheets lost most of their text from every text-level API** — `extract_text()`, `extract_spans()`, `extract_words()` and `extract_text_lines()` returned a small fraction of what `extract_chars()` reported for the same page, so schedules, general notes and title blocks silently vanished while the character layer proved the text was there. Content streams above 256 KB are pre-scanned for text regions instead of parsed front to back, and the graphics state reconstructed for each region was wrong in two ways: it was sampled at the `BT`/`Do` rather than at the region start, so `q`/`cm` operators inside a marked-content block were applied twice (an AutoCAD sheet drawn at `0.12` scale inside an `8.3333333` block landed its text ~69× off, outside the MediaBox, where the off-page filter deleted it); and a stream whose `Do` invocations outnumbered its `BT` blocks by more than 10:1 had every `Do` position discarded, reporting a page that draws through re-used blocks as having no text at all. On a 59-page public construction drawing set, 13 pages lost 86–98% of their characters; all now extract in full (#966).
+
+### Contributors
+
+Issues reported by:
+- **@tealtonyplanhub** — #966 (text-level APIs lose most characters on CAD drawing sheets that `extract_chars` returns in full)
+
+Thank you!
+
 ## [0.3.77] - 2026-07-27
 
 > Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
