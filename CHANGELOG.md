@@ -2,6 +2,12 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`extract_chars` returned Form XObject text that no conformant renderer paints, disagreeing with `extract_spans` about the page's content** — a form's marks are clipped to its `/BBox` (ISO 32000-1:2008 §8.10.1), and the span layer applied that clip while the character layer did not. On the pdfTeX pattern, where a whole page is embedded as a figure-sized form and the embedded file still carries a full draft galley, `extract_chars` returned a second, invisible copy of the article interleaved with the real one — roughly twice the characters `extract_spans` reported for the same page. Beyond the API inconsistency this corrupted assembled text, because word-boundary detection reads the character layer: a statistics table came out as `Test 8 0.71 3 … 0.0 676` and `PD Me ds` where the clipped glyphs split the tokens. Forms covering ≥60% of the page are still treated as content frames rather than figures and are not clipped, so wrapper bodies are unaffected. Across the 419-PDF regression corpus, pages where the two layers disagreed by more than half went from 7 to 0 (#970).
+
 ## [0.3.77] - 2026-07-27
 
 > Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
