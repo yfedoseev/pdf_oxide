@@ -977,18 +977,20 @@ fn prescan_text_regions(data: &[u8]) -> Option<PrescanResult> {
         return Some(PrescanResult::Empty);
     }
 
-    // Drop Do positions when Do dominates BT (chart/figure graphics that
-    // would merge prescan regions across the entire stream).
+    // `Do` dominating `BT` means chart/figure graphics whose regions would
+    // merge across the whole stream, defeating the pre-scan. Give up and let
+    // the caller parse the stream in full: the invocations cannot simply be
+    // dropped, because a Form XObject is where a page's text lives whenever a
+    // producer draws through re-used blocks — a CAD sheet keeps its schedules,
+    // notes and title block there, and discarding those positions reports the
+    // page as having no text regions at all.
     let bt_count = text_positions
         .iter()
         .filter(|&&p| p + 1 < len && data[p] == b'B')
         .count();
     let do_count = text_positions.len() - bt_count;
     if do_count > 50 && do_count > bt_count * 10 {
-        text_positions.retain(|&p| p + 1 < len && data[p] == b'B');
-        if text_positions.is_empty() {
-            return Some(PrescanResult::Empty);
-        }
+        return None;
     }
 
     // For each text position, scan backwards to find the nearest unmatched 'q'
@@ -1027,18 +1029,46 @@ fn prescan_text_regions(data: &[u8]) -> Option<PrescanResult> {
         // backward scan to capture all enclosing CTM context. Run a lightweight
         // forward scan to get the full graphics state at each BT/Do position.
         //
-        // Regions start at the BT/Do position itself (not the backward-scanned
-        // q) to avoid q/Q nesting issues with the SaveState/RestoreState
-        // wrapping. The forward scan also tracks font state so BT blocks that
-        // inherit fonts from prior state get the correct Tf injected.
-        let states = forward_scan_ctm(data, &text_positions)?;
+        // Each region is extended back over a preceding BDC/BMC and forward
+        // over the following EMC, so marked-content operators survive in
+        // tagged PDFs. That extension makes the region start EARLIER than the
+        // BT/Do it was found from, which constrains the injected state in two
+        // ways — both of them defects when ignored, and both routinely hit by
+        // CAD/plan-sheet streams, which are one long line of `cm`-scaled
+        // marked-content blocks:
+        //
+        //  * The state must be the one in force at the REGION START, not at
+        //    the BT. Anything between the two (typically `q`/`cm` inside the
+        //    marked-content block) is replayed when the region is parsed, so
+        //    taking the state at the BT applies those operators twice — an
+        //    AutoCAD sheet drawn at `0.12` scale inside an `8.3333333` block
+        //    lands its text ~69x off, outside the MediaBox, where the
+        //    off-page filter then drops it.
+        //
+        //  * The extension must not swallow an unbalanced `Q`. The region is
+        //    wrapped in SaveState/RestoreState, so a restore with no matching
+        //    save inside the region pops THAT save and discards the injected
+        //    state entirely. When the window carries one, keep the region
+        //    starting at the BT/Do and give up the marked-content context
+        //    rather than the geometry.
+        let region_starts: Vec<usize> = text_positions
+            .iter()
+            .map(|&tp| {
+                let start = find_preceding_marked_content(data, tp);
+                if has_unbalanced_restore(data, start, tp) {
+                    tp
+                } else {
+                    start
+                }
+            })
+            .collect();
 
-        // Build BT-based regions with their graphics state.
-        // Extend each region to include preceding BDC/BMC and following EMC
-        // so that marked-content operators are preserved in tagged PDFs.
+        // The forward scan also tracks font state, so BT blocks that inherit
+        // a font from a prior scope get the correct Tf injected.
+        let states = forward_scan_ctm(data, &region_starts)?;
+
         let mut ctm_regions: Vec<(usize, usize)> = Vec::new();
-        for &tp in &text_positions {
-            let region_start = find_preceding_marked_content(data, tp);
+        for (&tp, &region_start) in text_positions.iter().zip(&region_starts) {
             let region_end = if data[tp] == b'B' {
                 let et_end = find_matching_et(data, tp + 2).unwrap_or(len);
                 find_following_emc(data, et_end)
@@ -1195,6 +1225,40 @@ fn find_preceding_marked_content(data: &[u8], pos: usize) -> usize {
         }
     }
     pos
+}
+
+/// Whether `data[start..end]` contains a `Q` with no matching `q` before it.
+///
+/// Such a restore would pop the SaveState that wraps an injected pre-scan
+/// region, so a region containing one cannot carry injected graphics state.
+/// Errs toward `true`: a `q`/`Q` appearing inside a string operand is counted
+/// as an operator, which at worst costs the region its marked-content context.
+fn has_unbalanced_restore(data: &[u8], start: usize, end: usize) -> bool {
+    fn is_delim(b: u8) -> bool {
+        b.is_ascii_whitespace()
+            || matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+    }
+    let end = end.min(data.len());
+    let mut depth: i32 = 0;
+    for i in start..end {
+        if !matches!(data[i], b'q' | b'Q') {
+            continue;
+        }
+        let before_ok = i == 0 || is_delim(data[i - 1]);
+        let after_ok = i + 1 >= data.len() || is_delim(data[i + 1]);
+        if !before_ok || !after_ok {
+            continue;
+        }
+        if data[i] == b'q' {
+            depth += 1;
+        } else {
+            depth -= 1;
+            if depth < 0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Scan forward from `pos` to find any immediately following EMC operator.
