@@ -56,6 +56,9 @@ pub enum WarningCategory {
     Font,
     /// Layout / reading-order warnings.
     Layout,
+    /// A glyph produced no rendered output while the cursor still advanced,
+    /// so the page renders with an invisible gap.
+    GlyphDropped,
 }
 
 impl WarningCategory {
@@ -71,6 +74,7 @@ impl WarningCategory {
             Self::Encryption => "encryption",
             Self::Font => "font",
             Self::Layout => "layout",
+            Self::GlyphDropped => "glyph_dropped",
         }
     }
 }
