@@ -12,7 +12,6 @@ use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_and_execute_text_only;
 use crate::content::parse_content_stream;
-use crate::content::parse_content_stream_text_only;
 use crate::error::Result;
 use crate::extract_log_debug;
 use crate::fonts::FontInfo;
@@ -3867,13 +3866,29 @@ impl<'doc> TextExtractor<'doc> {
         self.spans.clear(); // Ensure spans are clear so they don't poison xobject_spans_cache
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
-        let operators = if self.excluded_inks.is_empty() {
-            parse_content_stream_text_only(content_stream)?
+        // Same parser as `extract_text_spans`. Character mode and span mode must
+        // differ only in how `execute_operator` handles the show-text operators,
+        // never in which operators reach it.
+        //
+        // This was the last caller of `parse_content_stream_text_only`, a second
+        // implementation of the same job that is not equivalent to
+        // `parse_and_execute_text_only` — they reconstruct the graphics state
+        // around a text region by different routes, so they can agree on every
+        // text operator (same BT blocks, same show operators, same operands)
+        // and still hand the extractor a different CTM. Counting operators does
+        // not detect that. On govdocs_003_003181.pdf page 4 it cost a
+        // 90°-rotated chart axis: all 2322 glyphs came back at rotation 0.
+        // Through this parser the page yields 2590 glyphs, 122 at 90°, matching
+        // the span path.
+        if self.excluded_inks.is_empty() {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))?;
         } else {
-            parse_content_stream(content_stream)?
-        };
-        for op in operators {
-            self.execute_operator(op)?;
+            // Ink filtering requires color operators (cs, rg, g, k) which the
+            // text-only parser skips. Fall back to the full parser.
+            let operators = parse_content_stream(content_stream)?;
+            for op in operators {
+                self.execute_operator(op)?;
+            }
         }
 
         // BUG FIX #2: Sort characters by reading order (top-to-bottom, left-to-right)
