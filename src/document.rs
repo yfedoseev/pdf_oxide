@@ -5393,13 +5393,27 @@ impl PdfDocument {
         // portrait page): the row-major assembler groups lines
         // in the portrait frame and interleaves every rotated row. Assemble
         // such pages in their rotated reading frame instead.
-        let base_spans = match self.map_dominant_rotation_into_reading_frame(page_index, base_spans)
-        {
-            Ok(mapped) => mapped,
-            Err(original) => original,
-        };
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// [`Self::map_dominant_rotation_into_reading_frame`] with the
+    /// mapped/unchanged distinction collapsed, for the call sites that only
+    /// want "spans as a reader sees them".
+    ///
+    /// Every text-producing surface goes through this. Applying the frame at
+    /// one call site made the same page read correctly through `extract_text`
+    /// and incorrectly through `to_markdown` / `to_html` / `to_plain_text`.
+    fn spans_in_reading_frame(
+        &self,
+        page_index: usize,
+        spans: Vec<crate::layout::TextSpan>,
+    ) -> Vec<crate::layout::TextSpan> {
+        match self.map_dominant_rotation_into_reading_frame(page_index, spans) {
+            Ok(mapped) => mapped,
+            Err(original) => original,
+        }
     }
 
     /// Map a dominant-rotation page's spans into their rotated reading
@@ -5491,6 +5505,7 @@ impl PdfDocument {
     ) -> Result<String> {
         let mut base_spans = self.extract_spans(page_index)?;
         base_spans.extend(extra);
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
     }
@@ -15566,6 +15581,7 @@ impl PdfDocument {
         }
 
         let spans = self.extract_spans_filtered(page_index, excluded_layers, excluded_inks)?;
+        let spans = self.spans_in_reading_frame(page_index, spans);
         let options = crate::converters::ConversionOptions {
             extract_tables: true,
             ..Default::default()
@@ -15592,6 +15608,7 @@ impl PdfDocument {
         } else {
             self.extract_spans_filtered(page_index, excluded_layers, excluded_inks)?
         };
+        let spans = self.spans_in_reading_frame(page_index, spans);
         let options = crate::converters::ConversionOptions {
             extract_tables: true,
             include_region: Some((region, mode)),
@@ -19968,6 +19985,11 @@ impl PdfDocument {
             return Ok(vertical);
         }
 
+        // Same frame `extract_text` assembles in, applied at the same point:
+        // after the vertical-CJK check (which reads the rotation this clears)
+        // and before table detection (which consumes the geometry this maps).
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
         // fallback: a short-cell two-column body must read column-major as
@@ -20544,6 +20566,9 @@ impl PdfDocument {
             return Ok(format!("<p>{}</p>", escaped.trim()));
         }
 
+        // Same frame `extract_text` assembles in — see `to_markdown_inner`.
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
         // fallback: a short-cell two-column body must read column-major as
@@ -20785,11 +20810,12 @@ impl PdfDocument {
         // path below, so their output is byte-for-byte unchanged.
         if self.prefers_structure_reading_order() {
             let base_spans = self.extract_spans(page_index)?;
+            let base_spans = self.spans_in_reading_frame(page_index, base_spans);
             return self.assemble_text_from_spans(page_index, base_spans, options);
         }
 
         // Step 1: Extract raw spans (unchanged - this is the foundation)
-        let mut spans = self.extract_spans(page_index)?;
+        let mut spans = self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
 
         // Step 1b: Merge widget annotation spans (form field values) if enabled
         if options.include_form_fields {
