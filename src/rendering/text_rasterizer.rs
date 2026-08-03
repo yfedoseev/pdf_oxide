@@ -333,6 +333,46 @@ fn render_cjk_fallback_face() -> Option<Arc<CachedFace>> {
 }
 
 /// Rasterizer for PDF text operations.
+/// Glyphs that painted nothing while the cursor advanced, tallied for one
+/// text run.
+///
+/// A dropped glyph is indistinguishable from real whitespace downstream: OCR
+/// transcribes the gap-filled render faithfully and the loss reaches a search
+/// index unnoticed (#991). One warning per run names the font, the first
+/// offending code and glyph id, and how many followed — enough to identify a
+/// broken font without a log line per glyph.
+#[derive(Default)]
+struct GlyphDropTally {
+    count: usize,
+    first: Option<(&'static str, u32, u16)>,
+}
+
+impl GlyphDropTally {
+    fn record(&mut self, reason: &'static str, char_code: u32, gid: u16) {
+        self.count += 1;
+        self.first.get_or_insert((reason, char_code, gid));
+    }
+
+    fn report(&self, font_name: &str) {
+        let Some((reason, char_code, gid)) = self.first else {
+            return;
+        };
+        let message = format!(
+            "font '{font_name}' painted nothing for {} glyph(s) while advancing the cursor; \
+             first was code 0x{char_code:X} (glyph {gid}): {reason}. The page renders with \
+             a gap that reads as whitespace downstream.",
+            self.count
+        );
+        log::warn!(target: "pdf_oxide::fonts", "{message}");
+        crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+            category: crate::extractors::warnings::WarningCategory::GlyphDropped,
+            page: None,
+            message,
+            spec_section: Some("9.6.6"),
+        });
+    }
+}
+
 pub struct TextRasterizer {
     /// Font database for system font fallback.
     ///
@@ -636,6 +676,10 @@ impl TextRasterizer {
         bytes: &[u8],
         font: Option<&crate::fonts::FontInfo>,
     ) -> String {
+        // Chars that resolve to U+FFFD are removed from the shaping input
+        // below: no glyph, no advance, and every downstream index shifts.
+        // Counted so the loss is reported rather than silent (#991).
+        let mut undecodable = GlyphDropTally::default();
         let raw_result = if let Some(font) = font {
             let mut result = String::new();
             // Use pre-computed lookup table for performance if it's a simple font
@@ -652,6 +696,8 @@ impl TextRasterizer {
                             .unwrap_or_else(|| fallback_char_to_unicode(byte as u32));
                         if char_str != "\u{FFFD}" {
                             result.push_str(&char_str);
+                        } else {
+                            undecodable.record("no Unicode mapping", byte as u32, 0);
                         }
                     }
                 }
@@ -664,9 +710,12 @@ impl TextRasterizer {
 
                     if char_str != "\u{FFFD}" {
                         result.push_str(&char_str);
+                    } else {
+                        undecodable.record("no Unicode mapping", char_code as u32, 0);
                     }
                 }
             }
+            undecodable.report(&font.base_font);
             result
         } else {
             // No font - fallback to Latin-1 (ISO 8859-1) encoding
@@ -1132,6 +1181,9 @@ impl TextRasterizer {
         let combined_base = base_transform.pre_concat(text_transform);
 
         let mut x_cursor: f32 = 0.0; // In text space units
+        // See GlyphDropTally: a glyph that paints nothing here still advances
+        // the cursor, leaving a gap indistinguishable from whitespace (#991).
+        let mut unicode_dropped = GlyphDropTally::default();
                                      // y_cursor tracks the cursor along the y-axis. It stays at 0 in
                                      // horizontal mode (the default) and accumulates `w1y*font_size/1000`
                                      // per glyph when WMode 1 is active. Single cursor variable keeps the
@@ -1393,11 +1445,7 @@ impl TextRasterizer {
                 }
 
                 if !has_outline {
-                    log::debug!(
-                        "No glyph outline found for char='{}' (0x{:X})",
-                        char_at_pos,
-                        char_at_pos as u32
-                    );
+                    unicode_dropped.record("no outline in font or CJK fallback", char_at_pos as u32, 0);
                 }
             }
 
@@ -1420,6 +1468,10 @@ impl TextRasterizer {
                 }
             }
         }
+
+        unicode_dropped.report(
+            font_info.map(|f| f.base_font.as_str()).unwrap_or("<system fallback>"),
+        );
 
         // Return the magnitude of the accumulated advance along the active
         // writing axis. Callers that drive the text matrix forward consume
@@ -1464,6 +1516,11 @@ impl TextRasterizer {
         let mut x_cursor: f32 = 0.0;
         let mut y_cursor: f32 = 0.0;
         let wmode = gs.text_wmode;
+        // A glyph that paints nothing while the cursor still advances leaves an
+        // invisible gap, and a caller cannot tell that from real whitespace
+        // (#991). Counted per run and reported once, so a broken font is
+        // visible without one line per glyph.
+        let mut dropped = GlyphDropTally::default();
 
         // Iterate over character codes from the raw bytes
         for (char_code, _bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
@@ -1530,14 +1587,22 @@ impl TextRasterizer {
             let char_at_pos = char_str.chars().next().unwrap_or('\0');
 
             // Draw glyph outline
+            if gid == 0 && !char_at_pos.is_whitespace() {
+                dropped.record("no glyph id", char_code, gid);
+            }
             if gid != 0 || char_at_pos.is_whitespace() {
                 if !char_at_pos.is_whitespace() {
                     let mut pb = PathBuilder::new();
                     let mut builder = SkiaOutlineBuilder(&mut pb);
-                    if ttf_face
+                    // Outlined once: `outline_glyph` appends to the builder,
+                    // so calling it twice would draw the glyph twice.
+                    let outlined = ttf_face
                         .outline_glyph(ttf_parser::GlyphId(gid), &mut builder)
-                        .is_some()
-                    {
+                        .is_some();
+                    if !outlined {
+                        dropped.record("no outline", char_code, gid);
+                    }
+                    if outlined {
                         if let Some(path) = pb.finish() {
                             let (rise_x, rise_y) = if wmode == 0 {
                                 (0.0, gs.text_rise)
@@ -1572,6 +1637,7 @@ impl TextRasterizer {
                 }
             }
         }
+        dropped.report(&font_info.base_font);
 
         Ok(if wmode == 0 { x_cursor } else { y_cursor })
     }
