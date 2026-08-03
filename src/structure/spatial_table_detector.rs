@@ -3581,17 +3581,33 @@ fn detect_tables_from_horizontal_rules(
             }
         }
     }
-    let mut families: HashMap<usize, Vec<&Edge>> = HashMap::new();
+    // Keyed by union-find root in a BTreeMap, not a HashMap: HashMap iteration
+    // order is randomized per process, and the sort below cannot recover from
+    // that on its own. Families are grouped by X-RANGE COHERENCE, so `coord`
+    // (the Y of a horizontal rule) is not unique across families — two rule
+    // families side by side, or a decorative border sharing a table's top-rule
+    // Y, tie on `a[0].coord`. `sort_by` is stable, so a tie leaves the input
+    // order intact, and with a HashMap that input order is per-process random:
+    // the two families then emit their tables in a different order each run,
+    // which reorders the rendered table blocks in the assembled page text.
+    // The BTreeMap makes the collected order deterministic; the root tiebreak
+    // makes the emitted order a total order over the families, so it depends
+    // only on page geometry and edge input order. Each family's `Vec` is pushed
+    // in ascending `wide` index order, so `a[0]` is still the family's first
+    // rule and non-tied pages sort exactly as before (byte-identical).
+    let mut families: std::collections::BTreeMap<usize, Vec<&Edge>> =
+        std::collections::BTreeMap::new();
     for (i, e) in wide.iter().enumerate() {
         families.entry(uf.find(i)).or_default().push(e);
     }
-    // Deterministic family order (HashMap iteration is randomized).
-    let mut families: Vec<Vec<&Edge>> = families.into_values().collect();
-    families.sort_by(|a, b| crate::utils::safe_float_cmp(a[0].coord, b[0].coord));
+    let mut families: Vec<(usize, Vec<&Edge>)> = families.into_iter().collect();
+    families.sort_by(|(root_a, a), (root_b, b)| {
+        crate::utils::safe_float_cmp(a[0].coord, b[0].coord).then_with(|| root_a.cmp(root_b))
+    });
 
     let mut tables = Vec::new();
 
-    for family in &families {
+    for (_root, family) in &families {
         // Cluster this family's edges by Y-coordinate (snap within Y_SNAP).
         let mut y_coords: Vec<f32> = Vec::new();
         for e in family {
