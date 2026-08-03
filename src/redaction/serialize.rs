@@ -309,10 +309,18 @@ pub(crate) fn serialize_operator(output: &mut Vec<u8>, op: &Operator) {
         // Inline image (BI…ID…EI)
         Operator::InlineImage { dict, data } => {
             output.extend_from_slice(b"BI\n");
-            for (key, value) in dict.iter() {
-                output.extend_from_slice(format!("/{} ", key).as_bytes());
-                serialize_object(output, value);
-                output.push(b'\n');
+            // Sorted for the same reason as `Object::Dictionary` below: the
+            // inline-image dictionary is a `HashMap`, and every inline image
+            // carries several keys (/W /H /BPC /CS at minimum), so unsorted
+            // emission randomizes the content stream's bytes every run.
+            let mut keys: Vec<_> = dict.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = dict.get(key) {
+                    output.extend_from_slice(format!("/{} ", key).as_bytes());
+                    serialize_object(output, value);
+                    output.push(b'\n');
+                }
             }
             output.extend_from_slice(b"ID ");
             output.extend_from_slice(data);
@@ -356,9 +364,20 @@ pub(crate) fn serialize_object(output: &mut Vec<u8>, obj: &Object) {
         },
         Object::Dictionary(dict) => {
             output.extend_from_slice(b"<<");
-            for (key, value) in dict {
-                output.extend_from_slice(format!("/{} ", key).as_bytes());
-                serialize_object(output, value);
+            // Sort keys for deterministic output. `Object::Dictionary` is a
+            // `HashMap`, so iterating it directly emits the entries in the
+            // per-process-randomized order and the redacted PDF's bytes differ
+            // between runs of the same binary on the same input. Unlike a
+            // tie-break this is unconditional: any dictionary with two or more
+            // keys reorders. Same fix as `writer::ObjectSerializer`, which
+            // already sorts for this reason.
+            let mut keys: Vec<_> = dict.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = dict.get(key) {
+                    output.extend_from_slice(format!("/{} ", key).as_bytes());
+                    serialize_object(output, value);
+                }
             }
             output.extend_from_slice(b">>");
         },
@@ -482,5 +501,54 @@ mod tests {
         );
         serialize_operator(&mut out, &Operator::RestoreState);
         assert_eq!(s(&out), "q\n1.000000 0.000000 0.000000 1.000000 10.000000 20.000000 cm\nQ\n");
+    }
+
+    /// A dictionary with several keys must serialize in sorted key order every
+    /// run. `Object::Dictionary` is a `HashMap`, so emitting its entries in
+    /// iteration order put the redacted PDF's bytes at the mercy of the
+    /// per-process hash seed — this assertion failed on most runs before the
+    /// keys were sorted. Unlike a tie-break the defect is unconditional: two
+    /// or more keys is enough.
+    #[test]
+    fn dictionary_serializes_in_sorted_key_order() {
+        let mut dict = std::collections::HashMap::new();
+        dict.insert("Zebra".to_string(), Object::Integer(3));
+        dict.insert("Alpha".to_string(), Object::Integer(1));
+        dict.insert("Middle".to_string(), Object::Integer(2));
+        let mut out = Vec::new();
+        serialize_object(&mut out, &Object::Dictionary(dict));
+        assert_eq!(s(&out), "<</Alpha 1/Middle 2/Zebra 3>>");
+    }
+
+    /// A single-key dictionary is unaffected by the sort — the ordinary case
+    /// must serialize exactly as before.
+    #[test]
+    fn single_key_dictionary_is_unaffected_by_sorting() {
+        let mut dict = std::collections::HashMap::new();
+        dict.insert("Only".to_string(), Object::Name("Value".to_string()));
+        let mut out = Vec::new();
+        serialize_object(&mut out, &Object::Dictionary(dict));
+        assert_eq!(s(&out), "<</Only /Value>>");
+    }
+
+    /// The inline-image dictionary is emitted through a separate loop and
+    /// needs the same guarantee: every inline image carries several keys, so
+    /// unsorted emission randomized the content stream on essentially every
+    /// image.
+    #[test]
+    fn inline_image_dictionary_serializes_in_sorted_key_order() {
+        let mut dict = std::collections::HashMap::new();
+        dict.insert("W".to_string(), Object::Integer(2));
+        dict.insert("BPC".to_string(), Object::Integer(8));
+        dict.insert("H".to_string(), Object::Integer(1));
+        let mut out = Vec::new();
+        serialize_operator(
+            &mut out,
+            &Operator::InlineImage {
+                dict: Box::new(dict),
+                data: b"ab".to_vec(),
+            },
+        );
+        assert_eq!(s(&out), "BI\n/BPC 8\n/H 1\n/W 2\nID ab\nEI\n");
     }
 }
