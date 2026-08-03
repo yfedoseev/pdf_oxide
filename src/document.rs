@@ -17127,7 +17127,14 @@ impl PdfDocument {
                 );
             }
         }
-        // One line per rotated run (contiguous words sharing the same span index).
+        // Rotated runs, grouped into lines. A run's own extents are recorded in
+        // its frame, so the offset BETWEEN lines is the coordinate the run does
+        // not advance along: x for a +-90 degree run, y for 180. Runs that share
+        // that offset are one visual line however many `Tm`s drew them — a
+        // rotated table row is typically one run per cell. Grouping by run alone
+        // returns one line per cell (#983); grouping without the rotation key
+        // fuses perpendicular columns into one line (#804).
+        let mut run_first_word: Vec<(usize, usize)> = Vec::new();
         let mut run_start = 0;
         while run_start < words.len() {
             match word_rot_run[run_start] {
@@ -17137,11 +17144,41 @@ impl PdfDocument {
                     while run_end < words.len() && word_rot_run[run_end] == Some(run_id) {
                         run_end += 1;
                     }
-                    lines.push(words[run_start..run_end].to_vec());
+                    run_first_word.push((run_start, run_end));
                     run_start = run_end;
                 },
             }
         }
+
+        // On a /Rotate page `postprocess_spans` rect-maps each span's bbox into
+        // the displayed frame but leaves `rotation_degrees` describing the
+        // pre-display one, so the bbox axes and the rotation no longer agree and
+        // the offset read below would be taken off the wrong axis.
+        let page_is_unrotated = self.get_page_rotation(page_index).unwrap_or(0) == 0;
+
+        let mut rotated_lines: Vec<(f32, f32, Vec<Word>)> = Vec::new();
+        for (start, end) in run_first_word {
+            let word = &words[start];
+            let rotation = spans[word_rot_run[start].expect("rotated run")].rotation_degrees;
+            // Only a quarter-turn run has its line offset on x; 180 degrees and
+            // free angles keep one line per run, as before. Widening past this
+            // merges runs that were never one line.
+            let quarter_turn = (rotation.abs() - 90.0).abs() < 0.5;
+            if !quarter_turn || !page_is_unrotated {
+                rotated_lines.push((rotation, f32::NAN, words[start..end].to_vec()));
+                continue;
+            }
+            let across = word.bbox.x;
+            let tolerance = word.bbox.height.max(1.0) * 0.5;
+            let existing = rotated_lines.iter_mut().find(|(rot, off, _)| {
+                (*rot - rotation).abs() < 0.5 && (*off - across).abs() <= tolerance
+            });
+            match existing {
+                Some((_, _, line)) => line.extend_from_slice(&words[start..end]),
+                None => rotated_lines.push((rotation, across, words[start..end].to_vec())),
+            }
+        }
+        lines.extend(rotated_lines.into_iter().map(|(_, _, line)| line));
         // Reading order: sort lines by the span sequence of their first word
         // (stable so intra-line order is preserved).
         lines.sort_by_key(|line| line.first().map(|w| w.sequence).unwrap_or(usize::MAX));
