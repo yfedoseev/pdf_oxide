@@ -212,6 +212,47 @@ impl Default for TextSpan {
 }
 
 impl TextSpan {
+    /// Where the run physically sits on the page.
+    ///
+    /// [`Self::bbox`] carries the run's own extents: `width` is the advance
+    /// along the writing axis and `height` the font size, whatever the
+    /// rotation. That is the right frame for measuring the text, and it is the
+    /// frame every existing consumer already reads, so it is left alone — but
+    /// it means a run drawn with `Tm [0 1 -1 0]` reports a wide, short box for
+    /// text that is physically tall and narrow.
+    ///
+    /// This rotates those extents about the run origin into page space. At
+    /// `rotation_degrees == 0` it returns `bbox` unchanged, so upright pages
+    /// cannot move; free angles get the axis-aligned hull of the rotated box.
+    ///
+    /// Mirrors [`crate::elements::Path::rendered_bbox`]: a derived accessor
+    /// rather than a second stored rectangle that could drift out of sync.
+    pub fn page_bbox(&self) -> Rect {
+        if self.rotation_degrees == 0.0 {
+            return self.bbox;
+        }
+        let theta = self.rotation_degrees.to_radians();
+        let (sin, cos) = theta.sin_cos();
+        // Writing axis and the across-line axis, the same pair the assembler
+        // resolves displacements onto (ISO 32000-1 §9.4.4).
+        let (ux, uy) = (cos, sin);
+        let (vx, vy) = (-sin, cos);
+        let (w, h) = (self.bbox.width, self.bbox.height);
+        let corners = [
+            (0.0, 0.0),
+            (w, 0.0),
+            (0.0, h),
+            (w, h),
+        ]
+        .map(|(a, b)| (self.bbox.x + a * ux + b * vx, self.bbox.y + a * uy + b * vy));
+
+        let min_x = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
+        let max_x = corners.iter().map(|c| c.0).fold(f32::NEG_INFINITY, f32::max);
+        let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
+        let max_y = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max);
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
     /// Decompose the span into individual characters.
     pub fn to_chars(&self) -> Vec<TextChar> {
         let char_count = self.text.chars().count();
