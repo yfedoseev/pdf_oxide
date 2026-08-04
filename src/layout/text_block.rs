@@ -238,18 +238,19 @@ impl TextSpan {
         let (ux, uy) = (cos, sin);
         let (vx, vy) = (-sin, cos);
         let (w, h) = (self.bbox.width, self.bbox.height);
-        let corners = [
-            (0.0, 0.0),
-            (w, 0.0),
-            (0.0, h),
-            (w, h),
-        ]
-        .map(|(a, b)| (self.bbox.x + a * ux + b * vx, self.bbox.y + a * uy + b * vy));
+        let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+            .map(|(a, b)| (self.bbox.x + a * ux + b * vx, self.bbox.y + a * uy + b * vy));
 
         let min_x = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
-        let max_x = corners.iter().map(|c| c.0).fold(f32::NEG_INFINITY, f32::max);
+        let max_x = corners
+            .iter()
+            .map(|c| c.0)
+            .fold(f32::NEG_INFINITY, f32::max);
         let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
-        let max_y = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners
+            .iter()
+            .map(|c| c.1)
+            .fold(f32::NEG_INFINITY, f32::max);
         Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
 

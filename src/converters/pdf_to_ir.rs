@@ -1447,10 +1447,7 @@ mod merge_lines_tests {
         let mut lines: Vec<Vec<TextSpan>> = Vec::new();
         for i in 0..8 {
             let left_x = if i < 4 { 50.0 } else { 100.0 };
-            lines.push(vec![
-                span_at(left_x, 250.0 - left_x),
-                span_at(350.0, 200.0),
-            ]);
+            lines.push(vec![span_at(left_x, 250.0 - left_x), span_at(350.0, 200.0)]);
         }
         let layout = detect_columns(&lines, 612.0).expect("two-column layout expected");
         assert_eq!(

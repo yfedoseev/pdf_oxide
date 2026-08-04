@@ -984,11 +984,7 @@ mod heading_level_tests {
             );
         }
         for s in spans.iter().skip(3) {
-            assert_eq!(
-                s.heading_level, None,
-                "body-size span must not be a heading: {:?}",
-                s.text
-            );
+            assert_eq!(s.heading_level, None, "body-size span must not be a heading: {:?}", s.text);
         }
     }
 

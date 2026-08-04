@@ -64,7 +64,6 @@ impl GlyphDropTally {
     }
 }
 
-
 /// Fallback function to map common character codes to Unicode when ToUnicode CMap fails.
 ///
 /// PDF Spec Compliance: ISO 32000-1:2008 Section 9.10.2
@@ -460,7 +459,6 @@ pub(crate) fn decode_text_to_unicode(
     }
     filtered
 }
-
 
 /// Strip a subset-tag prefix from a base font name
 /// (e.g., `"QQPMQK+Impact"` → `"Impact"`). Only the spec-shaped form —
