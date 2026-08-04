@@ -174,3 +174,83 @@ fn zero_width_mask_sub_image_renders() {
         .expect("page with a zero-width mask renders");
     assert!(!img.data.is_empty(), "renderer produced an empty buffer");
 }
+
+/// Build a page carrying one `/AP` dictionary with the given entries, or no
+/// annotation at all when `ap_entries` is `None`.
+fn annotation_ap_pdf(ap_entries: Option<&str>) -> Vec<u8> {
+    let red =
+        stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 30 30]", b"1 0 0 rg 0 0 30 30 re f");
+    let green =
+        stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 30 30]", b"0 1 0 rg 0 0 30 30 re f");
+    let annots = match ap_entries {
+        Some(_) => "/Annots [5 0 R]",
+        None => "",
+    };
+    let annot = match ap_entries {
+        Some(ap) => {
+            format!("<< /Type /Annot /Subtype /Square /Rect [10 10 40 40] /F 4 /AP << {ap} >> >>")
+        },
+        None => "<< /Type /Annot /Subtype /Square /Rect [10 10 40 40] /F 4 >>".to_string(),
+    };
+    let objects = vec![
+        obj("<< /Type /Catalog /Pages 2 0 R >>"),
+        obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        obj(&format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 50] /Contents 4 0 R {annots} >>"
+        )),
+        stream_obj("", b""),
+        obj(&annot),
+        red,
+        green,
+    ];
+    build_pdf(&objects)
+}
+
+/// Render the same bytes `n` times, reparsing each time, and return the set of
+/// distinct pixel buffers.
+fn distinct_renders(pdf: &[u8], n: usize) -> std::collections::HashSet<Vec<u8>> {
+    let mut distinct = std::collections::HashSet::new();
+    for _ in 0..n {
+        let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
+        let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
+        distinct.insert(img.data);
+    }
+    distinct
+}
+
+/// ISO 32000-1 §12.5.5: `/N` is the normal appearance. An `/AP` carrying only
+/// `/D` and `/R` has no normal appearance, so nothing is drawn — picking an
+/// arbitrary sibling stream made identical bytes render differently per run.
+#[test]
+fn annotation_appearance_without_normal_entry_draws_nothing() {
+    let blank = distinct_renders(&annotation_ap_pdf(None), 1)
+        .into_iter()
+        .next()
+        .expect("baseline render");
+
+    let renders = distinct_renders(&annotation_ap_pdf(Some("/D 6 0 R /R 7 0 R")), 64);
+    assert_eq!(renders.len(), 1, "identical bytes produced {} distinct renders", renders.len());
+    assert_eq!(
+        renders.into_iter().next().expect("one render"),
+        blank,
+        "an /AP without /N must draw no appearance"
+    );
+}
+
+/// Control: the same annotation WITH `/N` draws that stream, deterministically.
+/// Without this the test above would also pass if annotations stopped rendering.
+#[test]
+fn annotation_appearance_with_normal_entry_is_deterministic() {
+    let blank = distinct_renders(&annotation_ap_pdf(None), 1)
+        .into_iter()
+        .next()
+        .expect("baseline render");
+
+    let renders = distinct_renders(&annotation_ap_pdf(Some("/N 6 0 R /R 7 0 R")), 64);
+    assert_eq!(renders.len(), 1, "identical bytes produced {} distinct renders", renders.len());
+    assert_ne!(
+        renders.into_iter().next().expect("one render"),
+        blank,
+        "the /N appearance stream must actually be drawn"
+    );
+}
