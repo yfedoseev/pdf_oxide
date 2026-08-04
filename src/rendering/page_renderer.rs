@@ -689,8 +689,7 @@ impl PageRenderer {
 
         for font in self.fonts.values() {
             if font.subtype == "Type0" && font.truetype_cmap().is_none() {
-                let base_name =
-                    crate::fonts::unicode_decode::strip_subset_prefix(&font.base_font);
+                let base_name = crate::fonts::unicode_decode::strip_subset_prefix(&font.base_font);
                 if let Some((shared_cmap, _)) = best_cmaps.get(base_name) {
                     font.truetype_cmap.set(Some(shared_cmap.clone())).ok();
                 }

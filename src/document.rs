@@ -5966,9 +5966,7 @@ impl PdfDocument {
                         // linear-scan Vec beats allocating a HashMap per span.
                         let mut span_tokens: Vec<(&str, usize)> = Vec::new();
                         for tok in trimmed.split_whitespace() {
-                            if let Some(entry) =
-                                span_tokens.iter_mut().find(|(t, _)| *t == tok)
-                            {
+                            if let Some(entry) = span_tokens.iter_mut().find(|(t, _)| *t == tok) {
                                 entry.1 += 1;
                             } else {
                                 span_tokens.push((tok, 1));
@@ -6015,9 +6013,7 @@ impl PdfDocument {
                         // traffic table). Require spatial proximity so body
                         // text that coincidentally matches a cell's text
                         // elsewhere on the page is not dropped.
-                        if !decided
-                            && !trimmed.is_empty()
-                            && cell_text_index.contains_key(trimmed)
+                        if !decided && !trimmed.is_empty() && cell_text_index.contains_key(trimmed)
                         {
                             let near_table = tables.iter().any(|t| {
                                 t.bbox.is_some_and(|tb| {

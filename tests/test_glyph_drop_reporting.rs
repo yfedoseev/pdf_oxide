@@ -27,7 +27,10 @@ impl log::Log for CaptureWarnings {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            captured().lock().expect("capture lock").push(record.args().to_string());
+            captured()
+                .lock()
+                .expect("capture lock")
+                .push(record.args().to_string());
         }
     }
 

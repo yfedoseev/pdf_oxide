@@ -63,7 +63,9 @@ fn converters_read_a_rotated_page_in_the_same_order_as_extract_text() {
 
     // The fixture must reach the framed path, or the comparison is vacuous.
     assert!(
-        from_text.windows(3).any(|w| w == ["Engine", "oil", "capacity"]),
+        from_text
+            .windows(3)
+            .any(|w| w == ["Engine", "oil", "capacity"]),
         "extract_text did not assemble the rotated page: {from_text:?}"
     );
 
@@ -82,13 +84,12 @@ fn html_reads_a_rotated_page_in_the_same_order_as_extract_text() {
     let from_html = reading_order(&strip_tags(&doc.to_html(0, &options).expect("to_html")));
 
     assert!(
-        from_text.windows(3).any(|w| w == ["Engine", "oil", "capacity"]),
+        from_text
+            .windows(3)
+            .any(|w| w == ["Engine", "oil", "capacity"]),
         "extract_text did not assemble the rotated page: {from_text:?}"
     );
-    assert_eq!(
-        from_text, from_html,
-        "extract_text and to_html disagree on a rotated page"
-    );
+    assert_eq!(from_text, from_html, "extract_text and to_html disagree on a rotated page");
 }
 
 #[test]
@@ -100,7 +101,9 @@ fn plain_text_reads_a_rotated_page_in_the_same_order_as_extract_text() {
     let from_plain = reading_order(&doc.to_plain_text(0, &options).expect("to_plain_text"));
 
     assert!(
-        from_text.windows(3).any(|w| w == ["Engine", "oil", "capacity"]),
+        from_text
+            .windows(3)
+            .any(|w| w == ["Engine", "oil", "capacity"]),
         "extract_text did not assemble the rotated page: {from_text:?}"
     );
     assert_eq!(
@@ -127,7 +130,9 @@ fn filtered_text_reads_a_rotated_page_in_the_same_order_as_extract_text() {
     let from_filtered = reading_order(&filtered);
 
     assert!(
-        from_text.windows(3).any(|w| w == ["Engine", "oil", "capacity"]),
+        from_text
+            .windows(3)
+            .any(|w| w == ["Engine", "oil", "capacity"]),
         "extract_text did not assemble the rotated page: {from_text:?}"
     );
     assert_eq!(

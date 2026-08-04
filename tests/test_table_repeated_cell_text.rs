@@ -52,8 +52,9 @@ fn repeated_value_table_pdf() -> Vec<u8> {
         // repeated-value invariant on a grid the detector reshapes.
         (110, 646, "0.00"),
     ] {
-        content
-            .extend_from_slice(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes());
+        content.extend_from_slice(
+            format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes(),
+        );
     }
     build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
 }
@@ -131,8 +132,9 @@ fn merged_cell_table_pdf() -> Vec<u8> {
         (110, 620, "Delta"),
         (260, 620, "Epsilon"),
     ] {
-        content
-            .extend_from_slice(format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes());
+        content.extend_from_slice(
+            format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes(),
+        );
     }
     build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
 }
