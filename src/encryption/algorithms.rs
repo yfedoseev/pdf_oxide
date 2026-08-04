@@ -230,22 +230,25 @@ fn authenticate_user_password_r5_r6(
         return None;
     }
 
-    if revision >= 6 {
-        // R6: Derive intermediate key via Algorithm 2.B, then unwrap UE
-        let ue = user_encryption?;
-        if ue.len() < 32 {
-            return None;
-        }
-        let intermediate_key = algorithm_2b(&password, key_salt, &[]);
-        let iv = [0u8; 16];
-        super::aes::aes256_decrypt_no_padding(&intermediate_key[..32], &iv, &ue[..32]).ok()
+    // The intermediate key differs between revisions (plain SHA-256 for R5,
+    // Algorithm 2.B for R6), but for both the file key is the AES-256
+    // unwrap of /UE with that intermediate key (ISO 32000-2 §7.6.4.4.8;
+    // Adobe Supplement ExtensionLevel 3 for R5). The intermediate key is
+    // never the file key itself.
+    let ue = user_encryption?;
+    if ue.len() < 32 {
+        return None;
+    }
+    let intermediate_key = if revision >= 6 {
+        algorithm_2b(&password, key_salt, &[])
     } else {
-        // R5: Simple SHA-256(password || key_salt)
         let mut hasher = Sha256::new();
         hasher.update(&password);
         hasher.update(key_salt);
-        Some(hasher.finalize().to_vec())
-    }
+        hasher.finalize().to_vec()
+    };
+    let iv = [0u8; 16];
+    super::aes::aes256_decrypt_no_padding(&intermediate_key[..32], &iv, &ue[..32]).ok()
 }
 
 /// Apply SASLprep (RFC 4013) normalization to a password.
@@ -836,23 +839,24 @@ fn authenticate_owner_password_r5_r6(
         return None;
     }
 
-    if revision >= 6 {
-        // R6: Derive intermediate key via Algorithm 2.B, then unwrap OE
-        let oe = owner_encryption?;
-        if oe.len() < 32 {
-            return None;
-        }
-        let intermediate_key = algorithm_2b(&password, owner_key_salt, u_value);
-        let iv = [0u8; 16];
-        super::aes::aes256_decrypt_no_padding(&intermediate_key[..32], &iv, &oe[..32]).ok()
+    // Same shape as the user path: the revision decides the intermediate
+    // hash, and the file key is always the AES-256 unwrap of /OE with it
+    // (ISO 32000-2 §7.6.4.4.8; Adobe Supplement ExtensionLevel 3 for R5).
+    let oe = owner_encryption?;
+    if oe.len() < 32 {
+        return None;
+    }
+    let intermediate_key = if revision >= 6 {
+        algorithm_2b(&password, owner_key_salt, u_value)
     } else {
-        // R5: SHA-256(password || owner_key_salt || U[0..48])
         let mut hasher = Sha256::new();
         hasher.update(&password);
         hasher.update(owner_key_salt);
         hasher.update(u_value);
-        Some(hasher.finalize().to_vec())
-    }
+        hasher.finalize().to_vec()
+    };
+    let iv = [0u8; 16];
+    super::aes::aes256_decrypt_no_padding(&intermediate_key[..32], &iv, &oe[..32]).ok()
 }
 
 /// Constant-time comparison to prevent timing attacks.
@@ -1160,18 +1164,36 @@ mod tests {
         user_key.extend_from_slice(&key_salt);
         assert_eq!(user_key.len(), 48);
 
-        let result = authenticate_user_password(
-            password, &user_key, &[0u8; 48], // owner_key unused for R>=5
-            -1, b"", 5, 32, true, None,
-        );
-        assert!(result.is_some());
-
-        // Verify the returned key is SHA-256("test" || key_salt)
+        // Wrap a known file key into /UE with the spec algorithm:
+        // UE = AES-256-CBC(key = SHA-256(password || key_salt), iv = 0, file key).
+        let file_key = [0x5Au8; 32];
         let mut hasher = Sha256::new();
         hasher.update(password);
         hasher.update(key_salt);
-        let expected_key = hasher.finalize().to_vec();
-        assert_eq!(result.unwrap(), expected_key);
+        let intermediate = hasher.finalize();
+        let ue =
+            crate::encryption::aes::aes256_encrypt_no_padding(&intermediate, &[0u8; 16], &file_key)
+                .unwrap();
+
+        let result = authenticate_user_password(
+            password,
+            &user_key,
+            &[0u8; 48], // owner_key unused for R>=5
+            -1,
+            b"",
+            5,
+            32,
+            true,
+            Some(&ue),
+        );
+        // The file key is the unwrapped /UE — never the intermediate hash.
+        assert_eq!(result.unwrap(), file_key.to_vec());
+
+        // Without /UE the file key is unobtainable; authentication must fail
+        // loudly rather than hand back the intermediate hash as a "key".
+        let no_ue =
+            authenticate_user_password(password, &user_key, &[0u8; 48], -1, b"", 5, 32, true, None);
+        assert!(no_ue.is_none());
     }
 
     #[test]
@@ -1346,19 +1368,39 @@ mod tests {
         owner_key.extend_from_slice(&owner_validation_salt);
         owner_key.extend_from_slice(&owner_key_salt);
 
-        let result = authenticate_owner_password(
-            password, &user_key, &owner_key, -1, b"", 5, 32, true, None,
-        )
-        .unwrap();
-        assert!(result.is_some());
-
-        // Verify the returned key is SHA-256(password || owner_key_salt || U[0..48])
+        // Wrap a known file key into /OE with the spec algorithm:
+        // OE = AES-256-CBC(key = SHA-256(password || owner_key_salt || U), iv = 0, file key).
+        let file_key = [0xC3u8; 32];
         let mut hasher = Sha256::new();
         hasher.update(password.as_slice());
         hasher.update(owner_key_salt);
         hasher.update(&user_key[..48]);
-        let expected_key = hasher.finalize().to_vec();
-        assert_eq!(result.unwrap(), expected_key);
+        let intermediate = hasher.finalize();
+        let oe =
+            crate::encryption::aes::aes256_encrypt_no_padding(&intermediate, &[0u8; 16], &file_key)
+                .unwrap();
+
+        let result = authenticate_owner_password(
+            password,
+            &user_key,
+            &owner_key,
+            -1,
+            b"",
+            5,
+            32,
+            true,
+            Some(&oe),
+        )
+        .unwrap();
+        // The file key is the unwrapped /OE — never the intermediate hash.
+        assert_eq!(result.unwrap(), file_key.to_vec());
+
+        // Without /OE the file key is unobtainable; authentication must fail.
+        let no_oe = authenticate_owner_password(
+            password, &user_key, &owner_key, -1, b"", 5, 32, true, None,
+        )
+        .unwrap();
+        assert!(no_oe.is_none());
     }
 
     #[test]
