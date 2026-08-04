@@ -1181,15 +1181,15 @@ impl TextRasterizer {
         let combined_base = base_transform.pre_concat(text_transform);
 
         let mut x_cursor: f32 = 0.0; // In text space units
-        // See GlyphDropTally: a glyph that paints nothing here still advances
-        // the cursor, leaving a gap indistinguishable from whitespace (#991).
+                                     // See GlyphDropTally: a glyph that paints nothing here still advances
+                                     // the cursor, leaving a gap indistinguishable from whitespace (#991).
         let mut unicode_dropped = GlyphDropTally::default();
-                                     // y_cursor tracks the cursor along the y-axis. It stays at 0 in
-                                     // horizontal mode (the default) and accumulates `w1y*font_size/1000`
-                                     // per glyph when WMode 1 is active. Single cursor variable keeps the
-                                     // hot loop simple — the branch on `gs.text_wmode` only flips which
-                                     // axis receives the advance and how the glyph is positioned
-                                     // relative to its horizontal origin.
+        // y_cursor tracks the cursor along the y-axis. It stays at 0 in
+        // horizontal mode (the default) and accumulates `w1y*font_size/1000`
+        // per glyph when WMode 1 is active. Single cursor variable keeps the
+        // hot loop simple — the branch on `gs.text_wmode` only flips which
+        // axis receives the advance and how the glyph is positioned
+        // relative to its horizontal origin.
         let mut y_cursor: f32 = 0.0;
         let mut last_fallback_cluster: Option<usize> = None;
         let wmode = gs.text_wmode;
@@ -1445,7 +1445,11 @@ impl TextRasterizer {
                 }
 
                 if !has_outline {
-                    unicode_dropped.record("no outline in font or CJK fallback", char_at_pos as u32, 0);
+                    unicode_dropped.record(
+                        "no outline in font or CJK fallback",
+                        char_at_pos as u32,
+                        0,
+                    );
                 }
             }
 
@@ -1470,7 +1474,9 @@ impl TextRasterizer {
         }
 
         unicode_dropped.report(
-            font_info.map(|f| f.base_font.as_str()).unwrap_or("<system fallback>"),
+            font_info
+                .map(|f| f.base_font.as_str())
+                .unwrap_or("<system fallback>"),
         );
 
         // Return the magnitude of the accumulated advance along the active

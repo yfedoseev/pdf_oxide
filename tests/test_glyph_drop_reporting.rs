@@ -27,7 +27,10 @@ impl log::Log for CaptureWarnings {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            captured().lock().expect("capture lock").push(record.args().to_string());
+            captured()
+                .lock()
+                .expect("capture lock")
+                .push(record.args().to_string());
         }
     }
 
@@ -63,7 +66,8 @@ fn a_dropped_glyph_is_reported() {
     install_capture();
     let pdf = unmapped_glyph_pdf();
     let doc = pdf_oxide::document::PdfDocument::from_bytes(pdf).expect("parse fixture");
-    let _ = doc.render_page(0, 1.0);
+    let opts = pdf_oxide::rendering::RenderOptions::default();
+    let _ = pdf_oxide::rendering::render_page(&doc, 0, &opts);
 
     let warnings = captured().lock().expect("capture lock");
     assert!(
