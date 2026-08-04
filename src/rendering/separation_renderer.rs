@@ -2896,9 +2896,14 @@ fn paint_image_to_plates(
     // extractor exposes RGB after Indexed expansion; for separation
     // routing we only consume CMYK / Separation / DeviceN paths (the
     // shapes above), so anything else falls through to skip.
-    // `decode_pre_applied`: the extractor stores Raw pixels with /Decode
-    // already mapped in (ISO 32000-1 §8.9.5.2), so re-applying it here would
-    // double-invert. JPEG samples are decoded locally and still need it.
+    // `decode_pre_applied`: whether /Decode is ALREADY mapped into these
+    // samples (ISO 32000-1 §8.9.5.2), in which case re-applying it here would
+    // double-invert. For extractor-provided Raw buffers this is exactly what
+    // the extractor recorded — notably it is false when the extractor could
+    // not interpret the array (e.g. a DeviceN whose ink count differs from
+    // the colour space's declared component count), so this path still owes
+    // the image its /Decode. JPEG samples are decoded locally and always do.
+    let extractor_decode_applied = pdf_image.decode_applied();
     let (samples, stride, decode_pre_applied) =
         match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
             // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
@@ -2909,7 +2914,7 @@ fn paint_image_to_plates(
                     pixels,
                     format: PixelFormat::CMYK,
                 },
-            ) => (pixels.clone(), 4usize, true),
+            ) => (pixels.clone(), 4usize, extractor_decode_applied),
             // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
             (
                 ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
@@ -2918,11 +2923,11 @@ fn paint_image_to_plates(
             ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4, false),
             // Separation: 1 channel.
             (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
-                (pixels.clone(), 1, true)
+                (pixels.clone(), 1, extractor_decode_applied)
             },
             // DeviceN: N channels (extractor reports DeviceN with N components).
             (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
-                (pixels.clone(), names.len().max(1), true)
+                (pixels.clone(), names.len().max(1), extractor_decode_applied)
             },
             // Shape mismatch (e.g. extractor reports a different colour space than
             // the dict declared after our resolver ran). Drop silently — the
