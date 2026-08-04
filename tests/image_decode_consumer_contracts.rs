@@ -1,0 +1,111 @@
+//! Consumers that compare stored image samples against values taken from the
+//! image dictionary — colour-key `/Mask` ranges (ISO 32000-1 §8.9.6.4),
+//! separation-plate routing — read samples in the *raw* sample space. When the
+//! extractor maps a non-default `/Decode` into the stored buffer (§8.9.5.2) it
+//! must say so, or those consumers silently compare in the wrong space.
+//!
+//! A malformed `/BitsPerComponent` must also stay a recoverable decode error
+//! rather than becoming a panic in the sub-byte unpacker.
+
+use pdf_oxide::document::PdfDocument;
+use pdf_oxide::extractors::ImageData;
+
+fn build_pdf(image_dict: &str, image_data: &[u8]) -> Vec<u8> {
+    let content: &[u8] = b"q 100 0 0 100 0 0 cm /Im0 Do Q";
+    let mut bodies: Vec<Vec<u8>> = vec![Vec::new(); 6]; // ids 1..=5
+    bodies[1] = b"<< /Type /Catalog /Pages 2 0 R >>".to_vec();
+    bodies[2] = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec();
+    bodies[3] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>"
+        .to_vec();
+    let mut img = format!("{image_dict}\nstream\n").into_bytes();
+    img.extend_from_slice(image_data);
+    img.extend_from_slice(b"\nendstream");
+    bodies[4] = img;
+    let mut cs = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    cs.extend_from_slice(content);
+    cs.extend_from_slice(b"\nendstream");
+    bodies[5] = cs;
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    let mut offsets = [0usize; 6];
+    for id in 1..=5 {
+        offsets[id] = out.len();
+        out.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
+        out.extend_from_slice(&bodies[id]);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for id in 1..=5 {
+        out.extend_from_slice(format!("{:010} 00000 n \n", offsets[id]).as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
+/// An image whose samples were rewritten through `/Decode` must advertise it,
+/// so a colour-key `/Mask` consumer does not range-test the wrong space.
+#[test]
+fn decoded_samples_are_flagged_for_raw_sample_consumers() {
+    let data: Vec<u8> = (0..64u8).collect();
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0] /Length 64 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let img = &imgs[0];
+    assert!(
+        img.decode_applied(),
+        "a non-default /Decode was mapped into the samples but the image does not say so"
+    );
+}
+
+/// The default `/Decode` leaves samples raw, so the flag must stay clear —
+/// otherwise every ordinary image would lose colour-key masking.
+#[test]
+fn untouched_samples_are_not_flagged() {
+    let data: Vec<u8> = (0..64u8).collect();
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    assert!(
+        !imgs[0].decode_applied(),
+        "an image with no /Decode must remain in the raw sample space"
+    );
+}
+
+/// A `/BitsPerComponent` outside the spec's {1, 2, 4, 8, 16} must not reach
+/// the sub-byte unpacker's shift arithmetic: extraction either declines the
+/// image or returns it untouched, never panics.
+#[test]
+fn illegal_bits_per_component_does_not_panic() {
+    for bpc in [3u8, 5, 6, 7, 12] {
+        let dict = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+             /ColorSpace /DeviceGray /BitsPerComponent {bpc} /Decode [1 0] /Length 64 >>"
+        );
+        let data: Vec<u8> = (0..64u8).collect();
+        let doc = PdfDocument::from_bytes(build_pdf(&dict, &data)).expect("open pdf");
+        // Whatever it decides, it must decide it without unwinding.
+        let extracted = doc.extract_images(0);
+        if let Ok(imgs) = extracted {
+            for img in &imgs {
+                if let ImageData::Raw { pixels, .. } = img.data() {
+                    // The stream is passed through untouched for an illegal
+                    // depth, so the buffer keeps its original length.
+                    assert_eq!(pixels.len(), 64, "bpc={bpc} buffer was rewritten");
+                }
+            }
+        }
+    }
+}

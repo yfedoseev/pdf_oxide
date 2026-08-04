@@ -52,6 +52,14 @@ pub struct PdfImage {
     /// Rendering intent from the image dictionary's `/Intent`, or the
     /// graphics-state default per ISO 32000-1:2008 §8.6.5.8.
     rendering_intent: crate::color::RenderingIntent,
+    /// Whether a non-default `/Decode` array has already been mapped into
+    /// `data`. Consumers that compare stored samples against values taken
+    /// from the image dictionary — colour-key `/Mask` ranges (§8.9.6.4),
+    /// separation-plate routing — must read the samples in the *raw*
+    /// sample space, so they need to know when this buffer is no longer
+    /// raw.
+    #[serde(skip)]
+    decode_applied: bool,
 }
 
 impl PdfImage {
@@ -75,7 +83,19 @@ impl PdfImage {
             ccitt_params: None,
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
+            decode_applied: false,
         }
+    }
+
+    /// Whether a non-default `/Decode` array is already baked into the
+    /// stored samples, so they are no longer in the raw sample space.
+    pub fn decode_applied(&self) -> bool {
+        self.decode_applied
+    }
+
+    /// Record that `/Decode` has been mapped into the stored samples.
+    pub(crate) fn set_decode_applied(&mut self, applied: bool) {
+        self.decode_applied = applied;
     }
 
     /// Create a new PDF image with spatial metadata (v0.3.14).
@@ -101,6 +121,7 @@ impl PdfImage {
             ccitt_params: None,
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
+            decode_applied: false,
         }
     }
 
@@ -146,6 +167,7 @@ impl PdfImage {
             ccitt_params: Some(ccitt_params),
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
+            decode_applied: false,
         }
     }
 
@@ -741,6 +763,9 @@ fn decode_ranges(decode: Option<&crate::object::Object>, ncomp: usize) -> Option
 /// `Dmin + raw · (Dmax − Dmin) / (2^bpc − 1)`, then scales to `0..=255`.
 /// Sub-byte samples are unpacked from their MSB-first, byte-aligned rows, so
 /// the result always holds `width × height × ncomp` bytes.
+/// Returns `None` for a `/BitsPerComponent` outside the spec's {1, 2, 4, 8}
+/// (Table 89) rather than trusting it as shift arithmetic: a malformed value
+/// must surface as a recoverable decode error, never a panic.
 fn samples_to_decoded_bytes(
     data: &[u8],
     width: u32,
@@ -748,8 +773,10 @@ fn samples_to_decoded_bytes(
     ncomp: usize,
     bpc: u8,
     ranges: Option<&[(f32, f32)]>,
-) -> Vec<u8> {
-    debug_assert!(matches!(bpc, 1 | 2 | 4 | 8));
+) -> Option<Vec<u8>> {
+    if !matches!(bpc, 1 | 2 | 4 | 8) {
+        return None;
+    }
     let bpc = usize::from(bpc);
     let max = ((1u32 << bpc) - 1) as f32;
     let map = |raw: u32, comp: usize| -> u8 {
@@ -759,11 +786,12 @@ fn samples_to_decoded_bytes(
     };
 
     if bpc == 8 {
-        return data
-            .iter()
-            .enumerate()
-            .map(|(i, &b)| map(b as u32, i % ncomp))
-            .collect();
+        return Some(
+            data.iter()
+                .enumerate()
+                .map(|(i, &b)| map(b as u32, i % ncomp))
+                .collect(),
+        );
     }
     let samples_per_row = width as usize * ncomp;
     let row_bytes = (samples_per_row * bpc).div_ceil(8);
@@ -779,7 +807,7 @@ fn samples_to_decoded_bytes(
             out.push(map(raw, s % ncomp));
         }
     }
-    out
+    Some(out)
 }
 
 /// Extract an image from an XObject stream.
@@ -945,6 +973,9 @@ pub fn extract_image_from_xobject(
     // below (sub-byte unpack, /Decode application, 16-bit reduction) rewrites
     // the samples as one byte per component.
     let mut stored_bpc = bits_per_component;
+    // Set when a non-default /Decode is mapped into the stored samples, so
+    // raw-sample consumers (colour-key /Mask, plate routing) can tell.
+    let mut decode_applied = false;
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
     } else if is_jpx {
@@ -1024,12 +1055,13 @@ pub fn extract_image_from_xobject(
 
             // The stored buffer contract is one 8-bit byte per component
             // (`PixelFormat::bytes_per_pixel`), so sub-byte samples are
-            // unpacked here and a non-default /Decode is applied at every
-            // bit depth (ISO 32000-1 §8.9.5.2) — not only for 1-bit CCITT.
-            let pixels = if keep_raw || (bpc_after_reduce == 8 && ranges.is_none()) {
-                reduced
+            // unpacked here and a non-default /Decode is applied at
+            // 1/2/4/8 bpc on this raw-sample path (ISO 32000-1 §8.9.5.2).
+            // DCT- and JPX-coded images keep their encoded stream and do
+            // not pass through here, so /Decode is not applied to them.
+            let unpacked = if keep_raw || (bpc_after_reduce == 8 && ranges.is_none()) {
+                None
             } else {
-                stored_bpc = 8;
                 samples_to_decoded_bytes(
                     &reduced,
                     width,
@@ -1038,6 +1070,17 @@ pub fn extract_image_from_xobject(
                     bpc_after_reduce,
                     ranges.as_deref(),
                 )
+            };
+            // A `/BitsPerComponent` the spec does not define leaves the
+            // stream untouched, so the existing length checks downstream
+            // reject it as they did before.
+            let pixels = match unpacked {
+                Some(samples) => {
+                    stored_bpc = 8;
+                    decode_applied = ranges.is_some();
+                    samples
+                },
+                None => reduced,
             };
             ImageData::Raw {
                 pixels,
@@ -1058,6 +1101,7 @@ pub fn extract_image_from_xobject(
         stored_bpc
     };
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
+    image.set_decode_applied(decode_applied);
 
     // Attach the ICC profile if we found one — prefer the direct ICCBased
     // profile, then fall back to an Indexed base's profile so the CMM has
