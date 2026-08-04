@@ -84,6 +84,86 @@ fn untouched_samples_are_not_flagged() {
     );
 }
 
+/// 4-bpc unpacking: two samples per byte, high nibble first. Width 9 forces a
+/// padded row (36 bits in 5 bytes), so an unpacker that ignored row padding
+/// would shear the image diagonally from row 1 onward.
+#[test]
+fn four_bpc_unpacks_with_row_padding() {
+    // Per row: 0x0F 0x00 0x00 0x00 0x00 -> samples 0,15,0,0,0,0,0,0,0 and
+    // four padding bits. Extraction skips images under 8x8, so the row is
+    // widened rather than shortened.
+    let row: [u8; 5] = [0x0F, 0x00, 0x00, 0x00, 0x00];
+    let mut data: Vec<u8> = Vec::new();
+    for _ in 0..8 {
+        data.extend_from_slice(&row);
+    }
+    let doc = PdfDocument::from_bytes(build_pdf(
+        &format!(
+            "<< /Type /XObject /Subtype /Image /Width 9 /Height 8 \
+             /ColorSpace /DeviceGray /BitsPerComponent 4 /Length {} >>",
+            data.len()
+        ),
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let ImageData::Raw { pixels, .. } = imgs[0].data() else {
+        panic!("expected raw samples");
+    };
+    assert_eq!(pixels.len(), 9 * 8, "one byte per sample");
+    for (row_index, chunk) in pixels.chunks(9).enumerate() {
+        assert_eq!(chunk[0], 0, "row {row_index} must restart at its own byte boundary");
+        assert_eq!(chunk[1], 255, "row {row_index} second sample");
+        assert!(
+            chunk[2..].iter().all(|&b| b == 0),
+            "row {row_index} tail must be zero, got {chunk:?}"
+        );
+    }
+}
+
+/// Sub-byte unpacking with more than one component: the per-component
+/// `/Decode` range must follow the component index, not the sample index.
+#[test]
+fn two_bpc_rgb_applies_per_component_decode() {
+    // Each pixel is 3 samples of 2 bits: 0, 1, 3 -> 00 01 11, so a row of 8
+    // pixels is 24 samples = 48 bits = 6 bytes exactly.
+    let pattern: u8 = 0b00_01_11_00; // px0 R,G,B + px1 R
+    let row: Vec<u8> = vec![
+        pattern,
+        0b01_11_00_01,
+        0b11_00_01_11,
+        pattern,
+        0b01_11_00_01,
+        0b11_00_01_11,
+    ];
+    let mut data: Vec<u8> = Vec::new();
+    for _ in 0..8 {
+        data.extend_from_slice(&row);
+    }
+    let doc = PdfDocument::from_bytes(build_pdf(
+        &format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+             /ColorSpace /DeviceRGB /BitsPerComponent 2 /Decode [1 0 0 1 0 1] \
+             /Length {} >>",
+            data.len()
+        ),
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let ImageData::Raw { pixels, .. } = imgs[0].data() else {
+        panic!("expected raw samples");
+    };
+    assert_eq!(pixels.len(), 8 * 8 * 3, "three bytes per pixel");
+    // First pixel: R sample 0 inverted -> 255; G sample 1 identity -> 85;
+    // B sample 3 identity -> 255. Only the red channel's range is inverted.
+    assert_eq!(
+        &pixels[..3],
+        &[255, 85, 255],
+        "per-component /Decode must key on the component, not the sample index"
+    );
+}
+
 /// A `/BitsPerComponent` outside the spec's {1, 2, 4, 8, 16} must not reach
 /// the sub-byte unpacker's shift arithmetic: extraction either declines the
 /// image or returns it untouched, never panics.

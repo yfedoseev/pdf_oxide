@@ -85,6 +85,74 @@ fn span_right_edge(content: &[u8]) -> f32 {
     s.bbox.x + s.bbox.width
 }
 
+/// One-page PDF whose Type0 font uses a mixed-codespace CMap (90ms-RKSJ-H),
+/// where byte 0x20 IS a single-byte code — the other half of §9.3.3.
+fn build_rksj(content_stream: &[u8]) -> Vec<u8> {
+    let mut bodies: Vec<Vec<u8>> = vec![Vec::new(); 8]; // ids 1..=7
+    bodies[1] = b"<< /Type /Catalog /Pages 2 0 R >>".to_vec();
+    bodies[2] = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec();
+    bodies[3] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+        .to_vec();
+    let mut content_obj = format!("<< /Length {} >>\nstream\n", content_stream.len()).into_bytes();
+    content_obj.extend_from_slice(content_stream);
+    content_obj.extend_from_slice(b"\nendstream");
+    bodies[4] = content_obj;
+    bodies[5] = b"<< /Type /Font /Subtype /Type0 /BaseFont /Ryumin-Light-90ms-RKSJ-H \
+/Encoding /90ms-RKSJ-H /DescendantFonts [6 0 R] >>"
+        .to_vec();
+    bodies[6] = b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Ryumin-Light \
+/CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 2 >> \
+/FontDescriptor 7 0 R /DW 1000 >>"
+        .to_vec();
+    bodies[7] = b"<< /Type /FontDescriptor /FontName /Ryumin-Light /Flags 6 \
+/FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 880 /Descent -120 \
+/CapHeight 880 /StemV 90 >>"
+        .to_vec();
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    let mut offsets = [0usize; 8];
+    for id in 1..=7 {
+        offsets[id] = out.len();
+        out.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
+        out.extend_from_slice(&bodies[id]);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 8\n0000000000 65535 f \n");
+    for id in 1..=7 {
+        out.extend_from_slice(format!("{:010} 00000 n \n", offsets[id]).as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
+/// The positive half of §9.3.3: a composite font that defines code 32 as a
+/// SINGLE-byte code must still receive word spacing. Guarding the negative
+/// case by font subtype rather than by byte width would silently break this.
+#[test]
+fn word_spacing_still_applied_to_single_byte_code_32_in_composite_font() {
+    let right_edge = |content: &[u8]| -> f32 {
+        let doc = PdfDocument::from_bytes(build_rksj(content)).expect("parse pdf");
+        let spans = doc.extract_spans(0).expect("spans");
+        spans
+            .iter()
+            .map(|s| s.bbox.x + s.bbox.width)
+            .fold(f32::MIN, f32::max)
+    };
+    // "A B" in RKSJ: 0x41 0x20 0x42, all single-byte codes.
+    let with_tw = right_edge(b"BT /F1 24 Tf 50 700 Td 50 Tw <412042> Tj ET");
+    let without_tw = right_edge(b"BT /F1 24 Tf 50 700 Td 0 Tw <412042> Tj ET");
+    assert!(
+        with_tw > without_tw + 40.0,
+        "single-byte code 32 in a composite font must still take Tw: \
+         Tw=50 edge {with_tw}, Tw=0 edge {without_tw}"
+    );
+}
+
 #[test]
 fn word_spacing_not_applied_to_two_byte_code_32() {
     // Two 1000/1000-em glyphs at 24pt from x0 = 50 → right edge 50 + 48 = 98.
