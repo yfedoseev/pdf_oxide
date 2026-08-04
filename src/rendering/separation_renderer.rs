@@ -2896,49 +2896,58 @@ fn paint_image_to_plates(
     // extractor exposes RGB after Indexed expansion; for separation
     // routing we only consume CMYK / Separation / DeviceN paths (the
     // shapes above), so anything else falls through to skip.
-    let (samples, stride) = match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
-        // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
-        (
-            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
-            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
-            ImageData::Raw {
-                pixels,
-                format: PixelFormat::CMYK,
+    // `decode_pre_applied`: the extractor stores Raw pixels with /Decode
+    // already mapped in (ISO 32000-1 §8.9.5.2), so re-applying it here would
+    // double-invert. JPEG samples are decoded locally and still need it.
+    let (samples, stride, decode_pre_applied) =
+        match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
+            // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
+            (
+                ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+                PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+                ImageData::Raw {
+                    pixels,
+                    format: PixelFormat::CMYK,
+                },
+            ) => (pixels.clone(), 4usize, true),
+            // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
+            (
+                ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+                PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+                ImageData::Jpeg(bytes),
+            ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4, false),
+            // Separation: 1 channel.
+            (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
+                (pixels.clone(), 1, true)
             },
-        ) => (pixels.clone(), 4usize),
-        // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
-        (
-            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
-            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
-            ImageData::Jpeg(bytes),
-        ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4),
-        // Separation: 1 channel.
-        (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
-            (pixels.clone(), 1)
-        },
-        // DeviceN: N channels (extractor reports DeviceN with N components).
-        (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
-            (pixels.clone(), names.len().max(1))
-        },
-        // Shape mismatch (e.g. extractor reports a different colour space than
-        // the dict declared after our resolver ran). Drop silently — the
-        // resolver result wins for routing semantics but we won't fabricate
-        // channels we don't have.
-        _ => {
-            log::debug!(
-                "Image XObject '{name}': shape mismatch between resolved colour space \
+            // DeviceN: N channels (extractor reports DeviceN with N components).
+            (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
+                (pixels.clone(), names.len().max(1), true)
+            },
+            // Shape mismatch (e.g. extractor reports a different colour space than
+            // the dict declared after our resolver ran). Drop silently — the
+            // resolver result wins for routing semantics but we won't fabricate
+            // channels we don't have.
+            _ => {
+                log::debug!(
+                    "Image XObject '{name}': shape mismatch between resolved colour space \
                  and extractor sample format; skipping"
-            );
-            return Ok(());
-        },
-    };
+                );
+                return Ok(());
+            },
+        };
     let _ = color_state; // currently unused outside the image-mask path
 
     // §8.9.5.2: /Decode maps raw sample values into the colour space's range.
     // For per-plate routing the colour space is treated as identity, so the
     // only effect that matters is inversion (`/Decode [1 0]` on a Separation
-    // image, etc.). Default identity is `[0 1]` per channel.
-    let decode = read_decode_array(dict, stride);
+    // image, etc.). Default identity is `[0 1]` per channel. Only consulted
+    // for sample sources the extractor has not already mapped.
+    let decode = if decode_pre_applied {
+        None
+    } else {
+        read_decode_array(dict, stride)
+    };
 
     let gs = gs_stack.current();
     let transform = combine_transforms(base_transform, &gs.ctm);

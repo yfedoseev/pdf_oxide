@@ -465,14 +465,13 @@ impl PdfImage {
                 } else if self.bits_per_component == 1
                     && matches!(self.color_space, ColorSpace::DeviceGray)
                 {
-                    // Non-CCITT 1-bit DeviceGray: the stream is already fully
-                    // decoded (Flate/LZW/ASCII/no filter) to raw packed bits,
-                    // one row per `ceil(width / 8)` bytes, MSB first. /Decode
-                    // inversion (if any) was already folded into the bits by
-                    // `extract_image_from_xobject`, so unpack with fixed
-                    // ISO 32000-1 §8.9.5.2 Table 90 default semantics: sample
-                    // bit 0 -> component 0.0 (black), bit 1 -> component 1.0
-                    // (white).
+                    // Packed 1-bit DeviceGray rows, `ceil(width / 8)` bytes
+                    // each, MSB first. `extract_image_from_xobject` unpacks
+                    // sub-byte images to 8-bit samples (with /Decode applied)
+                    // before storing, so this branch only serves externally
+                    // constructed images; it unpacks with the ISO 32000-1
+                    // §8.9.5.2 Table 90 default semantics: sample bit 0 ->
+                    // component 0.0 (black), bit 1 -> component 1.0 (white).
                     let row_bytes = (self.width as usize).div_ceil(8);
                     let mut grayscale =
                         Vec::with_capacity(self.width as usize * self.height as usize);
@@ -721,6 +720,68 @@ fn decode_array_inverts_1bpc(decode: Option<&crate::object::Object>) -> bool {
     matches!((as_num(&arr[0]), as_num(&arr[1])), (Some(lo), Some(hi)) if lo > hi)
 }
 
+/// Per-component `(Dmin, Dmax)` pairs from a `/Decode` array, or `None` when
+/// the array is absent or does not hold `2 × ncomp` numbers.
+fn decode_ranges(decode: Option<&crate::object::Object>, ncomp: usize) -> Option<Vec<(f32, f32)>> {
+    let arr = decode.and_then(|o| o.as_array())?;
+    if arr.len() != ncomp * 2 {
+        return None;
+    }
+    let as_num =
+        |o: &crate::object::Object| o.as_integer().map(|i| i as f64).or_else(|| o.as_real());
+    let mut out = Vec::with_capacity(ncomp);
+    for pair in arr.chunks_exact(2) {
+        out.push((as_num(&pair[0])? as f32, as_num(&pair[1])? as f32));
+    }
+    Some(out)
+}
+
+/// Interleaved image samples as one 8-bit byte per component with `/Decode`
+/// applied (ISO 32000-1 §8.9.5.2): each raw sample maps through
+/// `Dmin + raw · (Dmax − Dmin) / (2^bpc − 1)`, then scales to `0..=255`.
+/// Sub-byte samples are unpacked from their MSB-first, byte-aligned rows, so
+/// the result always holds `width × height × ncomp` bytes.
+fn samples_to_decoded_bytes(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    ncomp: usize,
+    bpc: u8,
+    ranges: Option<&[(f32, f32)]>,
+) -> Vec<u8> {
+    debug_assert!(matches!(bpc, 1 | 2 | 4 | 8));
+    let bpc = usize::from(bpc);
+    let max = ((1u32 << bpc) - 1) as f32;
+    let map = |raw: u32, comp: usize| -> u8 {
+        let (lo, hi) = ranges.map_or((0.0, 1.0), |r| r[comp]);
+        let v = lo + (raw as f32) * (hi - lo) / max;
+        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+
+    if bpc == 8 {
+        return data
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| map(b as u32, i % ncomp))
+            .collect();
+    }
+    let samples_per_row = width as usize * ncomp;
+    let row_bytes = (samples_per_row * bpc).div_ceil(8);
+    let mask = (1u32 << bpc) - 1;
+    let mut out = Vec::with_capacity(samples_per_row * height as usize);
+    for row in 0..height as usize {
+        let row_start = row * row_bytes;
+        for s in 0..samples_per_row {
+            let bit_offset = s * bpc;
+            let byte = data.get(row_start + bit_offset / 8).copied().unwrap_or(0);
+            let shift = 8 - bpc - (bit_offset % 8);
+            let raw = ((byte >> shift) as u32) & mask;
+            out.push(map(raw, s % ncomp));
+        }
+    }
+    out
+}
+
 /// Extract an image from an XObject stream.
 pub fn extract_image_from_xobject(
     doc: Option<&crate::document::PdfDocument>,
@@ -880,6 +941,10 @@ pub fn extract_image_from_xobject(
         .iter()
         .any(|n| n.eq_ignore_ascii_case("CCITTFaxDecode"));
 
+    // Bit depth of the buffer actually stored: raised to 8 when a transform
+    // below (sub-byte unpack, /Decode application, 16-bit reduction) rewrites
+    // the samples as one byte per component.
+    let mut stored_bpc = bits_per_component;
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
     } else if is_jpx {
@@ -934,25 +999,45 @@ pub fn extract_image_from_xobject(
             // visibly darkening near-white highlights. Full u16 precision
             // through extraction is deferred (v0.3.72) — no current consumer
             // benefits, as both the PNG path and the rasteriser are 8-bit.
-            let pixels = if bits_per_component == 16 {
+            let reduced: Vec<u8> = if bits_per_component == 16 {
                 decoded_data
                     .chunks_exact(2)
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))
                     .collect()
-            } else if bits_per_component == 1
-                && color_space == ColorSpace::DeviceGray
-                && !is_ccitt
-                && decode_array_inverts_1bpc(dict.get("Decode"))
-            {
-                // Fold a non-default /Decode [1 0] into the packed bits here,
-                // the same way the CCITT branch below folds it into
-                // `black_is_1`, so `to_dynamic_image` can unpack with fixed
-                // (non-inverted) bit semantics regardless of /Decode. Flipping
-                // every bit of a 1-bpp buffer is a plain byte-wise NOT; the
-                // unused row-padding bits get flipped too but are never read.
-                decoded_data.iter().map(|b| !b).collect()
             } else {
                 decoded_data
+            };
+            let bpc_after_reduce = if bits_per_component == 16 {
+                8
+            } else {
+                bits_per_component
+            };
+
+            // CCITT keeps its packed stream — decompression happens lazily
+            // and /Decode is folded into `black_is_1` below. Lab samples are
+            // not confined to [0, 1], so the linear-to-byte mapping does not
+            // apply to them.
+            let keep_raw = is_ccitt || color_space == ColorSpace::Lab;
+            let ncomp = color_space.components();
+            let ranges = decode_ranges(dict.get("Decode"), ncomp)
+                .filter(|r| r.iter().any(|&(lo, hi)| (lo, hi) != (0.0, 1.0)));
+
+            // The stored buffer contract is one 8-bit byte per component
+            // (`PixelFormat::bytes_per_pixel`), so sub-byte samples are
+            // unpacked here and a non-default /Decode is applied at every
+            // bit depth (ISO 32000-1 §8.9.5.2) — not only for 1-bit CCITT.
+            let pixels = if keep_raw || (bpc_after_reduce == 8 && ranges.is_none()) {
+                reduced
+            } else {
+                stored_bpc = 8;
+                samples_to_decoded_bytes(
+                    &reduced,
+                    width,
+                    height,
+                    ncomp,
+                    bpc_after_reduce,
+                    ranges.as_deref(),
+                )
             };
             ImageData::Raw {
                 pixels,
@@ -970,7 +1055,7 @@ pub fn extract_image_from_xobject(
     let effective_bpc = if is_jbig2 || bits_per_component == 16 {
         8
     } else {
-        bits_per_component
+        stored_bpc
     };
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
 
