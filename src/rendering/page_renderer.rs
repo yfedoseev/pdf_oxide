@@ -7745,9 +7745,11 @@ impl PageRenderer {
             if let Some(ap_obj) = annot.raw_dict.as_ref().and_then(|d| d.get("AP")) {
                 let ap_stream_obj = doc.resolve_object(ap_obj)?;
 
-                // Normal appearance (N)
+                // ISO 32000-1 §12.5.5: /N is the normal appearance; /D and /R
+                // show only under pointer press or hover, so an /AP without /N
+                // draws nothing in a static render.
                 if let Object::Dictionary(ap_dict) = ap_stream_obj {
-                    if let Some(n_entry) = ap_dict.get("N").or_else(|| ap_dict.values().next()) {
+                    if let Some(n_entry) = ap_dict.get("N") {
                         let n_stream_obj = doc.resolve_object(n_entry)?;
                         if let Object::Stream { ref dict, .. } = n_stream_obj {
                             let ap_data = if let Some(r) = n_entry.as_reference() {
