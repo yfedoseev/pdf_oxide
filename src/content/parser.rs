@@ -598,6 +598,43 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
     Ok(operators)
 }
 
+/// Text-state parameters tracked by [`forward_scan_ctm`].
+///
+/// These persist across `BT`/`ET` (ISO 32000-1 §9.3.1 — only `Tm` resets at
+/// `BT`) and are saved/restored by `q`/`Q`, so a BT block may rely on a value
+/// set by an earlier block or between blocks. The prescan path parses each
+/// region in isolation inside a synthesized SaveState/RestoreState wrap, which
+/// would silently reset them; the scan tracks them so the region wrapper can
+/// re-inject the inherited values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PrescanTextState {
+    /// Character spacing (`Tc`).
+    char_spacing: f32,
+    /// Word spacing (`Tw`).
+    word_spacing: f32,
+    /// Horizontal scaling percentage (`Tz`).
+    horiz_scaling: f32,
+    /// Text leading (`TL`, and `TD`'s implicit `TL = -ty`).
+    leading: f32,
+    /// Text rise (`Ts`).
+    rise: f32,
+    /// Text rendering mode (`Tr`).
+    render_mode: u8,
+}
+
+impl Default for PrescanTextState {
+    fn default() -> Self {
+        PrescanTextState {
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horiz_scaling: 100.0,
+            leading: 0.0,
+            rise: 0.0,
+            render_mode: 0,
+        }
+    }
+}
+
 /// Graphics state snapshot captured at a text position by [`forward_scan_ctm`].
 #[derive(Debug)]
 struct PrescanState {
@@ -605,13 +642,24 @@ struct PrescanState {
     ctm: (f32, f32, f32, f32, f32, f32),
     /// Current font name and size from the most recent `Tf` operator, if any.
     font: Option<(String, f32)>,
+    /// Persistent text-state parameters at this position.
+    text: PrescanTextState,
+    /// Fill color space set by `cs`, if any. Replayed before `fill_op` so the
+    /// components are interpreted in the right space.
+    fill_space: Option<String>,
+    /// Most recent fill-color operator (`rg`/`g`/`k`/`sc`/`scn`), if any.
+    /// Glyph color comes from the fill state, so losing this across region
+    /// boundaries turns colored text black (`chars_hash`-only sweep diffs).
+    fill_op: Option<Operator>,
 }
 
 /// Lightweight forward scan that tracks graphics state across the full content stream.
 ///
-/// Scans the stream recognizing only `q`, `Q`, `cm`, and `Tf` operators, skipping
-/// all path, color, and text operators. Records the accumulated CTM and font state
-/// at each position in `text_positions`.
+/// Scans the stream recognizing only `q`, `Q`, `cm`, `Tf`, and the persistent
+/// text-state operators (`Tc`, `Tw`, `Tz`, `TL`, `Ts`, `Tr`, plus `TD`'s
+/// implicit leading), skipping all path, color, and text-showing operators.
+/// Records the accumulated CTM, font, and text state at each position in
+/// `text_positions`.
 ///
 /// This is much cheaper than full parsing. Numeric operands are tracked in a
 /// rolling buffer so `cm` operands are always available when the operator is
@@ -637,8 +685,18 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
     // in ctm_stack to avoid String cloning on every q/Q.
     let mut font_table: Vec<(String, f32)> = Vec::new();
     let mut current_font_idx: Option<usize> = None;
-    let mut ctm_stack: Vec<(Matrix, Option<usize>)> = Vec::with_capacity(32);
+    #[allow(clippy::type_complexity)]
+    let mut ctm_stack: Vec<(
+        Matrix,
+        Option<usize>,
+        PrescanTextState,
+        Option<String>,
+        Option<Operator>,
+    )> = Vec::with_capacity(32);
     let mut ctm = Matrix::identity();
+    let mut text_state = PrescanTextState::default();
+    let mut fill_space: Option<String> = None;
+    let mut fill_op: Option<Operator> = None;
 
     // Rolling buffer of recent numeric operands (for cm's 6 floats)
     let mut num_buf: [f32; 6] = [0.0; 6];
@@ -658,6 +716,9 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
         .map(|_| PrescanState {
             ctm: (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             font: None,
+            text: PrescanTextState::default(),
+            fill_space: None,
+            fill_op: None,
         })
         .collect();
 
@@ -671,6 +732,9 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
             results[orig_idx] = PrescanState {
                 ctm: (ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f),
                 font: current_font_idx.map(|idx| font_table[idx].clone()),
+                text: text_state,
+                fill_space: fill_space.clone(),
+                fill_op: fill_op.clone(),
             };
             next_tp_idx += 1;
         }
@@ -758,13 +822,24 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                     continue;
                 },
                 b"q" => {
-                    ctm_stack.push((ctm, current_font_idx));
+                    ctm_stack.push((
+                        ctm,
+                        current_font_idx,
+                        text_state,
+                        fill_space.clone(),
+                        fill_op.clone(),
+                    ));
                     num_count = 0;
                 },
                 b"Q" => {
-                    if let Some((saved_ctm, saved_font_idx)) = ctm_stack.pop() {
+                    if let Some((saved_ctm, saved_font_idx, saved_text, saved_space, saved_fill)) =
+                        ctm_stack.pop()
+                    {
                         ctm = saved_ctm;
                         current_font_idx = saved_font_idx;
+                        text_state = saved_text;
+                        fill_space = saved_space;
+                        fill_op = saved_fill;
                     }
                     num_count = 0;
                 },
@@ -795,6 +870,104 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                     }
                     num_count = 0;
                     last_name = None;
+                },
+                b"Tc" => {
+                    if num_count >= 1 {
+                        text_state.char_spacing = num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"Tw" => {
+                    if num_count >= 1 {
+                        text_state.word_spacing = num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"Tz" => {
+                    if num_count >= 1 {
+                        text_state.horiz_scaling = num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"TL" => {
+                    if num_count >= 1 {
+                        text_state.leading = num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"Ts" => {
+                    if num_count >= 1 {
+                        text_state.rise = num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"Tr" => {
+                    if num_count >= 1 {
+                        text_state.render_mode = num_buf[num_count - 1] as u8;
+                    }
+                    num_count = 0;
+                },
+                b"TD" => {
+                    // `tx ty TD` also sets the leading to -ty (§9.4.2).
+                    if num_count >= 2 {
+                        text_state.leading = -num_buf[num_count - 1];
+                    }
+                    num_count = 0;
+                },
+                b"rg" => {
+                    if num_count >= 3 {
+                        fill_op = Some(Operator::SetFillRgb {
+                            r: num_buf[num_count - 3],
+                            g: num_buf[num_count - 2],
+                            b: num_buf[num_count - 1],
+                        });
+                    }
+                    num_count = 0;
+                },
+                b"g" => {
+                    if num_count >= 1 {
+                        fill_op = Some(Operator::SetFillGray {
+                            gray: num_buf[num_count - 1],
+                        });
+                    }
+                    num_count = 0;
+                },
+                b"k" => {
+                    if num_count >= 4 {
+                        fill_op = Some(Operator::SetFillCmyk {
+                            c: num_buf[num_count - 4],
+                            m: num_buf[num_count - 3],
+                            y: num_buf[num_count - 2],
+                            k: num_buf[num_count - 1],
+                        });
+                    }
+                    num_count = 0;
+                },
+                b"cs" => {
+                    // `cs` resets the fill color to the space's initial value,
+                    // so any earlier color operator no longer applies.
+                    if let Some(name) = last_name.take() {
+                        fill_space = Some(name);
+                        fill_op = None;
+                    }
+                    num_count = 0;
+                },
+                b"sc" => {
+                    if num_count >= 1 {
+                        fill_op = Some(Operator::SetFillColor {
+                            components: num_buf[..num_count.min(4)].to_vec(),
+                        });
+                    }
+                    num_count = 0;
+                },
+                b"scn" => {
+                    if num_count >= 1 || last_name.is_some() {
+                        fill_op = Some(Operator::SetFillColorN {
+                            components: num_buf[..num_count.min(4)].to_vec(),
+                            name: last_name.take().map(Box::new),
+                        });
+                    }
+                    num_count = 0;
                 },
                 _ => {
                     num_count = 0;
@@ -885,6 +1058,9 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
         results[orig_idx] = PrescanState {
             ctm: (ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f),
             font: current_font_idx.map(|idx| font_table[idx].clone()),
+            text: text_state,
+            fill_space: fill_space.clone(),
+            fill_op: fill_op.clone(),
         };
         next_tp_idx += 1;
     }
@@ -1313,6 +1489,16 @@ where
                         let (a, b, c, d, e, f) = state.ctm;
                         handler(Operator::SaveState)?;
                         handler(Operator::Cm { a, b, c, d, e, f })?;
+                        // Re-inject inherited fill color: glyph color reads the
+                        // fill state, which the region wrap would otherwise
+                        // reset to black. Space first so components are
+                        // interpreted in the right color space.
+                        if let Some(ref name) = state.fill_space {
+                            handler(Operator::SetFillColorSpace { name: name.clone() })?;
+                        }
+                        if let Some(ref op) = state.fill_op {
+                            handler(op.clone())?;
+                        }
                         // Inject font state if the forward scan tracked one.
                         // This handles BT blocks that inherit Tf from a prior
                         // scope instead of setting their own.
@@ -1320,6 +1506,41 @@ where
                             handler(Operator::Tf {
                                 font: font_name.clone(),
                                 size: font_size,
+                            })?;
+                        }
+                        // Re-inject inherited text state the same way. These
+                        // parameters persist across BT/ET, so a region may rely
+                        // on a value set by an earlier region — which the
+                        // SaveState/RestoreState wrap would otherwise reset.
+                        // Only non-default values are injected, keeping the
+                        // operator stream unchanged for the common case.
+                        let ts = &state.text;
+                        if ts.char_spacing != 0.0 {
+                            handler(Operator::Tc {
+                                char_space: ts.char_spacing,
+                            })?;
+                        }
+                        if ts.word_spacing != 0.0 {
+                            handler(Operator::Tw {
+                                word_space: ts.word_spacing,
+                            })?;
+                        }
+                        if ts.horiz_scaling != 100.0 {
+                            handler(Operator::Tz {
+                                scale: ts.horiz_scaling,
+                            })?;
+                        }
+                        if ts.leading != 0.0 {
+                            handler(Operator::TL {
+                                leading: ts.leading,
+                            })?;
+                        }
+                        if ts.rise != 0.0 {
+                            handler(Operator::Ts { rise: ts.rise })?;
+                        }
+                        if ts.render_mode != 0 {
+                            handler(Operator::Tr {
+                                render: ts.render_mode,
                             })?;
                         }
                         parse_region_text_only(&data[*start..*end], &mut handler)?;
@@ -5343,6 +5564,162 @@ mod tests {
             tf_ops.len() >= 2,
             "expected Tf for both BT blocks (explicit + inherited), got {}",
             tf_ops.len()
+        );
+    }
+
+    /// Build a stream with two BT regions separated by >256KB of path filler,
+    /// forcing the prescan's forward-scan path. `first_region` is the body of
+    /// the first BT block (state setters + show ops).
+    fn two_region_prescan_stream(first_region: &[u8]) -> Vec<u8> {
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"BT ");
+        cs.extend_from_slice(first_region);
+        cs.extend_from_slice(b" ET\n");
+        for i in 0..14000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed 256KB prescan threshold");
+        cs.extend_from_slice(b"BT (B) Tj T* (C) Tj ET\n");
+        cs
+    }
+
+    /// The operators injected for the LAST region: everything between the
+    /// final SaveState and the final BeginText.
+    fn last_region_injected(ops: &[Operator]) -> &[Operator] {
+        let last_bt = ops
+            .iter()
+            .rposition(|op| matches!(op, Operator::BeginText))
+            .expect("no BeginText");
+        let save = ops[..last_bt]
+            .iter()
+            .rposition(|op| matches!(op, Operator::SaveState))
+            .expect("no SaveState before last BeginText");
+        &ops[save..last_bt]
+    }
+
+    #[test]
+    fn test_prescan_injects_inherited_text_state() {
+        // Tc, Tw, and the leading persist across BT/ET (ISO 32000-1 §9.3.1;
+        // only Tm resets at BT), so the second region legitimately runs with
+        // the first region's values. The prescan path parses each region in
+        // an isolated SaveState/RestoreState wrap; without reconstruction the
+        // second region's T* would step by zero leading and every advance
+        // would lose Tc — glyphs land on the wrong line, slightly compressed
+        // (govdocs_040_040921.pdf p22, govdocs_055_055555.pdf p23).
+        let cs = two_region_prescan_stream(b"/F1 10 Tf 0.5 Tc 0.25 Tw 0 -12 TD (A) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            injected
+                .iter()
+                .any(|op| matches!(op, Operator::Tc { char_space } if (*char_space - 0.5).abs() < 1e-6)),
+            "inherited Tc not injected: {:?}",
+            injected
+        );
+        assert!(
+            injected
+                .iter()
+                .any(|op| matches!(op, Operator::Tw { word_space } if (*word_space - 0.25).abs() < 1e-6)),
+            "inherited Tw not injected: {:?}",
+            injected
+        );
+        assert!(
+            injected
+                .iter()
+                .any(|op| matches!(op, Operator::TL { leading } if (*leading - 12.0).abs() < 1e-6)),
+            "leading set via TD not injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_does_not_inject_default_text_state() {
+        // A first region that never touches text state must not cause any
+        // text-state operator to be synthesized for the second region.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            !injected.iter().any(|op| matches!(
+                op,
+                Operator::Tc { .. }
+                    | Operator::Tw { .. }
+                    | Operator::Tz { .. }
+                    | Operator::TL { .. }
+                    | Operator::Ts { .. }
+                    | Operator::Tr { .. }
+            )),
+            "default text state must not be injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_injects_inherited_fill_color() {
+        // Glyph color reads the fill state, which persists across BT/ET like
+        // the rest of the graphics state. A region relying on a color set
+        // before or in an earlier region must get it re-injected, or colored
+        // text silently turns black on the prescan path (the old vec parser
+        // preserved color operators, so this shows up as chars_hash-only
+        // sweep diffs).
+        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET 0.2 0.4 0.6 rg BT (X) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            injected.iter().any(|op| matches!(
+                op,
+                Operator::SetFillRgb { r, g, b }
+                    if (*r - 0.2).abs() < 1e-6 && (*g - 0.4).abs() < 1e-6 && (*b - 0.6).abs() < 1e-6
+            )),
+            "inherited fill color not injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_text_state_respects_q_restore() {
+        // Text state set inside a q/Q scope is restored at Q, so it must not
+        // be injected into a region that begins after the Q.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET q 3 Tc BT (X) Tj ET Q BT (Y) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            !injected
+                .iter()
+                .any(|op| matches!(op, Operator::Tc { .. })),
+            "Tc from a closed q/Q scope must not leak into a later region: {:?}",
+            injected
         );
     }
 
