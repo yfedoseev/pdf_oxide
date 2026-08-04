@@ -648,9 +648,10 @@ impl PdfDocument {
                 let page = match &arr[0] {
                     Object::Integer(n) => *n as u32,
                     Object::Reference(r) => {
-                        // Resolve page reference to page index
-                        // For now, just use object ID as approximation
-                        r.id
+                        // A reference names a page *object*; `Explicit.page`
+                        // is the 0-based position in the page tree
+                        // (ISO 32000-1 §12.3.2.2).
+                        self.page_index_of_ref(*r)? as u32
                     },
                     _ => 0,
                 };
@@ -729,8 +730,19 @@ impl PdfDocument {
                     crate::error::Error::InvalidPdf("GoTo action missing /D field".to_string())
                 })?;
 
-                let destination = self.parse_destination(dest_obj)?;
-                Ok(LinkAction::GoTo(destination))
+                // A destination that cannot be resolved (e.g. a dangling
+                // reference to a deleted page) invalidates the action, not
+                // the annotation: report the action type without inventing
+                // a page number.
+                match self.parse_destination(dest_obj) {
+                    Ok(destination) => Ok(LinkAction::GoTo(destination)),
+                    Err(e) => {
+                        log::warn!("GoTo destination unresolvable: {e}");
+                        Ok(LinkAction::Other {
+                            action_type: "GoTo".to_string(),
+                        })
+                    },
+                }
             },
             "GoToR" => {
                 // GoToR action - navigate to remote document
