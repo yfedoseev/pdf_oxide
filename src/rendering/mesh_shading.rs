@@ -82,9 +82,23 @@ pub(crate) fn render_mesh_shading(
 
     // Resolve a set of stream/function colour components to RGBA, routing
     // through `/Function` first when present.
+    // A Type 0 function carries its samples in a stream. `to_rgba` runs once
+    // per grid point — up to 129x129 for a Type 1 shading — so decoding that
+    // stream inside the evaluation made the cost of the samples proportional
+    // to the grid rather than paid once. Decode it here instead.
+    let sampled_bytes: Option<Vec<u8>> = function.as_ref().and_then(|f| {
+        let is_sampled = f
+            .as_dict()
+            .and_then(|d| d.get("FunctionType"))
+            .and_then(|o| o.as_integer())
+            == Some(0);
+        is_sampled.then(|| f.decode_stream_data().ok()).flatten()
+    });
+
     let to_rgba = |comps: &[f32]| -> (f32, f32, f32, f32) {
         let cs_comps: Vec<f32> = match &function {
-            Some(f) => eval_pdf_function(f, doc, comps).unwrap_or_else(|| comps.to_vec()),
+            Some(f) => eval_pdf_function(f, doc, comps, sampled_bytes.as_deref())
+                .unwrap_or_else(|| comps.to_vec()),
             None => comps.to_vec(),
         };
         resolve_color(&cs_comps).unwrap_or((0.0, 0.0, 0.0, 1.0))
@@ -899,13 +913,20 @@ fn blend_premul(dest: &mut [u8], off: usize, r: f32, g: f32, b: f32, a: f32) {
 /// components. Supports an array of 1-output functions plus function types
 /// 0 (sampled), 2 (exponential), 3 (stitching) and 4 (PostScript). Returns
 /// `None` for unsupported shapes so callers fall back to the raw inputs.
-fn eval_pdf_function(func: &Object, doc: &PdfDocument, inputs: &[f32]) -> Option<Vec<f32>> {
+fn eval_pdf_function(
+    func: &Object,
+    doc: &PdfDocument,
+    inputs: &[f32],
+    sampled_bytes: Option<&[u8]>,
+) -> Option<Vec<f32>> {
     if let Object::Array(arr) = func {
         // An array of n single-output functions, one per colour component.
         let mut out = Vec::with_capacity(arr.len());
         for f in arr {
             let resolved = doc.resolve_object(f).ok()?;
-            let mut r = eval_pdf_function(&resolved, doc, inputs)?;
+            // Each element is its own function; the caller's prepared stream
+            // belongs to `func`, not to these.
+            let mut r = eval_pdf_function(&resolved, doc, inputs, None)?;
             out.append(&mut r);
         }
         return Some(out);
@@ -916,7 +937,12 @@ fn eval_pdf_function(func: &Object, doc: &PdfDocument, inputs: &[f32]) -> Option
     match ftype {
         2 => eval_type2(dict, inputs),
         3 => eval_type3(dict, doc, inputs),
-        0 => eval_type0(func, dict, inputs),
+        0 => match sampled_bytes {
+            Some(bytes) => eval_type0(bytes, dict, inputs),
+            // No prepared stream: a nested or array member, which this
+            // optimisation does not cover. It still decodes per call.
+            None => eval_type0(&func.decode_stream_data().ok()?, dict, inputs),
+        },
         4 => eval_type4(func, dict, inputs),
         _ => None,
     }
@@ -994,7 +1020,7 @@ fn eval_type3(
         e0 + (xc - lo) * (e1 - e0) / (hi - lo)
     };
     let sub = doc.resolve_object(&funcs[k]).ok()?;
-    eval_pdf_function(&sub, doc, &[xe])
+    eval_pdf_function(&sub, doc, &[xe], None)
 }
 
 /// Type 4 PostScript calculator function.
@@ -1011,8 +1037,7 @@ fn eval_type4(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
 /// input dimensions (enough for Type 1 shadings and 1-D `/Function` mesh
 /// colours). Bounded sample reads; returns `None` for out-of-support
 /// shapes.
-fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> Option<Vec<f32>> {
-    let bytes = func.decode_stream_data().ok()?;
+fn eval_type0(bytes: &[u8], dict: &HashMap<String, Object>, inputs: &[f32]) -> Option<Vec<f32>> {
     let domain = pairs(dict.get("Domain"));
     let range = pairs(dict.get("Range"));
     let size: Vec<usize> = dict
@@ -1091,7 +1116,7 @@ fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
         (0..n)
             .map(|o| {
                 let bit_off = (flat * n + o) * bps as usize;
-                let raw = read_bits_at(&bytes, bit_off, bps).unwrap_or(0);
+                let raw = read_bits_at(bytes, bit_off, bps).unwrap_or(0);
                 (raw as f64 / max_sample) as f32
             })
             .collect()
