@@ -916,6 +916,7 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                             b: num_buf[num_count - 1],
                         });
                     }
+                    fill_space = None;
                     num_count = 0;
                 },
                 b"g" => {
@@ -924,6 +925,7 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                             gray: num_buf[num_count - 1],
                         });
                     }
+                    fill_space = None;
                     num_count = 0;
                 },
                 b"k" => {
@@ -935,6 +937,7 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                             k: num_buf[num_count - 1],
                         });
                     }
+                    fill_space = None;
                     num_count = 0;
                 },
                 b"cs" => {
@@ -947,17 +950,22 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                     num_count = 0;
                 },
                 b"sc" => {
-                    if num_count >= 1 {
+                    // Operands are the TAIL of the rolling buffer, like every
+                    // other arm. More than 4 means a color space this replay
+                    // cannot represent (and the rotated buffer has lost the
+                    // leading operands) — inject nothing rather than a
+                    // truncated, plausible-looking wrong color.
+                    if (1..=4).contains(&num_count) {
                         fill_op = Some(Operator::SetFillColor {
-                            components: num_buf[..num_count.min(4)].to_vec(),
+                            components: num_buf[..num_count].to_vec(),
                         });
                     }
                     num_count = 0;
                 },
                 b"scn" => {
-                    if num_count >= 1 || last_name.is_some() {
+                    if (1..=4).contains(&num_count) || (num_count == 0 && last_name.is_some()) {
                         fill_op = Some(Operator::SetFillColorN {
-                            components: num_buf[..num_count.min(4)].to_vec(),
+                            components: num_buf[..num_count].to_vec(),
                             name: last_name.take().map(Box::new),
                         });
                     }
@@ -967,6 +975,10 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                     num_count = 0;
                 },
             }
+            // A name operand belongs to the operator that follows it; once any
+            // operator has executed, a surviving `last_name` is stale. Without
+            // this, `/GS0 gs 0.5 scn` fabricated a pattern named GS0.
+            last_name = None;
             continue;
         }
 
@@ -5552,6 +5564,49 @@ mod tests {
                     if (*r - 0.2).abs() < 1e-6 && (*g - 0.4).abs() < 1e-6 && (*b - 0.6).abs() < 1e-6
             )),
             "inherited fill color not injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_scn_does_not_inherit_stale_name() {
+        // `/GS0 gs 0.5 scn`: the name operand belongs to `gs`; the scanner
+        // must not hand it to `scn` as a pattern name.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET /GS0 gs 0.5 scn BT (X) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+        let injected = last_region_injected(&ops);
+        assert!(
+            !injected.iter().any(
+                |op| matches!(op, Operator::SetFillColorN { name: Some(_), .. })
+            ),
+            "stale name fabricated a pattern: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_scn_with_too_many_operands_injects_nothing() {
+        // A 6-component scn (DeviceN) exceeds what the rolling buffer can
+        // faithfully replay; a truncated color would be plausible and wrong.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET 0.1 0.2 0.3 0.4 0.5 0.6 scn BT (X) Tj");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+        let injected = last_region_injected(&ops);
+        assert!(
+            !injected.iter().any(|op| matches!(
+                op,
+                Operator::SetFillColor { .. } | Operator::SetFillColorN { .. }
+            )),
+            "truncated color injected: {:?}",
             injected
         );
     }
