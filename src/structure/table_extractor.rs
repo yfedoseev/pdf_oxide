@@ -700,138 +700,167 @@ fn extract_cell(
     // falls back from to plain text — losing ~73% of inline formatting
     // in the reporter's 54-PDF corpus.
     let mut cell_spans: Vec<TextSpan> = Vec::new();
+
+    // Collect every block the cell's marked-content sequences own, then join
+    // in visual reading order (top line first, left to right): content-stream
+    // order routinely interleaves a wrapped title's lines. Lines are formed
+    // by walking blocks top-to-bottom and opening a new line when the drop
+    // from the current line's first block exceeds half the SMALLER of the
+    // two heights — a per-pair threshold, so one tall multi-line block
+    // cannot swallow line spacing tighter than its own height.
+    let mut blocks: Vec<&TextBlock> = text_blocks
+        .iter()
+        .filter(|b| b.mcid.is_some_and(|m| mcids.contains(&m)))
+        .collect();
+    blocks.sort_by(|a, b| {
+        b.bbox
+            .y
+            .partial_cmp(&a.bbox.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut keyed: Vec<(usize, &TextBlock)> = Vec::with_capacity(blocks.len());
+    let mut line = 0usize;
+    let mut anchor: Option<&TextBlock> = None;
+    for b in blocks {
+        if let Some(a) = anchor {
+            let threshold = a.bbox.height.min(b.bbox.height).max(1.0) * 0.5;
+            if a.bbox.y - b.bbox.y > threshold {
+                line += 1;
+                anchor = Some(b);
+            }
+        } else {
+            anchor = Some(b);
+        }
+        keyed.push((line, b));
+    }
+    keyed.sort_by(|(line_a, a), (line_b, b)| {
+        line_a.cmp(line_b).then(
+            a.bbox
+                .x
+                .partial_cmp(&b.bbox.x)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+
     let mut prev_block: Option<&TextBlock> = None;
-    for mcid in &mcids {
-        for block in text_blocks {
-            if let Some(block_mcid) = block.mcid {
-                if block_mcid == *mcid {
-                    let mut leading_space = false;
-                    if !cell_text.is_empty() {
-                        let need_space = if let Some(prev) = prev_block {
-                            let y_diff = (block.bbox.y - prev.bbox.y).abs();
-                            let line_h = prev.bbox.height.max(block.bbox.height);
-                            if y_diff > line_h * 0.5 {
-                                // Different lines — always insert a space.
-                                true
-                            } else {
-                                // Same line — only insert a space when there is an actual
-                                // horizontal gap (> 15% of font size, matching document.rs).
-                                let gap = block.bbox.x - (prev.bbox.x + prev.bbox.width);
-                                let font_size =
-                                    prev.avg_font_size.max(block.avg_font_size).max(1.0);
-                                if gap <= font_size * 0.15 {
-                                    false
-                                } else {
-                                    // Suppress space insertion when one side is CJK and the
-                                    // other is CJK or a fullwidth/math operator (e.g. ≤, ＜, μ).
-                                    // This mirrors the CJK-pair suppression in document.rs and
-                                    // converters/mod.rs (Issue #485).
-                                    #[inline(always)]
-                                    fn is_cjk(c: char) -> bool {
-                                        matches!(c,
-                                            '\u{3040}'..='\u{309F}' |   // Hiragana
-                                            '\u{30A0}'..='\u{30FF}' |   // Katakana
-                                            '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs
-                                            '\u{AC00}'..='\u{D7AF}' |   // Hangul
-                                            '\u{3400}'..='\u{4DBF}' |   // CJK Extension A
-                                            '\u{20000}'..='\u{2A6DF}'   // CJK Extension B
-                                        )
-                                    }
-                                    #[inline(always)]
-                                    fn is_fw_math(c: char) -> bool {
-                                        matches!(c,
-                                            '\u{FF0B}' | '\u{FF0D}' |
-                                            '\u{FF1A}' | '\u{FF1B}' |
-                                            '\u{FF1C}'..='\u{FF1E}' |
-                                            '\u{2260}' | '\u{2248}' |
-                                            '\u{2264}'..='\u{2265}' |
-                                            '\u{00B5}' | '\u{03BC}' |
-                                            '\u{00B1}' | '\u{00D7}' | '\u{00F7}'
-                                        )
-                                    }
-                                    let p_last = prev.text.chars().next_back();
-                                    let b_first = block.text.chars().next();
-                                    let suppress = if let (Some(p), Some(b)) = (p_last, b_first) {
-                                        let p_cjk = is_cjk(p);
-                                        let b_cjk = is_cjk(b);
-                                        (p_cjk || is_fw_math(p))
-                                            && (b_cjk || is_fw_math(b))
-                                            && (p_cjk || b_cjk)
-                                    } else {
-                                        false
-                                    };
-                                    !suppress
-                                }
-                            }
-                        } else {
-                            !cell_text.ends_with(' ')
-                        };
-                        if need_space {
-                            cell_text.push(' ');
-                            leading_space = true;
-                        }
+    for (_, block) in keyed {
+        let mut leading_space = false;
+        if !cell_text.is_empty() {
+            let need_space = if let Some(prev) = prev_block {
+                let y_diff = (block.bbox.y - prev.bbox.y).abs();
+                let line_h = prev.bbox.height.max(block.bbox.height);
+                let gap = block.bbox.x - (prev.bbox.x + prev.bbox.width);
+                let font_size = prev.avg_font_size.max(block.avg_font_size).max(1.0);
+                if y_diff > line_h * 0.5 || gap < -font_size {
+                    // Different lines — always insert a space. A large
+                    // backward jump at near-equal y is also a line break:
+                    // a multi-line block's height can swallow the y test.
+                    true
+                } else if gap <= font_size * 0.15 {
+                    // Same line, abutting — no space.
+                    false
+                } else {
+                    // Suppress space insertion when one side is CJK and the
+                    // other is CJK or a fullwidth/math operator (e.g. ≤, ＜, μ).
+                    // This mirrors the CJK-pair suppression in document.rs and
+                    // converters/mod.rs (Issue #485).
+                    #[inline(always)]
+                    fn is_cjk(c: char) -> bool {
+                        matches!(c,
+                            '\u{3040}'..='\u{309F}' |   // Hiragana
+                            '\u{30A0}'..='\u{30FF}' |   // Katakana
+                            '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs
+                            '\u{AC00}'..='\u{D7AF}' |   // Hangul
+                            '\u{3400}'..='\u{4DBF}' |   // CJK Extension A
+                            '\u{20000}'..='\u{2A6DF}'   // CJK Extension B
+                        )
                     }
-                    cell_text.push_str(&block.text);
-                    // Synthesize a minimal TextSpan capturing the block's
-                    // style. Only the fields the markdown converter
-                    // consults (text, font_weight, is_italic, font_size,
-                    // bbox) need real values — everything else is filled
-                    // from sensible defaults. Carry the inter-block space
-                    // into the span text as well: the markdown/HTML table
-                    // renderers reconstruct spacing from the spans (not from
-                    // cell_text), and their horizontal-gap heuristic cannot
-                    // see a line wrap, so without this they glue tokens
-                    // across wrapped lines. Both renderers already treat a
-                    // leading space in the span text as authoritative
-                    // (their `already_has_space` guard), so this never
-                    // double-spaces.
-                    let span_text = if leading_space {
-                        let mut s = String::with_capacity(block.text.len() + 1);
-                        s.push(' ');
-                        s.push_str(&block.text);
-                        s
+                    #[inline(always)]
+                    fn is_fw_math(c: char) -> bool {
+                        matches!(c,
+                            '\u{FF0B}' | '\u{FF0D}' |
+                            '\u{FF1A}' | '\u{FF1B}' |
+                            '\u{FF1C}'..='\u{FF1E}' |
+                            '\u{2260}' | '\u{2248}' |
+                            '\u{2264}'..='\u{2265}' |
+                            '\u{00B5}' | '\u{03BC}' |
+                            '\u{00B1}' | '\u{00D7}' | '\u{00F7}'
+                        )
+                    }
+                    let p_last = prev.text.chars().next_back();
+                    let b_first = block.text.chars().next();
+                    let suppress = if let (Some(p), Some(b)) = (p_last, b_first) {
+                        let p_cjk = is_cjk(p);
+                        let b_cjk = is_cjk(b);
+                        (p_cjk || is_fw_math(p)) && (b_cjk || is_fw_math(b)) && (p_cjk || b_cjk)
                     } else {
-                        block.text.clone()
+                        false
                     };
-                    cell_spans.push(TextSpan {
-                        provenance: None,
-                        artifact_type: None,
-                        text: span_text,
-                        bbox: block.bbox,
-                        font_name: block.dominant_font.clone(),
-                        font_size: block.avg_font_size,
-                        font_weight: if block.is_bold {
-                            FontWeight::Bold
-                        } else {
-                            FontWeight::Normal
-                        },
-                        is_italic: block.is_italic,
-                        is_monospace: false,
-                        color: Color::black(),
-                        mcid: block.mcid,
-                        mcid_scope: None,
-                        sequence: 0,
-                        offset_semantic: false,
-                        split_boundary_before: false,
-                        char_spacing: 0.0,
-                        word_spacing: 0.0,
-                        horizontal_scaling: 100.0,
-                        primary_detected: false,
-                        char_widths: vec![],
-                        char_x_offsets: Vec::new(),
-                        heading_level: None,
-                        rotation_degrees: 0.0,
-                        wmode: 0,
-                        text_rise: 0.0,
-                        rtl_draw_logical: false,
-                    });
-                    prev_block = Some(block);
-                    // No early exit: one marked-content sequence routinely
-                    // carries several text blocks (wrapped lines, gap-split
-                    // runs), and the cell owns all of them.
+                    !suppress
                 }
+            } else {
+                !cell_text.ends_with(' ')
+            };
+            if need_space {
+                cell_text.push(' ');
+                leading_space = true;
             }
         }
+        cell_text.push_str(&block.text);
+        // Synthesize a minimal TextSpan capturing the block's
+        // style. Only the fields the markdown converter
+        // consults (text, font_weight, is_italic, font_size,
+        // bbox) need real values — everything else is filled
+        // from sensible defaults. Carry the inter-block space
+        // into the span text as well: the markdown/HTML table
+        // renderers reconstruct spacing from the spans (not from
+        // cell_text), and their horizontal-gap heuristic cannot
+        // see a line wrap, so without this they glue tokens
+        // across wrapped lines. Both renderers already treat a
+        // leading space in the span text as authoritative
+        // (their `already_has_space` guard), so this never
+        // double-spaces.
+        let span_text = if leading_space {
+            let mut s = String::with_capacity(block.text.len() + 1);
+            s.push(' ');
+            s.push_str(&block.text);
+            s
+        } else {
+            block.text.clone()
+        };
+        cell_spans.push(TextSpan {
+            provenance: None,
+            artifact_type: None,
+            text: span_text,
+            bbox: block.bbox,
+            font_name: block.dominant_font.clone(),
+            font_size: block.avg_font_size,
+            font_weight: if block.is_bold {
+                FontWeight::Bold
+            } else {
+                FontWeight::Normal
+            },
+            is_italic: block.is_italic,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: block.mcid,
+            mcid_scope: None,
+            sequence: 0,
+            offset_semantic: false,
+            split_boundary_before: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 0.0,
+            wmode: 0,
+            text_rise: 0.0,
+            rtl_draw_logical: false,
+        });
+        prev_block = Some(block);
     }
 
     let mut cell = TableCell::new(cell_text.trim().to_string(), is_header);

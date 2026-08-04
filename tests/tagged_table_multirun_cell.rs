@@ -187,3 +187,26 @@ fn cell_with_gap_separated_spans_keeps_both() {
         "second span sharing the cell's MCID was dropped"
     );
 }
+
+/// Wrapped lines arriving in reverse content order must join in visual
+/// order, even when a tall sibling block sits in the same cell — line
+/// grouping is per-pair, so one tall block cannot swallow line spacing
+/// tighter than its own height.
+#[test]
+fn cell_with_tight_wrap_and_tall_block_keeps_visual_order() {
+    let mut tall = span("tall", 72.0, 660.0, 0, 0);
+    tall.bbox = pdf_oxide::geometry::Rect::new(72.0, 660.0, 30.0, 30.0);
+    let mut upper = span("upper", 100.0, 700.0, 0, 1);
+    upper.bbox = pdf_oxide::geometry::Rect::new(100.0, 700.0, 30.0, 8.0);
+    let mut lower = span("lower", 72.0, 691.5, 0, 2);
+    lower.bbox = pdf_oxide::geometry::Rect::new(72.0, 691.5, 30.0, 8.0);
+    // Content order: lower before upper (a wrap emitted tail-first).
+    let spans = vec![tall, lower, upper, span("x", 400.0, 700.0, 1, 3)];
+    let mut table = StructElem::new(StructType::Table);
+    table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
+    let t = extract_table_from_spans(&table, &spans).unwrap();
+    assert_eq!(
+        t.rows[0].cells[0].text, "upper lower tall",
+        "tight 8.5pt line spacing beside a 30pt block must still order top-to-bottom"
+    );
+}
