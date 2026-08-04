@@ -962,7 +962,7 @@ fn eval_type3(
         return None;
     }
     let domain = dict.get("Domain").and_then(|o| o.as_array())?;
-    let (d0, d1) = (num(&domain[0]), num(domain.get(1)?));
+    let (d0, d1) = (num(domain.first()?), num(domain.get(1)?));
     let bounds: Vec<f32> = dict
         .get("Bounds")
         .and_then(|o| o.as_array())
@@ -1028,6 +1028,25 @@ fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
         return None;
     }
     if size.contains(&0) || domain.len() < m {
+        return None;
+    }
+    // `/Size` is document controlled. Bound the declared grid by what the
+    // sample stream can actually hold, so the flat-index and stride products
+    // below cannot wrap a bogus grid into a valid-looking sample offset.
+    let declared_bits = size
+        .iter()
+        .try_fold(1usize, |acc, &s| acc.checked_mul(s))
+        .and_then(|samples| samples.checked_mul(n))
+        .and_then(|values| values.checked_mul(bps as usize));
+    if declared_bits.is_none_or(|bits| bits > bytes.len() * 8) {
+        log::warn!(
+            "Skipping sampled function: /Size {:?} with {} outputs at {} bits declares \
+             more samples than the {}-byte sample stream holds",
+            size,
+            n,
+            bps,
+            bytes.len()
+        );
         return None;
     }
     let encode: Vec<f32> = dict

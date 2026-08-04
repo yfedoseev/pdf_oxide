@@ -3057,8 +3057,16 @@ fn paint_image_mask_to_plates(
         Object::Stream { dict, .. } => dict,
         _ => return Ok(()),
     };
-    let w = dict.get("Width").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
-    let h = dict.get("Height").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
+    let raw_w = dict.get("Width").and_then(|o| o.as_integer()).unwrap_or(0);
+    let raw_h = dict.get("Height").and_then(|o| o.as_integer()).unwrap_or(0);
+    let dims = usize::try_from(raw_w).ok().zip(usize::try_from(raw_h).ok());
+    let Some((w, h)) = dims.filter(|(w, h)| w.checked_mul(*h).is_some()) else {
+        log::warn!(
+            "Skipping image mask '{name}': /Width {raw_w} /Height {raw_h} is not a \
+             representable pixel count"
+        );
+        return Ok(());
+    };
     let pixel_count = w * h;
     if pixel_count == 0 {
         return Ok(());
