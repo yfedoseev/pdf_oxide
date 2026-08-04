@@ -533,12 +533,14 @@ fn parse_k_children(
             // Single MCID — bare integer child references the page's
             // own content stream (ISO 32000-1:2008 §14.7.5.4.2 "MCR"
             // form is reserved for cross-stream refs).
-            let page = parent.page.unwrap_or(0);
-            parent.add_child(StructChild::MarkedContentRef {
-                mcid: *mcid as u32,
-                page,
-                scope: crate::structure::McidScope::Page(page),
-            });
+            if let Some(mcid) = checked_mcid(*mcid) {
+                let page = parent.page.unwrap_or(0);
+                parent.add_child(StructChild::MarkedContentRef {
+                    mcid,
+                    page,
+                    scope: crate::structure::McidScope::Page(page),
+                });
+            }
         },
 
         Object::Array(arr) => {
@@ -568,12 +570,14 @@ fn parse_k_children(
                 match &child_obj {
                     Object::Integer(mcid) => {
                         // Bare integer MCID — page's own content stream.
-                        let page = parent.page.unwrap_or(0);
-                        parent.add_child(StructChild::MarkedContentRef {
-                            mcid: *mcid as u32,
-                            page,
-                            scope: crate::structure::McidScope::Page(page),
-                        });
+                        if let Some(mcid) = checked_mcid(*mcid) {
+                            let page = parent.page.unwrap_or(0);
+                            parent.add_child(StructChild::MarkedContentRef {
+                                mcid,
+                                page,
+                                scope: crate::structure::McidScope::Page(page),
+                            });
+                        }
                     },
 
                     Object::Dictionary(_) => {
@@ -746,6 +750,9 @@ fn parse_marked_content_ref(
         Some(mcid) => mcid,
         None => return Ok(None), // Missing /MCID, skip gracefully
     };
+    let Some(mcid) = checked_mcid(mcid) else {
+        return Ok(None);
+    };
 
     // Get /Pg (page reference) and resolve to page number.
     let page = dict
@@ -765,11 +772,21 @@ fn parse_marked_content_ref(
     // namespace.
     let scope = resolve_mcr_scope(document, dict, page);
 
-    Ok(Some(StructChild::MarkedContentRef {
-        mcid: mcid as u32,
-        page,
-        scope,
-    }))
+    Ok(Some(StructChild::MarkedContentRef { mcid, page, scope }))
+}
+
+/// Narrow a `/K` or `/MCID` integer to the `u32` marked-content id space.
+///
+/// Wrapping collides a malformed id with a real one: `2^32 + 5` becomes MCID 5
+/// and duplicates that entry in the page's reading order.
+fn checked_mcid(raw: i64) -> Option<u32> {
+    match u32::try_from(raw) {
+        Ok(mcid) => Some(mcid),
+        Err(_) => {
+            log::warn!("Structure tree: marked-content id {raw} is out of range, skipping");
+            None
+        },
+    }
 }
 
 /// Determine the `McidScope` for a marked-content reference dict.
