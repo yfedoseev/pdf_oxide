@@ -225,7 +225,7 @@ impl TextSpan {
     /// `rotation_degrees == 0` it returns `bbox` unchanged, so upright pages
     /// cannot move; free angles get the axis-aligned hull of the rotated box.
     ///
-    /// Mirrors [`crate::elements::Path::rendered_bbox`]: a derived accessor
+    /// Mirrors [`crate::elements::PathContent::rendered_bbox`]: a derived accessor
     /// rather than a second stored rectangle that could drift out of sync.
     pub fn page_bbox(&self) -> Rect {
         if self.rotation_degrees == 0.0 {
