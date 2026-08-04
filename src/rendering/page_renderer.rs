@@ -675,31 +675,23 @@ impl PageRenderer {
     }
 
     /// Share TrueType cmap tables between fonts with matching base font names.
+    ///
+    /// Donor selection lives in `fonts::unicode_decode::best_truetype_cmaps`,
+    /// shared with the extraction path: best coverage wins, deterministic
+    /// tie-break, strict subset-prefix stripping. Only the write loop is
+    /// local, because this table stores fonts behind a `OnceLock` cmap slot.
     fn share_truetype_cmaps(&mut self) {
-        let mut base_font_to_cmap = HashMap::new();
-
-        // First pass: collect available cmaps
-        for font in self.fonts.values() {
-            if let Some(cmap) = font.truetype_cmap() {
-                // Get base font name without subset prefix (e.g. ABCDEF+Arial -> Arial)
-                let base_name = if let Some(plus_idx) = font.base_font.find('+') {
-                    &font.base_font[plus_idx + 1..]
-                } else {
-                    &font.base_font
-                };
-                base_font_to_cmap.insert(base_name.to_string(), cmap.clone());
-            }
+        let best_cmaps =
+            crate::fonts::unicode_decode::best_truetype_cmaps(self.fonts.values().map(|f| &**f));
+        if best_cmaps.is_empty() {
+            return;
         }
 
-        // Second pass: apply cmaps to fonts missing them
         for font in self.fonts.values() {
             if font.subtype == "Type0" && font.truetype_cmap().is_none() {
-                let base_name = if let Some(plus_idx) = font.base_font.find('+') {
-                    &font.base_font[plus_idx + 1..]
-                } else {
-                    &font.base_font
-                };
-                if let Some(shared_cmap) = base_font_to_cmap.get(base_name) {
+                let base_name =
+                    crate::fonts::unicode_decode::strip_subset_prefix(&font.base_font);
+                if let Some((shared_cmap, _)) = best_cmaps.get(base_name) {
                     font.truetype_cmap.set(Some(shared_cmap.clone())).ok();
                 }
             }

@@ -13,6 +13,7 @@
 use super::create_fill_paint;
 use crate::content::operators::TextElement;
 use crate::content::GraphicsState;
+use crate::fonts::unicode_decode::{DecodePolicy, GlyphDropTally, TextCharIter};
 use crate::document::PdfDocument;
 use crate::error::{Error, Result};
 use crate::object::Object;
@@ -332,46 +333,6 @@ fn render_cjk_fallback_face() -> Option<Arc<CachedFace>> {
         .clone()
 }
 
-/// Rasterizer for PDF text operations.
-/// Glyphs that painted nothing while the cursor advanced, tallied for one
-/// text run.
-///
-/// A dropped glyph is indistinguishable from real whitespace downstream: OCR
-/// transcribes the gap-filled render faithfully and the loss reaches a search
-/// index unnoticed (#991). One warning per run names the font, the first
-/// offending code and glyph id, and how many followed — enough to identify a
-/// broken font without a log line per glyph.
-#[derive(Default)]
-struct GlyphDropTally {
-    count: usize,
-    first: Option<(&'static str, u32, u16)>,
-}
-
-impl GlyphDropTally {
-    fn record(&mut self, reason: &'static str, char_code: u32, gid: u16) {
-        self.count += 1;
-        self.first.get_or_insert((reason, char_code, gid));
-    }
-
-    fn report(&self, font_name: &str) {
-        let Some((reason, char_code, gid)) = self.first else {
-            return;
-        };
-        let message = format!(
-            "font '{font_name}' painted nothing for {} glyph(s) while advancing the cursor; \
-             first was code 0x{char_code:X} (glyph {gid}): {reason}. The page renders with \
-             a gap that reads as whitespace downstream.",
-            self.count
-        );
-        log::warn!(target: "pdf_oxide::fonts", "{message}");
-        crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
-            category: crate::extractors::warnings::WarningCategory::GlyphDropped,
-            page: None,
-            message,
-            spec_section: Some("9.6.6"),
-        });
-    }
-}
 
 pub struct TextRasterizer {
     /// Font database for system font fallback.
@@ -671,80 +632,31 @@ impl TextRasterizer {
     }
 
     /// Decode raw PDF text bytes to a Unicode string based on font type.
+    ///
+    /// Delegates to the shared decoder with the rasterizer policy: unmapped
+    /// codes are dropped (a U+FFFD has no glyph to paint) but counted so the
+    /// loss is reported rather than silent (#991), and presentation-form
+    /// ligature code points are decomposed so the shaper passes the cluster
+    /// through instead of dropping it (#331).
     fn decode_text_to_unicode(
         &self,
         bytes: &[u8],
         font: Option<&crate::fonts::FontInfo>,
     ) -> String {
-        // Chars that resolve to U+FFFD are removed from the shaping input
-        // below: no glyph, no advance, and every downstream index shifts.
-        // Counted so the loss is reported rather than silent (#991).
         let mut undecodable = GlyphDropTally::default();
-        let raw_result = if let Some(font) = font {
-            let mut result = String::new();
-            // Use pre-computed lookup table for performance if it's a simple font
-            if font.subtype != "Type0" {
-                let table = font.get_byte_to_char_table();
-                for &byte in bytes {
-                    let c = table[byte as usize];
-                    if c != '\0' {
-                        result.push(c);
-                    } else {
-                        // Fallback: multi-char mapping or unmapped byte
-                        let char_str = font
-                            .char_to_unicode(byte as u32)
-                            .unwrap_or_else(|| fallback_char_to_unicode(byte as u32));
-                        if char_str != "\u{FFFD}" {
-                            result.push_str(&char_str);
-                        } else {
-                            undecodable.record("no Unicode mapping", byte as u32, 0);
-                        }
-                    }
-                }
-            } else {
-                // Complex font: use unified iterator for robust multi-byte decoding
-                for (char_code, _) in TextCharIter::new(bytes, Some(font)) {
-                    let char_str = font
-                        .char_to_unicode(char_code as u32)
-                        .unwrap_or_else(|| fallback_char_to_unicode(char_code as u32));
-
-                    if char_str != "\u{FFFD}" {
-                        result.push_str(&char_str);
-                    } else {
-                        undecodable.record("no Unicode mapping", char_code as u32, 0);
-                    }
-                }
-            }
+        let result = crate::fonts::unicode_decode::decode_text_to_unicode(
+            bytes,
+            font,
+            DecodePolicy {
+                preserve_unmapped: false,
+                decompose_ligatures: true,
+            },
+            Some(&mut undecodable),
+        );
+        if let Some(font) = font {
             undecodable.report(&font.base_font);
-            result
-        } else {
-            // No font - fallback to Latin-1 (ISO 8859-1) encoding
-            bytes.iter().map(|&b| char::from(b)).collect()
-        };
-
-        // Filter control characters from failed encoding resolution,
-        // and expand presentation-form ligature code points (fi, fl, ffi,
-        // ffl, st, ct, …) into their component letters so the shaper
-        // passes the cluster through as ordinary glyphs instead of
-        // dropping it or producing a lone box. `extract_text` already
-        // does this on the extraction path via
-        // `ligature_processor::get_ligature_components`; without the
-        // same decomposition on the render path, words like
-        // "Efficient" rasterize as "Effi  ert" because the shaper can't
-        // resolve the ligature cluster against the fallback system
-        // font. See issue #331 (R2).
-        let mut filtered = String::with_capacity(raw_result.len());
-        for c in raw_result.chars() {
-            if c < '\x20' && c != '\t' && c != '\n' && c != '\r' {
-                continue;
-            }
-            if let Some(components) = crate::text::ligature_processor::get_ligature_components(c) {
-                filtered.push_str(components);
-            } else {
-                filtered.push(c);
-            }
         }
-        filtered
+        result
     }
 
     /// Measure-only: compute the horizontal advance of a Tj text string
@@ -1913,135 +1825,6 @@ impl TextRasterizer {
     }
 }
 
-/// Byte grouping mode for CID font character code decoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ByteMode {
-    /// Single-byte codes (simple fonts, some predefined CMaps)
-    OneByte,
-    /// Always 2-byte codes (Identity-H/V, UCS2)
-    TwoByte,
-    /// Shift-JIS variable-width (1 or 2 bytes depending on lead byte)
-    ShiftJIS,
-}
-
-/// Get byte grouping mode for a font.
-fn get_byte_mode(font: Option<&crate::fonts::FontInfo>) -> ByteMode {
-    if let Some(font) = font {
-        if font.subtype == "Type0" {
-            match &font.encoding {
-                crate::fonts::Encoding::Identity => ByteMode::TwoByte,
-                crate::fonts::Encoding::Standard(name) => {
-                    if (name.contains("Identity") && !name.contains("OneByteIdentity"))
-                        || name.contains("UCS2")
-                        || name.contains("UTF16")
-                    {
-                        ByteMode::TwoByte
-                    } else if name.contains("RKSJ") {
-                        ByteMode::ShiftJIS
-                    } else if name.contains("EUC")
-                        || name.contains("GBK")
-                        || name.contains("GBpc")
-                        || name.contains("GB-")
-                        || name.contains("CNS")
-                        || name.contains("B5")
-                        || name.contains("KSC")
-                        || name.contains("KSCms")
-                    {
-                        ByteMode::TwoByte
-                    } else {
-                        ByteMode::OneByte
-                    }
-                },
-                _ => ByteMode::OneByte,
-            }
-        } else {
-            ByteMode::OneByte
-        }
-    } else {
-        ByteMode::OneByte
-    }
-}
-
-/// Iterator over characters in a PDF string based on font encoding.
-struct TextCharIter<'a> {
-    bytes: &'a [u8],
-    byte_mode: ByteMode,
-    index: usize,
-}
-
-impl<'a> TextCharIter<'a> {
-    fn new(bytes: &'a [u8], font: Option<&crate::fonts::FontInfo>) -> Self {
-        Self {
-            bytes,
-            byte_mode: get_byte_mode(font),
-            index: 0,
-        }
-    }
-}
-
-impl<'a> Iterator for TextCharIter<'a> {
-    type Item = (u16, usize); // (char_code, bytes_consumed)
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.bytes.len() {
-            return None;
-        }
-
-        let (char_code, bytes_consumed) = match self.byte_mode {
-            ByteMode::TwoByte if self.index + 1 < self.bytes.len() => {
-                (((self.bytes[self.index] as u16) << 8) | (self.bytes[self.index + 1] as u16), 2)
-            },
-            ByteMode::ShiftJIS => {
-                let b = self.bytes[self.index];
-                let is_lead = (0x81..=0x9F).contains(&b) || (0xE0..=0xFC).contains(&b);
-                if is_lead && self.index + 1 < self.bytes.len() {
-                    (((b as u16) << 8) | (self.bytes[self.index + 1] as u16), 2)
-                } else {
-                    (b as u16, 1)
-                }
-            },
-            _ => (self.bytes[self.index] as u16, 1),
-        };
-
-        self.index += bytes_consumed;
-        Some((char_code, bytes_consumed))
-    }
-}
-
-/// Fallback function to map common character codes to Unicode when ToUnicode CMap fails.
-fn fallback_char_to_unicode(char_code: u32) -> String {
-    match char_code {
-        0x2014 => "—".to_string(),
-        0x2013 => "–".to_string(),
-        0x2018 => "\u{2018}".to_string(),
-        0x2019 => "\u{2019}".to_string(),
-        0x201C => "\u{201C}".to_string(),
-        0x201D => "\u{201D}".to_string(),
-        0x2022 => "•".to_string(),
-        0x2026 => "…".to_string(),
-        0x00B0 => "°".to_string(),
-        0x00B1 => "±".to_string(),
-        0x00D7 => "×".to_string(),
-        0x00F7 => "÷".to_string(),
-        0x2202 => "∂".to_string(),
-        0x2207 => "∇".to_string(),
-        0x220F => "∏".to_string(),
-        0x2211 => "∑".to_string(),
-        0x221A => "√".to_string(),
-        0x221E => "∞".to_string(),
-        0x2260 => "≠".to_string(),
-        0x2261 => "≡".to_string(),
-        0x2264 => "≤".to_string(),
-        0x2265 => "≥".to_string(),
-        code => {
-            if let Some(ch) = char::from_u32(code) {
-                ch.to_string()
-            } else {
-                "\u{FFFD}".to_string()
-            }
-        },
-    }
-}
 
 impl Default for TextRasterizer {
     fn default() -> Self {
