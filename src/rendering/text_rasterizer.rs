@@ -2013,7 +2013,7 @@ fn measure_text_bytes(
     let mut advance: f32 = 0.0;
 
     if let Some(font) = font_info {
-        for (char_code, _) in TextCharIter::new(bytes, Some(font)) {
+        for (char_code, nbytes) in TextCharIter::new(bytes, Some(font)) {
             // Per ISO 32000-1 §9.4.4 the advance formula differs by writing
             // mode:
             //   horizontal: tx = ((w0 * Tfs) + Tc + Tw) * Th
@@ -2021,17 +2021,23 @@ fn measure_text_bytes(
             // Tz is defined as glyph stretching along the *horizontal*
             // direction only (§9.3.4); it does not scale vertical w1y or
             // vertical Tc / Tw.
+            //
+            // Word spacing applies only to the SINGLE-BYTE code 32 (§9.3.3),
+            // never to a multi-byte code whose value happens to be 32 —
+            // the same guard the extractors use, so a rendered glyph and its
+            // extracted box advance identically.
+            let ws_applies = char_code == 0x20 && nbytes == 1;
             if wmode == 0 {
                 let glyph_adv = font.get_glyph_width(char_code) * font_size / 1000.0;
                 advance += (glyph_adv + gs.char_space) * h_scale;
-                if char_code == 0x20 {
+                if ws_applies {
                     advance += gs.word_space * h_scale;
                 }
             } else {
                 let w1y = font.get_vertical_metrics(char_code).w1y;
                 let glyph_adv = w1y * font_size / 1000.0;
                 advance += glyph_adv + gs.char_space;
-                if char_code == 0x20 {
+                if ws_applies {
                     advance += gs.word_space;
                 }
             }
