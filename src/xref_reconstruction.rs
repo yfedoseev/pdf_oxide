@@ -542,6 +542,13 @@ fn recover_from_objstms<R: Read + Seek>(
         let Ok(contained) = crate::objstm::parse_object_stream(&container) else {
             continue;
         };
+        // Ordered by object number: the `get_or_insert` calls below keep the
+        // FIRST candidate they meet, and `parse_object_stream` returns a
+        // `HashMap`, whose iteration order Rust randomizes per instance. Without
+        // this, a damaged file carrying two page trees recovers a different one
+        // between reconstructions of the same bytes.
+        let mut contained: Vec<(u32, Object)> = contained.into_iter().collect();
+        contained.sort_by_key(|(num, _)| *num);
         for (num, obj) in contained {
             match obj
                 .as_dict()
