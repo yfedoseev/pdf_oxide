@@ -376,6 +376,11 @@ pub(crate) fn merge_key_value_pairs(text: &str) -> String {
         if is_ordered_list_marker(trimmed).is_some() || starts_with_bullet(trimmed) {
             return false;
         }
+        // Multi-word prose that ends a sentence is a paragraph, not a value,
+        // no matter what it starts with ("2024 was a record year.").
+        if trimmed.ends_with(['.', '!', '?']) && trimmed.split_whitespace().count() >= 3 {
+            return false;
+        }
         let mut chars = trimmed.chars();
         let first = chars.next().unwrap();
         match first {
@@ -394,6 +399,11 @@ pub(crate) fn merge_key_value_pairs(text: &str) -> String {
     fn is_label_line(line: &str) -> bool {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            return false;
+        }
+        // A markdown heading is a complete block in its own right — it
+        // labels the section below it, never a value line.
+        if trimmed.starts_with('#') {
             return false;
         }
         // Must not itself be a value-only line

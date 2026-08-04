@@ -333,24 +333,22 @@ fn merge_consecutive_same_level_headings(s: &str) -> String {
             j += 1;
         }
 
-        // Two policies that both prove the run is one logical heading:
-        //   A) 3+ fragments AND each <= 2 words — canonical PowerPoint
-        //      word-per-heading pattern.
-        //   B) Exactly 2 fragments AND the FIRST ends with a
-        //      continuation-strength punctuation (`,` or `;`) or no
-        //      sentence-terminator (`.`, `?`, `!`, `:`). The second
-        //      fragment must visually look like a continuation: start
-        //      lowercase or with a connector word ("and"/"or"/"the"/
-        //      "with"/"of"/...). This matches the reporter's wrapped-
-        //      heading shape `## Despite seasonal slowdown,` +
-        //      `## warehouse operations maintained...` while still
-        //      keeping `# First Heading` / `# Second Heading` apart
-        //      (no trailing comma, second word "Second" is capitalized
-        //      and not a connector).
-        let three_plus_short =
-            texts.len() >= 3 && texts.iter().all(|t| t.split_whitespace().count() <= 2);
+        // Merge only when the run carries a positive continuation signal:
+        // exactly 2 fragments where the FIRST ends with continuation-
+        // strength punctuation (`,` or `;`) or no sentence-terminator, and
+        // the second visually looks like a continuation (starts lowercase
+        // or with a connector word — "and"/"or"/"the"/"with"/"of"/...).
+        // This fuses the wrapped-heading shape `## Despite seasonal
+        // slowdown,` + `## warehouse operations maintained...` while
+        // keeping `# First Heading` / `# Second Heading` apart.
+        //
+        // Runs of 3+ short headings are deliberately NOT fused: at the
+        // string level `# Sales / # Marketing / # Engineering` (three real
+        // sections) is indistinguishable from a slide title exported one
+        // word per heading, and every reference extractor keeps such runs
+        // separate. Fusing destroyed genuinely distinct section headers.
         let wrapped_two = texts.len() == 2 && looks_like_heading_wrap(&texts[0], &texts[1]);
-        if three_plus_short || wrapped_two {
+        if wrapped_two {
             let merged = texts.join(" ");
             let hashes = "#".repeat(level);
             out.push(format!("{} {}", hashes, merged));
@@ -590,55 +588,13 @@ fn collapse_numeric_heading_runs(s: &str) -> String {
     out.join("\n")
 }
 
-/// Issue #12 (narrow) band-aid. Within a single bold block `**...**`,
-/// detect the CamelCase fragmentation pattern produced when a word
-/// rendered with mixed fonts (e.g. bold first letter, regular rest) is
-/// emitted as space-separated fragments inside one bold span. The
-/// canonical example from the reporter's corpus is `**S alesF orce**`
-/// (intended: `**SalesForce**`).
-///
-/// Match criteria: a single uppercase ASCII letter followed by a space,
-/// then a lowercase chunk that itself contains a later uppercase letter
-/// (the CamelCase indicator), then a space and another lowercase chunk.
-/// All three pieces must live inside the same `**...**` pair. Replacing
-/// `**A bcD efg**` with `**AbcDefg**`.
-///
-/// Conservative on purpose: matching mid-prose "I am Bob" or "USB Type C"
-/// would corrupt legitimate text, so the regex requires the CamelCase
-/// signal to be unambiguous (lowercase+uppercase within a single inner
-/// fragment).
-fn coalesce_camelcase_bold_fragments(s: &str) -> String {
-    // Unicode-aware (script-agnostic): `\p{Lu}` matches any
-    // uppercase letter in Unicode, `\p{Ll}` matches any lowercase
-    // letter. The CamelCase signal — a lowercase-letter run
-    // containing a later uppercase letter inside one fragment — is
-    // unambiguous across Latin, Cyrillic, Greek, Armenian, Coptic,
-    // and other cased scripts. Non-cased scripts (CJK, Arabic,
-    // Hebrew) lack CamelCase entirely so the pattern can never
-    // match — that's correct behavior.
-    //
-    // Pass 1 — inline form: `**A bcD ef**` (closing `**` after the
-    // lowercase tail). Three fragments inside one bold pair.
-    static RE_CAMELCASE_BOLD_INLINE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\*\*(\p{Lu})\s+(\p{Ll}+\p{Lu}\p{Ll}*)\s+(\p{Ll}+)\*\*").unwrap()
-    });
-    // Pass 2 — bound form: `**A bcD** ef` (closing `**` mid-CamelCase,
-    // lowercase tail outside the bold). Two fragments inside the bold
-    // pair, tail immediately (or after one optional space) after.
-    static RE_CAMELCASE_BOLD_BOUND: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\*\*(\p{Lu})\s+(\p{Ll}+\p{Lu}\p{Ll}*)\*\*\s*(\p{Ll}+)").unwrap()
-    });
-    let pass1 = RE_CAMELCASE_BOLD_INLINE
-        .replace_all(s, |caps: &regex::Captures| {
-            format!("**{}{}{}**", &caps[1], &caps[2], &caps[3])
-        })
-        .to_string();
-    RE_CAMELCASE_BOLD_BOUND
-        .replace_all(&pass1, |caps: &regex::Captures| {
-            format!("**{}{}{}**", &caps[1], &caps[2], &caps[3])
-        })
-        .to_string()
-}
+// The former `coalesce_camelcase_bold_fragments` post-process is gone: at
+// the string level a torn brand name (`**S alesF orce**`) is
+// indistinguishable from legitimate bold prose whose second word is
+// CamelCase (`**A gitHub repo**`), and the pass deleted the real spaces
+// from the latter. The tear it compensated for is prevented upstream in
+// span assembly, where glyph geometry (a zero raw gap between fragments)
+// identifies it unambiguously.
 
 /// Markdown output converter.
 ///
@@ -1772,7 +1728,14 @@ impl MarkdownOutputConverter {
                     } else {
                         is_list_item_role
                     };
-                    if is_bullet || is_ordered || starts_new_list_item {
+                    // A heading is a single-line construct: a new baseline
+                    // inside a heading run starts a new heading line rather
+                    // than concatenating (`## Sales Marketing Engineering`).
+                    // A genuinely wrapped heading is re-fused downstream by
+                    // merge_consecutive_same_level_headings, which demands a
+                    // continuation signal.
+                    let heading_line_break = current_heading_level.is_some();
+                    if is_bullet || is_ordered || starts_new_list_item || heading_line_break {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
@@ -2141,11 +2104,9 @@ impl MarkdownOutputConverter {
         let is_tagged = sorted.iter().any(|s| s.struct_role.is_some());
 
         // Always-safe steps (no semantic structure change): markdown
-        // escaping, whitespace-only bold-fragment recovery, and
-        // exact-duplicate paragraph dedup. These run for both tagged
-        // and untagged documents.
+        // escaping and exact-duplicate paragraph dedup. These run for
+        // both tagged and untagged documents.
         final_result = escape_stray_leading_pipes(&final_result);
-        final_result = coalesce_camelcase_bold_fragments(&final_result);
         // Fuse consecutive monospace (fixed-pitch / code-font) paragraphs into a
         // fenced code block. A `Code` element renders its lines monospace even
         // when the producer left the block untagged.
@@ -5432,18 +5393,15 @@ mod tests {
         );
     }
 
-    /// Issue #1 — PowerPoint-exported word-per-heading runs must fuse
-    /// into a single heading line.
+    /// A run of 3+ short same-level headings must stay separate: at the
+    /// string level it is indistinguishable from three genuine section
+    /// headers, and every reference extractor keeps the run apart.
     #[test]
-    fn test_issue1_merge_word_per_heading_runs() {
+    fn test_short_heading_runs_stay_separate() {
         let input = "# Quarterly\n\n# Inventory\n\n# Review\n";
         let out = merge_consecutive_same_level_headings(input);
-        assert_eq!(
-            out.trim(),
-            "# Quarterly Inventory Review",
-            "three same-level short H1s must merge, got:\n{}",
-            out
-        );
+        let headings = out.lines().filter(|l| l.starts_with("# ")).count();
+        assert_eq!(headings, 3, "distinct short headings fused, got:\n{}", out);
     }
 
     /// Issue #4 — wrapped long-heading split across two lines must
@@ -5656,58 +5614,6 @@ mod tests {
         let input = "# 2024 Annual Report\n";
         let out = collapse_numeric_heading_runs(input);
         assert_eq!(out, input, "single non-numeric heading must be untouched: {}", out);
-    }
-
-    /// Issue #12 — `**S alesF orce**` CamelCase fragmentation inside a
-    /// single bold pair coalesces to `**SalesForce**`.
-    #[test]
-    fn test_issue12_coalesces_inline_camelcase_bold() {
-        let input = "**S alesF orce** is great.\n";
-        let out = coalesce_camelcase_bold_fragments(input);
-        assert!(
-            out.contains("**SalesForce**"),
-            "inline CamelCase bold must coalesce, got:\n{}",
-            out
-        );
-    }
-
-    /// Issue #12 — must NOT touch legitimate two-word bold like
-    /// `**John Smith**` or `**USB Type C**`. The CamelCase signal
-    /// (lowercase-then-uppercase inside one fragment) is required.
-    #[test]
-    fn test_issue12_preserves_normal_multi_word_bold() {
-        let input = "**John Smith** wrote.\n**USB Type C** cable.\n";
-        let out = coalesce_camelcase_bold_fragments(input);
-        assert!(
-            out.contains("**John Smith**"),
-            "two-word person bold must not be merged, got:\n{}",
-            out
-        );
-        assert!(
-            out.contains("**USB Type C**"),
-            "three-word product bold must not be merged, got:\n{}",
-            out
-        );
-    }
-
-    /// Issue #12 (BOUND case) — closing `**` lands mid-CamelCase:
-    /// `**N orthW** ind` (intended `**N**orthWind` or `**NorthWind**`).
-    /// This is the pattern not yet covered by the inline-bold regex.
-    /// Marked `#[ignore]` until the bound coalescer lands.
-    #[test]
-    fn test_issue12_bound_camelcase_bold_coalesces() {
-        let input = "**N orthW** ind";
-        let out = coalesce_camelcase_bold_fragments(input);
-        // Either of these post-coalesce forms is acceptable; both
-        // recover the intended brand name.
-        let acceptable = out.contains("**NorthWind**")
-            || out.contains("**NorthW**ind")
-            || out.contains("**N**orthWind");
-        assert!(
-            acceptable,
-            "bound CamelCase bold (closing ** mid-word) should coalesce, got:\n{}",
-            out
-        );
     }
 
     /// Issue #8 — a table cell that carries bold spans must render the
