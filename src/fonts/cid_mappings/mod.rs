@@ -141,6 +141,15 @@ mod tests {
     }
 
     #[test]
+    fn test_cid_tables_map_to_ideographs_not_radical_forms() {
+        // A CID whose glyph is shared between a kanji and its radical
+        // presentation form must resolve to the unified ideograph, never a
+        // U+2E80–2FDF dictionary codepoint (Equivalent_Unified_Ideograph).
+        assert_eq!(lookup_adobe_japan1(2664), Some(0x9752)); // 青, not U+2ED8 ⻘
+        assert_eq!(lookup_adobe_japan1(2666), Some(0x6589)); // 斉, not U+2EEB ⻫
+    }
+
+    #[test]
     fn test_adobe_cns1_ascii_from_cid() {
         // CID 34 maps to 'A' (U+0041)
         assert_eq!(lookup_adobe_cns1(34), Some(0x41)); // CID 34 -> A

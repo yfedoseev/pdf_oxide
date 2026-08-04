@@ -135,14 +135,17 @@ fn test_unigb_ucs2_h_cmap_simplified_chinese() {
 
     // For UCS2 encoding, char_to_unicode receives the raw character code from the
     // content stream (not a post-CMap CID). UCS2 codes are treated as Unicode BMP
-    // values at Priority 2, so 0x2EE5 → U+2EE5 (CJK Radical Fish ⻥).
+    // values at Priority 2, so 0x2EE5 decodes as U+2EE5 (CJK Radical Fish ⻥) —
+    // and radical presentation forms are dictionary glyphs, never running text,
+    // so normalization then carries it to the equivalent unified ideograph
+    // 鱼 (U+9C7C), the same treatment the Kangxi block already receives.
     let result = font.char_to_unicode(0x2EE5);
 
     assert!(result.is_some(), "UniGB-UCS2-H should map char code 0x2EE5");
     let mapped = result.unwrap();
     assert_eq!(
-        mapped, "\u{2EE5}",
-        "char code 0x2EE5 should map to U+2EE5 (⻥) via CID-as-Unicode"
+        mapped, "鱼",
+        "char code 0x2EE5 (⻥, a radical presentation form) must normalize to 鱼 (U+9C7C)"
     );
 }
 

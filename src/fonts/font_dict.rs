@@ -5143,28 +5143,18 @@ fn shift_jis_to_unicode(code: u16) -> Option<char> {
 /// are never part of running text — but a font cmap that maps a glyph shared
 /// between a radical and its ideograph to the *radical* codepoint (and a
 /// GID→Unicode reverse lookup that then prefers it) surfaces e.g. 欠→⽋, 立→⽴.
-/// NFKC carries each radical to its ideograph; only chars inside the two radical
-/// blocks are touched, so legitimate text (incl. fullwidth forms) is unchanged.
+///
+/// The mapping is Unicode's `Equivalent_Unified_Ideograph` property, not NFKC:
+/// NFKC decomposes the whole Kangxi block but only 2 of the 115 Supplement
+/// codepoints, so an NFKC-based pass silently no-ops on e.g. ⻘ (U+2ED8).
 /// Fast-path returns the input untouched when it contains no radical-block char.
 fn normalize_cjk_radical_forms(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    fn is_radical(c: char) -> bool {
-        // CJK Radicals Supplement (U+2E80–2EFF) + Kangxi Radicals (U+2F00–2FDF),
-        // which are contiguous, so a single range covers both blocks.
-        matches!(c as u32, 0x2E80..=0x2FDF)
-    }
-    if !s.chars().any(is_radical) {
+    use super::radical_forms::radical_to_unified_ideograph;
+    if !s.chars().any(|c| matches!(c as u32, 0x2E80..=0x2FDF)) {
         return s.to_string();
     }
     s.chars()
-        .flat_map(|c| {
-            if is_radical(c) {
-                // NFKC-decompose just this radical glyph to its ideograph.
-                Box::new(c.nfkc()) as Box<dyn Iterator<Item = char>>
-            } else {
-                Box::new(std::iter::once(c)) as Box<dyn Iterator<Item = char>>
-            }
-        })
+        .map(|c| radical_to_unified_ideograph(c).unwrap_or(c))
         .collect()
 }
 
@@ -9615,6 +9605,14 @@ mod tests {
         // Kangxi Radicals (U+2F00–2FDF) → unified ideograph.
         assert_eq!(normalize_cjk_radical_forms("⽋点"), "欠点");
         assert_eq!(normalize_cjk_radical_forms("⽴⾮⾔⾦"), "立非言金");
+        // CJK Radicals Supplement (U+2E80–2EFF) → unified ideograph. NFKC has
+        // no decomposition for these, which is why the mapping is Unicode's
+        // Equivalent_Unified_Ideograph property instead.
+        assert_eq!(normalize_cjk_radical_forms("\u{2ED8}"), "青");
+        assert_eq!(normalize_cjk_radical_forms("\u{2EEB}"), "斉");
+        assert_eq!(normalize_cjk_radical_forms("\u{2EC4}空"), "西空");
+        // U+2E80 (a repeat mark) has no equivalent ideograph — untouched.
+        assert_eq!(normalize_cjk_radical_forms("\u{2E80}"), "\u{2E80}");
         // Mixed radical + normal text: only the radical is rewritten.
         assert_eq!(normalize_cjk_radical_forms("実⽴確率"), "実立確率");
         // Fast path: no radical-block char → returned unchanged (incl. fullwidth).
