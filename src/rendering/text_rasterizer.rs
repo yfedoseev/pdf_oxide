@@ -1500,7 +1500,7 @@ impl TextRasterizer {
 
             // Draw glyph outline
             if gid == 0 && !char_at_pos.is_whitespace() {
-                dropped.record("no glyph id", char_code, gid);
+                dropped.record("no glyph id", u32::from(char_code), gid);
             }
             if gid != 0 || char_at_pos.is_whitespace() {
                 if !char_at_pos.is_whitespace() {
@@ -1512,7 +1512,7 @@ impl TextRasterizer {
                         .outline_glyph(ttf_parser::GlyphId(gid), &mut builder)
                         .is_some();
                     if !outlined {
-                        dropped.record("no outline", char_code, gid);
+                        dropped.record("no outline", u32::from(char_code), gid);
                     }
                     if outlined {
                         if let Some(path) = pb.finish() {
