@@ -44,6 +44,10 @@ impl GlyphDropTally {
         self.first.get_or_insert((reason, char_code, gid));
     }
 
+    /// Only the rasterizer reports (extraction's drops are policy-visible
+    /// via `preserve_unmapped`), so without the `rendering` feature this is
+    /// dead code by design.
+    #[cfg_attr(not(feature = "rendering"), allow(dead_code))]
     pub(crate) fn report(&self, font_name: &str) {
         let Some((reason, char_code, gid)) = self.first else {
             return;
