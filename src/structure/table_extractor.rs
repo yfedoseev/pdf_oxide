@@ -702,29 +702,49 @@ fn extract_cell(
     let mut cell_spans: Vec<TextSpan> = Vec::new();
 
     // Collect every block the cell's marked-content sequences own, then join
-    // in visual reading order (top line first, left to right): content-stream
-    // order routinely interleaves a wrapped title's lines. Lines are formed
-    // by walking blocks top-to-bottom and opening a new line when the drop
-    // from the current line's first block exceeds half the SMALLER of the
-    // two heights — a per-pair threshold, so one tall multi-line block
-    // cannot swallow line spacing tighter than its own height.
+    // them in reading order: content-stream order routinely interleaves a
+    // wrapped title's lines.
+    //
+    // Reading order follows the run's OWN writing axis, not the page's. ISO
+    // 32000-1 §9.4.4 puts glyph displacement along the text matrix's writing
+    // direction, so a line rotated 90° advances along y while successive
+    // lines step along x, and right-to-left script is stored in logical order
+    // while advancing toward decreasing x. Projecting onto those axes
+    // recovers reading order for upright, rotated and RTL cells alike, where
+    // a fixed y-then-x sort reverses the last two.
     let mut blocks: Vec<&TextBlock> = text_blocks
         .iter()
         .filter(|b| b.mcid.is_some_and(|m| mcids.contains(&m)))
         .collect();
-    blocks.sort_by(|a, b| {
-        b.bbox
-            .y
-            .partial_cmp(&a.bbox.y)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+
+    let (sin, cos) = cell_rotation_degrees(&blocks).to_radians().sin_cos();
+    let direction = if blocks.iter().any(|b| crate::text::bidi::looks_rtl(&b.text)) {
+        -1.0
+    } else {
+        1.0
+    };
+    // Along the writing direction, and perpendicular to it in the direction
+    // successive lines advance (unrotated: +x and "down the page").
+    let along = |b: &TextBlock| direction * (b.bbox.x * cos + b.bbox.y * sin);
+    let perp = |b: &TextBlock| b.bbox.x * sin - b.bbox.y * cos;
+
+    // `perp` multiplies a bbox coordinate by a sine that is exactly 0.0 at
+    // rotation 0, so a non-finite coordinate yields NaN on the axis we are not
+    // even sorting along. Comparing NaN as Equal breaks transitivity and
+    // `sort_by` then panics, so use the crate's NaN ordering.
+    blocks.sort_by(|a, b| crate::utils::safe_float_cmp(perp(a), perp(b)));
+    // Lines are formed by walking along the perpendicular axis and opening a
+    // new line when the step from the current line's first block exceeds half
+    // the SMALLER of the two heights — a per-pair threshold, so one tall
+    // multi-line block cannot swallow line spacing tighter than its own
+    // height.
     let mut keyed: Vec<(usize, &TextBlock)> = Vec::with_capacity(blocks.len());
     let mut line = 0usize;
     let mut anchor: Option<&TextBlock> = None;
     for b in blocks {
         if let Some(a) = anchor {
             let threshold = a.bbox.height.min(b.bbox.height).max(1.0) * 0.5;
-            if a.bbox.y - b.bbox.y > threshold {
+            if perp(b) - perp(a) > threshold {
                 line += 1;
                 anchor = Some(b);
             }
@@ -734,12 +754,9 @@ fn extract_cell(
         keyed.push((line, b));
     }
     keyed.sort_by(|(line_a, a), (line_b, b)| {
-        line_a.cmp(line_b).then(
-            a.bbox
-                .x
-                .partial_cmp(&b.bbox.x)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
+        line_a
+            .cmp(line_b)
+            .then_with(|| crate::utils::safe_float_cmp(along(a), along(b)))
     });
 
     let mut prev_block: Option<&TextBlock> = None;
@@ -868,6 +885,31 @@ fn extract_cell(
     cell.spans = cell_spans;
 
     Ok(cell)
+}
+
+/// The quadrant the cell's glyph runs are drawn at, as the modal rotation of
+/// its blocks. A cell mixing rotations (a rotated header beside an upright
+/// note) reads in the majority frame; ties resolve to the smaller angle so
+/// the choice is deterministic.
+fn cell_rotation_degrees(blocks: &[&TextBlock]) -> f32 {
+    let mut counts: [usize; 4] = [0; 4];
+    for b in blocks {
+        let normalized = b.rotation_degrees.rem_euclid(360.0);
+        // Snap to a quadrant; a free angle (skew) reads in the upright frame,
+        // which is what the unrotated sort did for it before.
+        let quadrant = ((normalized / 90.0).round() as usize) % 4;
+        if (normalized - (quadrant as f32) * 90.0).abs() < 0.5 {
+            counts[quadrant] += 1;
+        } else {
+            counts[0] += 1;
+        }
+    }
+    let (index, _) = counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, &count)| (count, std::cmp::Reverse(*index)))
+        .expect("counts is non-empty");
+    (index as f32) * 90.0
 }
 
 /// Recursively collect all MCIDs from a structure element and its children.

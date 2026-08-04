@@ -188,6 +188,45 @@ fn cell_with_gap_separated_spans_keeps_both() {
     );
 }
 
+/// A 90° rotated column header (reads bottom-to-top) must join along its own
+/// writing axis. Its runs share an x and step in y, so a page-frame y-then-x
+/// sort would emit them in reverse.
+#[test]
+fn rotated_cell_runs_join_along_their_writing_axis() {
+    let mut first = span("Reve", 100.0, 200.0, 0, 0);
+    first.rotation_degrees = 90.0;
+    let mut second = span("nue", 100.0, 240.0, 0, 1);
+    second.rotation_degrees = 90.0;
+    // Content order deliberately reversed to prove the sort, not the input.
+    let spans = vec![second, first, span("x", 400.0, 700.0, 1, 2)];
+    let mut table = StructElem::new(StructType::Table);
+    table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
+    let t = extract_table_from_spans(&table, &spans).unwrap();
+    assert_eq!(
+        t.rows[0].cells[0].text, "Reve nue",
+        "a 90° rotated run advances along +y, so 'Reve' (lower y) comes first"
+    );
+}
+
+/// Right-to-left script is stored in logical order but drawn toward
+/// decreasing x, so ordering by ascending x would reverse the words.
+#[test]
+fn rtl_cell_runs_keep_logical_order() {
+    // Two Arabic words: the logically-first is drawn at the greater x.
+    let spans = vec![
+        span("مرحبا", 300.0, 700.0, 0, 0),
+        span("بالعالم", 200.0, 700.0, 0, 1),
+        span("x", 400.0, 660.0, 1, 2),
+    ];
+    let mut table = StructElem::new(StructType::Table);
+    table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
+    let t = extract_table_from_spans(&table, &spans).unwrap();
+    assert_eq!(
+        t.rows[0].cells[0].text, "مرحبا بالعالم",
+        "RTL runs must join in logical order, not left-to-right visual order"
+    );
+}
+
 /// Wrapped lines arriving in reverse content order must join in visual
 /// order, even when a tall sibling block sits in the same cell — line
 /// grouping is per-pair, so one tall block cannot swallow line spacing
