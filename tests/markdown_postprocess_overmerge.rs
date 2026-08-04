@@ -90,6 +90,35 @@ fn consecutive_short_headings_stay_separate() {
     }
 }
 
+/// A heading too long for one line stays ONE heading. The continuation here
+/// starts with a capitalized word ("North"), which is how Title Case wraps
+/// almost always break — so this must not depend on the continuation's
+/// spelling, only on the first line having run to the column margin.
+#[test]
+fn wrapped_heading_stays_one_heading() {
+    // The 20pt heading's first line runs to the same right margin as the body
+    // text below it, i.e. it wrapped; the second line continues it.
+    let md = markdown(
+        "BT /F1 20 Tf 1 0 0 1 72 720 Tm (Quarterly Report for the Western) Tj \
+         1 0 0 1 72 696 Tm (North America Region) Tj \
+         /F1 12 Tf 1 0 0 1 72 660 Tm (Revenue grew across every product line this quarter.) Tj ET",
+    );
+    let heading_lines: Vec<&str> = md
+        .lines()
+        .filter(|l| l.trim_start().starts_with('#'))
+        .collect();
+    assert_eq!(
+        heading_lines.len(),
+        1,
+        "a wrapped heading must stay one heading, got {heading_lines:?}\n{md}"
+    );
+    assert!(
+        heading_lines[0].contains("Quarterly Report for the Western")
+            && heading_lines[0].contains("North America Region"),
+        "both wrapped lines must land in the one heading: {heading_lines:?}\n{md}"
+    );
+}
+
 /// Bold prose `A gitHub repo` must keep its spaces; the CamelCase inside one
 /// word is not license to delete the word boundaries around it.
 #[test]

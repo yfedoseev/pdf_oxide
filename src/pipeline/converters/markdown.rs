@@ -1295,9 +1295,19 @@ impl MarkdownOutputConverter {
             std::collections::HashMap::new();
         let mut block_left_min: std::collections::HashMap<u32, f32> =
             std::collections::HashMap::new();
+        // Page-level equivalents, for untagged content where no block id
+        // exists to key the per-block extents on.
+        let mut page_right_max = f32::MIN;
+        let mut page_left_min = f32::MAX;
         for s in &sorted {
+            let right = s.span.bbox.x + s.span.bbox.width;
+            if right > page_right_max {
+                page_right_max = right;
+            }
+            if s.span.bbox.x < page_left_min {
+                page_left_min = s.span.bbox.x;
+            }
             if let Some(b) = s.block_id {
-                let right = s.span.bbox.x + s.span.bbox.width;
                 let e = block_right_max.entry(b).or_insert(f32::MIN);
                 if right > *e {
                     *e = right;
@@ -1649,6 +1659,7 @@ impl MarkdownOutputConverter {
                 // LEFT margin, so the test is mirrored for them.
                 let tol = prev.span.font_size.max(8.0) * 1.5;
                 let prev_is_rtl = crate::text::bidi::looks_rtl(&prev.span.text);
+                let prev_right = prev.span.bbox.x + prev.span.bbox.width;
                 let prev_fills_column = prev.block_id.is_some_and(|b| {
                     if prev_is_rtl {
                         block_left_min
@@ -1657,9 +1668,19 @@ impl MarkdownOutputConverter {
                     } else {
                         block_right_max
                             .get(&b)
-                            .is_some_and(|&hi| prev.span.bbox.x + prev.span.bbox.width >= hi - tol)
+                            .is_some_and(|&hi| prev_right >= hi - tol)
                     }
                 });
+                // Same question without a block id to key on: did the line run
+                // to the page's text margin? Falls back to the per-block answer
+                // when one exists, so tagged content is unaffected.
+                let prev_fills_any_column = if prev.block_id.is_some() {
+                    prev_fills_column
+                } else if prev_is_rtl {
+                    prev.span.bbox.x <= page_left_min + tol
+                } else {
+                    prev_right >= page_right_max - tol
+                };
                 let merge_wrapped_line = same_block
                     && plain_para
                     && next_continues_lowercase
@@ -1728,13 +1749,17 @@ impl MarkdownOutputConverter {
                     } else {
                         is_list_item_role
                     };
-                    // A heading is a single-line construct: a new baseline
-                    // inside a heading run starts a new heading line rather
-                    // than concatenating (`## Sales Marketing Engineering`).
-                    // A genuinely wrapped heading is re-fused downstream by
-                    // merge_consecutive_same_level_headings, which demands a
-                    // continuation signal.
-                    let heading_line_break = current_heading_level.is_some();
+                    // A new baseline inside a heading run starts a new heading
+                    // line — UNLESS the geometry says the previous line
+                    // wrapped. A line that ran to the column margin stopped
+                    // because it ran out of width; a line that stopped short
+                    // stopped because the heading ended. That distinction is
+                    // structural, so `# Sales` / `# Marketing` / `# Engineering`
+                    // (each short) stay three headings while a title too long
+                    // for one line stays one heading — with no appeal to how
+                    // the continuation happens to be spelled.
+                    let heading_line_break =
+                        current_heading_level.is_some() && !prev_fills_any_column;
                     if is_bullet || is_ordered || starts_new_list_item || heading_line_break {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
