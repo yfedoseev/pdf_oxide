@@ -33,6 +33,7 @@ pub mod non_text_detection;
 /// glyph outlines. ISO 32000-2 §9.7.5.2 mandates support for these collections.
 pub mod predefined_cidfont;
 pub mod provenance;
+mod radical_forms;
 /// TrueType font CMap parsing for glyph-to-character mapping.
 pub mod truetype_cmap;
 /// TrueType/OpenType font parser for PDF embedding (v0.3.0).
