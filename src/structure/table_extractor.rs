@@ -826,7 +826,9 @@ fn extract_cell(
                         rtl_draw_logical: false,
                     });
                     prev_block = Some(block);
-                    break;
+                    // No early exit: one marked-content sequence routinely
+                    // carries several text blocks (wrapped lines, gap-split
+                    // runs), and the cell owns all of them.
                 }
             }
         }
