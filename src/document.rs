@@ -17174,6 +17174,20 @@ impl PdfDocument {
         let page_is_unrotated = self.get_page_rotation(page_index).unwrap_or(0) == 0;
 
         let mut rotated_lines: Vec<(f32, f32, Vec<Word>)> = Vec::new();
+        // Offsets of the quarter-turn lines, quantized to 1/100 pt, mapped to
+        // the indices of the lines carrying them. The match below used to scan
+        // every line built so far, which is O(runs^2) — and a rotated table,
+        // the exact page this grouping exists for, is where the run count
+        // climbs. The index answers the same question over a bounded range.
+        //
+        // Semantics are preserved exactly. A line's offset is frozen when it is
+        // created, and the winner is the FIRST such line in insertion order, so
+        // candidates are filtered by the original predicate and the smallest
+        // index wins. Merging neighbours instead would group differently:
+        // offsets 0, 3, 6 with tolerance 4 give {0,3},{6} under this rule but
+        // {0,3,6} under a chained merge.
+        let mut offset_index: std::collections::BTreeMap<i64, Vec<usize>> =
+            std::collections::BTreeMap::new();
         for (start, end) in run_first_word {
             let word = &words[start];
             let rotation = spans[word_rot_run[start].expect("rotated run")].rotation_degrees;
@@ -17187,12 +17201,27 @@ impl PdfDocument {
             }
             let across = word.bbox.x;
             let tolerance = word.bbox.height.max(1.0) * 0.5;
-            let existing = rotated_lines.iter_mut().find(|(rot, off, _)| {
-                (*rot - rotation).abs() < 0.5 && (*off - across).abs() <= tolerance
-            });
-            match existing {
-                Some((_, _, line)) => line.extend_from_slice(&words[start..end]),
-                None => rotated_lines.push((rotation, across, words[start..end].to_vec())),
+            let quantize = |v: f32| (f64::from(v) * 100.0).round() as i64;
+            // Widened by one step each way so a value sitting on a bucket edge
+            // cannot be missed by rounding.
+            let (lo, hi) = (quantize(across - tolerance) - 1, quantize(across + tolerance) + 1);
+            let winner = offset_index
+                .range(lo..=hi)
+                .flat_map(|(_, indices)| indices.iter().copied())
+                .filter(|&i| {
+                    let (rot, off, _) = &rotated_lines[i];
+                    (*rot - rotation).abs() < 0.5 && (*off - across).abs() <= tolerance
+                })
+                .min();
+            match winner {
+                Some(i) => rotated_lines[i].2.extend_from_slice(&words[start..end]),
+                None => {
+                    offset_index
+                        .entry(quantize(across))
+                        .or_default()
+                        .push(rotated_lines.len());
+                    rotated_lines.push((rotation, across, words[start..end].to_vec()));
+                },
             }
         }
         lines.extend(rotated_lines.into_iter().map(|(_, _, line)| line));
