@@ -542,10 +542,13 @@ impl FormExtractor {
             Object::Name(name) => {
                 // Name value (for radio buttons, choice fields)
                 if *field_type == FieldType::Button {
-                    // For checkboxes, common values are /Yes or /Off
+                    // ISO 32000-1 §12.7.4.2.3: a button's /V names its selected
+                    // appearance state and only /Off means "unselected". Any
+                    // other name — including /No — is a real on-state whose
+                    // export value must be preserved.
                     if name == "Yes" || name == "On" {
                         FieldValue::Boolean(true)
-                    } else if name == "No" || name == "Off" {
+                    } else if name == "Off" {
                         FieldValue::Boolean(false)
                     } else {
                         FieldValue::Name(name.clone())
@@ -921,9 +924,11 @@ mod tests {
 
     #[test]
     fn test_parse_field_value_button_no() {
+        // /No is a real on-state (only /Off means unselected, ISO 32000-1
+        // §12.7.4.2.3): the export value must survive.
         let obj = Object::Name("No".to_string());
         let value = FormExtractor::parse_field_value(&obj, &FieldType::Button);
-        assert!(matches!(value, FieldValue::Boolean(false)));
+        assert!(matches!(value, FieldValue::Name(ref s) if s == "No"));
     }
 
     #[test]
