@@ -332,15 +332,14 @@ fn render_cjk_fallback_face() -> Option<Arc<CachedFace>> {
         .clone()
 }
 
-/// Rasterizer for PDF text operations.
 /// Glyphs that painted nothing while the cursor advanced, tallied for one
 /// text run.
 ///
 /// A dropped glyph is indistinguishable from real whitespace downstream: OCR
 /// transcribes the gap-filled render faithfully and the loss reaches a search
-/// index unnoticed (#991). One warning per run names the font, the first
-/// offending code and glyph id, and how many followed — enough to identify a
-/// broken font without a log line per glyph.
+/// index unnoticed (#991). One warning per font names the first offending
+/// code and glyph id and how many followed in the run that triggered it —
+/// enough to identify a broken font without a log line per glyph.
 #[derive(Default)]
 struct GlyphDropTally {
     count: usize,
@@ -353,26 +352,53 @@ impl GlyphDropTally {
         self.first.get_or_insert((reason, char_code, gid));
     }
 
-    fn report(&self, font_name: &str) {
-        let Some((reason, char_code, gid)) = self.first else {
-            return;
-        };
-        let message = format!(
-            "font '{font_name}' painted nothing for {} glyph(s) while advancing the cursor; \
-             first was code 0x{char_code:X} (glyph {gid}): {reason}. The page renders with \
-             a gap that reads as whitespace downstream.",
-            self.count
-        );
-        log::warn!(target: "pdf_oxide::fonts", "{message}");
-        crate::extractors::warnings::push_global_warning(crate::extractors::warnings::Warning {
+    /// The structured warning for this run, or `None` when nothing dropped.
+    fn warning(&self, font_name: &str) -> Option<crate::extractors::warnings::Warning> {
+        let (reason, char_code, gid) = self.first?;
+        Some(crate::extractors::warnings::Warning {
             category: crate::extractors::warnings::WarningCategory::GlyphDropped,
             page: None,
-            message,
-            spec_section: Some("9.6.6"),
-        });
+            message: format!(
+                "font '{font_name}' painted nothing for {} glyph(s) while advancing the cursor; \
+                 first was code 0x{char_code:X} (glyph {gid}): {reason}. The page renders with \
+                 a gap that reads as whitespace downstream.",
+                self.count
+            ),
+            spec_section: None,
+        })
+    }
+
+    /// True the first time `font_name` is seen in this process. Reporting is
+    /// per text run, and the global sink is never drained by render-only
+    /// callers, so a broken font would otherwise push one warning per Tj/TJ
+    /// element without bound (#991 asked for once per font). `MAX_WARNED_FONTS`
+    /// bounds the gate's own memory.
+    fn first_report_for(font_name: &str) -> bool {
+        const MAX_WARNED_FONTS: usize = 64;
+        static WARNED_FONTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let Ok(mut warned) = WARNED_FONTS.lock() else {
+            return false;
+        };
+        if warned.iter().any(|w| w == font_name) || warned.len() >= MAX_WARNED_FONTS {
+            return false;
+        }
+        warned.push(font_name.to_string());
+        true
+    }
+
+    fn report(&self, font_name: &str) {
+        let Some(warning) = self.warning(font_name) else {
+            return;
+        };
+        if !Self::first_report_for(font_name) {
+            return;
+        }
+        log::warn!(target: "pdf_oxide::fonts", "{}", warning.message);
+        crate::extractors::warnings::push_global_warning(warning);
     }
 }
 
+/// Rasterizer for PDF text operations.
 pub struct TextRasterizer {
     /// Font database for system font fallback.
     ///
@@ -676,10 +702,10 @@ impl TextRasterizer {
         bytes: &[u8],
         font: Option<&crate::fonts::FontInfo>,
     ) -> String {
-        // Chars that resolve to U+FFFD are removed from the shaping input
-        // below: no glyph, no advance, and every downstream index shifts.
-        // Counted so the loss is reported rather than silent (#991).
-        let mut undecodable = GlyphDropTally::default();
+        // No GlyphDropTally here: this decode runs before render_text routes
+        // the run, and the byte-to-GID / direct-CID paths paint correctly from
+        // raw bytes for exactly the font classes whose Unicode decode fails.
+        // Only the chosen paint path may record a drop.
         let raw_result = if let Some(font) = font {
             let mut result = String::new();
             // Use pre-computed lookup table for performance if it's a simple font
@@ -696,8 +722,6 @@ impl TextRasterizer {
                             .unwrap_or_else(|| fallback_char_to_unicode(byte as u32));
                         if char_str != "\u{FFFD}" {
                             result.push_str(&char_str);
-                        } else {
-                            undecodable.record("no Unicode mapping", byte as u32, 0);
                         }
                     }
                 }
@@ -710,12 +734,9 @@ impl TextRasterizer {
 
                     if char_str != "\u{FFFD}" {
                         result.push_str(&char_str);
-                    } else {
-                        undecodable.record("no Unicode mapping", char_code as u32, 0);
                     }
                 }
             }
-            undecodable.report(&font.base_font);
             result
         } else {
             // No font - fallback to Latin-1 (ISO 8859-1) encoding
@@ -1181,16 +1202,16 @@ impl TextRasterizer {
         let combined_base = base_transform.pre_concat(text_transform);
 
         let mut x_cursor: f32 = 0.0; // In text space units
-                                     // See GlyphDropTally: a glyph that paints nothing here still advances
-                                     // the cursor, leaving a gap indistinguishable from whitespace (#991).
-        let mut unicode_dropped = GlyphDropTally::default();
-        // y_cursor tracks the cursor along the y-axis. It stays at 0 in
-        // horizontal mode (the default) and accumulates `w1y*font_size/1000`
-        // per glyph when WMode 1 is active. Single cursor variable keeps the
-        // hot loop simple — the branch on `gs.text_wmode` only flips which
-        // axis receives the advance and how the glyph is positioned
-        // relative to its horizontal origin.
+                                     // y_cursor tracks the cursor along the y-axis. It stays at 0 in
+                                     // horizontal mode (the default) and accumulates `w1y*font_size/1000`
+                                     // per glyph when WMode 1 is active. Single cursor variable keeps the
+                                     // hot loop simple — the branch on `gs.text_wmode` only flips which
+                                     // axis receives the advance and how the glyph is positioned
+                                     // relative to its horizontal origin.
         let mut y_cursor: f32 = 0.0;
+        // A glyph that paints nothing here still advances the cursor, leaving
+        // a gap indistinguishable from whitespace (#991).
+        let mut unicode_dropped = GlyphDropTally::default();
         let mut last_fallback_cluster: Option<usize> = None;
         let wmode = gs.text_wmode;
 
@@ -1445,11 +1466,12 @@ impl TextRasterizer {
                 }
 
                 if !has_outline {
-                    unicode_dropped.record(
-                        "no outline in font or CJK fallback",
-                        char_at_pos as u32,
-                        0,
-                    );
+                    let reason = if glyph_id == 0 {
+                        "not mapped by font or CJK fallback"
+                    } else {
+                        "no outline in font or CJK fallback"
+                    };
+                    unicode_dropped.record(reason, char_at_pos as u32, glyph_id as u16);
                 }
             }
 
@@ -1524,7 +1546,7 @@ impl TextRasterizer {
         let wmode = gs.text_wmode;
         // A glyph that paints nothing while the cursor still advances leaves an
         // invisible gap, and a caller cannot tell that from real whitespace
-        // (#991). Counted per run and reported once, so a broken font is
+        // (#991). Counted per run, reported once per font, so a broken font is
         // visible without one line per glyph.
         let mut dropped = GlyphDropTally::default();
 
@@ -2135,6 +2157,39 @@ mod tests {
     use crate::content::graphics_state::GraphicsState;
     use crate::fonts::{Encoding, FontInfo, VerticalMetrics};
     use std::collections::HashMap;
+
+    /// A run with no drops must produce no warning.
+    #[test]
+    fn empty_glyph_drop_tally_produces_no_warning() {
+        assert!(GlyphDropTally::default().warning("AnyFont").is_none());
+    }
+
+    /// The warning names the font, the first dropped glyph, and the count.
+    #[test]
+    fn glyph_drop_warning_names_font_first_glyph_and_count() {
+        let mut tally = GlyphDropTally::default();
+        tally.record("no outline", 0x41, 7);
+        tally.record("no glyph id", 0x42, 0);
+        tally.record("no outline", 0x43, 9);
+        let warning = tally.warning("AAAAAA+Broken").expect("recorded drops must warn");
+        assert_eq!(
+            warning.category,
+            crate::extractors::warnings::WarningCategory::GlyphDropped
+        );
+        assert!(warning.message.contains("AAAAAA+Broken"));
+        assert!(warning.message.contains("3 glyph(s)"));
+        assert!(warning.message.contains("0x41"));
+        assert!(warning.message.contains("(glyph 7)"));
+        assert!(warning.message.contains("no outline"));
+    }
+
+    /// A font is named once per process, not once per text run (#991).
+    #[test]
+    fn glyph_drop_report_is_once_per_font() {
+        assert!(GlyphDropTally::first_report_for("OncePerFont+UniqueA"));
+        assert!(!GlyphDropTally::first_report_for("OncePerFont+UniqueA"));
+        assert!(GlyphDropTally::first_report_for("OncePerFont+UniqueB"));
+    }
 
     /// Query helper: the family name the CJK fallback resolver looks up.
     #[cfg(feature = "cjk-render-fallback")]

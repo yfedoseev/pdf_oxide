@@ -35,6 +35,7 @@ pub struct Warning {
 /// `pdf_oxide::content`, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WarningCategory {
     /// PDF spec violations during xref / stream / content-stream parsing.
     /// E.g. "SPEC VIOLATION: No newline after stream keyword".
