@@ -296,12 +296,19 @@ fn build_pdf_with_16bpc_cmyk_image(samples: &[u8], width: u32, height: u32) -> V
     finalize_pdf(buf, offsets)
 }
 
-/// §8.9.5: BitsPerComponent ∈ {1, 2, 4, 8, 16}. The current routing path
-/// reads 8-bit interleaved samples. A 16-bpc image must not be mis-read
-/// as 8-bpc and paint garbage onto plates — until full BPC expansion lands,
-/// the routing path skips with a log entry, leaving plates untouched.
+/// §8.9.5: BitsPerComponent ∈ {1, 2, 4, 8, 16}. A 16-bpc image is reduced to
+/// one byte per component during extraction, so by the time routing sees it
+/// the samples are 8-bit and it is routed rather than skipped. What must hold
+/// is that the reduction preserved channel identity: reading the high byte of
+/// each 16-bit sample as a separate channel would smear the C channel across
+/// M and Y.
+///
+/// The name this carried — `non_8bpc_image_is_skipped_not_mis_routed` — stopped
+/// being true once extraction reduced 16-bpc samples: nothing is skipped here,
+/// and asserting only that M/Y/K stay clean passes whether the image routes or
+/// is dropped entirely. The Cyan assertion is what distinguishes them.
 #[test]
-fn non_8bpc_image_is_skipped_not_mis_routed() {
+fn sixteen_bpc_cmyk_image_routes_with_channels_intact() {
     // 2×2 16-bpc image. All four pixels have C = 0xFFFF, M=Y=K=0. If the
     // renderer mis-reads as 8-bpc it would paint nonzero values on Magenta
     // and Yellow (reading the high byte of each 16-bit sample as a separate
@@ -316,6 +323,16 @@ fn non_8bpc_image_is_skipped_not_mis_routed() {
     let doc =
         PdfDocument::from_bytes(build_pdf_with_16bpc_cmyk_image(&samples, 2, 2)).expect("parse");
     let plates = render_separations(&doc, 0, 72).expect("render");
+
+    // The C channel is full ink, so the Cyan plate must actually be painted.
+    // Without this the M/Y/K assertions below hold trivially for an image that
+    // never reached the plates at all.
+    let cyan = plate(&plates, "Cyan");
+    assert!(
+        sample(cyan, 50, 50) > 200,
+        "16-bpc C=0xFFFF must reduce to full ink on the Cyan plate; got {}",
+        sample(cyan, 50, 50)
+    );
 
     // M / Y / K plates must stay clean even though the 8-bpc misread would
     // pick up nonzero bytes from the 16-bit C channel.
