@@ -105,6 +105,49 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
     }
 }
 
+/// Largest device-space coordinate a path may reach and still be handed to
+/// tiny_skia. Beyond f32's exact-integer range (2^24) the rasterizer's clip
+/// arithmetic can no longer distinguish adjacent pixels, and its antialiased
+/// run accounting desynchronizes and panics (`alpha_runs.rs` `unwrap` on a
+/// run past the accumulated buffer). 1e7 sits safely inside that range and
+/// far beyond any real pixmap.
+const MAX_DEVICE_COORD: f64 = 1.0e7;
+
+/// Whether a path's device-space bounds are representable enough to
+/// rasterize. Transforms the four corners of `path.bounds()` through the
+/// affine `transform` (no path clone) and requires every coordinate to be
+/// finite and within [`MAX_DEVICE_COORD`]. A draw that fails this cannot be
+/// painted meaningfully — its geometry is beyond f32 pixel precision — so
+/// callers skip it rather than crash in the rasterizer.
+pub(crate) fn device_bounds_rasterizable(
+    path: &tiny_skia::Path,
+    transform: tiny_skia::Transform,
+) -> bool {
+    let b = path.bounds();
+    let (sx, kx, ky, sy, tx, ty) = (
+        f64::from(transform.sx),
+        f64::from(transform.kx),
+        f64::from(transform.ky),
+        f64::from(transform.sy),
+        f64::from(transform.tx),
+        f64::from(transform.ty),
+    );
+    let corners = [
+        (f64::from(b.left()), f64::from(b.top())),
+        (f64::from(b.right()), f64::from(b.top())),
+        (f64::from(b.left()), f64::from(b.bottom())),
+        (f64::from(b.right()), f64::from(b.bottom())),
+    ];
+    corners.iter().all(|&(x, y)| {
+        let dx = sx * x + kx * y + tx;
+        let dy = ky * x + sy * y + ty;
+        dx.is_finite()
+            && dy.is_finite()
+            && dx.abs() <= MAX_DEVICE_COORD
+            && dy.abs() <= MAX_DEVICE_COORD
+    })
+}
+
 /// Returns `Some(mode)` when the PDF blend mode name is one of the four
 /// non-separable modes that tiny_skia cannot express natively. The
 /// caller renders the paint into a fresh scratch pixmap with Normal

@@ -1,7 +1,8 @@
 //! Path rasterizer - renders PDF paths using tiny-skia.
 
 use super::{
-    create_fill_paint, create_stroke_paint, paint_with_nonsep_blend, pdf_blend_mode_is_nonseparable,
+    create_fill_paint, create_stroke_paint, device_bounds_rasterizable, paint_with_nonsep_blend,
+    pdf_blend_mode_is_nonseparable,
 };
 use crate::content::GraphicsState;
 use tiny_skia::{FillRule, LineCap, LineJoin, Path, Pixmap, Stroke, Transform};
@@ -27,6 +28,10 @@ impl PathRasterizer {
         gs: &GraphicsState,
         fill_rule: FillRule,
     ) {
+        if !device_bounds_rasterizable(path, transform) {
+            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
         let paint = create_fill_paint(gs, &gs.blend_mode);
         pixmap.fill_path(path, &paint, fill_rule, transform, None);
     }
@@ -40,6 +45,10 @@ impl PathRasterizer {
         transform: Transform,
         gs: &GraphicsState,
     ) {
+        if !device_bounds_rasterizable(path, transform) {
+            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
         let paint = create_stroke_paint(gs, &gs.blend_mode);
 
         let dash = if !gs.dash_pattern.0.is_empty() {
@@ -69,6 +78,10 @@ impl PathRasterizer {
         fill_rule: FillRule,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
+        if !device_bounds_rasterizable(path, transform) {
+            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
         // NOTE: do NOT compute `path.clone().transform(transform)` here just for
         // logging. Vector figures (scatter / contour plots embedded as Form
         // XObjects) trigger this path tens of thousands of times per page, and
@@ -112,6 +125,10 @@ impl PathRasterizer {
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
+        if !device_bounds_rasterizable(path, transform) {
+            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
         // See fill_path_clipped: skip the expensive transformed-bounds compute
         // unless debug logging is enabled.
         if log::log_enabled!(log::Level::Debug) {
