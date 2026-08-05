@@ -2343,4 +2343,225 @@ mod tests {
             "Th=50% must halve the returned advance (§9.4.4 tx·Th): got {half}, full was {full}"
         );
     }
+
+    /// Encodes a CFF INDEX (CFF1 spec §5) over `items`.
+    ///
+    /// Uses a 1-byte offset size, which is valid only while the concatenated
+    /// payload stays under 255 bytes — true for the synthetic fonts here and
+    /// asserted so a future edit can't silently produce a corrupt INDEX.
+    fn cff_index(items: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(items.len() as u16).to_be_bytes());
+        if items.is_empty() {
+            return out;
+        }
+        let total: usize = items.iter().map(|i| i.len()).sum();
+        assert!(total < 255, "1-byte INDEX offsets cannot address {total} bytes");
+        out.push(1);
+        let mut off: u8 = 1;
+        out.push(off);
+        for item in items {
+            off += item.len() as u8;
+            out.push(off);
+        }
+        for item in items {
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    /// A CFF DICT integer in the fixed-width 5-byte form (b0 = 29 + i32).
+    ///
+    /// The shorter encodings are size-dependent on the value, which would make
+    /// the Top DICT's length vary with the very offsets computed from it. The
+    /// wide form keeps the Top DICT a constant 17 bytes so the layout below can
+    /// be computed in a single pass.
+    fn cff_dict_int(value: i32) -> [u8; 5] {
+        let b = value.to_be_bytes();
+        [29, b[0], b[1], b[2], b[3]]
+    }
+
+    /// Builds a minimal OpenType/CFF face whose one drawable glyph (GID 1)
+    /// brackets its outline with the deprecated Type 2 `dotsection` operator.
+    ///
+    /// `dotsection` (`12 0`) is a Type 1 hinting operator that marks the dot
+    /// subpath of glyphs like `i`, `j`, `!` and `.`. Adobe's Type 1 → Type 2
+    /// conversion preserves it, so fonts in the wild still carry it. It takes
+    /// no operands and contributes no geometry.
+    ///
+    /// The glyph draws a 200×200 square starting at (100, 100), with the
+    /// `dotsection` placed *before* the drawing operators — so an interpreter
+    /// that rejects the operator aborts the whole charstring and emits no
+    /// outline at all, rather than merely skipping a hint.
+    fn cff_face_with_dotsection_glyph() -> Vec<u8> {
+        // Type 2 charstring. Operand encoding (CFF2 spec §4): a value in
+        // -107..=107 is the single byte v + 139; 108..=1131 is
+        // [247..=250, b1]; -1131..=-108 is [251..=254, b1].
+        #[rustfmt::skip]
+        let dotsection_glyph: Vec<u8> = vec![
+            239, 239, 21,      // 100 100 rmoveto
+            12, 0,             // dotsection  <- rejected by an unpatched parser
+            247, 92, 139, 5,   // 200 0 rlineto
+            139, 247, 92, 5,   // 0 200 rlineto
+            251, 92, 139, 5,   // -200 0 rlineto
+            14,                // endchar (closes the contour implicitly)
+        ];
+        let notdef_glyph: Vec<u8> = vec![14];
+
+        let name_index = cff_index(&[b"T"]);
+        let charstrings_index = cff_index(&[&notdef_glyph, &dotsection_glyph]);
+        // defaultWidthX = 0 (op 20), nominalWidthX = 0 (op 21); 139 encodes 0.
+        let private_dict: Vec<u8> = vec![139, 20, 139, 21];
+
+        // The Top DICT INDEX is a constant 22 bytes: 2 (count) + 1 (offSize)
+        // + 2 (offsets) + 17 (payload, see cff_dict_int).
+        const TOP_DICT_INDEX_LEN: usize = 22;
+        let charstrings_off =
+            4 + name_index.len() + TOP_DICT_INDEX_LEN + 2 /* String */ + 2 /* GSubr */;
+        let private_off = charstrings_off + charstrings_index.len();
+
+        let mut top_dict = Vec::new();
+        top_dict.extend_from_slice(&cff_dict_int(private_dict.len() as i32));
+        top_dict.extend_from_slice(&cff_dict_int(private_off as i32));
+        top_dict.push(18); // Private
+        top_dict.extend_from_slice(&cff_dict_int(charstrings_off as i32));
+        top_dict.push(17); // CharStrings
+        let top_dict_index = cff_index(&[&top_dict]);
+        assert_eq!(
+            top_dict_index.len(),
+            TOP_DICT_INDEX_LEN,
+            "Top DICT INDEX size drifted; the offsets above are computed from it"
+        );
+
+        let mut cff = vec![1, 0, 4, 1]; // major, minor, hdrSize, offSize
+        cff.extend_from_slice(&name_index);
+        cff.extend_from_slice(&top_dict_index);
+        cff.extend_from_slice(&[0, 0]); // String INDEX (empty)
+        cff.extend_from_slice(&[0, 0]); // Global Subr INDEX (empty)
+        assert_eq!(cff.len(), charstrings_off, "CharStrings offset mismatch");
+        cff.extend_from_slice(&charstrings_index);
+        assert_eq!(cff.len(), private_off, "Private DICT offset mismatch");
+        cff.extend_from_slice(&private_dict);
+
+        // `head`, `hhea` and `maxp` are the three tables Face::parse requires.
+        let mut head = Vec::new();
+        head.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // version
+        head.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // fontRevision
+        head.extend_from_slice(&0u32.to_be_bytes()); // checkSumAdjustment
+        head.extend_from_slice(&0x5F0F_3CF5u32.to_be_bytes()); // magicNumber
+        head.extend_from_slice(&0u16.to_be_bytes()); // flags
+        head.extend_from_slice(&1000u16.to_be_bytes()); // unitsPerEm
+        head.extend_from_slice(&0i64.to_be_bytes()); // created
+        head.extend_from_slice(&0i64.to_be_bytes()); // modified
+        head.extend_from_slice(&0i16.to_be_bytes()); // xMin
+        head.extend_from_slice(&0i16.to_be_bytes()); // yMin
+        head.extend_from_slice(&1000i16.to_be_bytes()); // xMax
+        head.extend_from_slice(&1000i16.to_be_bytes()); // yMax
+        head.extend_from_slice(&0u16.to_be_bytes()); // macStyle
+        head.extend_from_slice(&8u16.to_be_bytes()); // lowestRecPPEM
+        head.extend_from_slice(&0i16.to_be_bytes()); // fontDirectionHint
+        head.extend_from_slice(&0i16.to_be_bytes()); // indexToLocFormat
+        head.extend_from_slice(&0i16.to_be_bytes()); // glyphDataFormat
+
+        let mut hhea = Vec::new();
+        hhea.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // version
+        hhea.extend_from_slice(&800i16.to_be_bytes()); // ascender
+        hhea.extend_from_slice(&(-200i16).to_be_bytes()); // descender
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // lineGap
+        hhea.extend_from_slice(&1000u16.to_be_bytes()); // advanceWidthMax
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // minLeftSideBearing
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // minRightSideBearing
+        hhea.extend_from_slice(&1000i16.to_be_bytes()); // xMaxExtent
+        hhea.extend_from_slice(&1i16.to_be_bytes()); // caretSlopeRise
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // caretSlopeRun
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // caretOffset
+        hhea.extend_from_slice(&[0u8; 8]); // 4 reserved i16
+        hhea.extend_from_slice(&0i16.to_be_bytes()); // metricDataFormat
+        hhea.extend_from_slice(&2u16.to_be_bytes()); // numberOfHMetrics
+
+        let mut maxp = Vec::new();
+        maxp.extend_from_slice(&0x0000_5000u32.to_be_bytes()); // version 0.5 (CFF)
+        maxp.extend_from_slice(&2u16.to_be_bytes()); // numGlyphs
+
+        // sfnt wrapper. Tables must be listed in ascending tag order.
+        let tables: [(&[u8; 4], &[u8]); 4] = [
+            (b"CFF ", &cff),
+            (b"head", &head),
+            (b"hhea", &hhea),
+            (b"maxp", &maxp),
+        ];
+        let mut font = Vec::new();
+        font.extend_from_slice(b"OTTO");
+        font.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        font.extend_from_slice(&0u16.to_be_bytes()); // searchRange
+        font.extend_from_slice(&0u16.to_be_bytes()); // entrySelector
+        font.extend_from_slice(&0u16.to_be_bytes()); // rangeShift
+
+        let mut offset = 12 + tables.len() * 16;
+        let mut records = Vec::new();
+        for (tag, data) in &tables {
+            records.extend_from_slice(*tag);
+            records.extend_from_slice(&0u32.to_be_bytes()); // checksum (unverified)
+            records.extend_from_slice(&(offset as u32).to_be_bytes());
+            records.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            offset += data.len().next_multiple_of(4);
+        }
+        font.extend_from_slice(&records);
+        for (_, data) in &tables {
+            font.extend_from_slice(data);
+            font.resize(font.len().next_multiple_of(4), 0);
+        }
+        font
+    }
+
+    /// A CFF glyph that brackets its outline with `dotsection` must still
+    /// produce geometry.
+    ///
+    /// The operator is a no-op for outlining, but an interpreter that treats it
+    /// as unsupported fails the entire charstring — so the glyph silently
+    /// renders blank. In a real font converted from Type 1 that removes the
+    /// dotted glyphs (`i`, `j`, `!`, `.`) from the page, which is a text-loss
+    /// bug rather than a hinting artifact.
+    ///
+    /// Drives the same `SkiaOutlineBuilder` the glyph-painting paths use, so a
+    /// regression shows up here exactly as it would on a rendered page.
+    #[test]
+    fn cff_dotsection_glyph_produces_outline() {
+        let font = cff_face_with_dotsection_glyph();
+        let face = xberg_ttf_parser::Face::parse(&font, 0)
+            .expect("synthetic OpenType/CFF face must parse");
+
+        let mut path_builder = PathBuilder::new();
+        let outlined = {
+            let mut builder = SkiaOutlineBuilder(&mut path_builder);
+            face.outline_glyph(xberg_ttf_parser::GlyphId(1), &mut builder)
+        };
+
+        assert!(
+            outlined.is_some(),
+            "charstring using `dotsection` must outline; rejecting the operator \
+             aborts the whole charstring and the glyph renders blank"
+        );
+
+        let path = path_builder
+            .finish()
+            .expect("outlining must emit a path, not an empty builder");
+        let bounds = path.bounds();
+
+        // Proves the operators *after* the dotsection ran: the full 200×200
+        // square at (100, 100), not just the opening move_to.
+        assert!(
+            (bounds.left() - 100.0).abs() < 0.01 && (bounds.top() - 100.0).abs() < 0.01,
+            "outline should start at (100, 100), got ({}, {})",
+            bounds.left(),
+            bounds.top()
+        );
+        assert!(
+            (bounds.width() - 200.0).abs() < 0.01 && (bounds.height() - 200.0).abs() < 0.01,
+            "outline should span 200×200, got {}×{} — the drawing operators \
+             following `dotsection` were not executed",
+            bounds.width(),
+            bounds.height()
+        );
+    }
 }
