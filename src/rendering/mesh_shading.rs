@@ -1371,6 +1371,170 @@ mod tests {
         assert_eq!(data[corner + 3], 0, "outside triangle stays background");
     }
 
+    /// Minimal PDF document used purely as a `&PdfDocument` argument.
+    /// `eval_pdf_function` touches it only to resolve `Reference` objects;
+    /// the fixtures below are inline, so any successfully-parsed PDF works.
+    fn fixture_doc() -> PdfDocument {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"%PDF-1.4\n");
+        let cat_off = buf.len();
+        buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let pages_off = buf.len();
+        buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let xref_off = buf.len();
+        buf.extend_from_slice(b"xref\n0 3\n0000000000 65535 f \n");
+        buf.extend_from_slice(format!("{:010} 00000 n \n", cat_off).as_bytes());
+        buf.extend_from_slice(format!("{:010} 00000 n \n", pages_off).as_bytes());
+        buf.extend_from_slice(
+            format!("trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        PdfDocument::from_bytes(buf).expect("fixture PDF parses")
+    }
+
+    /// Sampled (Type 0) function stream: 2 inputs, 2×2 grid, 8-bit RGB
+    /// samples — red, green, blue, yellow at the four grid corners.
+    fn sampled_rgb_function() -> Object {
+        let mut dict = HashMap::new();
+        dict.insert("FunctionType".to_string(), Object::Integer(0));
+        dict.insert(
+            "Domain".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        dict.insert(
+            "Range".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        dict.insert(
+            "Size".to_string(),
+            Object::Array(vec![Object::Integer(2), Object::Integer(2)]),
+        );
+        dict.insert("BitsPerSample".to_string(), Object::Integer(8));
+        // Sample order: (0,0) (1,0) (0,1) (1,1).
+        let samples: [u8; 12] = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::copy_from_slice(&samples),
+        }
+    }
+
+    /// The prepared-bytes fast path and the per-call decode fallback must
+    /// agree on every input, and both must yield the grid's interpolated
+    /// values — a wrong or empty prepared buffer reads as all-zero samples
+    /// (`read_bits_at` → `unwrap_or(0)`) and fails the expected values.
+    #[test]
+    fn type0_prepared_bytes_matches_per_call_decode() {
+        let doc = fixture_doc();
+        let func = sampled_rgb_function();
+        let prepared = func.decode_stream_data().expect("stream decodes");
+
+        let cases: &[([f32; 2], [f32; 3])] = &[
+            ([0.0, 0.0], [1.0, 0.0, 0.0]),
+            ([1.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 1.0], [0.0, 0.0, 1.0]),
+            ([1.0, 1.0], [1.0, 1.0, 0.0]),
+            ([0.5, 0.5], [0.5, 0.5, 0.25]),
+            ([0.25, 0.75], [0.375, 0.25, 0.5625]),
+        ];
+        for (inputs, expected) in cases {
+            let fast = eval_pdf_function(&func, &doc, inputs, Some(&prepared))
+                .expect("fast path evaluates");
+            let slow =
+                eval_pdf_function(&func, &doc, inputs, None).expect("fallback path evaluates");
+            assert_eq!(fast, slow, "paths diverge at {inputs:?}");
+            assert_eq!(fast.len(), 3);
+            for (o, (&got, &want)) in fast.iter().zip(expected).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "output {o} at {inputs:?}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// End-to-end: a Type 1 shading whose `/Function` is a sampled stream
+    /// goes through the hoisted-bytes path in `render_mesh_shading`; every
+    /// probed pixel must match a per-point fallback evaluation of the same
+    /// function.
+    #[test]
+    fn type1_shading_renders_sampled_function_via_prepared_bytes() {
+        let doc = fixture_doc();
+        let func = sampled_rgb_function();
+
+        let mut shading = HashMap::new();
+        shading.insert("ShadingType".to_string(), Object::Integer(1));
+        shading.insert(
+            "Domain".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        shading.insert(
+            "Matrix".to_string(),
+            Object::Array(vec![
+                Object::Real(16.0),
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(16.0),
+                Object::Real(0.0),
+                Object::Real(0.0),
+            ]),
+        );
+        shading.insert("Function".to_string(), func.clone());
+
+        let mut pixmap = Pixmap::new(16, 16).unwrap();
+        let resolve = |c: &[f32]| -> Option<(f32, f32, f32, f32)> {
+            Some((
+                c.first().copied().unwrap_or(0.0),
+                c.get(1).copied().unwrap_or(0.0),
+                c.get(2).copied().unwrap_or(0.0),
+                1.0,
+            ))
+        };
+        render_mesh_shading(
+            &mut pixmap,
+            &shading,
+            &Object::Dictionary(shading.clone()),
+            1,
+            Transform::identity(),
+            &doc,
+            None,
+            &resolve,
+        )
+        .unwrap();
+
+        let data = pixmap.data();
+        for &(px, py) in &[(4usize, 4usize), (12, 4), (4, 12), (12, 12), (8, 8)] {
+            let (u, v) = ((px as f32 + 0.5) / 16.0, (py as f32 + 0.5) / 16.0);
+            let want =
+                eval_pdf_function(&func, &doc, &[u, v], None).expect("fallback path evaluates");
+            let o = (py * 16 + px) * 4;
+            assert_eq!(data[o + 3], 255, "pixel ({px},{py}) must be opaque");
+            for (ch, &w) in want.iter().enumerate().take(3) {
+                let got = data[o + ch] as f32 / 255.0;
+                assert!(
+                    (got - w).abs() < 8.0 / 255.0,
+                    "pixel ({px},{py}) channel {ch}: got {got}, want {w}"
+                );
+            }
+        }
+    }
+
     /// Type 2 exponential function evaluates the endpoint interpolation.
     #[test]
     fn type2_function_interpolates() {
