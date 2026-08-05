@@ -790,10 +790,19 @@ fn samples_to_decoded_bytes(
     let samples_per_row = (width as usize).checked_mul(ncomp)?;
     let total = samples_per_row.checked_mul(height as usize)?;
     let row_bytes = samples_per_row.checked_mul(bpc)?.div_ceil(8);
-    // The stream must actually contain the samples it declares. Zero-filling
-    // a short stream would turn a truncated image into a plausible
-    // full-size one — the silent-wrong-answer this project forbids.
-    if row_bytes.checked_mul(height as usize)? > data.len() {
+    // A stream shorter than its declared size is padded, matching what the
+    // packed path already did. Refusing it instead would drop the image back
+    // to its packed bytes with `/Decode` never applied, which renders the
+    // negative of the intended picture — a louder wrong answer than the
+    // displaced one padding gives.
+    //
+    // Refusing was also what bounded this allocation, so bound it directly:
+    // the same 256 MiB ceiling `expand_indexed_to_rgb_with_transform` uses.
+    /// Hard cap on the unpacked output buffer (256 MiB), matching the
+    /// Indexed expander. A legitimate image does not reach it; a hostile
+    /// `/Width` × `/Height` does.
+    const MAX_UNPACKED_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+    if total > MAX_UNPACKED_OUTPUT_BYTES {
         return None;
     }
 
@@ -828,7 +837,9 @@ fn samples_to_decoded_bytes(
         let row_start = row * row_bytes;
         for s in 0..samples_per_row {
             let bit_offset = s * bpc;
-            let byte = data[row_start + bit_offset / 8];
+            // Past the end of a short stream the sample reads as zero, which
+            // is what the packed path produced before unpacking existed.
+            let byte = data.get(row_start + bit_offset / 8).copied().unwrap_or(0);
             // Cannot underflow: bpc < 8 here (the bpc == 8 case returned
             // above) and `bit_offset % 8` is at most 8 - bpc for those depths.
             let shift = 8 - bpc - (bit_offset % 8);
