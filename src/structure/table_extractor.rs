@@ -940,6 +940,90 @@ mod tests {
     use super::*;
     use crate::structure::types::StructTreeRoot;
 
+    /// A block whose bbox carries a non-finite coordinate, which a malformed
+    /// file can produce. `perp()` multiplies x by a sine that is exactly 0.0 at
+    /// rotation 0, so `inf * 0.0` is NaN on an axis the sort does not even use.
+    fn block_at(x: f32, y: f32, mcid: u32, text: &str) -> TextBlock {
+        let ch = crate::layout::TextChar {
+            char: text.chars().next().unwrap_or('x'),
+            bbox: Rect::new(x, y, 10.0, 10.0),
+            font_name: "Test".to_string(),
+            font_size: 10.0,
+            font_weight: FontWeight::default(),
+            is_italic: false,
+            is_monospace: false,
+            color: Color::default(),
+            mcid: Some(mcid),
+            origin_x: x,
+            origin_y: y,
+            rotation_degrees: 0.0,
+            advance_width: 10.0,
+            rendered_advance: 10.0,
+            ascent: 8.0,
+            descent: -2.0,
+            matrix: None,
+        };
+        let mut block = TextBlock::from_chars(vec![ch]);
+        block.bbox = Rect::new(x, y, 10.0, 10.0);
+        block.text = text.to_string();
+        block.mcid = Some(mcid);
+        block
+    }
+
+    /// `sort_by` panics on a comparator that is not a total order, and NaN
+    /// compares equal to everything. This is the failure #807 fixed twice; the
+    /// cell sorts must go through `utils::safe_float_cmp`.
+    #[test]
+    fn cell_blocks_with_non_finite_bbox_do_not_panic() {
+        // Enough blocks that `sort_by` takes its merge path: Rust's total-order
+        // violation check is best-effort, and a three-element slice sorts by
+        // insertion without ever comparing the offending pair.
+        const N: u32 = 24;
+        let children: Vec<StructChild> = (0..N)
+            .map(|mcid| StructChild::MarkedContentRef {
+                mcid,
+                page: 0,
+                scope: crate::structure::types::McidScope::Page(0),
+            })
+            .collect();
+        let cell = StructElem {
+            struct_type: StructType::TD,
+            children,
+            page: Some(0),
+            attributes: std::collections::HashMap::new(),
+            alt_text: None,
+            expansion: None,
+            actual_text: None,
+            source_role: None,
+        };
+        // Two non-finite x coordinates scattered through the run. `perp`
+        // multiplies x by a sine that is exactly 0.0 at rotation 0, so each
+        // yields NaN on the axis the sort does not even use.
+        let blocks: Vec<TextBlock> = (0..N)
+            .map(|i| {
+                // Four lines of six: y selects the line, x the position within
+                // it. The perp sort decides line membership, so a NaN there
+                // changes which line a block lands on.
+                let x = if i == 7 || i == 17 {
+                    f32::INFINITY
+                } else {
+                    10.0 * (i % 6) as f32
+                };
+                let text = ((b'a' + i as u8) as char).to_string();
+                block_at(x, 20.0 + 40.0 * (i / 6) as f32, i, &text)
+            })
+            .collect();
+
+        // The assertion is that this returns at all: with `partial_cmp(..)
+        // .unwrap_or(Equal)` the NaN breaks transitivity and sort_by panics.
+        let cell = extract_cell(&cell, &blocks, false).expect("cell extraction");
+        assert!(
+            cell.text.contains('a') && cell.text.contains('x'),
+            "finite blocks must survive a non-finite sibling, got {:?}",
+            cell.text
+        );
+    }
+
     #[test]
     fn test_table_new() {
         let table = Table::new();
