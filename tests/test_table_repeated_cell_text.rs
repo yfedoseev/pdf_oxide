@@ -83,14 +83,6 @@ fn table_extraction_does_not_delete_repeated_tokens() {
         !tables.is_empty(),
         "fixture produced no detected table; the comparison would be vacuous"
     );
-    for t in &tables {
-        eprintln!("fixture table bbox={:?}", t.bbox);
-        for r in &t.rows {
-            for c in &r.cells {
-                eprintln!("  cell {:?} bbox={:?}", c.text, c.bbox);
-            }
-        }
-    }
 
     let (a, b) = (token_counts(&with_tables), token_counts(&without));
     for (token, n_off) in &b {
@@ -266,6 +258,94 @@ fn table_extraction_keeps_values_in_unruled_columns() {
     }
 }
 
+/// A ruled table where two same-row spans sit closer than the sub-em space
+/// threshold (0.15 em): the table side glues them into one compound token
+/// ("12,3" + "45" -> "12,345"), so neither span's own text survives in the
+/// cell's budget material. Different fonts keep the two runs as separate
+/// FLOW spans (a span carries a single font), so each must be absorbed as a
+/// fragment of the glued token — verbatim token equality cannot.
+fn glued_cell_table_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    // A closed 2x2 grid: three horizontals, three verticals.
+    content.extend_from_slice(b"0.5 w\n");
+    for (x0, y0, x1, y1) in [
+        (100, 600, 100, 700),
+        (250, 600, 250, 700),
+        (400, 600, 400, 700),
+        (100, 700, 400, 700),
+        (100, 650, 400, 650),
+        (100, 600, 400, 600),
+    ] {
+        content.extend_from_slice(format!("{x0} {y0} m {x1} {y1} l S\n").as_bytes());
+    }
+    // "12,3" in Helvetica ends near x=129.5; "45" in Courier starts at
+    // x=130 — a sub-point gap, far below the 1.5pt space threshold at
+    // 10pt, so the cell builder joins them with no separator.
+    content.extend_from_slice(b"BT /F1 10 Tf 1 0 0 1 110 670 Tm (12,3) Tj ET\n");
+    content.extend_from_slice(b"BT /F2 10 Tf 1 0 0 1 130 670 Tm (45) Tj ET\n");
+    for (x, y, text) in [(260, 670, "Gamma"), (110, 620, "Delta"), (260, 620, "Epsilon")] {
+        content.extend_from_slice(
+            format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes(),
+        );
+    }
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
+}
+
+fn nonspace_char_counts(text: &str) -> HashMap<char, usize> {
+    let mut counts = HashMap::new();
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        *counts.entry(c).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// A span whose text the cell builder rewrote away (glued into a compound
+/// token) must still leave the flow: the cell re-emits its content, so
+/// keeping the span duplicates it. Token boundaries move when spans glue,
+/// so compare the non-whitespace character multiset — deletion and
+/// duplication both change it, reflow does not.
+#[test]
+fn table_extraction_absorbs_spans_glued_into_one_cell_token() {
+    let doc = PdfDocument::from_bytes(glued_cell_table_pdf()).expect("parse fixture");
+    let on = ConversionOptions {
+        extract_tables: true,
+        ..Default::default()
+    };
+    let off = ConversionOptions {
+        extract_tables: false,
+        ..Default::default()
+    };
+
+    let with_tables = doc.extract_text_with_options(0, &on).expect("tables on");
+    let without = doc.extract_text_with_options(0, &off).expect("tables off");
+
+    let tables = doc.extract_tables(0).unwrap_or_default();
+    assert!(
+        !tables.is_empty(),
+        "fixture produced no detected table; the comparison would be vacuous"
+    );
+    // The comparison below only pins the rewrite case if the table side
+    // actually glued the two runs into one compound token.
+    assert!(
+        tables
+            .iter()
+            .flat_map(|t| t.rows.iter())
+            .flat_map(|r| r.cells.iter())
+            .any(|c| c.text.split_whitespace().any(|t| t == "12,345")),
+        "no cell glued the two runs into one token; the rewrite case is not exercised"
+    );
+
+    let (a, b) = (
+        nonspace_char_counts(&with_tables),
+        nonspace_char_counts(&without),
+    );
+    assert_eq!(
+        a, b,
+        "tables on/off disagree on character content — a glued span was duplicated or \
+         deleted\n  off: {without:?}\n  on:  {with_tables:?}"
+    );
+}
+
 fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
     let mut pdf = b"%PDF-1.4\n".to_vec();
 
@@ -278,7 +358,9 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
     let off3 = pdf.len();
     pdf.extend_from_slice(b"3 0 obj\n<< ");
     pdf.extend_from_slice(page_extra);
-    pdf.extend_from_slice(b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+    pdf.extend_from_slice(
+        b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>\nendobj\n",
+    );
 
     let off4 = pdf.len();
     pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
@@ -290,8 +372,13 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
         b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n",
     );
 
+    let off6 = pdf.len();
+    pdf.extend_from_slice(
+        b"6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>\nendobj\n",
+    );
+
     let xref_pos = pdf.len();
-    let offsets = [0usize, off1, off2, off3, off4, off5];
+    let offsets = [0usize, off1, off2, off3, off4, off5, off6];
     pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
     pdf.extend_from_slice(format!("{:010} 65535 f\r\n", 0).as_bytes());
     for &off in &offsets[1..] {

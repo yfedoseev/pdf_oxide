@@ -5811,34 +5811,37 @@ impl PdfDocument {
                 // by bbox alone would silently drop real content.
                 // Falls back to bbox-only filtering when no MCIDs are present
                 // (untagged PDFs or spatial-detection tables).
+                // Only tables with a bbox reach the inline flush below; a
+                // cell of an unflushed table renders nowhere and must not
+                // absorb anything — whether ownership is decided by MCID or
+                // by geometry.
                 let table_cell_mcids: HashSet<u32> = tables
                     .iter()
+                    .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
                         t.rows
                             .iter()
                             .flat_map(|r| r.cells.iter().flat_map(|c| c.mcids.iter().copied()))
                     })
                     .collect();
-                // Flatten every cell bbox once (with its trimmed text, so the
-                // ownership test below can tell an exact-text cell match from a
-                // fragment of a merged cell) and index it into coarse y-bands,
-                // so the per-span containment test below scans only the cells in
-                // the span's y-band instead of every cell on the page (was
-                // O(spans x cells) on untagged table pages). A cell that contains
-                // a span necessarily shares the span's y-band, so this is
+                // Flatten every flushed cell once (bbox plus the cell, whose
+                // text and member spans drive the ownership test below) and
+                // index it into coarse y-bands, so the per-span containment
+                // test below scans only the cells in the span's y-band
+                // instead of every cell on the page (was O(spans x cells) on
+                // untagged table pages). A cell that contains a span
+                // necessarily shares the span's y-band, so this is
                 // byte-identical to the full scan.
-                // Only tables with a bbox reach the inline flush below; a
-                // cell of an unflushed table renders nowhere and must not
-                // absorb anything.
-                let cell_bboxes: Vec<(crate::geometry::Rect, &str)> = tables
+                let flushed_cells: Vec<(
+                    crate::geometry::Rect,
+                    &crate::structure::table_extractor::TableCell,
+                )> = tables
                     .iter()
                     .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
-                        t.rows.iter().flat_map(|r| {
-                            r.cells
-                                .iter()
-                                .filter_map(|c| c.bbox.map(|b| (b, c.text.trim())))
-                        })
+                        t.rows
+                            .iter()
+                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox.map(|b| (b, c))))
                     })
                     .collect();
                 // Same-text cell lookup for the fallback path: a span that no
@@ -5847,7 +5850,8 @@ impl PdfDocument {
                 // untouched.
                 let mut cell_text_index: std::collections::HashMap<&str, Vec<usize>> =
                     std::collections::HashMap::new();
-                for (ci, (_, text)) in cell_bboxes.iter().enumerate() {
+                for (ci, (_, c)) in flushed_cells.iter().enumerate() {
+                    let text = c.text.trim();
                     if !text.is_empty() {
                         cell_text_index.entry(text).or_default().push(ci);
                     }
@@ -5856,34 +5860,119 @@ impl PdfDocument {
                 let cell_bin = |y: f32| (y / CELL_Y_BIN).floor() as i32;
                 let mut cell_y_index: std::collections::HashMap<i32, Vec<usize>> =
                     std::collections::HashMap::new();
-                for (ci, (b, _)) in cell_bboxes.iter().enumerate() {
+                for (ci, (b, _)) in flushed_cells.iter().enumerate() {
                     for bin in cell_bin(b.y)..=cell_bin(b.y + b.height) {
                         cell_y_index.entry(bin).or_default().push(ci);
                     }
                 }
                 // Per-cell token budgets. `render_text()` emits each cell's
-                // text exactly once, so a cell can absorb dropped spans
-                // totalling at most its own token multiset. Bbox containment
-                // alone cannot decide a drop: a rowspan-merged cell's bbox can
-                // cover far more spans than its text was built from (a
-                // schedule column's tall cell covering hundreds of repeated
-                // marks while holding six lines of them), and an empty-text
-                // cell re-emits nothing at all (a value column without row
-                // rules becomes one tall empty cell whose bbox swallows every
-                // figure in the column). A span leaves the flow only by
-                // consuming its tokens from a covering cell's budget — the
-                // fragment-level form of the same rule the text fallback
-                // needs: membership cannot see multiplicity.
-                let mut cell_remaining: Vec<std::collections::HashMap<&str, usize>> = cell_bboxes
+                // content exactly once, so a cell can absorb dropped spans
+                // totalling at most the material it was built from. Bbox
+                // containment alone cannot decide a drop: a rowspan-merged
+                // cell's bbox can cover far more spans than its text was
+                // built from (a schedule column's tall cell covering
+                // hundreds of repeated marks while holding six lines of
+                // them), and an empty cell re-emits nothing at all (a value
+                // column without row rules becomes one tall empty cell whose
+                // bbox swallows every figure in the column). A span leaves
+                // the flow only by consuming its tokens from a covering
+                // cell's budget — the fragment-level form of the same rule
+                // the text fallback needs: membership cannot see
+                // multiplicity.
+                //
+                // Budgets are denominated in the cell's member-span tokens,
+                // not its rendered text: the cell builders rewrite text
+                // while joining spans (sub-em gaps and CJK/fullwidth pairs
+                // glue two spans with no separator, column-spanning decimals
+                // split "12.11" into "12 11"), so the rendered text is not a
+                // token superset of the spans the cell was built from. The
+                // member spans are, by construction — they are clones of the
+                // same flow spans this filter walks. A cell recorded without
+                // member spans falls back to its rendered text.
+                let mut cell_remaining: Vec<std::collections::HashMap<&str, usize>> = flushed_cells
                     .iter()
-                    .map(|(_, text)| {
+                    .map(|(_, c)| {
                         let mut m = std::collections::HashMap::new();
-                        for tok in text.split_whitespace() {
-                            *m.entry(tok).or_insert(0) += 1;
+                        if c.spans.is_empty() {
+                            for tok in c.text.split_whitespace() {
+                                *m.entry(tok).or_insert(0) += 1;
+                            }
+                        } else {
+                            for sp in &c.spans {
+                                for tok in sp.text.split_whitespace() {
+                                    *m.entry(tok).or_insert(0) += 1;
+                                }
+                            }
                         }
                         m
                     })
                     .collect();
+                // The detector runs on `extract_words` output, so a budget
+                // token can itself be a glued compound of several flow spans
+                // drawn with no gap ("12,3" + "45" -> "12,345"). A contained
+                // span may therefore consume a substring of one budget
+                // token; the unmatched remainder returns to the budget so
+                // the sibling fragments can follow. Absorption stays bounded
+                // by the material the cell was built from. The text-fallback
+                // path keeps whole-token matching: it has no containment
+                // evidence, so fragments would let distant same-substring
+                // text vanish.
+                fn take_one<'a>(
+                    work: &mut std::collections::HashMap<&'a str, usize>,
+                    tok: &str,
+                    allow_fragment: bool,
+                ) -> bool {
+                    if let Some(r) = work.get_mut(tok) {
+                        if *r > 0 {
+                            *r -= 1;
+                            return true;
+                        }
+                    }
+                    if !allow_fragment {
+                        return false;
+                    }
+                    // Shortest host wins: splits are deterministic (HashMap
+                    // iteration order is not) and minimal.
+                    let Some(host) = work
+                        .iter()
+                        .filter(|(k, n)| **n > 0 && k.len() > tok.len() && k.contains(tok))
+                        .map(|(k, _)| *k)
+                        .min_by_key(|k| (k.len(), *k))
+                    else {
+                        return false;
+                    };
+                    *work.get_mut(host).unwrap() -= 1;
+                    let start = host.find(tok).unwrap();
+                    let before = &host[..start];
+                    let after = &host[start + tok.len()..];
+                    if !before.is_empty() {
+                        *work.entry(before).or_insert(0) += 1;
+                    }
+                    if !after.is_empty() {
+                        *work.entry(after).or_insert(0) += 1;
+                    }
+                    true
+                }
+                // Test plus decrement, in one place so the containment and
+                // text-fallback paths cannot drift apart — they must draw on
+                // the SAME accounting. All-or-nothing: a span either fits
+                // the cell's remaining budget whole or leaves it untouched.
+                fn try_consume<'a>(
+                    remaining: &mut std::collections::HashMap<&'a str, usize>,
+                    span_tokens: &[(&str, usize)],
+                    allow_fragment: bool,
+                ) -> bool {
+                    let mut work = remaining.clone();
+                    for (tok, n) in span_tokens {
+                        for _ in 0..*n {
+                            if !take_one(&mut work, tok, allow_fragment) {
+                                return false;
+                            }
+                        }
+                    }
+                    *remaining = work;
+                    true
+                }
 
                 let preserved_label_indices: std::collections::HashSet<usize> =
                     Self::identify_multi_row_labels(&spans)
@@ -5968,7 +6057,7 @@ impl PdfDocument {
                                 continue;
                             };
                             for &ci in cands {
-                                let (cell_bbox, _) = &cell_bboxes[ci];
+                                let (cell_bbox, _) = &flushed_cells[ci];
                                 if !Self::contains_rect_with_tolerance(
                                     cell_bbox,
                                     &s.bbox,
@@ -5976,15 +6065,7 @@ impl PdfDocument {
                                 ) {
                                     continue;
                                 }
-                                let remaining = &mut cell_remaining[ci];
-                                if span_tokens.iter().all(|(tok, n)| {
-                                    remaining.get::<str>(tok).copied().unwrap_or(0) >= *n
-                                }) {
-                                    for (tok, n) in &span_tokens {
-                                        if let Some(r) = remaining.get_mut::<str>(tok) {
-                                            *r -= n;
-                                        }
-                                    }
+                                if try_consume(&mut cell_remaining[ci], &span_tokens, true) {
                                     // Dropped: the cell re-emits it.
                                     decided = true;
                                     break 'cells;
@@ -6012,15 +6093,7 @@ impl PdfDocument {
                             });
                             if near_table {
                                 for &ci in &cell_text_index[trimmed] {
-                                    let remaining = &mut cell_remaining[ci];
-                                    if span_tokens.iter().all(|(tok, n)| {
-                                        remaining.get::<str>(tok).copied().unwrap_or(0) >= *n
-                                    }) {
-                                        for (tok, n) in &span_tokens {
-                                            if let Some(r) = remaining.get_mut::<str>(tok) {
-                                                *r -= n;
-                                            }
-                                        }
+                                    if try_consume(&mut cell_remaining[ci], &span_tokens, false) {
                                         // Dropped: this unclaimed cell re-emits it.
                                         decided = true;
                                         break;
