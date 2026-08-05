@@ -824,6 +824,8 @@ fn extract_cell(
                         wmode: 0,
                         text_rise: 0.0,
                         rtl_draw_logical: false,
+                        mirrored: false,
+                        page_rotation_applied: 0,
                     });
                     prev_block = Some(block);
                     break;
@@ -1179,6 +1181,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -1375,6 +1379,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         let spans = vec![
             crate::layout::TextSpan {
@@ -1453,6 +1459,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // Line 1: "Hello" ends at x=100, y=200.  Line 2: "World" starts at x=10, y=188.
         // y_diff = 12 > line_h * 0.5 = 6 → different lines → space inserted.
@@ -1530,6 +1538,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // Line 1: bold "Bold" (y=200).  Line 2 (wrapped): italic "Italic" (y=188).
         let spans = vec![
@@ -1633,6 +1643,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // "数" ends at x=10+10=20; "≤" starts at x=23 → gap=3.0 > 1.5 → gap branch fires
         // CJK("数")→math_op("≤") with at least one CJK side → suppress space
@@ -1719,6 +1731,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // "Hello" ends at 50; "world" starts at 53 → gap=3.0 > 1.5 → space inserted
         // Neither side is CJK, so the CJK suppression must NOT fire.
