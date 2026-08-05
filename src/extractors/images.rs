@@ -775,6 +775,23 @@ fn decode_array_inverts_1bpc(decode: Option<&crate::object::Object>) -> bool {
 
 /// Per-component `(Dmin, Dmax)` pairs from a `/Decode` array, or `None` when
 /// the array is absent or does not hold `2 × ncomp` numbers.
+/// The number of inks a `/DeviceN` colour space names (ISO 32000-1 §8.6.6.5,
+/// `[/DeviceN names alternate tint]`), or `None` for any other space.
+///
+/// `ColorSpace::DeviceN` is a unit variant: the parser keeps the tag and drops
+/// the name array, so `components()` can only answer a flat 4. Sample geometry
+/// needs the true count, and 4 is merely the most common one.
+fn devicen_ink_count(cs_obj: &crate::object::Object) -> Option<usize> {
+    let arr = cs_obj.as_array()?;
+    if !matches!(arr.first(), Some(crate::object::Object::Name(n)) if n == "DeviceN") {
+        return None;
+    }
+    match arr.get(1)? {
+        crate::object::Object::Array(names) if !names.is_empty() => Some(names.len()),
+        _ => None,
+    }
+}
+
 fn decode_ranges(decode: Option<&crate::object::Object>, ncomp: usize) -> Option<Vec<(f32, f32)>> {
     let arr = decode.and_then(|o| o.as_array())?;
     if arr.len() != ncomp * 2 {
@@ -1137,12 +1154,28 @@ pub fn extract_image_from_xobject(
                 bits_per_component
             };
 
+            // `ColorSpace::DeviceN` does not carry its ink count — the parser
+            // discards the name array and `components()` answers a flat 4 — so
+            // read the real count here. It sets the unpacker's row geometry:
+            // with the wrong value every row starts at the wrong offset, and a
+            // stream sized for its true ink count runs out partway down, so
+            // the tail of the image is padded with fabricated zeros.
+            let ncomp = devicen_ink_count(&resolved_color_space)
+                .unwrap_or_else(|| color_space.components());
+            // The stored buffer is one byte per component at the stride
+            // `PixelFormat` declares, and that stride is only ever 1, 3 or 4.
+            // A colour space whose component count is anything else — a
+            // 2- or 6-ink `/DeviceN`, an `/ICCBased` with N ∉ {1,3,4} — cannot
+            // be expressed in it, so unpacking would have to write a buffer
+            // whose length contradicts its own format. Leave the stream packed
+            // instead: `bits_per_component` stays sub-byte, which is exactly
+            // what every consumer already checks before reading samples.
+            let representable = ncomp == pixel_format.bytes_per_pixel();
             // CCITT keeps its packed stream — decompression happens lazily
             // and /Decode is folded into `black_is_1` below. Lab samples are
             // not confined to [0, 1], so the linear-to-byte mapping does not
             // apply to them.
-            let keep_raw = is_ccitt || color_space == ColorSpace::Lab;
-            let ncomp = color_space.components();
+            let keep_raw = is_ccitt || color_space == ColorSpace::Lab || !representable;
             let ranges = decode_ranges(dict.get("Decode"), ncomp)
                 .filter(|r| r.iter().any(|&(lo, hi)| (lo, hi) != (0.0, 1.0)));
 
