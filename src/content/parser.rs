@@ -5623,16 +5623,16 @@ mod tests {
 
         let injected = last_region_injected(&ops);
         assert!(
-            injected
-                .iter()
-                .any(|op| matches!(op, Operator::Tc { char_space } if (*char_space - 0.5).abs() < 1e-6)),
+            injected.iter().any(
+                |op| matches!(op, Operator::Tc { char_space } if (*char_space - 0.5).abs() < 1e-6)
+            ),
             "inherited Tc not injected: {:?}",
             injected
         );
         assert!(
-            injected
-                .iter()
-                .any(|op| matches!(op, Operator::Tw { word_space } if (*word_space - 0.25).abs() < 1e-6)),
+            injected.iter().any(
+                |op| matches!(op, Operator::Tw { word_space } if (*word_space - 0.25).abs() < 1e-6)
+            ),
             "inherited Tw not injected: {:?}",
             injected
         );
@@ -5715,9 +5715,7 @@ mod tests {
 
         let injected = last_region_injected(&ops);
         assert!(
-            !injected
-                .iter()
-                .any(|op| matches!(op, Operator::Tc { .. })),
+            !injected.iter().any(|op| matches!(op, Operator::Tc { .. })),
             "Tc from a closed q/Q scope must not leak into a later region: {:?}",
             injected
         );
