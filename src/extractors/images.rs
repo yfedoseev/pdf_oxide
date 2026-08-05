@@ -803,6 +803,16 @@ fn samples_to_decoded_bytes(
     /// `/Width` × `/Height` does.
     const MAX_UNPACKED_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
     if total > MAX_UNPACKED_OUTPUT_BYTES {
+        // Refusing here is the same fallback the short-stream case was moved
+        // off: the caller keeps the packed bytes and any /Decode goes
+        // unapplied, which renders the negative of the picture. Nothing in a
+        // real corpus reaches this, so the trade is worth it against an
+        // adversarial /Width × /Height — but say so rather than letting a
+        // wrong-polarity image out silently.
+        log::warn!(
+            "Refusing to unpack a {total}-byte image buffer (cap {MAX_UNPACKED_OUTPUT_BYTES}); \
+             samples stay packed and any /Decode is left unapplied"
+        );
         return None;
     }
 
