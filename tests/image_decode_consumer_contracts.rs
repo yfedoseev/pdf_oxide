@@ -194,6 +194,47 @@ fn eight_bpc_samples_stay_raw_without_decode() {
     );
 }
 
+/// `ColorSpace::DeviceN` is a unit variant — the parser drops the ink-name
+/// array — so `components()` answers a flat 4 for every `/DeviceN`. That count
+/// sets the sub-byte unpacker's row geometry, and `PixelFormat` can only
+/// express a 1-, 3- or 4-byte stride, so a 2-ink image has no representation in
+/// the stored buffer at all. Unpacking it anyway read rows at twice their true
+/// stride and ran off the end of a correctly-sized stream, padding the bottom
+/// half of the image with fabricated zeros. It must stay packed instead.
+#[test]
+fn two_ink_devicen_sub_byte_is_left_packed() {
+    // 8×8, two inks, 4 bpc: 8×2 samples/row = 8 bytes/row, 64 bytes total —
+    // exactly the right length for two inks, and half what four would need.
+    let data: Vec<u8> = vec![0xFF; 64];
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace [/DeviceN [/InkA /InkB] /DeviceCMYK \
+           << /FunctionType 2 /Domain [0 1] /N 1 /C0 [0 0] /C1 [1 1] >>] \
+         /BitsPerComponent 4 /Length 64 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let img = &imgs[0];
+    assert_eq!(
+        img.bits_per_component(),
+        4,
+        "an unrepresentable component count must leave the samples packed, \
+         and sub-byte depth is what tells consumers not to read them"
+    );
+    if let ImageData::Raw { pixels, .. } = img.data() {
+        assert_eq!(
+            pixels.len(),
+            64,
+            "the packed stream is passed through untouched; unpacking at the \
+             wrong stride produced {} bytes, half of them fabricated",
+            pixels.len()
+        );
+    } else {
+        panic!("expected a raw buffer");
+    }
+}
+
 /// 4-bpc unpacking: two samples per byte, high nibble first. Width 9 forces a
 /// padded row (36 bits in 5 bytes), so an unpacker that ignored row padding
 /// would shear the image diagonally from row 1 onward.
