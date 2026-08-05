@@ -5688,9 +5688,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-ttf-parser"
-version = "1.0.14"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0187fcfcd202849428d311f214bdd0429e7afe3ca199df207f30397b1d3b1994"
+checksum = "92b07d4e7aae5dd7a6c145dfbce4f5dbec692b5e1bb56149841401c4f197956b"
 
 [[package]]
 name = "y4m"
