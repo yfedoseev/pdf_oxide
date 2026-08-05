@@ -193,18 +193,43 @@ fn cell_with_gap_separated_spans_keeps_both() {
 /// sort would emit them in reverse.
 #[test]
 fn rotated_cell_runs_join_along_their_writing_axis() {
+    // `span` builds a 30-wide run, and a run's bbox width is its advance along
+    // its own writing axis, so the second run abuts the first at y = 230.
     let mut first = span("Reve", 100.0, 200.0, 0, 0);
     first.rotation_degrees = 90.0;
-    let mut second = span("nue", 100.0, 240.0, 0, 1);
+    let mut second = span("nue", 100.0, 230.0, 0, 1);
     second.rotation_degrees = 90.0;
     // Content order deliberately reversed to prove the sort, not the input.
     let spans = vec![second, first, span("x", 400.0, 700.0, 1, 2)];
     let mut table = StructElem::new(StructType::Table);
     table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
     let t = extract_table_from_spans(&table, &spans).unwrap();
+    // Both runs are on ONE rotated line and abut along it, so they rejoin
+    // into the word they were torn from. Deciding line membership in page
+    // coordinates would call each run its own line and split the word.
     assert_eq!(
-        t.rows[0].cells[0].text, "Reve nue",
-        "a 90° rotated run advances along +y, so 'Reve' (lower y) comes first"
+        t.rows[0].cells[0].text, "Revenue",
+        "abutting runs of one 90° rotated line must rejoin without a space"
+    );
+}
+
+/// Two separate lines of a rotated cell — a genuinely wrapped rotated header —
+/// still get their space. The line break is decided in the writing frame, so
+/// it must survive there too.
+#[test]
+fn rotated_cell_separate_lines_keep_their_space() {
+    // 90° rotated: lines advance along +x, runs advance along +y.
+    let mut first = span("Total", 100.0, 200.0, 0, 0);
+    first.rotation_degrees = 90.0;
+    let mut second = span("Cost", 140.0, 200.0, 0, 1);
+    second.rotation_degrees = 90.0;
+    let spans = vec![first, second, span("x", 400.0, 700.0, 1, 2)];
+    let mut table = StructElem::new(StructType::Table);
+    table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
+    let t = extract_table_from_spans(&table, &spans).unwrap();
+    assert_eq!(
+        t.rows[0].cells[0].text, "Total Cost",
+        "runs on different rotated lines are separate words"
     );
 }
 

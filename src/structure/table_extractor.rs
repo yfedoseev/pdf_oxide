@@ -727,6 +727,11 @@ fn extract_cell(
     // successive lines advance (unrotated: +x and "down the page").
     let along = |b: &TextBlock| direction * (b.bbox.x * cos + b.bbox.y * sin);
     let perp = |b: &TextBlock| b.bbox.x * sin - b.bbox.y * cos;
+    // How far a run extends along its own writing direction. A span's bbox is
+    // run-local — `width` is the accumulated advance and `height` the font
+    // size, whatever the rotation (see the TextSpan construction in
+    // extractors/text.rs) — so the writing-axis extent is always `width`.
+    let advance_extent = |b: &TextBlock| b.bbox.width;
 
     // `perp` multiplies a bbox coordinate by a sine that is exactly 0.0 at
     // rotation 0, so a non-finite coordinate yields NaN on the axis we are not
@@ -759,19 +764,19 @@ fn extract_cell(
             .then_with(|| crate::utils::safe_float_cmp(along(a), along(b)))
     });
 
-    let mut prev_block: Option<&TextBlock> = None;
-    for (_, block) in keyed {
+    let mut prev_block: Option<(usize, &TextBlock)> = None;
+    for (line_index, block) in keyed {
         let mut leading_space = false;
         if !cell_text.is_empty() {
-            let need_space = if let Some(prev) = prev_block {
-                let y_diff = (block.bbox.y - prev.bbox.y).abs();
-                let line_h = prev.bbox.height.max(block.bbox.height);
-                let gap = block.bbox.x - (prev.bbox.x + prev.bbox.width);
+            let need_space = if let Some((prev_line, prev)) = prev_block {
+                // Line membership was already decided above, in the writing
+                // frame. Re-deriving it here from page-frame y would call
+                // every run of a rotated line a new line (they differ in y by
+                // their own advance) and inject a space into every word.
+                let gap = along(block) - (along(prev) + advance_extent(prev));
                 let font_size = prev.avg_font_size.max(block.avg_font_size).max(1.0);
-                if y_diff > line_h * 0.5 || gap < -font_size {
-                    // Different lines — always insert a space. A large
-                    // backward jump at near-equal y is also a line break:
-                    // a multi-line block's height can swallow the y test.
+                if line_index != prev_line {
+                    // Different lines — always insert a space.
                     true
                 } else if gap <= font_size * 0.15 {
                     // Same line, abutting — no space.
@@ -877,7 +882,7 @@ fn extract_cell(
             text_rise: 0.0,
             rtl_draw_logical: false,
         });
-        prev_block = Some(block);
+        prev_block = Some((line_index, block));
     }
 
     let mut cell = TableCell::new(cell_text.trim().to_string(), is_header);

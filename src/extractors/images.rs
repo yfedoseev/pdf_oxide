@@ -774,37 +774,62 @@ fn samples_to_decoded_bytes(
     bpc: u8,
     ranges: Option<&[(f32, f32)]>,
 ) -> Option<Vec<u8>> {
-    if !matches!(bpc, 1 | 2 | 4 | 8) {
+    if !matches!(bpc, 1 | 2 | 4 | 8) || ncomp == 0 {
         return None;
     }
     let bpc = usize::from(bpc);
-    let max = ((1u32 << bpc) - 1) as f32;
-    let map = |raw: u32, comp: usize| -> u8 {
-        let (lo, hi) = ranges.map_or((0.0, 1.0), |r| r[comp]);
-        let v = lo + (raw as f32) * (hi - lo) / max;
-        (v.clamp(0.0, 1.0) * 255.0).round() as u8
-    };
+    // Sizes come from /Width and /Height, which a hostile file controls, so
+    // every product is checked: a wrapped `usize` (reachable on 32-bit wasm
+    // with ordinary dimensions) would under-reserve and then grow until the
+    // allocator aborts, and an allocation failure aborts the process rather
+    // than returning an error.
+    let samples_per_row = (width as usize).checked_mul(ncomp)?;
+    let total = samples_per_row.checked_mul(height as usize)?;
+    let row_bytes = samples_per_row.checked_mul(bpc)?.div_ceil(8);
+    // The stream must actually contain the samples it declares. Zero-filling
+    // a short stream would turn a truncated image into a plausible
+    // full-size one — the silent-wrong-answer this project forbids.
+    if row_bytes.checked_mul(height as usize)? > data.len() {
+        return None;
+    }
+
+    // Per-component lookup instead of float arithmetic per sample: `2^bpc`
+    // entries per component, so the inner loop is one table read. The
+    // identity mapping stays exact (bpc 1/2/4/8 -> ×255/×85/×17/×1).
+    let levels = 1usize << bpc;
+    let max = (levels - 1) as f32;
+    let lut: Vec<[u8; 256]> = (0..ncomp)
+        .map(|comp| {
+            let (lo, hi) = ranges.map_or((0.0, 1.0), |r| r[comp]);
+            let mut table = [0u8; 256];
+            for (raw, slot) in table.iter_mut().enumerate().take(levels) {
+                let v = lo + (raw as f32) * (hi - lo) / max;
+                *slot = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            table
+        })
+        .collect();
 
     if bpc == 8 {
         return Some(
             data.iter()
                 .enumerate()
-                .map(|(i, &b)| map(b as u32, i % ncomp))
+                .map(|(i, &b)| lut[i % ncomp][b as usize])
                 .collect(),
         );
     }
-    let samples_per_row = width as usize * ncomp;
-    let row_bytes = (samples_per_row * bpc).div_ceil(8);
     let mask = (1u32 << bpc) - 1;
-    let mut out = Vec::with_capacity(samples_per_row * height as usize);
+    let mut out = Vec::with_capacity(total);
     for row in 0..height as usize {
         let row_start = row * row_bytes;
         for s in 0..samples_per_row {
             let bit_offset = s * bpc;
-            let byte = data.get(row_start + bit_offset / 8).copied().unwrap_or(0);
+            let byte = data[row_start + bit_offset / 8];
+            // Cannot underflow: bpc < 8 here (the bpc == 8 case returned
+            // above) and `bit_offset % 8` is at most 8 - bpc for those depths.
             let shift = 8 - bpc - (bit_offset % 8);
             let raw = ((byte >> shift) as u32) & mask;
-            out.push(map(raw, s % ncomp));
+            out.push(lut[s % ncomp][raw as usize]);
         }
     }
     Some(out)
