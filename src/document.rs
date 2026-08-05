@@ -17186,8 +17186,13 @@ impl PdfDocument {
             let tolerance = word.bbox.height.max(1.0) * 0.5;
             let quantize = |v: f32| (f64::from(v) * 100.0).round() as i64;
             // Widened by one step each way so a value sitting on a bucket edge
-            // cannot be missed by rounding.
-            let (lo, hi) = (quantize(across - tolerance) - 1, quantize(across + tolerance) + 1);
+            // cannot be missed by rounding. Saturating: the cast in `quantize`
+            // clamps |v| >= ~9.2e16 to i64::MAX/MIN, and a plain +-1 there
+            // overflows (panic in debug, an inverted `range` panic in release).
+            let (lo, hi) = (
+                quantize(across - tolerance).saturating_sub(1),
+                quantize(across + tolerance).saturating_add(1),
+            );
             let winner = offset_index
                 .range(lo..=hi)
                 .flat_map(|(_, indices)| indices.iter().copied())

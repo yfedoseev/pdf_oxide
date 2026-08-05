@@ -118,6 +118,85 @@ fn rotated_formula_with_subscript_pdf() -> Vec<u8> {
     build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
 }
 
+/// A page with no resolvable `/MediaBox` anywhere in its tree skips the
+/// off-page span filter, so a run positioned at a huge coordinate reaches line
+/// grouping. Quantizing such an offset to 1/100 pt saturates the i64 cast;
+/// the `+-1` widening on the saturated value must not overflow (a panic in
+/// debug, an inverted `BTreeMap::range` panic in release).
+fn huge_offset_rotated_runs_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    // A normal quarter-turn run first, so the offset index is non-empty when
+    // the saturated offsets are looked up.
+    content.extend_from_slice(b"0 1 -1 0 200 150 Tm (Alpha) Tj\n");
+    // Real syntax, not integer: the lexer rejects an i64-overflowing integer
+    // literal but passes an in-f32-range real through unclamped.
+    content.extend_from_slice(b"0 1 -1 0 100000000000000000000.0 150 Tm (Far) Tj\n");
+    content.extend_from_slice(b"0 1 -1 0 -100000000000000000000.0 150 Tm (Near) Tj\n");
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R")
+}
+
+/// Garbage coordinates in a crafted PDF must degrade to extra lines, never
+/// panic the library.
+#[test]
+fn huge_rotated_offsets_do_not_panic_line_grouping() {
+    let doc = PdfDocument::from_bytes(huge_offset_rotated_runs_pdf()).expect("parse fixture");
+    let lines = doc.extract_text_lines(0).expect("extract lines");
+    assert!(
+        lines.iter().any(|l| l.text.contains("Alpha")),
+        "on-page rotated run went missing: {:?}",
+        lines.iter().map(|l| l.text.trim()).collect::<Vec<_>>()
+    );
+}
+
+/// On a `/Rotate` page span bboxes are rect-mapped into the displayed frame
+/// while `rotation_degrees` keeps describing the pre-display one, so the
+/// quarter-turn offset would be read off the wrong axis; such pages keep one
+/// line per run. Two parallel rotated lines drawn at the same y land on the
+/// same displayed `bbox.x`, so grouping them by that offset would fuse them —
+/// this pins the fallback.
+fn parallel_rotated_lines_on_rotated_page_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    content.extend_from_slice(b"0 1 -1 0 200 150 Tm (Alpha) Tj\n");
+    content.extend_from_slice(b"0 1 -1 0 300 150 Tm (Bravo) Tj\n");
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(
+        &content,
+        b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90",
+    )
+}
+
+#[test]
+fn a_rotate_page_keeps_one_line_per_rotated_run() {
+    let doc =
+        PdfDocument::from_bytes(parallel_rotated_lines_on_rotated_page_pdf()).expect("parse fixture");
+    let lines = doc.extract_text_lines(0).expect("extract lines");
+
+    assert!(
+        doc.extract_chars(0)
+            .expect("extract chars")
+            .iter()
+            .any(|c| (c.rotation_degrees - 90.0).abs() < 0.5),
+        "fixture produced no rotated glyphs"
+    );
+
+    for l in &lines {
+        assert!(
+            !(l.text.contains("Alpha") && l.text.contains("Bravo")),
+            "parallel rotated lines fused on a /Rotate page: {:?}",
+            l.text
+        );
+    }
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected one line per run, got {:?}",
+        lines.iter().map(|l| l.text.trim()).collect::<Vec<_>>()
+    );
+}
+
 /// A baseline drop inside a rotated run is a sub-glyph perpendicular offset, not
 /// a line break: the formula must not be split apart by the continuation test.
 #[test]
