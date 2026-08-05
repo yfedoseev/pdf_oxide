@@ -5581,9 +5581,9 @@ mod tests {
         .unwrap();
         let injected = last_region_injected(&ops);
         assert!(
-            !injected.iter().any(
-                |op| matches!(op, Operator::SetFillColorN { name: Some(_), .. })
-            ),
+            !injected
+                .iter()
+                .any(|op| matches!(op, Operator::SetFillColorN { name: Some(_), .. })),
             "stale name fabricated a pattern: {:?}",
             injected
         );
@@ -5593,7 +5593,8 @@ mod tests {
     fn test_prescan_scn_with_too_many_operands_injects_nothing() {
         // A 6-component scn (DeviceN) exceeds what the rolling buffer can
         // faithfully replay; a truncated color would be plausible and wrong.
-        let cs = two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET 0.1 0.2 0.3 0.4 0.5 0.6 scn BT (X) Tj");
+        let cs =
+            two_region_prescan_stream(b"/F1 10 Tf (A) Tj ET 0.1 0.2 0.3 0.4 0.5 0.6 scn BT (X) Tj");
         let mut ops = Vec::new();
         parse_and_execute_text_only(&cs, |op| {
             ops.push(op);
