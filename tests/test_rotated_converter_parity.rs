@@ -1,9 +1,11 @@
 //! Every text-producing surface must read a rotated page the same way.
 //!
-//! The rotated reading frame is applied at one call site, inside
-//! `extract_text`. `to_markdown` and `to_html` assemble the same page in raw
-//! page space, so the same document extracts correctly through one surface and
-//! incorrectly through the other.
+//! The rotated reading frame used to be applied at one call site, inside
+//! `extract_text`; `to_markdown` and `to_html` assembled the same page in raw
+//! page space, so the same document extracted correctly through one surface
+//! and incorrectly through the other. Region rects stay page-space
+//! coordinates on every surface: they filter before the frame rewrites the
+//! geometry they select against.
 
 use pdf_oxide::converters::ConversionOptions;
 use pdf_oxide::document::PdfDocument;
@@ -138,6 +140,105 @@ fn filtered_text_reads_a_rotated_page_in_the_same_order_as_extract_text() {
     assert_eq!(
         from_text, from_filtered,
         "extract_text and extract_text_filtered disagree on a rotated page"
+    );
+}
+
+/// Region rects are page-space coordinates on every surface: a rect covering
+/// the rotated text's true page-space location must select it even though the
+/// reading-frame map rewrites the span geometry before assembly.
+#[test]
+fn rect_surfaces_interpret_the_rect_in_page_space_on_a_rotated_page() {
+    use pdf_oxide::layout::RectFilterMode;
+    use std::collections::HashSet;
+
+    let doc = PdfDocument::from_bytes(rotated_page_pdf()).expect("parse fixture");
+    let from_text = reading_order(&doc.extract_text(0).expect("extract text"));
+    assert!(
+        from_text
+            .windows(3)
+            .any(|w| w == ["Engine", "oil", "capacity"]),
+        "extract_text did not assemble the rotated page: {from_text:?}"
+    );
+
+    // The rotated text's true page-space extent: lines at x = 200/214/228
+    // running up from y = 150. The mapped frame puts the spans at
+    // y = 384..422 — entirely outside this rect, so filtering after the map
+    // selects nothing.
+    let region = pdf_oxide::geometry::Rect::new(185.0, 140.0, 60.0, 130.0);
+
+    let in_rect = doc
+        .extract_text_in_rect(0, region, RectFilterMode::Intersects)
+        .expect("extract_text_in_rect");
+    assert_eq!(
+        from_text,
+        reading_order(&in_rect),
+        "extract_text_in_rect dropped page-space content on a rotated page"
+    );
+
+    let mut inks = HashSet::new();
+    inks.insert("NoSuchInkOnThisPage".to_string());
+    let filtered = doc
+        .extract_text_filtered_in_rect(0, HashSet::new(), inks, region, RectFilterMode::Intersects)
+        .expect("extract_text_filtered_in_rect");
+    assert_eq!(
+        from_text,
+        reading_order(&filtered),
+        "extract_text_filtered_in_rect dropped page-space content on a rotated page"
+    );
+}
+
+/// Two spans per rotated line, offset unevenly along the run: the raw and
+/// mapped frames disagree on token ORDER, not just spacing. In the mapped
+/// frame each pair reads as one line; in the raw frame the second spans sit
+/// on their own raw-Y lines above every first span.
+fn rotated_two_span_lines_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    for (x, y, text) in [
+        (200, 150, "alpha one"),
+        (200, 260, "beta two"),
+        (214, 150, "gamma three"),
+        (214, 300, "delta four"),
+        (228, 150, "epsilon five"),
+        (228, 240, "zeta six"),
+    ] {
+        content.extend_from_slice(format!("0 1 -1 0 {x} {y} Tm ({text}) Tj\n").as_bytes());
+    }
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
+}
+
+/// With one span per line, raw and mapped frames can agree on token order by
+/// luck; with two, the raw frame reads the far spans first (`delta four` at
+/// raw y=300 tops the page) while the mapped frame pairs each with its line.
+#[test]
+fn converters_agree_with_extract_text_when_rotated_lines_have_multiple_spans() {
+    let doc = PdfDocument::from_bytes(rotated_two_span_lines_pdf()).expect("parse fixture");
+    let options = ConversionOptions::default();
+
+    let from_text = reading_order(&doc.extract_text(0).expect("extract text"));
+    // The fixture must reach the framed path — mapped lines pair the spans.
+    assert!(
+        from_text.windows(4).any(|w| w == ["alpha", "one", "beta", "two"]),
+        "extract_text did not pair the rotated line's spans: {from_text:?}"
+    );
+
+    let from_markdown = reading_order(&doc.to_markdown(0, &options).expect("to_markdown"));
+    assert_eq!(
+        from_text, from_markdown,
+        "extract_text and to_markdown disagree on multi-span rotated lines"
+    );
+
+    let from_html = reading_order(&strip_tags(&doc.to_html(0, &options).expect("to_html")));
+    assert_eq!(
+        from_text, from_html,
+        "extract_text and to_html disagree on multi-span rotated lines"
+    );
+
+    let from_plain = reading_order(&doc.to_plain_text(0, &options).expect("to_plain_text"));
+    assert_eq!(
+        from_text, from_plain,
+        "extract_text and to_plain_text disagree on multi-span rotated lines"
     );
 }
 
