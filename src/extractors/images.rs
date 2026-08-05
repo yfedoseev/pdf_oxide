@@ -1170,15 +1170,13 @@ pub fn extract_image_from_xobject(
             let pixels = match unpacked {
                 Some(samples) => {
                     stored_bpc = 8;
-                    // Unpacking a sub-byte sample rescales it to the 8-bit
-                    // range (bpc 1/2/4 scale by ×255/×85/×17), which leaves the
-                    // raw sample space just as folding in a /Decode does. Only
-                    // the 8-bit case is an identity scale and stays raw.
-                    // Consumers that range-test against dictionary values —
-                    // colour-key /Mask (§8.9.6.4), separation-plate routing —
-                    // read this flag, and they compare against bounds stated in
-                    // the original 0..2^bpc−1 space.
-                    samples_are_raw = ranges.is_none() && bpc_after_reduce == 8;
+                    // This arm runs only when the buffer was rewritten — the
+                    // identity case (8 bpc, no /Decode) took the `None` branch
+                    // above — so the samples have left the raw space either by
+                    // the ×255/×85/×17 sub-byte rescale or by /Decode itself.
+                    // Colour-key /Mask (§8.9.6.4) range-tests against bounds
+                    // stated in the original 0..2^bpc−1 space and reads this.
+                    samples_are_raw = false;
                     // Plate routing applies /Decode itself, so it needs the
                     // narrower fact: only `ranges` actually folds one in.
                     decode_folded_in = ranges.is_some();
