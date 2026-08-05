@@ -1030,9 +1030,9 @@ fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
     if size.contains(&0) || domain.len() < m {
         return None;
     }
-    // `/Size` is document controlled. Bound the declared grid by what the
-    // sample stream can actually hold, so the flat-index and stride products
-    // below cannot wrap a bogus grid into a valid-looking sample offset.
+    // `/Size` is document controlled. Bounding the declared grid by what the
+    // sample stream holds keeps the stride and flat-index products below from
+    // wrapping a bogus grid into a valid-looking offset.
     let declared_bits = size
         .iter()
         .try_fold(1usize, |acc, &s| acc.checked_mul(s))

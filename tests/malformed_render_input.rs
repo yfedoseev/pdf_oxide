@@ -142,6 +142,27 @@ fn separation_image_mask_negative_dimensions_render() {
     );
 }
 
+/// A separation `/ImageMask` whose declared geometry is positive, in range and
+/// overflows nothing — and which no stream of any size could back. Rejecting
+/// only unrepresentable dimensions still let this one through to an allocation
+/// sized from the declaration: 2^31 x 2^31 is 2^62 bytes.
+#[test]
+fn separation_image_mask_larger_than_its_stream_renders() {
+    let control = PdfDocument::from_bytes(separation_imagemask_pdf("8", "8")).expect("parse");
+    let control_plates =
+        render_separations(&control, 0, 72).expect("8x8 control image mask renders");
+
+    let doc = PdfDocument::from_bytes(separation_imagemask_pdf("2147483648", "2147483648"))
+        .expect("parse");
+    let plates = render_separations(&doc, 0, 72)
+        .expect("page with an image mask larger than its stream renders");
+    assert_eq!(
+        plates.len(),
+        control_plates.len(),
+        "skipping the unbacked mask must not drop the separation plates"
+    );
+}
+
 fn masked_image_pdf(mask_dict: &str, mask_data: &[u8]) -> Vec<u8> {
     let objects = vec![
         obj("<< /Type /Catalog /Pages 2 0 R >>"),

@@ -4212,9 +4212,9 @@ impl PageRenderer {
                                     .map(|o| matches!(o, Object::Boolean(true)))
                                     .unwrap_or(false);
                                 if is_image_mask {
-                                    // `as u32` would turn a negative /Width into a
-                                    // near-u32::MAX row stride that passes the
-                                    // check below; try_from rejects it instead.
+                                    // `as u32` turns a negative /Width into a
+                                    // near-u32::MAX stride that passes the
+                                    // check below.
                                     let mw = mask_dict
                                         .get("Width")
                                         .and_then(|o| o.as_integer())
@@ -4553,7 +4553,10 @@ impl PageRenderer {
         name.eq_ignore_ascii_case("CCITTFaxDecode") || name.eq_ignore_ascii_case("CCF")
     }
 
-    fn image_mask_layout(
+    /// `(width, height, row_bytes, packed_len, rgba_len)` for a 1-bpc stencil,
+    /// rejecting geometry that does not fit or that no stream could back —
+    /// before anything is allocated from it.
+    pub(crate) fn image_mask_layout(
         dict: &HashMap<String, Object>,
     ) -> Result<(u32, u32, usize, usize, usize)> {
         let dimension = |key: &str| -> Result<u32> {
@@ -7764,10 +7767,9 @@ impl PageRenderer {
             if let Some(ap_obj) = annot.raw_dict.as_ref().and_then(|d| d.get("AP")) {
                 let ap_stream_obj = doc.resolve_object(ap_obj)?;
 
-                // ISO 32000-1 §12.5.5: /N is the normal appearance. /D and /R
-                // are the down and rollover appearances, shown only while the
-                // pointer presses or hovers the annotation, so an /AP without
-                // /N has no appearance to draw in a static render.
+                // ISO 32000-1 §12.5.5: /N is the normal appearance; /D and /R
+                // show only under pointer press or hover, so an /AP without /N
+                // draws nothing in a static render.
                 if let Object::Dictionary(ap_dict) = ap_stream_obj {
                     if let Some(n_entry) = ap_dict.get("N") {
                         let n_stream_obj = doc.resolve_object(n_entry)?;

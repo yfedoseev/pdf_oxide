@@ -775,12 +775,10 @@ fn parse_marked_content_ref(
     Ok(Some(StructChild::MarkedContentRef { mcid, page, scope }))
 }
 
-/// Narrow a `/K` or `/MCID` integer to the `u32` marked-content id space,
-/// rejecting anything that does not fit.
+/// Narrow a `/K` or `/MCID` integer to the `u32` marked-content id space.
 ///
-/// Wrapping instead would make a malformed id collide with a real one: an id
-/// of `2^32 + 5` becomes MCID 5 and duplicates that entry in the page's
-/// reading order. An out-of-range id is dropped rather than guessed at.
+/// Wrapping collides a malformed id with a real one: `2^32 + 5` becomes MCID 5
+/// and duplicates that entry in the page's reading order.
 fn checked_mcid(raw: i64) -> Option<u32> {
     match u32::try_from(raw) {
         Ok(mcid) => Some(mcid),

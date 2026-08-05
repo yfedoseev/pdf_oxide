@@ -3057,20 +3057,15 @@ fn paint_image_mask_to_plates(
         Object::Stream { dict, .. } => dict,
         _ => return Ok(()),
     };
-    let raw_w = dict.get("Width").and_then(|o| o.as_integer()).unwrap_or(0);
-    let raw_h = dict.get("Height").and_then(|o| o.as_integer()).unwrap_or(0);
-    let dims = usize::try_from(raw_w).ok().zip(usize::try_from(raw_h).ok());
-    let Some((w, h)) = dims.filter(|(w, h)| w.checked_mul(*h).is_some()) else {
-        log::warn!(
-            "Skipping image mask '{name}': /Width {raw_w} /Height {raw_h} is not a \
-             representable pixel count"
-        );
+    // Same geometry contract as the stencil path in `page_renderer`, which
+    // already rejects non-positive and unbacked dimensions before allocating.
+    let layout = crate::rendering::page_renderer::PageRenderer::image_mask_layout(dict);
+    let Ok((w32, h32, _row_bytes, packed_len, _rgba_len)) = layout else {
+        log::warn!("Skipping image mask '{name}': {}", layout.unwrap_err());
         return Ok(());
     };
+    let (w, h) = (w32 as usize, h32 as usize);
     let pixel_count = w * h;
-    if pixel_count == 0 {
-        return Ok(());
-    }
     let bpc = dict
         .get("BitsPerComponent")
         .and_then(|o| o.as_integer())
@@ -3088,10 +3083,18 @@ fn paint_image_mask_to_plates(
     } else {
         xobject.decode_stream_data()?
     };
-    let mut stencil = expand_1bpc_to_8bpc(&packed, w as u32, h as u32);
-    if stencil.len() < pixel_count {
+    // Checked before expanding, because `expand_1bpc_to_8bpc` zero-pads and
+    // would size the buffer from the declaration: `/Width 2147483648 /Height
+    // 2147483648` is representable and asks for 2^62 bytes.
+    if packed.len() < packed_len {
+        log::warn!(
+            "Skipping image mask '{name}': {w}x{h} needs {packed_len} bytes, the stream \
+             carries {}",
+            packed.len()
+        );
         return Ok(());
     }
+    let mut stencil = expand_1bpc_to_8bpc(&packed, w32, h32);
 
     // §8.9.6.2: decoded sample value 0 marks the pixel with the current
     // colour; value 1 leaves it transparent. /Decode defaults to [0 1] —
