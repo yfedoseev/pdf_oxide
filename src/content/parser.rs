@@ -600,12 +600,12 @@ pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
 
 /// Text-state parameters tracked by [`forward_scan_ctm`].
 ///
-/// These persist across `BT`/`ET` (ISO 32000-1 §9.3.1 — only `Tm` resets at
-/// `BT`) and are saved/restored by `q`/`Q`, so a BT block may rely on a value
-/// set by an earlier block or between blocks. The prescan path parses each
-/// region in isolation inside a synthesized SaveState/RestoreState wrap, which
-/// would silently reset them; the scan tracks them so the region wrapper can
-/// re-inject the inherited values.
+/// These persist across `BT`/`ET` (ISO 32000-1 §9.3 — `BT` resets only the
+/// text and line matrices, §9.4.1) and are saved/restored by `q`/`Q`, so a
+/// BT block may rely on a value set by an earlier block or between blocks.
+/// The prescan path parses each region in isolation inside a synthesized
+/// SaveState/RestoreState wrap, which would silently reset them; the scan
+/// tracks them so the region wrapper can re-inject the inherited values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PrescanTextState {
     /// Character spacing (`Tc`).
@@ -655,9 +655,11 @@ struct PrescanState {
 
 /// Lightweight forward scan that tracks graphics state across the full content stream.
 ///
-/// Scans the stream recognizing only `q`, `Q`, `cm`, `Tf`, and the persistent
+/// Scans the stream recognizing only `q`, `Q`, `cm`, `Tf`, the persistent
 /// text-state operators (`Tc`, `Tw`, `Tz`, `TL`, `Ts`, `Tr`, plus `TD`'s
-/// implicit leading), skipping all path, color, and text-showing operators.
+/// implicit leading and `"`'s implicit `Tw`/`Tc`), and the fill-color
+/// operators (`rg`, `g`, `k`, `cs`, `sc`, `scn`), skipping all path and
+/// text-showing operators.
 /// Records the accumulated CTM, font, and text state at each position in
 /// `text_positions`.
 ///
@@ -956,10 +958,11 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                 },
                 b"sc" => {
                     // Operands are the TAIL of the rolling buffer, like every
-                    // other arm. More than 4 means a color space this replay
-                    // cannot represent (and the rotated buffer has lost the
-                    // leading operands) — inject nothing rather than a
-                    // truncated, plausible-looking wrong color.
+                    // other arm. The buffer holds 6, so at 7+ operands the
+                    // leading ones have rotated away and a full count no
+                    // longer proves a complete window; replay only the 1-4
+                    // component device-sized spaces rather than a truncated,
+                    // plausible-looking wrong color.
                     if (1..=4).contains(&num_count) {
                         fill_op = Some(Operator::SetFillColor {
                             components: num_buf[..num_count].to_vec(),
@@ -987,7 +990,24 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
             continue;
         }
 
-        // Skip string literals to avoid false matches
+        // `'` and `"` are the only operators that don't start with an
+        // alphabetic byte. `aw ac string "` also persistently sets the word
+        // and character spacing, like `Tw`/`Tc` (§9.4.3); the operands
+        // survive the string skip because strings don't reset the buffer.
+        if b == b'"' || b == b'\'' {
+            if b == b'"' && num_count >= 2 {
+                text_state.word_spacing = num_buf[num_count - 2];
+                text_state.char_spacing = num_buf[num_count - 1];
+            }
+            num_count = 0;
+            last_name = None;
+            i += 1;
+            continue;
+        }
+
+        // Skip string literals to avoid false matches. Numeric operands are
+        // kept: they may belong to a following `"`, and any other operator
+        // resets the buffer itself.
         if b == b'(' {
             i += 1;
             let mut depth = 1u32;
@@ -1000,7 +1020,6 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                 }
                 i += 1;
             }
-            num_count = 0;
             continue;
         }
         if b == b'<' {
@@ -1019,8 +1038,9 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                         i += 1;
                     }
                 }
+                num_count = 0;
             } else {
-                // Hex string <...>
+                // Hex string <...> — operands kept, like literal strings.
                 i += 1;
                 while i < len && data[i] != b'>' {
                     i += 1;
@@ -1029,7 +1049,6 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                     i += 1;
                 }
             }
-            num_count = 0;
             continue;
         }
 
@@ -5617,10 +5636,11 @@ mod tests {
 
     #[test]
     fn test_prescan_injects_inherited_text_state() {
-        // Tc, Tw, and the leading persist across BT/ET (ISO 32000-1 §9.3.1;
-        // only Tm resets at BT), so the second region legitimately runs with
-        // the first region's values. The prescan path parses each region in
-        // an isolated SaveState/RestoreState wrap; without reconstruction the
+        // Tc, Tw, and the leading persist across BT/ET (ISO 32000-1 §9.3;
+        // BT resets only the text and line matrices, §9.4.1), so the second
+        // region legitimately runs with the first region's values. The
+        // prescan path parses each region in an isolated
+        // SaveState/RestoreState wrap; without reconstruction the
         // second region's T* would step by zero leading and every advance
         // would lose Tc — glyphs land on the wrong line, slightly compressed
         // (govdocs_040_040921.pdf p22, govdocs_055_055555.pdf p23).
@@ -5652,6 +5672,65 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, Operator::TL { leading } if (*leading - 12.0).abs() < 1e-6)),
             "leading set via TD not injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_injects_double_quote_spacing() {
+        // `aw ac string "` persistently sets the word and character spacing
+        // (ISO 32000-1 §9.4.3), exactly like `Tw`/`Tc` — a later region
+        // relies on the persisted values the same way.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf 12 TL 1.5 0.3 (A) \"");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            injected.iter().any(
+                |op| matches!(op, Operator::Tw { word_space } if (*word_space - 1.5).abs() < 1e-6)
+            ),
+            "Tw persisted by \" not injected: {:?}",
+            injected
+        );
+        assert!(
+            injected.iter().any(
+                |op| matches!(op, Operator::Tc { char_space } if (*char_space - 0.3).abs() < 1e-6)
+            ),
+            "Tc persisted by \" not injected: {:?}",
+            injected
+        );
+    }
+
+    #[test]
+    fn test_prescan_double_quote_hex_string_operand() {
+        // The string operand of `"` may be a hex string; the numeric
+        // operands must survive the <...> skip too.
+        let cs = two_region_prescan_stream(b"/F1 10 Tf 12 TL 2.0 0.5 <41> \"");
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let injected = last_region_injected(&ops);
+        assert!(
+            injected.iter().any(
+                |op| matches!(op, Operator::Tw { word_space } if (*word_space - 2.0).abs() < 1e-6)
+            ),
+            "Tw persisted by \" with hex string not injected: {:?}",
+            injected
+        );
+        assert!(
+            injected.iter().any(
+                |op| matches!(op, Operator::Tc { char_space } if (*char_space - 0.5).abs() < 1e-6)
+            ),
+            "Tc persisted by \" with hex string not injected: {:?}",
             injected
         );
     }
