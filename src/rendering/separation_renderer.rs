@@ -2903,7 +2903,10 @@ fn paint_image_to_plates(
     // not interpret the array (e.g. a DeviceN whose ink count differs from
     // the colour space's declared component count), so this path still owes
     // the image its /Decode. JPEG samples are decoded locally and always do.
-    let extractor_decode_applied = !pdf_image.samples_are_raw();
+    // Deliberately not `!samples_are_raw()`: that is the wider "were these
+    // samples rescaled at all" fact, true for every sub-byte and 16-bit
+    // image, and reading it here drops the /Decode those images are owed.
+    let extractor_decode_applied = pdf_image.decode_folded_in();
     let (samples, stride, decode_pre_applied) =
         match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
             // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).

@@ -402,6 +402,84 @@ fn separation_image_decode_array_inverts_routing() {
     );
 }
 
+/// A 16-bpc Separation image whose `/Decode` array is longer than the colour
+/// space's component count. The extractor's parser is exact (`len == ncomp*2`)
+/// and rejects it, so nothing is folded into the samples; this path's parser is
+/// lenient (`len >= ncomp*2`) and still owes the image the inversion.
+fn build_pdf_with_16bpc_separation_overlong_decode(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let content = b"q\n50 0 0 50 25 25 cm\n/Im1 Do\nQ\n";
+    let mut buf = Vec::new();
+    let mut offsets = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+           /Contents 4 0 R \
+           /Resources << /XObject << /Im1 5 0 R >> \
+                        /ColorSpace << /CS1 6 0 R >> >> >>\nendobj\n",
+    );
+    offsets.push(buf.len());
+    let hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    buf.extend_from_slice(hdr.as_bytes());
+    buf.extend_from_slice(content);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+    offsets.push(buf.len());
+    let img_hdr = format!(
+        "5 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+         /ColorSpace /CS1 /BitsPerComponent 16 \
+         /Decode [1 0 1 0] /Length {len} >>\nstream\n",
+        w = width,
+        h = height,
+        len = samples.len()
+    );
+    buf.extend_from_slice(img_hdr.as_bytes());
+    buf.extend_from_slice(samples);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"6 0 obj\n[/Separation /Pantone-185 /DeviceCMYK 7 0 R]\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(
+        b"7 0 obj\n<< /FunctionType 2 /Domain [0 1] /N 1 \
+            /C0 [0 0 0 0] /C1 [0 0.85 0.45 0] >>\nendobj\n",
+    );
+    finalize_pdf(buf, offsets)
+}
+
+/// §8.9.5.2: plate routing applies `/Decode` itself, so it must key off "was a
+/// `/Decode` folded in", not the wider "were these samples rescaled at all".
+/// Reducing 16-bit samples to 8 rescales them without applying any map, so
+/// reading the wider fact here drops an inversion the image is still owed.
+#[test]
+fn plate_routing_applies_decode_the_extractor_rejected() {
+    // 2×1, one component, 16 bpc: pixel 0 full ink, pixel 1 none. Under the
+    // `/Decode [1 0]` inversion the plate must come out the other way round.
+    let samples: Vec<u8> = vec![0xFF, 0xFF, 0x00, 0x00];
+    let doc =
+        PdfDocument::from_bytes(build_pdf_with_16bpc_separation_overlong_decode(&samples, 2, 1))
+            .expect("parse");
+    let plates = render_separations(&doc, 0, 72).expect("render");
+    let pantone = plate(&plates, "Pantone-185");
+    assert!(
+        sample(pantone, 30, 50) < 16,
+        "raw-full-ink pixel inverts to no ink under /Decode [1 0]; got {}",
+        sample(pantone, 30, 50)
+    );
+    assert!(
+        sample(pantone, 70, 50) > 200,
+        "raw-no-ink pixel inverts to full ink under /Decode [1 0]; got {}",
+        sample(pantone, 70, 50)
+    );
+}
+
 /// §8.9.6.2: ImageMask is a 1-bpc stencil. Sample value 0 marks the page
 /// with the current non-stroking colour; value 1 leaves the pixel
 /// transparent. With a Separation fill colour, the named spot plate must

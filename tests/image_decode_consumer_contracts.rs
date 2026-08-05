@@ -109,6 +109,48 @@ fn rescaled_sub_byte_samples_are_not_raw() {
     );
 }
 
+/// Leaving the raw sample space and having `/Decode` folded in are different
+/// facts, and a sub-byte image with no `/Decode` separates them: its samples
+/// were rescaled, but nothing applied a map. Plate routing applies `/Decode`
+/// itself, so reading the wider fact here drops the inversion such an image is
+/// still owed.
+#[test]
+fn sub_byte_without_decode_is_not_reported_as_decoded() {
+    let data: Vec<u8> = vec![0x0F; 4 * 8];
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 4 /Length 32 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let img = &imgs[0];
+    assert!(!img.samples_are_raw(), "sub-byte samples were rescaled to 0..255");
+    assert!(
+        !img.decode_folded_in(),
+        "no /Decode was present, so nothing folded one in — a consumer that \
+         applies /Decode itself still owes this image its map"
+    );
+}
+
+/// The complement: when a non-default `/Decode` really is folded in, plate
+/// routing must not apply it a second time and double-invert.
+#[test]
+fn sub_byte_with_decode_reports_it_folded_in() {
+    let data: Vec<u8> = vec![0x0F; 4 * 8];
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 4 /Decode [1 0] /Length 32 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    assert!(
+        imgs[0].decode_folded_in(),
+        "a non-default /Decode was mapped into the samples and must be advertised"
+    );
+}
+
 /// The 8-bit case is an identity scale, so it must stay raw — otherwise every
 /// ordinary image loses colour-key masking.
 #[test]
