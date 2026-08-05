@@ -61,7 +61,7 @@ fn decoded_samples_are_flagged_for_raw_sample_consumers() {
     let imgs = doc.extract_images(0).expect("extract_images");
     let img = &imgs[0];
     assert!(
-        img.decode_applied(),
+        !img.samples_are_raw(),
         "a non-default /Decode was mapped into the samples but the image does not say so"
     );
 }
@@ -79,7 +79,7 @@ fn untouched_samples_are_not_flagged() {
     .expect("open pdf");
     let imgs = doc.extract_images(0).expect("extract_images");
     assert!(
-        !imgs[0].decode_applied(),
+        imgs[0].samples_are_raw(),
         "an image with no /Decode must remain in the raw sample space"
     );
 }

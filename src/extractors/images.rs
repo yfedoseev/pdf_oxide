@@ -52,14 +52,17 @@ pub struct PdfImage {
     /// Rendering intent from the image dictionary's `/Intent`, or the
     /// graphics-state default per ISO 32000-1:2008 §8.6.5.8.
     rendering_intent: crate::color::RenderingIntent,
-    /// Whether a non-default `/Decode` array has already been mapped into
-    /// `data`. Consumers that compare stored samples against values taken
-    /// from the image dictionary — colour-key `/Mask` ranges (§8.9.6.4),
-    /// separation-plate routing — must read the samples in the *raw*
-    /// sample space, so they need to know when this buffer is no longer
-    /// raw.
+    /// Whether `data` still holds the image's raw samples, i.e. the values
+    /// the image dictionary's own entries are expressed in.
+    ///
+    /// Consumers that compare stored samples against dictionary values —
+    /// colour-key `/Mask` ranges (§8.9.6.4), separation-plate routing —
+    /// are only meaningful in that space. It is left behind by mapping a
+    /// non-default `/Decode` into the buffer AND by expanding an Indexed
+    /// image to palette RGB; a CCITT buffer stays raw, with its `/Decode`
+    /// polarity carried separately in `ccitt_params`.
     #[serde(skip)]
-    decode_applied: bool,
+    samples_are_raw: bool,
 }
 
 impl PdfImage {
@@ -83,19 +86,20 @@ impl PdfImage {
             ccitt_params: None,
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
-            decode_applied: false,
+            samples_are_raw: true,
         }
     }
 
-    /// Whether a non-default `/Decode` array is already baked into the
-    /// stored samples, so they are no longer in the raw sample space.
-    pub fn decode_applied(&self) -> bool {
-        self.decode_applied
+    /// Whether the stored samples are still in the image's raw sample space
+    /// (see the field docs for what leaves it).
+    pub fn samples_are_raw(&self) -> bool {
+        self.samples_are_raw
     }
 
-    /// Record that `/Decode` has been mapped into the stored samples.
-    pub(crate) fn set_decode_applied(&mut self, applied: bool) {
-        self.decode_applied = applied;
+    /// Record that the stored samples have been transformed out of the raw
+    /// sample space.
+    pub(crate) fn set_samples_are_raw(&mut self, raw: bool) {
+        self.samples_are_raw = raw;
     }
 
     /// Create a new PDF image with spatial metadata (v0.3.14).
@@ -121,7 +125,7 @@ impl PdfImage {
             ccitt_params: None,
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
-            decode_applied: false,
+            samples_are_raw: true,
         }
     }
 
@@ -167,7 +171,7 @@ impl PdfImage {
             ccitt_params: Some(ccitt_params),
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
-            decode_applied: false,
+            samples_are_raw: true,
         }
     }
 
@@ -998,9 +1002,10 @@ pub fn extract_image_from_xobject(
     // below (sub-byte unpack, /Decode application, 16-bit reduction) rewrites
     // the samples as one byte per component.
     let mut stored_bpc = bits_per_component;
-    // Set when a non-default /Decode is mapped into the stored samples, so
-    // raw-sample consumers (colour-key /Mask, plate routing) can tell.
-    let mut decode_applied = false;
+    // Cleared when a transform below moves the stored samples out of the raw
+    // sample space, so consumers that compare them against dictionary values
+    // (colour-key /Mask, plate routing) can tell.
+    let mut samples_are_raw = true;
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
     } else if is_jpx {
@@ -1034,6 +1039,9 @@ pub fn extract_image_from_xobject(
                 bits_per_component,
                 transform.as_ref(),
             )?;
+            // Palette lookup replaces index samples with RGB, so the buffer
+            // is no longer in the space the dictionary's entries describe.
+            samples_are_raw = false;
             ImageData::Raw {
                 pixels: expanded,
                 format: PixelFormat::RGB,
@@ -1102,7 +1110,15 @@ pub fn extract_image_from_xobject(
             let pixels = match unpacked {
                 Some(samples) => {
                     stored_bpc = 8;
-                    decode_applied = ranges.is_some();
+                    // Unpacking a sub-byte sample rescales it to the 8-bit
+                    // range (bpc 1/2/4 scale by ×255/×85/×17), which leaves the
+                    // raw sample space just as folding in a /Decode does. Only
+                    // the 8-bit case is an identity scale and stays raw.
+                    // Consumers that range-test against dictionary values —
+                    // colour-key /Mask (§8.9.6.4), separation-plate routing —
+                    // read this flag, and they compare against bounds stated in
+                    // the original 0..2^bpc−1 space.
+                    samples_are_raw = ranges.is_none() && bpc_after_reduce == 8;
                     samples
                 },
                 None => reduced,
@@ -1126,7 +1142,7 @@ pub fn extract_image_from_xobject(
         stored_bpc
     };
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
-    image.set_decode_applied(decode_applied);
+    image.set_samples_are_raw(samples_are_raw);
 
     // Attach the ICC profile if we found one — prefer the direct ICCBased
     // profile, then fall back to an Indexed base's profile so the CMM has

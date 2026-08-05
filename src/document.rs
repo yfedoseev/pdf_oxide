@@ -5187,81 +5187,21 @@ impl PdfDocument {
         }
     }
 
-    /// 0-based page-tree position of a page object. The traversal mirrors
-    /// [`Self::get_page_ref_recursive`] so both directions of the
-    /// index ↔ reference mapping always agree.
+    /// 0-based page-tree position of a page object.
+    ///
+    /// Defers to [`Self::all_page_refs`] rather than walking the tree again:
+    /// that collector already handles the `/Count` fast path, nodes that omit
+    /// `/Type`, and cycles, and sharing it keeps this direction of the
+    /// index <-> reference mapping consistent with the other by construction.
+    /// A page whose object is not in the tree is an error, never a guess —
+    /// a plausible-but-wrong page number is worse than no destination.
     pub(crate) fn page_index_of_ref(&self, page_ref: ObjectRef) -> Result<usize> {
-        let catalog = self.catalog()?;
-        let catalog_dict = catalog.as_dict().ok_or_else(|| Error::InvalidObjectType {
-            expected: "Dictionary".to_string(),
-            found: catalog.type_name().to_string(),
-        })?;
-
-        let pages_ref = catalog_dict
-            .get("Pages")
-            .ok_or_else(|| Error::InvalidPdf("Catalog missing /Pages entry".to_string()))?
-            .as_reference()
-            .ok_or_else(|| Error::InvalidPdf("/Pages is not a reference".to_string()))?;
-
-        self.page_index_of_ref_recursive(pages_ref, page_ref, &mut 0, &mut HashSet::new())
-    }
-
-    fn page_index_of_ref_recursive(
-        &self,
-        node_ref: ObjectRef,
-        target_ref: ObjectRef,
-        current_index: &mut usize,
-        visited: &mut HashSet<ObjectRef>,
-    ) -> Result<usize> {
-        if !visited.insert(node_ref) {
-            return Err(Error::CircularReference(node_ref));
-        }
-        let node = self.load_object(node_ref)?;
-        let node_dict = node.as_dict().ok_or_else(|| {
-            Error::InvalidPdf(format!("Page tree node {} is not a dictionary", node_ref.id))
-        })?;
-
-        let node_type = node_dict
-            .get("Type")
-            .and_then(|t| t.as_name())
-            .ok_or_else(|| Error::InvalidPdf("Node missing Type".to_string()))?;
-
-        match node_type {
-            "Page" => {
-                if node_ref == target_ref {
-                    Ok(*current_index)
-                } else {
-                    *current_index += 1;
-                    Err(Error::InvalidPdf(format!("object {} is not this page", target_ref.id)))
-                }
-            },
-            "Pages" => {
-                let kids = node_dict
-                    .get("Kids")
-                    .and_then(|k| k.as_array())
-                    .ok_or_else(|| Error::InvalidPdf("Pages node missing Kids".to_string()))?;
-
-                for kid_obj in kids {
-                    if let Some(kid_ref) = kid_obj.as_reference() {
-                        match self.page_index_of_ref_recursive(
-                            kid_ref,
-                            target_ref,
-                            current_index,
-                            visited,
-                        ) {
-                            Ok(index) => return Ok(index),
-                            Err(_) => continue,
-                        }
-                    }
-                }
-
-                Err(Error::InvalidPdf(format!(
-                    "object {} is not a page in the page tree",
-                    target_ref.id
-                )))
-            },
-            _ => Err(Error::InvalidPdf(format!("Unknown node type: {}", node_type))),
-        }
+        self.all_page_refs()?
+            .iter()
+            .position(|candidate| *candidate == page_ref)
+            .ok_or_else(|| {
+                Error::InvalidPdf(format!("object {} is not a page in the page tree", page_ref.id))
+            })
     }
 
     /// Extract text from a page as a plain string.
