@@ -1,21 +1,15 @@
-//! Word boundaries inside a **single rotated text run**.
+//! Word boundaries in and around rotated text runs.
 //!
-//! A run drawn with a rotated text matrix advances along a rotated axis, but
-//! its span records the advance as `width` on the x-axis and the font size as
-//! `height` (ISO 32000-1:2008 §9.4.4 gives the displacement along the writing
-//! direction; the span flattens it). Word-gap detection then measures gaps on
-//! the wrong axis, so:
-//!
-//! * inter-word gaps inside one rotated run vanish and the words glue
-//!   (`large-scale two-omics integration` → `large-scaletwo-omicsintegration`);
-//! * consecutive rotated cells whose true advance separates them appear to
-//!   overlap, so no separator is emitted between them.
-//!
-//! The existing rotated-reading-order fixture draws one `Tm` + one `Tj` per
-//! word, so every rotated span holds exactly one word and never exercises
-//! either boundary. These fixtures put multiple words inside ONE rotated `Tm`,
-//! and place rotated cells at a true-axis pitch that the flattened geometry
-//! misreads.
+//! Two tests are sensitive to the writing-axis continuation conjunct this
+//! file accompanies: `rotated_paragraph_keeps_words_and_lines` fails without
+//! it (successive rotated `Tm`s displaced along the perpendicular batched
+//! into one line: `brown foxjumps over`), and
+//! `rotated_subscript_formula_stays_contiguous` bounds it from the other
+//! side (a sub-glyph perpendicular offset must not split a run). The
+//! remaining tests pin boundaries that already held and must not regress
+//! while runs batch: word gaps inside one rotated `Tj`, TJ-offset-only gaps,
+//! grid cells at a true-axis pitch, a minority rotated run on an upright
+//! page, and span extent along the writing axis.
 
 use pdf_oxide::document::PdfDocument;
 
@@ -366,36 +360,40 @@ fn build_minimal_pdf_raw(content: &[u8], page_extra: &[u8]) -> Vec<u8> {
     pdf
 }
 
-/// A subscript inside a rotated run sits off the run's writing axis by the
-/// subscript drop, not by a line height. It must stay attached to the formula
-/// it belongs to: `N`, a smaller `2`, and `O` drawn as three runs of one
-/// rotated label are one chemical formula, not three fragments separated by
-/// unrelated page content.
+/// A shallowly rotated (5°) label whose middle glyph is a subscript: `N`, a
+/// dropped `2`, `O`, one `Tm`+`Tj` each. The drop is 3pt PERPENDICULAR to the
+/// writing axis — inside the axis test's tolerance (0.5 × font size) — while
+/// the along-axis steps (8pt, then 14pt from the start) stay inside the
+/// `|d|`-scaled raw `f` band the axis test is ANDed with. The rotation must
+/// stay shallow: at quadrant angles that band (`d == 0` → 0.5pt) vetoes any
+/// along-axis advance before the axis test runs, so its tolerance is
+/// reachable there only through the veto path pinned by
+/// `rotated_paragraph_keeps_words_and_lines`.
 fn rotated_formula_with_subscript_pdf() -> Vec<u8> {
     let mut content = Vec::new();
-    // A 90-degree label "N2O" whose middle glyph is dropped below the baseline,
-    // the shape a rotated chart axis uses. Under a 90-degree matrix the drop is
-    // a displacement along -x, i.e. PERPENDICULAR to the +y writing axis — the
-    // exact quantity the continuation test measures.
-    //
-    // One BT/ET and one Tf size throughout, deliberately: `ET` flushes the run
-    // buffer and so does a Tf size change, either of which would leave the
-    // buffer empty at the next Tm and make the continuation test unreachable —
-    // the assertion below would then hold no matter what that test decided.
-    content.extend_from_slice(b"BT /F1 18 Tf\n");
-    content.extend_from_slice(b"0 1 -1 0 246 244 Tm (N) Tj\n");
-    content.extend_from_slice(b"0 1 -1 0 242 258 Tm (2) Tj\n");
-    content.extend_from_slice(b"0 1 -1 0 246 266 Tm (O) Tj\n");
+    // cos 5° = 0.99619, sin 5° = 0.08716; each e/f is
+    // start + along·(cos, sin) + drop·(sin, -cos).
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    content.extend_from_slice(b"0.99619 0.08716 -0.08716 0.99619 200 300 Tm (N) Tj\n");
+    content.extend_from_slice(b"0.99619 0.08716 -0.08716 0.99619 208.231 297.709 Tm (2) Tj\n");
+    content.extend_from_slice(b"0.99619 0.08716 -0.08716 0.99619 213.947 301.22 Tm (O) Tj\n");
     content.extend_from_slice(b"ET");
     build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
 }
 
-/// A baseline drop inside a rotated run is a sub-glyph perpendicular offset, not
-/// a line break: the formula must not be split apart by the continuation test.
+/// The drop is a baseline shift, not a line break: all three glyphs batch into
+/// ONE span. Asserted on span membership — assembled text reads "N2O" whether
+/// or not the run split, so it cannot observe the difference. This is a pin,
+/// not a revert-red test (a veto-only conjunct admits nothing new); it holds
+/// the perpendicular tolerance against tightening.
 #[test]
 fn rotated_subscript_formula_stays_contiguous() {
     let doc = PdfDocument::from_bytes(rotated_formula_with_subscript_pdf()).expect("parse fixture");
-    let text = doc.extract_text(0).expect("extract text");
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join("");
-    assert!(flat.contains("N2O"), "rotated subscripted formula came apart: {text:?}");
+    let spans = doc.extract_spans(0).expect("extract spans");
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.text.split_whitespace().collect::<String>().contains("N2O")),
+        "subscript drop split the rotated run: {spans:?}"
+    );
 }

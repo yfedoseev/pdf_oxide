@@ -8860,9 +8860,11 @@ impl<'doc> TextExtractor<'doc> {
     ///
     /// ISO 32000-1:2008 §9.4.4 places the writing direction along the matrix's
     /// `(a, b)` row, so the displacement resolves into a component along it
-    /// (the advance) and one perpendicular (the line offset). For an unrotated
-    /// matrix this reduces termwise to the caller's raw `e`/`f` test, so it can
-    /// only ever be an additional conjunct.
+    /// (the advance) and one perpendicular (the line offset). For any `b = 0,
+    /// a > 0` matrix the along test equals the caller's raw `e` test and the
+    /// perpendicular test is implied by the raw `f` band (`hypot(c, d) >=
+    /// |d|`, equal only when unskewed), so ANDing it in cannot change upright
+    /// output.
     ///
     /// WMode 1 is exempt: vertical text advances along `(c, d)` instead, the
     /// branch [`GraphicsState::advance_text_matrix`] already makes, and reading
@@ -8889,7 +8891,8 @@ impl<'doc> TextExtractor<'doc> {
         let (dx, dy) = (e - start.e, f - start.f);
         let along = ux * dx + uy * dy;
         let perp = -uy * dx + ux * dy;
-        // Perpendicular scale; `|d|` for an unrotated matrix.
+        // Perpendicular scale; `hypot(c, d) >= |d|`, so an upright (`b == 0`)
+        // run keeps at least the raw `f` band.
         let line_scale = (start.c * start.c + start.d * start.d).sqrt();
         let tolerance = ((font_size * line_scale).abs() * 0.5).max(0.5);
         perp.abs() <= tolerance && along >= 0.0
@@ -9367,8 +9370,11 @@ mod tests {
 
     /// The writing-axis continuation test, quadrant by quadrant.
     ///
-    /// The upright cases must agree with the raw `e`/`f` test they are ANDed
-    /// with; that agreement is why unrotated output cannot move.
+    /// Upright cases must be no stricter than the raw `e`/`f` tests they are
+    /// ANDed with — that implication is why unrotated output cannot move.
+    /// Rotated along-axis cases pin the helper alone: in the composed
+    /// predicate the raw `f` band still gates them, so there the helper is
+    /// veto-only.
     #[test]
     fn test_advances_along_writing_axis_by_quadrant() {
         let m = |a, b, c, d| Matrix {
@@ -9389,21 +9395,27 @@ mod tests {
         assert!(at(upright, 14.0, 0.0), "upright advance must continue");
         assert!(!at(upright, 0.0, -14.0), "upright line break must not");
         assert!(!at(upright, -14.0, 0.0), "upright backwards must not");
+        // Perpendicular tolerance: 0.5 × font size (5pt here) admits a
+        // sub-glyph baseline offset; a full line step is vetoed.
+        assert!(at(upright, 14.0, 4.0), "upright sub-glyph offset must not be vetoed");
+        assert!(!at(upright, 14.0, 8.0), "upright line step must be vetoed");
 
         // Advances along +y; lines separate along +x.
         let cw = m(0.0, 1.0, -1.0, 0.0);
-        assert!(at(cw, 0.0, 14.0), "90° along-axis advance is a continuation");
+        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must not be vetoed");
         assert!(!at(cw, 14.0, 0.0), "90° line break must not continue");
+        assert!(at(cw, -4.0, 14.0), "90° sub-glyph offset must not be vetoed");
+        assert!(!at(cw, -8.0, 14.0), "90° line step must be vetoed");
 
         // Advances along -y; the sign a single-rotation fixture cannot catch.
         let ccw = m(0.0, -1.0, 1.0, 0.0);
-        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance is a continuation");
+        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must not be vetoed");
         assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not continue");
         assert!(!at(ccw, 14.0, 0.0), "270° line break must not continue");
 
         // 180°: advances along -x.
         let flip = m(-1.0, 0.0, 0.0, -1.0);
-        assert!(at(flip, -14.0, 0.0), "180° along-axis advance is a continuation");
+        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must not be vetoed");
         assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not continue");
 
         // No writing direction: falls back to +x, as before.
