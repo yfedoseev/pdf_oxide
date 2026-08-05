@@ -1,8 +1,8 @@
 //! Path rasterizer - renders PDF paths using tiny-skia.
 
 use super::{
-    create_fill_paint, create_stroke_paint, device_bounds_rasterizable, paint_with_nonsep_blend,
-    pdf_blend_mode_is_nonseparable,
+    create_fill_paint, create_stroke_paint, guarded_fill_path, guarded_stroke_path,
+    paint_with_nonsep_blend, pdf_blend_mode_is_nonseparable,
 };
 use crate::content::GraphicsState;
 use tiny_skia::{FillRule, LineCap, LineJoin, Path, Pixmap, Stroke, Transform};
@@ -28,12 +28,8 @@ impl PathRasterizer {
         gs: &GraphicsState,
         fill_rule: FillRule,
     ) {
-        if !device_bounds_rasterizable(path, transform) {
-            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
-            return;
-        }
         let paint = create_fill_paint(gs, &gs.blend_mode);
-        pixmap.fill_path(path, &paint, fill_rule, transform, None);
+        guarded_fill_path(pixmap, path, &paint, fill_rule, transform, None);
     }
 
     /// Stroke a path with the current stroke color and line style.
@@ -45,10 +41,6 @@ impl PathRasterizer {
         transform: Transform,
         gs: &GraphicsState,
     ) {
-        if !device_bounds_rasterizable(path, transform) {
-            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
-            return;
-        }
         let paint = create_stroke_paint(gs, &gs.blend_mode);
 
         let dash = if !gs.dash_pattern.0.is_empty() {
@@ -65,7 +57,7 @@ impl PathRasterizer {
             dash,
         };
 
-        pixmap.stroke_path(path, &paint, &stroke, transform, None);
+        guarded_stroke_path(pixmap, path, &paint, &stroke, transform, None);
     }
 
     /// Fill a path with optional clip mask.
@@ -78,10 +70,6 @@ impl PathRasterizer {
         fill_rule: FillRule,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        if !device_bounds_rasterizable(path, transform) {
-            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
-            return;
-        }
         // NOTE: do NOT compute `path.clone().transform(transform)` here just for
         // logging. Vector figures (scatter / contour plots embedded as Form
         // XObjects) trigger this path tens of thousands of times per page, and
@@ -107,13 +95,13 @@ impl PathRasterizer {
         if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
             let paint = create_fill_paint(gs, "Normal");
             paint_with_nonsep_blend(pixmap, mode, |scratch| {
-                scratch.fill_path(path, &paint, fill_rule, transform, clip_mask);
+                guarded_fill_path(scratch, path, &paint, fill_rule, transform, clip_mask);
             });
             return;
         }
 
         let paint = create_fill_paint(gs, &gs.blend_mode);
-        pixmap.fill_path(path, &paint, fill_rule, transform, clip_mask);
+        guarded_fill_path(pixmap, path, &paint, fill_rule, transform, clip_mask);
     }
 
     /// Stroke a path with optional clip mask.
@@ -125,10 +113,6 @@ impl PathRasterizer {
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        if !device_bounds_rasterizable(path, transform) {
-            log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
-            return;
-        }
         // See fill_path_clipped: skip the expensive transformed-bounds compute
         // unless debug logging is enabled.
         if log::log_enabled!(log::Level::Debug) {
@@ -162,13 +146,13 @@ impl PathRasterizer {
         if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
             let paint = create_stroke_paint(gs, "Normal");
             paint_with_nonsep_blend(pixmap, mode, |scratch| {
-                scratch.stroke_path(path, &paint, &stroke, transform, clip_mask);
+                guarded_stroke_path(scratch, path, &paint, &stroke, transform, clip_mask);
             });
             return;
         }
 
         let paint = create_stroke_paint(gs, &gs.blend_mode);
-        pixmap.stroke_path(path, &paint, &stroke, transform, clip_mask);
+        guarded_stroke_path(pixmap, path, &paint, &stroke, transform, clip_mask);
     }
 
     /// Convert PDF line cap style to tiny-skia.

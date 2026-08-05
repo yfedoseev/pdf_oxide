@@ -48,6 +48,7 @@ use tiny_skia::{FillRule, Mask, Pixmap, Transform};
 
 use crate::content::graphics_state::Matrix;
 use crate::error::Result;
+use crate::rendering::{guarded_fill_path, guarded_stroke_path};
 
 use super::backend::PaintBackend;
 use super::ink::{InkAction, InkRouter};
@@ -225,7 +226,7 @@ fn fill_plate(
     paint.set_color(color);
     paint.anti_alias = true;
     paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-    pixmap.fill_path(path, &paint, fill_rule, transform, clip);
+    guarded_fill_path(pixmap, path, &paint, fill_rule, transform, clip);
 }
 
 /// Stroke a path into a single plate with the given tint value.
@@ -246,7 +247,7 @@ fn stroke_plate(
     let mut paint = tiny_skia::Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
-    pixmap.stroke_path(path, &paint, stroke, transform, clip);
+    guarded_stroke_path(pixmap, path, &paint, stroke, transform, clip);
 }
 
 /// Compose a base device transform with a PDF CTM. Matches the

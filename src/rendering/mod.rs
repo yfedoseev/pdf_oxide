@@ -123,6 +123,29 @@ pub(crate) fn device_bounds_rasterizable(
     path: &tiny_skia::Path,
     transform: tiny_skia::Transform,
 ) -> bool {
+    inflated_bounds_rasterizable(path, 0.0, transform)
+}
+
+/// Stroke variant of [`device_bounds_rasterizable`]. tiny_skia strokes in
+/// path space before applying `transform`, expanding the outline by up to
+/// `width/2 · miter_limit` at miter joins (square caps stay within one
+/// width), so the bounds are inflated by `width · max(miter_limit, 1)`
+/// before the corner check — a content-stream `w` beyond f32 pixel
+/// precision fails it even when the path itself is tiny.
+fn stroked_bounds_rasterizable(
+    path: &tiny_skia::Path,
+    stroke: &tiny_skia::Stroke,
+    transform: tiny_skia::Transform,
+) -> bool {
+    let inflate = f64::from(stroke.width.abs()) * f64::from(stroke.miter_limit.max(1.0));
+    inflated_bounds_rasterizable(path, inflate, transform)
+}
+
+fn inflated_bounds_rasterizable(
+    path: &tiny_skia::Path,
+    inflate: f64,
+    transform: tiny_skia::Transform,
+) -> bool {
     let b = path.bounds();
     let (sx, kx, ky, sy, tx, ty) = (
         f64::from(transform.sx),
@@ -132,12 +155,9 @@ pub(crate) fn device_bounds_rasterizable(
         f64::from(transform.tx),
         f64::from(transform.ty),
     );
-    let corners = [
-        (f64::from(b.left()), f64::from(b.top())),
-        (f64::from(b.right()), f64::from(b.top())),
-        (f64::from(b.left()), f64::from(b.bottom())),
-        (f64::from(b.right()), f64::from(b.bottom())),
-    ];
+    let (left, top) = (f64::from(b.left()) - inflate, f64::from(b.top()) - inflate);
+    let (right, bottom) = (f64::from(b.right()) + inflate, f64::from(b.bottom()) + inflate);
+    let corners = [(left, top), (right, top), (left, bottom), (right, bottom)];
     corners.iter().all(|&(x, y)| {
         let dx = sx * x + kx * y + tx;
         let dy = ky * x + sy * y + ty;
@@ -146,6 +166,59 @@ pub(crate) fn device_bounds_rasterizable(
             && dx.abs() <= MAX_DEVICE_COORD
             && dy.abs() <= MAX_DEVICE_COORD
     })
+}
+
+/// Choke point for handing a fill to tiny_skia: skips the draw when its
+/// device-space bounds are beyond f32 pixel precision. All content-derived
+/// fills must route through here (or the mask/stroke siblings) rather than
+/// calling tiny_skia directly.
+pub(crate) fn guarded_fill_path(
+    pixmap: &mut tiny_skia::Pixmap,
+    path: &tiny_skia::Path,
+    paint: &Paint<'_>,
+    fill_rule: tiny_skia::FillRule,
+    transform: tiny_skia::Transform,
+    clip_mask: Option<&tiny_skia::Mask>,
+) {
+    if !device_bounds_rasterizable(path, transform) {
+        log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+        return;
+    }
+    pixmap.fill_path(path, paint, fill_rule, transform, clip_mask);
+}
+
+/// Stroke sibling of [`guarded_fill_path`]; the bounds check includes the
+/// stroke expansion, so a beyond-precision line width is skipped too.
+pub(crate) fn guarded_stroke_path(
+    pixmap: &mut tiny_skia::Pixmap,
+    path: &tiny_skia::Path,
+    paint: &Paint<'_>,
+    stroke: &tiny_skia::Stroke,
+    transform: tiny_skia::Transform,
+    clip_mask: Option<&tiny_skia::Mask>,
+) {
+    if !stroked_bounds_rasterizable(path, stroke, transform) {
+        log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+        return;
+    }
+    pixmap.stroke_path(path, paint, stroke, transform, clip_mask);
+}
+
+/// Mask sibling of [`guarded_fill_path`]. A skipped path leaves the mask
+/// untouched, which for coverage masks means zero coverage — consistent
+/// with the paint itself being skipped.
+pub(crate) fn guarded_mask_fill_path(
+    mask: &mut tiny_skia::Mask,
+    path: &tiny_skia::Path,
+    fill_rule: tiny_skia::FillRule,
+    anti_alias: bool,
+    transform: tiny_skia::Transform,
+) {
+    if !device_bounds_rasterizable(path, transform) {
+        log::debug!("skipping draw beyond f32 device precision: {:?}", path.bounds());
+        return;
+    }
+    mask.fill_path(path, fill_rule, anti_alias, transform);
 }
 
 /// Returns `Some(mode)` when the PDF blend mode name is one of the four

@@ -29,6 +29,9 @@ use crate::rendering::sidecar::{
     self as sidecar_mod, page_declares_transparency_or_overprint, CmykSidecar,
 };
 use crate::rendering::text_rasterizer::TextRasterizer;
+use crate::rendering::{
+    device_bounds_rasterizable, guarded_fill_path, guarded_mask_fill_path, guarded_stroke_path,
+};
 
 use crate::fonts::FontInfo;
 use std::collections::{HashMap, HashSet};
@@ -5161,7 +5164,7 @@ impl PageRenderer {
         let flood = |pixmap: &mut Pixmap| {
             let mut p = base_paint.clone();
             p.set_color(avg_color);
-            pixmap.fill_path(path, &p, fill_rule, path_transform, clip);
+            guarded_fill_path(pixmap, path, &p, fill_rule, path_transform, clip);
         };
         if !axis_aligned
             || x_step.abs() <= f32::EPSILON
@@ -5190,7 +5193,7 @@ impl PageRenderer {
                 return Ok(true);
             },
         };
-        mask.fill_path(path, fill_rule, true, path_transform);
+        guarded_mask_fill_path(&mut mask, path, fill_rule, true, path_transform);
         if let Some(c) = clip {
             for (mv, cv) in mask.data_mut().iter_mut().zip(c.data().iter()) {
                 *mv = (*mv).min(*cv);
@@ -5571,7 +5574,7 @@ impl PageRenderer {
         let sidecar = self.cmyk_sidecar.as_ref()?;
         let (w, h) = sidecar.dims();
         let mut mask = tiny_skia::Mask::new(w, h)?;
-        mask.fill_path(path, fill_rule, true, transform);
+        guarded_mask_fill_path(&mut mask, path, fill_rule, true, transform);
         let mut buf = mask.data().to_vec();
         // Intersect with the active clip mask. tiny_skia's clip mask
         // is per-pixel coverage; pixel-wise min gives the
@@ -5623,7 +5626,7 @@ impl PageRenderer {
         let mut paint = tiny_skia::Paint::default();
         paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         paint.anti_alias = true;
-        scratch.stroke_path(path, &paint, &stroke, transform, clip);
+        guarded_stroke_path(&mut scratch, path, &paint, &stroke, transform, clip);
         let buf: Vec<u8> = scratch.data().chunks_exact(4).map(|px| px[3]).collect();
         Some(buf)
     }
@@ -9841,6 +9844,14 @@ fn apply_pending_clip(
         let gs = gs_stack.current();
         let transform = combine_transforms(base_transform, &gs.ctm);
 
+        // A clip path beyond f32 device precision cannot be rasterized.
+        // Drop the clip rather than materialize an empty mask — an empty
+        // mask would erase every subsequent draw on the page.
+        if !device_bounds_rasterizable(&path, transform) {
+            log::debug!("skipping clip beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
+
         let Some(slot) = clip_stack.last_mut() else {
             return;
         };
@@ -9935,7 +9946,13 @@ fn build_axial_extend_clip(
     let path = pb.finish()?;
 
     let mut mask = tiny_skia::Mask::new(pixmap.width(), pixmap.height())?;
-    mask.fill_path(&path, tiny_skia::FillRule::Winding, true, Transform::identity());
+    guarded_mask_fill_path(
+        &mut mask,
+        &path,
+        tiny_skia::FillRule::Winding,
+        true,
+        Transform::identity(),
+    );
     Some(intersect_with_inherited(mask, inherited))
 }
 
@@ -9992,7 +10009,13 @@ fn build_radial_extend_clip(
         }
         pb.finish()?
     };
-    mask.fill_path(&outer_path, tiny_skia::FillRule::Winding, true, Transform::identity());
+    guarded_mask_fill_path(
+        &mut mask,
+        &outer_path,
+        tiny_skia::FillRule::Winding,
+        true,
+        Transform::identity(),
+    );
 
     if !extend_start && r0 > 1.0e-3 {
         // Subtract the inner disk by painting black into the mask.
@@ -10003,7 +10026,8 @@ fn build_radial_extend_clip(
         let mut pb = PathBuilder::new();
         pb.push_circle(c0.x, c0.y, r0);
         if let Some(inner_path) = pb.finish() {
-            inner_mask.fill_path(
+            guarded_mask_fill_path(
+                &mut inner_mask,
                 &inner_path,
                 tiny_skia::FillRule::Winding,
                 true,
