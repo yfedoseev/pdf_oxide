@@ -1117,6 +1117,13 @@ pub fn extract_image_from_xobject(
             // through extraction is deferred (v0.3.72) — no current consumer
             // benefits, as both the PNG path and the rasteriser are 8-bit.
             let reduced: Vec<u8> = if bits_per_component == 16 {
+                // Rescaling 0..65535 to 0..255 leaves the raw sample space
+                // exactly as the sub-byte unpack does, and `effective_bpc`
+                // below reports 8 — so nothing downstream can infer it from
+                // the depth. A colour-key /Mask states its bounds in the
+                // file's 0..65535 space and must not be range-tested against
+                // these bytes.
+                samples_are_raw = false;
                 decoded_data
                     .chunks_exact(2)
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))

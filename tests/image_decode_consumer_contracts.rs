@@ -151,6 +151,31 @@ fn sub_byte_with_decode_reports_it_folded_in() {
     );
 }
 
+/// 16-bit samples are collapsed to their high byte and `bits_per_component()`
+/// then reports 8, so nothing downstream can infer the rescale from the depth.
+/// A colour-key `/Mask` states its bounds in the file's `0..65535` space; if
+/// the flag stays set it range-tests them against these bytes and a
+/// `/Mask [0 30000]` turns the whole image transparent.
+#[test]
+fn sixteen_bpc_reduced_samples_are_not_raw() {
+    let data: Vec<u8> = (0..128u8).collect();
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 16 /Length 128 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let img = &imgs[0];
+    assert_eq!(img.bits_per_component(), 8, "16-bit samples are stored reduced");
+    assert!(
+        !img.samples_are_raw(),
+        "0..65535 was rescaled to 0..255, so the samples are no longer in the \
+         space a colour-key /Mask is expressed in"
+    );
+    assert!(!img.decode_folded_in(), "no /Decode was present");
+}
+
 /// The 8-bit case is an identity scale, so it must stay raw — otherwise every
 /// ordinary image loses colour-key masking.
 #[test]
