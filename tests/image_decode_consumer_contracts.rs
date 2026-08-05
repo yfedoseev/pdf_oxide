@@ -177,7 +177,8 @@ fn sixteen_bpc_reduced_samples_are_not_raw() {
 }
 
 /// The 8-bit case is an identity scale, so it must stay raw — otherwise every
-/// ordinary image loses colour-key masking.
+/// ordinary image loses colour-key masking. This pins the *branch*: 8 bpc with
+/// no `/Decode` must skip the rewrite path entirely, which is what keeps it raw.
 #[test]
 fn eight_bpc_samples_stay_raw_without_decode() {
     let data: Vec<u8> = (0..64u8).collect();
