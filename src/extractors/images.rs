@@ -55,14 +55,25 @@ pub struct PdfImage {
     /// Whether `data` still holds the image's raw samples, i.e. the values
     /// the image dictionary's own entries are expressed in.
     ///
-    /// Consumers that compare stored samples against dictionary values —
-    /// colour-key `/Mask` ranges (§8.9.6.4), separation-plate routing —
-    /// are only meaningful in that space. It is left behind by mapping a
-    /// non-default `/Decode` into the buffer AND by expanding an Indexed
-    /// image to palette RGB; a CCITT buffer stays raw, with its `/Decode`
-    /// polarity carried separately in `ccitt_params`.
+    /// Consumers that range-test stored samples against dictionary values —
+    /// colour-key `/Mask` (§8.9.6.4) — are only meaningful in that space.
+    /// Every rescale leaves it: mapping a non-default `/Decode` into the
+    /// buffer, expanding an Indexed image to palette RGB, unpacking a
+    /// sub-byte sample to the 8-bit range, and collapsing a 16-bit sample to
+    /// its high byte. A CCITT buffer stays raw, with its `/Decode` polarity
+    /// carried separately in `ccitt_params`.
     #[serde(skip)]
     samples_are_raw: bool,
+    /// Whether a non-default `/Decode` array is already mapped into `data`.
+    ///
+    /// Strictly narrower than `!samples_are_raw`, and not interchangeable
+    /// with it: unpacking a sub-byte sample, expanding an Indexed image and
+    /// reducing 16-bit samples all leave the raw space *without* folding in
+    /// `/Decode`. A consumer that applies `/Decode` itself — separation-plate
+    /// routing — must read this one, or it drops a map the image is still
+    /// owed (e.g. a `/Decode [1 0]` inversion) on every sub-byte image.
+    #[serde(skip)]
+    decode_folded_in: bool,
 }
 
 impl PdfImage {
@@ -87,6 +98,7 @@ impl PdfImage {
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
             samples_are_raw: true,
+            decode_folded_in: false,
         }
     }
 
@@ -100,6 +112,19 @@ impl PdfImage {
     /// sample space.
     pub(crate) fn set_samples_are_raw(&mut self, raw: bool) {
         self.samples_are_raw = raw;
+    }
+
+    /// Whether a non-default `/Decode` is already mapped into the stored
+    /// samples, so a consumer that applies `/Decode` itself must not do so
+    /// again. Do not substitute `!samples_are_raw()` — see the field docs.
+    pub fn decode_folded_in(&self) -> bool {
+        self.decode_folded_in
+    }
+
+    /// Record that a non-default `/Decode` has been mapped into the stored
+    /// samples.
+    pub(crate) fn set_decode_folded_in(&mut self, folded: bool) {
+        self.decode_folded_in = folded;
     }
 
     /// Create a new PDF image with spatial metadata (v0.3.14).
@@ -126,6 +151,7 @@ impl PdfImage {
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
             samples_are_raw: true,
+            decode_folded_in: false,
         }
     }
 
@@ -172,6 +198,7 @@ impl PdfImage {
             icc_profile: None,
             rendering_intent: crate::color::RenderingIntent::default(),
             samples_are_raw: true,
+            decode_folded_in: false,
         }
     }
 
@@ -1024,9 +1051,14 @@ pub fn extract_image_from_xobject(
     // the samples as one byte per component.
     let mut stored_bpc = bits_per_component;
     // Cleared when a transform below moves the stored samples out of the raw
-    // sample space, so consumers that compare them against dictionary values
-    // (colour-key /Mask, plate routing) can tell.
+    // sample space, so consumers that range-test them against dictionary
+    // values (colour-key /Mask) can tell.
     let mut samples_are_raw = true;
+    // Set only when a non-default /Decode is actually folded into the stored
+    // samples. Tracked apart from `samples_are_raw` because most transforms
+    // below leave the raw space without applying /Decode, and a consumer that
+    // applies it itself (plate routing) must still do so for those.
+    let mut decode_folded_in = false;
     let data = if is_jbig2 {
         decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
     } else if is_jpx {
@@ -1140,6 +1172,9 @@ pub fn extract_image_from_xobject(
                     // read this flag, and they compare against bounds stated in
                     // the original 0..2^bpc−1 space.
                     samples_are_raw = ranges.is_none() && bpc_after_reduce == 8;
+                    // Plate routing applies /Decode itself, so it needs the
+                    // narrower fact: only `ranges` actually folds one in.
+                    decode_folded_in = ranges.is_some();
                     samples
                 },
                 None => reduced,
@@ -1164,6 +1199,7 @@ pub fn extract_image_from_xobject(
     };
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
     image.set_samples_are_raw(samples_are_raw);
+    image.set_decode_folded_in(decode_folded_in);
 
     // Attach the ICC profile if we found one — prefer the direct ICCBased
     // profile, then fall back to an Indexed base's profile so the CMM has
