@@ -869,7 +869,6 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
                         }
                     }
                     num_count = 0;
-                    last_name = None;
                 },
                 b"Tc" => {
                     if num_count >= 1 {
