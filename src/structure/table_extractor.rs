@@ -785,7 +785,7 @@ fn extract_cell(
                     // Suppress space insertion when one side is CJK and the
                     // other is CJK or a fullwidth/math operator (e.g. ≤, ＜, μ).
                     // This mirrors the CJK-pair suppression in document.rs and
-                    // converters/mod.rs (Issue #485).
+                    // converters/mod.rs.
                     #[inline(always)]
                     fn is_cjk(c: char) -> bool {
                         matches!(c,
@@ -971,8 +971,8 @@ mod tests {
     }
 
     /// `sort_by` panics on a comparator that is not a total order, and NaN
-    /// compares equal to everything. This is the failure #807 fixed twice; the
-    /// cell sorts must go through `utils::safe_float_cmp`.
+    /// compares equal to everything. This class of panic has been fixed twice
+    /// already; the cell sorts must go through `utils::safe_float_cmp`.
     #[test]
     fn cell_blocks_with_non_finite_bbox_do_not_panic() {
         // Enough blocks that `sort_by` takes its merge path: Rust's total-order
