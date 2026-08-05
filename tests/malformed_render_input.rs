@@ -99,7 +99,10 @@ fn sampled_function_size_larger_than_stream_renders() {
 }
 
 fn separation_imagemask_pdf(w: &str, h: &str) -> Vec<u8> {
-    let stencil: Vec<u8> = vec![0x00; 8];
+    separation_imagemask_pdf_with(w, h, "", &[0x00; 8])
+}
+
+fn separation_imagemask_pdf_with(w: &str, h: &str, extra_dict: &str, stencil: &[u8]) -> Vec<u8> {
     let objects = vec![
         obj("<< /Type /Catalog /Pages 2 0 R >>"),
         obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
@@ -109,14 +112,23 @@ fn separation_imagemask_pdf(w: &str, h: &str) -> Vec<u8> {
         stream_obj(
             &format!(
                 "/Type /XObject /Subtype /Image /Width {w} /Height {h} \
-                 /ImageMask true /BitsPerComponent 1"
+                 /ImageMask true /BitsPerComponent 1{extra_dict}"
             ),
-            &stencil,
+            stencil,
         ),
         obj("[/Separation /Pantone-185 /DeviceCMYK 7 0 R]"),
         obj("<< /FunctionType 2 /Domain [0 1] /N 1 /C0 [0 0 0 0] /C1 [0 0.85 0.45 0] >>"),
     ];
     build_pdf(&objects)
+}
+
+fn pantone_plate(pdf: Vec<u8>) -> pdf_oxide::rendering::SeparationPlate {
+    let doc = PdfDocument::from_bytes(pdf).expect("parse");
+    render_separations(&doc, 0, 72)
+        .expect("separations render")
+        .into_iter()
+        .find(|p| p.ink_name == "Pantone-185")
+        .expect("Pantone-185 plate emitted")
 }
 
 /// A separation `/ImageMask` with negative dimensions. Only the sign differs
@@ -160,6 +172,37 @@ fn separation_image_mask_larger_than_its_stream_renders() {
         plates.len(),
         control_plates.len(),
         "skipping the unbacked mask must not drop the separation plates"
+    );
+}
+
+/// A CCITT-compressed separation stencil. The decode chain passes
+/// `/CCITTFaxDecode` through raw, so the mask path receives the compressed
+/// bytes — fewer than the 8 the 8x8 geometry needs. The mask must be skipped,
+/// not expanded from zero-padded compressed bytes (padded 0-bits mean "paint",
+/// so padding fabricates ink the file never specified). Skipping loses the
+/// mask's real ink until this path grows a CCITT decode like the page
+/// renderer's stencil path has; this test pins the skip-not-fabricate half.
+#[test]
+fn ccitt_separation_image_mask_is_skipped_not_fabricated() {
+    // Control: an uncompressed all-paint stencil must put ink on the plate,
+    // proving the assertion below is reached through a painting mask path.
+    let control = pantone_plate(separation_imagemask_pdf("8", "8"));
+    assert!(
+        control.data.iter().any(|&v| v > 0),
+        "control stencil painted no ink, so the mask path is not reached"
+    );
+
+    // Payload bytes are never decoded (pass-through); only their length —
+    // shorter than the 8-byte 8x8 geometry, as compressed data is — matters.
+    let plate = pantone_plate(separation_imagemask_pdf_with(
+        "8",
+        "8",
+        " /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8 /Rows 8 >>",
+        &[0x25, 0x88, 0x40, 0x80],
+    ));
+    assert!(
+        plate.data.iter().all(|&v| v == 0),
+        "a stencil the decoded stream cannot back must be skipped, not painted from padding"
     );
 }
 

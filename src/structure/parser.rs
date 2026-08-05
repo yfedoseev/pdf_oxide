@@ -779,11 +779,11 @@ fn parse_marked_content_ref(
 ///
 /// Wrapping collides a malformed id with a real one: `2^32 + 5` becomes MCID 5
 /// and duplicates that entry in the page's reading order.
-fn checked_mcid(raw: i64) -> Option<u32> {
+pub(crate) fn checked_mcid(raw: i64) -> Option<u32> {
     match u32::try_from(raw) {
         Ok(mcid) => Some(mcid),
         Err(_) => {
-            log::warn!("Structure tree: marked-content id {raw} is out of range, skipping");
+            log::warn!("Marked-content id {raw} is out of range, skipping");
             None
         },
     }
