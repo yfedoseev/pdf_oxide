@@ -58,8 +58,10 @@ id = "RUSTSEC-2026-0192"
 # transitively two ways, neither of which we control:
 #   1. fontdb (system-fonts) -> ttf-parser — latest fontdb 0.23.0 still depends
 #      on it and ships no skrifa/fontations release;
-#   2. imageproc (ml) -> ab_glyph -> owned_ttf_parser -> ttf-parser — likewise
-#      no fontations-based release exists.
+#   2. imageproc (ocr) -> ab_glyph -> owned_ttf_parser -> ttf-parser — likewise
+#      no fontations-based release exists. Note this is the `ocr` feature, not
+#      `ml`: `ml` = ocr-tract + linfa + tokenizers and pulls no ttf-parser at
+#      all, so an `ml`-only build is already clear of the advisory.
 # Both are informational-only exposure: no CVE, no memory-safety or RCE
 # implication. Fully clearing the advisory now requires only that fontdb and
 # ab_glyph move off ttf-parser (or that we replace them) — the direct-usage
