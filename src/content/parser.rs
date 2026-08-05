@@ -5597,6 +5597,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_prescan_merged_region_injects_earliest_state() {
+        // Two BT blocks close enough that marked-content extension merges them
+        // into one region. The merge keeps one state for the whole span, and it
+        // must be the state at the EARLIEST text position — the state in effect
+        // where parsing actually starts. Keeping a later block's state would
+        // apply char spacing the first block never had.
+        //
+        // This holds because region starts are monotonic in BT position
+        // (nearest-preceding BDC is monotonic, and the pos-256 clamp only
+        // tightens as pos grows), so sorting by start never reorders. The test
+        // pins that invariant rather than leaving it to inspection.
+        let mut cs = Vec::new();
+        for i in 0..14000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024);
+
+        cs.extend_from_slice(b"3 Tc\n");
+        cs.extend_from_slice(b"/Span <</MCID 0>> BDC\n");
+        cs.extend_from_slice(b"BT (First) Tj ET\n");
+        cs.extend_from_slice(b"7 Tc\n");
+        cs.extend_from_slice(b"BT (Second) Tj ET\n");
+        cs.extend_from_slice(b"EMC\n");
+
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let first_tc = ops.iter().find_map(|op| match op {
+            Operator::Tc { char_space } => Some(*char_space),
+            _ => None,
+        });
+        assert_eq!(
+            first_tc,
+            Some(3.0),
+            "merged region must inject the earliest block's char spacing, got {first_tc:?}"
+        );
+    }
+
     /// Build a stream with two BT regions separated by >256KB of path filler,
     /// forcing the prescan's forward-scan path. `first_region` is the body of
     /// the first BT block (state setters + show ops).
