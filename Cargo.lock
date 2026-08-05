@@ -1464,7 +1464,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2062,7 +2062,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3174,7 +3174,6 @@ dependencies = [
  "tiny-skia",
  "tokenizers",
  "tract-onnx",
- "ttf-parser",
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-normalization",
@@ -3186,6 +3185,7 @@ dependencies = [
  "weezl 0.2.1",
  "x509-parser",
  "x509-tsp",
+ "xberg-ttf-parser",
 ]
 
 [[package]]
@@ -4174,7 +4174,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4732,7 +4732,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5446,7 +5446,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5685,6 +5685,12 @@ dependencies = [
  "libc",
  "rustix",
 ]
+
+[[package]]
+name = "xberg-ttf-parser"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0187fcfcd202849428d311f214bdd0429e7afe3ca199df207f30397b1d3b1994"
 
 [[package]]
 name = "y4m"

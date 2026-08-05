@@ -14,7 +14,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
 
-use ttf_parser::{Face, GlyphId};
+use xberg_ttf_parser::{Face, GlyphId};
 
 /// Error types for TrueType font parsing.
 #[derive(Debug, thiserror::Error)]
@@ -119,7 +119,7 @@ impl<'a> TrueTypeFont<'a> {
         self.face
             .names()
             .into_iter()
-            .find(|name| name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
+            .find(|name| name.name_id == xberg_ttf_parser::name_id::POST_SCRIPT_NAME)
             .and_then(|name| name.to_string())
     }
 
@@ -128,7 +128,7 @@ impl<'a> TrueTypeFont<'a> {
         self.face
             .names()
             .into_iter()
-            .find(|name| name.name_id == ttf_parser::name_id::FAMILY)
+            .find(|name| name.name_id == xberg_ttf_parser::name_id::FAMILY)
             .and_then(|name| name.to_string())
     }
 

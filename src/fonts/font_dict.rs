@@ -481,7 +481,7 @@ impl FontInfo {
                 if font_data.is_empty() {
                     return None;
                 }
-                let face = match ttf_parser::Face::parse(font_data, 0) {
+                let face = match xberg_ttf_parser::Face::parse(font_data, 0) {
                     Ok(f) => f,
                     Err(e) => {
                         log::debug!(
@@ -498,7 +498,7 @@ impl FontInfo {
                 let mut found_any = false;
                 for g in 0..n {
                     let name = face
-                        .glyph_name(ttf_parser::GlyphId(g))
+                        .glyph_name(xberg_ttf_parser::GlyphId(g))
                         .filter(|s| !s.is_empty() && *s != ".notdef")
                         .map(|s| s.to_string());
                     if name.is_some() {
@@ -10503,7 +10503,7 @@ mod tests {
 
         // ttf-parser should be able to parse the header (head + hhea + maxp)
         // without panicking, even if CFF data is minimal
-        let result = ttf_parser::Face::parse(&otf, 0);
+        let result = xberg_ttf_parser::Face::parse(&otf, 0);
         // May fail on CFF content but should not panic on table parsing
         // The fact that it doesn't panic is the test
         let _ = result;

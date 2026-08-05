@@ -144,9 +144,9 @@ impl TrueTypeCMap {
     /// time. Reuses `ttf-parser` (already a dependency). Empty when the font has
     /// no such subtable or fails to parse — decode then treats the byte as a GID.
     fn build_symbol_code_to_gid(data: &[u8]) -> HashMap<u32, u16> {
-        use ttf_parser::PlatformId;
+        use xberg_ttf_parser::PlatformId;
         let mut map = HashMap::new();
-        let Ok(face) = ttf_parser::Face::parse(data, 0) else {
+        let Ok(face) = xberg_ttf_parser::Face::parse(data, 0) else {
             return map;
         };
         let Some(cmap) = face.tables().cmap else {

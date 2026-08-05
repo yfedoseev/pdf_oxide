@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tiny_skia::{Paint, PathBuilder, Pixmap, Transform};
-use ttf_parser::OutlineBuilder;
+use xberg_ttf_parser::OutlineBuilder;
 
 /// Outline builder that converts ttf-parser paths to tiny-skia paths.
 struct SkiaOutlineBuilder<'a>(&'a mut PathBuilder);
@@ -51,7 +51,7 @@ impl<'a> OutlineBuilder for SkiaOutlineBuilder<'a> {
 /// - `has_unicode_cmap`: a Unicode/Windows cmap is present → Unicode shaping
 ///   is likely to produce non-.notdef glyphs; use `render_unicode_text`.
 ///
-/// This is a zero-copy `ttf_parser` table probe (no glyph parsing, no
+/// This is a zero-copy `xberg_ttf_parser` table probe (no glyph parsing, no
 /// shaping), cheap enough to run per call. It was previously memoised in a
 /// process-wide `HashMap` keyed on `Arc::as_ptr(data)`, but that key is
 /// unsound under concurrency: when an `Arc<Vec<u8>>` font buffer is dropped
@@ -62,12 +62,12 @@ impl<'a> OutlineBuilder for SkiaOutlineBuilder<'a> {
 /// Computing it locally removes the shared mutable state entirely.
 fn classify_embedded_font(data: &Arc<Vec<u8>>) -> (bool, bool) {
     (|| {
-        let face = ttf_parser::Face::parse(data, 0).ok()?;
+        let face = xberg_ttf_parser::Face::parse(data, 0).ok()?;
         let cmap = face.tables().cmap?;
         let mut saw_byte_indexed = false;
         let mut saw_unicode = false;
         for sub in cmap.subtables {
-            use ttf_parser::PlatformId;
+            use xberg_ttf_parser::PlatformId;
             match sub.platform_id {
                 PlatformId::Unicode => saw_unicode = true,
                 PlatformId::Windows if sub.encoding_id == 1 || sub.encoding_id == 10 => {
@@ -86,10 +86,10 @@ fn classify_embedded_font(data: &Arc<Vec<u8>>) -> (bool, bool) {
 /// own cmap subtables. Prefers a byte-indexed (Macintosh Roman) subtable
 /// when present; falls back to ttf-parser's default Unicode resolution
 /// for ASCII-range bytes if no byte-indexed subtable exists.
-fn cmap_byte_to_gid(face: &ttf_parser::Face, byte: u8) -> Option<u16> {
+fn cmap_byte_to_gid(face: &xberg_ttf_parser::Face, byte: u8) -> Option<u16> {
     if let Some(cmap) = face.tables().cmap {
         for sub in cmap.subtables {
-            use ttf_parser::PlatformId;
+            use xberg_ttf_parser::PlatformId;
             if matches!(sub.platform_id, PlatformId::Macintosh) && sub.encoding_id == 0 {
                 if let Some(gid) = sub.glyph_index(byte as u32) {
                     return Some(gid.0);
@@ -180,7 +180,7 @@ fn cached_font_bytes(id: fontdb::ID, db: &fontdb::Database) -> Option<(Arc<Vec<u
 
 /// Parsed font faces cached by fontdb ID.
 ///
-/// harfrust's `FontRef` and `ttf_parser::Face` both borrow the backing bytes.
+/// harfrust's `FontRef` and `xberg_ttf_parser::Face` both borrow the backing bytes.
 /// We use a self-referential pattern (backed Arc keeps bytes alive) with
 /// unsafe 'static transmute so we can store them in a process-wide cache
 /// and reuse them across hundreds of render_text calls for the same font.
@@ -197,11 +197,11 @@ struct CachedFace {
     _data: Arc<Vec<u8>>,
     font: harfrust::FontRef<'static>,
     shaper_data: harfrust::ShaperData,
-    ttf_face: ttf_parser::Face<'static>,
+    ttf_face: xberg_ttf_parser::Face<'static>,
     pub units_per_em: f32,
 }
 
-// SAFETY: harfrust::FontRef and ttf_parser::Face only borrow immutable bytes;
+// SAFETY: harfrust::FontRef and xberg_ttf_parser::Face only borrow immutable bytes;
 // harfrust::ShaperData owns the cached tables it derives from the font.
 unsafe impl Send for CachedFace {}
 unsafe impl Sync for CachedFace {}
@@ -209,13 +209,14 @@ unsafe impl Sync for CachedFace {}
 impl CachedFace {
     fn new(data: Arc<Vec<u8>>, index: u32) -> Option<Self> {
         let font: harfrust::FontRef<'_> = harfrust::FontRef::from_index(&data, index).ok()?;
-        let ttf_face: ttf_parser::Face<'_> = ttf_parser::Face::parse(&data, index).ok()?;
+        let ttf_face: xberg_ttf_parser::Face<'_> =
+            xberg_ttf_parser::Face::parse(&data, index).ok()?;
         let units_per_em = ttf_face.units_per_em() as f32;
         // SAFETY: both the font and ttf_face borrow the data slice. We store an
         // Arc to that data in `_data`, ensuring the bytes stay alive for this
         // struct's lifetime.
         let font: harfrust::FontRef<'static> = unsafe { std::mem::transmute(font) };
-        let ttf_face: ttf_parser::Face<'static> = unsafe { std::mem::transmute(ttf_face) };
+        let ttf_face: xberg_ttf_parser::Face<'static> = unsafe { std::mem::transmute(ttf_face) };
         // ShaperData owns its derived tables (no borrow of `font`), so it is
         // safe to build from the now-'static font and store it alongside.
         let shaper_data = harfrust::ShaperData::new(&font);
@@ -466,7 +467,7 @@ impl TextRasterizer {
                     // `Tj` / `TJ` call, not just the ones whose decoded Unicode
                     // happens to miss the cmap.
                     // Classify the embedded font's cmap tables. Computed
-                    // locally on every call — a cheap zero-copy `ttf_parser`
+                    // locally on every call — a cheap zero-copy `xberg_ttf_parser`
                     // probe; the process-wide memoisation was removed as
                     // unsound under concurrency (issue #505).
                     let (is_byte_indexed, has_unicode_cmap) = classify_embedded_font(embedded);
@@ -1022,12 +1023,12 @@ impl TextRasterizer {
         // Storage for locally-created faces when there is no cache entry
         // (embedded fonts, first-ever render of a system font).
         let _local_font: Option<harfrust::FontRef<'_>>;
-        let _local_ttf: Option<ttf_parser::Face<'_>>;
+        let _local_ttf: Option<xberg_ttf_parser::Face<'_>>;
         let _local_shaper_data: Option<harfrust::ShaperData>;
 
         let font_ref: &harfrust::FontRef<'_>;
         let shaper_data_ref: &harfrust::ShaperData;
-        let ttf_face_ref: &ttf_parser::Face<'_>;
+        let ttf_face_ref: &xberg_ttf_parser::Face<'_>;
         let units_per_em: f32;
 
         if let Some(ref c) = cached_arc {
@@ -1073,7 +1074,7 @@ impl TextRasterizer {
                 );
             }
             _local_font = font_opt;
-            _local_ttf = ttf_parser::Face::parse(&font_data, index).ok();
+            _local_ttf = xberg_ttf_parser::Face::parse(&font_data, index).ok();
             if _local_ttf.is_none() {
                 return Err(Error::InvalidPdf(format!("Failed to parse font: {}", pdf_font_name)));
             }
@@ -1284,7 +1285,7 @@ impl TextRasterizer {
             let mut pb = PathBuilder::new();
             let mut builder = SkiaOutlineBuilder(&mut pb);
             let mut has_outline = ttf_face_ref
-                .outline_glyph(ttf_parser::GlyphId(glyph_id as u16), &mut builder)
+                .outline_glyph(xberg_ttf_parser::GlyphId(glyph_id as u16), &mut builder)
                 .is_some();
 
             if has_outline && glyph_id != 0 {
@@ -1446,7 +1447,7 @@ impl TextRasterizer {
         let font_size = gs.font_size;
         let h_scale = gs.horizontal_scaling / 100.0;
 
-        let ttf_face = ttf_parser::Face::parse(font_data, index)
+        let ttf_face = xberg_ttf_parser::Face::parse(font_data, index)
             .map_err(|e| Error::InvalidPdf(format!("Failed to parse embedded font: {}", e)))?;
         let units_per_em = ttf_face.units_per_em() as f32;
         let scale = font_size / units_per_em;
@@ -1535,7 +1536,7 @@ impl TextRasterizer {
                     let mut pb = PathBuilder::new();
                     let mut builder = SkiaOutlineBuilder(&mut pb);
                     if ttf_face
-                        .outline_glyph(ttf_parser::GlyphId(gid), &mut builder)
+                        .outline_glyph(xberg_ttf_parser::GlyphId(gid), &mut builder)
                         .is_some()
                     {
                         if let Some(path) = pb.finish() {
@@ -1712,7 +1713,7 @@ impl TextRasterizer {
                 let mut pb = PathBuilder::new();
                 let mut builder = SkiaOutlineBuilder(&mut pb);
                 if ttf_face
-                    .outline_glyph(ttf_parser::GlyphId(gid), &mut builder)
+                    .outline_glyph(xberg_ttf_parser::GlyphId(gid), &mut builder)
                     .is_some()
                 {
                     if let Some(path) = pb.finish() {
@@ -2097,7 +2098,7 @@ mod tests {
         // the Adobe-Japan1 / Adobe-GB1 / Adobe-Korea1 collections.
         let covered = db
             .with_face_data(id, |data, index| {
-                let face = ttf_parser::Face::parse(data, index).expect("parse bundled face");
+                let face = xberg_ttf_parser::Face::parse(data, index).expect("parse bundled face");
                 ['東', '中', '가']
                     .iter()
                     .all(|&c| face.glyph_index(c).is_some())
