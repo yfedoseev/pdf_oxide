@@ -84,6 +84,48 @@ fn untouched_samples_are_not_flagged() {
     );
 }
 
+/// Unpacking a sub-byte sample rescales it into the 8-bit range (bpc 1/2/4
+/// scale by ×255/×85/×17), which leaves the raw sample space just as folding in
+/// a `/Decode` does. With no `/Decode` at all the flag must still be clear, or a
+/// colour-key `/Mask` consumer range-tests rescaled bytes against bounds stated
+/// in the file's `0..2^bpc−1` space.
+#[test]
+fn rescaled_sub_byte_samples_are_not_raw() {
+    // 4 bpc, width 8: four bytes per row, samples 0 and 15 alternating.
+    let data: Vec<u8> = vec![0x0F; 4 * 8];
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 4 /Length 32 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    let imgs = doc.extract_images(0).expect("extract_images");
+    let img = &imgs[0];
+    assert_eq!(img.bits_per_component(), 8, "unpacked samples are stored 8-bit");
+    assert!(
+        !img.samples_are_raw(),
+        "sub-byte samples were rescaled to 0..255, so they are no longer in the \
+         space a colour-key /Mask is expressed in"
+    );
+}
+
+/// The 8-bit case is an identity scale, so it must stay raw — otherwise every
+/// ordinary image loses colour-key masking.
+#[test]
+fn eight_bpc_samples_stay_raw_without_decode() {
+    let data: Vec<u8> = (0..64u8).collect();
+    let doc = PdfDocument::from_bytes(build_pdf(
+        "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+         /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>",
+        &data,
+    ))
+    .expect("open pdf");
+    assert!(
+        doc.extract_images(0).expect("extract_images")[0].samples_are_raw(),
+        "8-bpc samples with no /Decode are untouched and must stay raw"
+    );
+}
+
 /// 4-bpc unpacking: two samples per byte, high nibble first. Width 9 forces a
 /// padded row (36 bits in 5 bytes), so an unpacker that ignored row padding
 /// would shear the image diagonally from row 1 onward.
