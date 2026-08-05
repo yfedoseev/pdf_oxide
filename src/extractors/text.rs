@@ -3758,16 +3758,7 @@ impl<'doc> TextExtractor<'doc> {
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
         extract_log_debug!("Parsing content stream for text extraction");
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))?;
-        } else {
-            // Ink filtering requires color operators (cs, rg, g, k) which the
-            // text-only parser skips. Fall back to the full parser.
-            let operators = parse_content_stream(content_stream)?;
-            for op in operators {
-                self.execute_operator(op)?;
-            }
-        }
+        self.run_content_stream(content_stream)?;
 
         // Flush any remaining Tj buffer at end of content stream
         self.flush_tj_span_buffer()?;
@@ -3848,6 +3839,33 @@ impl<'doc> TextExtractor<'doc> {
         Ok(std::mem::take(&mut self.spans))
     }
 
+    /// Feed a content stream's operators to `execute_operator`.
+    ///
+    /// The single parser dispatch for every extraction mode (chars, spans,
+    /// Form XObject recursion). The modes must differ only in how
+    /// `execute_operator` handles the show-text operators, never in which
+    /// operators reach it: char and span mode once used different parsers
+    /// (`parse_content_stream_text_only` vs `parse_and_execute_text_only`),
+    /// which reconstruct the graphics state around a text region by different
+    /// routes, so they could agree on every text operator and still hand the
+    /// extractor a different CTM. On govdocs_003_003181.pdf page 4 that cost
+    /// a 90°-rotated chart axis: char mode returned 2322 glyphs, all at
+    /// rotation 0, where span mode saw 2590 glyphs, 122 at 90°.
+    fn run_content_stream(&mut self, content_stream: &[u8]) -> Result<()> {
+        if self.excluded_inks.is_empty() {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
+        } else {
+            // Ink filtering needs the color operators (cs, rg, g, k). The
+            // text-only parser does not guarantee their delivery — its >256KB
+            // prescan route parses only text regions — so use the full parser.
+            let operators = parse_content_stream(content_stream)?;
+            for op in operators {
+                self.execute_operator(op)?;
+            }
+            Ok(())
+        }
+    }
+
     /// Extract individual characters from a PDF content stream.
     ///
     /// This is a low-level method that extracts characters one by one.
@@ -3866,30 +3884,7 @@ impl<'doc> TextExtractor<'doc> {
         self.spans.clear(); // Ensure spans are clear so they don't poison xobject_spans_cache
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
-        // Same parser as `extract_text_spans`. Character mode and span mode must
-        // differ only in how `execute_operator` handles the show-text operators,
-        // never in which operators reach it.
-        //
-        // This was the last caller of `parse_content_stream_text_only`, a second
-        // implementation of the same job that is not equivalent to
-        // `parse_and_execute_text_only` — they reconstruct the graphics state
-        // around a text region by different routes, so they can agree on every
-        // text operator (same BT blocks, same show operators, same operands)
-        // and still hand the extractor a different CTM. Counting operators does
-        // not detect that. On govdocs_003_003181.pdf page 4 it cost a
-        // 90°-rotated chart axis: all 2322 glyphs came back at rotation 0.
-        // Through this parser the page yields 2590 glyphs, 122 at 90°, matching
-        // the span path.
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))?;
-        } else {
-            // Ink filtering requires color operators (cs, rg, g, k) which the
-            // text-only parser skips. Fall back to the full parser.
-            let operators = parse_content_stream(content_stream)?;
-            for op in operators {
-                self.execute_operator(op)?;
-            }
-        }
+        self.run_content_stream(content_stream)?;
 
         // BUG FIX #2: Sort characters by reading order (top-to-bottom, left-to-right)
         // PDF content streams are in rendering order, not reading order.
@@ -7227,20 +7222,7 @@ impl<'doc> TextExtractor<'doc> {
                     .push(crate::structure::McidScope::Form(xobject_ref));
 
                 self.xobject_depth += 1;
-                let parse_result = if self.excluded_inks.is_empty() {
-                    parse_and_execute_text_only(&stream_data, |op| self.execute_operator(op))
-                } else {
-                    let ops = parse_content_stream(&stream_data);
-                    match ops {
-                        Ok(ops) => {
-                            for op in ops {
-                                self.execute_operator(op)?;
-                            }
-                            Ok(())
-                        },
-                        Err(e) => Err(e),
-                    }
-                };
+                let parse_result = self.run_content_stream(&stream_data);
                 self.xobject_depth -= 1;
                 // Pop the Form XObject scope pushed before the
                 // content-stream walk. Cleared regardless of parse
@@ -9482,6 +9464,52 @@ mod tests {
             "Y position should be ~200 (got {})",
             chars[0].bbox.y
         );
+    }
+
+    /// Regression test for issue #1006: char mode must run the same parser as
+    /// span mode.
+    ///
+    /// The stream forces the streaming parser's >256KB prescan route: the
+    /// rotating `q`/`cm` sits >4KB before `BT`, so the CTM reaches the text
+    /// region only via the forward scan's injected `Cm`. The unbalanced
+    /// literal-string opens are invisible to the prescan (they lie outside
+    /// every text region) but feed the old char-mode parser,
+    /// `parse_content_stream_text_only`, over `MAX_CONSECUTIVE_ERRORS`
+    /// consecutive scan failures — it bails before `BT` and extracts nothing.
+    #[test]
+    fn test_char_mode_rotated_ctm_survives_large_hostile_stream() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"q\n0 1 -1 0 612 0 cm\n");
+        cs.extend_from_slice(&[b'('; 1500]);
+        cs.push(b'\n');
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l S\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed the 256KB prescan threshold");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 200 Td (Hello) Tj ET\nQ\n");
+
+        let chars = extractor.extract(&cs).unwrap();
+        let mut glyphs: Vec<char> = chars.iter().map(|c| c.char).collect();
+        glyphs.sort_unstable();
+        assert_eq!(glyphs, vec!['H', 'e', 'l', 'l', 'o']);
+        for c in &chars {
+            assert!(
+                (c.rotation_degrees - 90.0).abs() < 1.0,
+                "expected 90 degrees from the cm before BT, got {}",
+                c.rotation_degrees
+            );
+        }
     }
 
     /// Regression test for Issue #11: CTM scaling must affect text positions
