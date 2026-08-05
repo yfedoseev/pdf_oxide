@@ -1,10 +1,11 @@
-//! `/K` marked-content ids that do not fit a `u32` must be rejected, not wrapped.
+//! Marked-content ids that do not fit a `u32` must be rejected, not wrapped.
 //!
-//! A structure element's `/K` may carry integer children (bare MCIDs) and
-//! marked-content reference dictionaries carrying `/MCID`. Both are `u32` in
-//! the reading-order model. Truncating a wider or negative integer into that
-//! `u32` makes a malformed id alias a real one, which silently corrupts the
-//! page's reading order rather than dropping the bad entry.
+//! The id space is written from two sides: a structure element's `/K` (bare
+//! integer MCIDs and `/MCR` dictionaries carrying `/MCID`) and the content
+//! stream's BDC property dictionaries. All are `u32` in the reading-order
+//! model. Truncating a wider or negative integer into that `u32` makes a
+//! malformed id alias a real one, which silently corrupts the page's reading
+//! order rather than dropping the bad entry.
 
 use pdf_oxide::PdfDocument;
 
@@ -116,4 +117,62 @@ fn out_of_range_mcr_mcid_is_skipped_not_wrapped() {
 fn in_range_k_mcids_are_unaffected() {
     let order = reading_order("[5]");
     assert_eq!(order, vec![5]);
+}
+
+/// A one-page untagged PDF whose content stream carries the given BDC bodies.
+/// Same id-space contract as the `/K` fixtures above, exercised from the
+/// content-stream (BDC `/MCID`) side.
+fn pdf_with_content(content: &str) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut off = vec![0usize; 6];
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+    obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    obj(
+        &mut buf,
+        &mut off,
+        3,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    );
+    stream(&mut buf, &mut off, 4, content.as_bytes());
+    obj(&mut buf, &mut off, 5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+    finish(&mut buf, &off, 5);
+    buf
+}
+
+fn span_mcids(bad_mcid: &str) -> Vec<(String, Option<u32>)> {
+    let content = format!(
+        "BT /F1 12 Tf\n\
+         /P <</MCID {bad_mcid}>> BDC 1 0 0 1 60 700 Tm (Aliased) Tj EMC\n\
+         /P <</MCID 5>> BDC 1 0 0 1 60 650 Tm (Real) Tj EMC\n\
+         ET\n"
+    );
+    let doc = PdfDocument::from_bytes(pdf_with_content(&content)).expect("fixture parses");
+    let spans = doc.extract_spans(0).expect("spans extract");
+    spans.into_iter().map(|s| (s.text, s.mcid)).collect()
+}
+
+fn mcid_of(spans: &[(String, Option<u32>)], needle: &str) -> Option<u32> {
+    spans
+        .iter()
+        .find(|(text, _)| text.contains(needle))
+        .unwrap_or_else(|| panic!("no span containing {needle:?} in {spans:?}"))
+        .1
+}
+
+#[test]
+fn bdc_mcid_above_u32_max_is_dropped_not_wrapped() {
+    // 4294967301 is 2^32 + 5. Truncated to u32 it becomes 5 and aliases the
+    // real MCID 5 region in the same content stream.
+    let spans = span_mcids("4294967301");
+    assert_eq!(mcid_of(&spans, "Aliased"), None, "out-of-range BDC /MCID aliased a real id");
+    assert_eq!(mcid_of(&spans, "Real"), Some(5));
+}
+
+#[test]
+fn negative_bdc_mcid_is_dropped_not_wrapped() {
+    let spans = span_mcids("-1");
+    assert_eq!(mcid_of(&spans, "Aliased"), None, "negative BDC /MCID was kept");
+    assert_eq!(mcid_of(&spans, "Real"), Some(5));
 }
