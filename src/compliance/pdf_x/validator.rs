@@ -570,7 +570,14 @@ impl PdfXValidator {
                     _ => continue,
                 };
 
-                for (gs_name, gs_obj) in &ext_gstate {
+                // Sorted by ExtGState name so the emitted error order is
+                // stable; see the ColorSpace sweep in validate_colors.
+                let mut gs_names: Vec<&String> = ext_gstate.keys().collect();
+                gs_names.sort();
+                for gs_name in gs_names {
+                    let Some(gs_obj) = ext_gstate.get(gs_name) else {
+                        continue;
+                    };
                     let gs_dict = match gs_obj {
                         Object::Dictionary(d) => d.clone(),
                         Object::Reference(r) => match document.load_object(*r)? {
