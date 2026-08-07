@@ -391,9 +391,11 @@ fn rotated_subscript_formula_stays_contiguous() {
     let doc = PdfDocument::from_bytes(rotated_formula_with_subscript_pdf()).expect("parse fixture");
     let spans = doc.extract_spans(0).expect("extract spans");
     assert!(
-        spans
-            .iter()
-            .any(|s| s.text.split_whitespace().collect::<String>().contains("N2O")),
+        spans.iter().any(|s| s
+            .text
+            .split_whitespace()
+            .collect::<String>()
+            .contains("N2O")),
         "subscript drop split the rotated run: {spans:?}"
     );
 }
