@@ -6483,6 +6483,38 @@ impl PdfDocument {
                             // -1.75 pt and -12.75 pt sit alongside
                             // delta_x values of 56 pt and 78 pt.
                             text.push(' ');
+                        } else if y_diff > 1.0
+                            && gap < -fs
+                            && (span_end_x - prev_end_x).abs()
+                                <= 0.5
+                                    * Self::mean_glyph_advance(prev)
+                                        .min(Self::mean_glyph_advance(span))
+                            && !prev.rtl_draw_logical
+                            && !span.rtl_draw_logical
+                            && !crate::text::bidi::looks_rtl(&prev.text)
+                            && !crate::text::bidi::looks_rtl(&span.text)
+                        {
+                            // Right-aligned column stack. The backtracking arm
+                            // above only reaches stacks that share a LEFT edge
+                            // (delta_x ≈ 0); a right-aligned numeric column
+                            // shares its RIGHT edge instead, so a shorter
+                            // successor starts further right by the width
+                            // difference — the one band no arm above tests. A
+                            // row pitch under `same_line_threshold` then fused
+                            // figures from consecutive rows ("22,796" + "3,052"
+                            // → "22,7963,052"). Coincident right edges plus a
+                            // full-em backward gap at a real baseline offset is
+                            // the stack signature. The right-edge tolerance is
+                            // half the narrower run's mean glyph advance:
+                            // column alignment is quantized in advances, so an
+                            // offset under half an advance cannot place the
+                            // edge at a different column position, and the
+                            // bound scales with the font instead of being a
+                            // point constant. Placed last, so it can only add a
+                            // separator where none is emitted today.
+                            if !hangul_midword_wrap && !text.ends_with('\n') {
+                                text.push('\n');
+                            }
                         }
                     } else if y_diff > 2.0
                         && gap > FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
@@ -7719,6 +7751,14 @@ impl PdfDocument {
     /// space must be synthesized. This works purely on the assembled text — the
     /// spans are left unmerged, so page layout and table detection are
     /// unaffected (a span merge here would shift XY-cut/table statistics).
+    /// A run's mean horizontal advance: its drawn width per character. Used
+    /// as the alignment quantum for the right-aligned column-stack arm — a
+    /// column position is a whole number of advances, so two right edges
+    /// closer than half an advance sit at the same column position.
+    fn mean_glyph_advance(span: &TextSpan) -> f32 {
+        span.bbox.width / span.text.chars().count().max(1) as f32
+    }
+
     fn is_reliable_kerning_overlap(prev: &TextSpan, span: &TextSpan, gap: f32) -> bool {
         let fs = prev.font_size.max(span.font_size).max(1.0);
         let prev_last = prev.text.chars().next_back();
