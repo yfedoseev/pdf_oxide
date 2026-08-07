@@ -687,7 +687,6 @@ fn forward_scan_ctm(data: &[u8], text_positions: &[usize]) -> Option<Vec<Prescan
     // in ctm_stack to avoid String cloning on every q/Q.
     let mut font_table: Vec<(String, f32)> = Vec::new();
     let mut current_font_idx: Option<usize> = None;
-    #[allow(clippy::type_complexity)]
     let mut ctm_stack: Vec<(
         Matrix,
         Option<usize>,
