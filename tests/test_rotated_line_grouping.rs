@@ -162,16 +162,13 @@ fn parallel_rotated_lines_on_rotated_page_pdf() -> Vec<u8> {
     content.extend_from_slice(b"0 1 -1 0 200 150 Tm (Alpha) Tj\n");
     content.extend_from_slice(b"0 1 -1 0 300 150 Tm (Bravo) Tj\n");
     content.extend_from_slice(b"ET");
-    build_minimal_pdf_raw(
-        &content,
-        b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90",
-    )
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90")
 }
 
 #[test]
 fn a_rotate_page_keeps_one_line_per_rotated_run() {
-    let doc =
-        PdfDocument::from_bytes(parallel_rotated_lines_on_rotated_page_pdf()).expect("parse fixture");
+    let doc = PdfDocument::from_bytes(parallel_rotated_lines_on_rotated_page_pdf())
+        .expect("parse fixture");
     let lines = doc.extract_text_lines(0).expect("extract lines");
 
     assert!(
