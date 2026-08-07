@@ -152,7 +152,8 @@ fn ordinary_geometry_still_renders() {
 
 /// True when every pixel is inked — the shape covered the whole page.
 fn fully_inked(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4).all(|px| px[0] < 250 && px[1] < 250 && px[2] < 250)
+    rgba.chunks_exact(4)
+        .all(|px| px[0] < 250 && px[1] < 250 && px[2] < 250)
 }
 
 #[test]
@@ -168,9 +169,7 @@ fn fill_whose_bounds_leave_the_page_still_covers_it() {
 fn fill_reaching_off_page_through_the_ctm_still_covers_it() {
     // The same geometry arrived at through the CTM rather than literal
     // coordinates: a 10x10 rect scaled by 2e6.
-    assert!(fully_inked(&render_raw(
-        "q 2000000 0 0 2000000 0 0 cm 0 0 10 10 re f Q"
-    )));
+    assert!(fully_inked(&render_raw("q 2000000 0 0 2000000 0 0 cm 0 0 10 10 re f Q")));
 }
 
 #[test]
@@ -194,7 +193,5 @@ fn stroke_width_beyond_precision_still_paints() {
 fn geometry_entirely_off_the_page_paints_nothing() {
     // The other direction: a draw whose device bounds cannot reach the
     // pixmap is dropped, and dropping it costs nothing.
-    assert!(!has_ink(&render_raw(
-        "1 0 0 1 100000 100000 cm 0 0 10 10 re f"
-    )));
+    assert!(!has_ink(&render_raw("1 0 0 1 100000 100000 cm 0 0 10 10 re f")));
 }

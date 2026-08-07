@@ -147,7 +147,12 @@ fn device_bounds(path: &tiny_skia::Path, transform: tiny_skia::Transform) -> Opt
     let b = path.bounds();
     let (left, top) = (f64::from(b.left()), f64::from(b.top()));
     let (right, bottom) = (f64::from(b.right()), f64::from(b.bottom()));
-    let mut out = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut out = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
         let dx = sx * x + kx * y + tx;
         let dy = ky * x + sy * y + ty;
