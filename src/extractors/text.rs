@@ -6684,8 +6684,9 @@ impl<'doc> TextExtractor<'doc> {
                     if let Some(mcid_obj) = props_dict.get("MCID") {
                         // Same id-space contract as the structure-tree side:
                         // wrapping would alias a malformed id onto a real MCID.
-                        if let Some(mcid) =
-                            mcid_obj.as_integer().and_then(crate::structure::checked_mcid)
+                        if let Some(mcid) = mcid_obj
+                            .as_integer()
+                            .and_then(crate::structure::checked_mcid)
                         {
                             own_mcid = Some(mcid);
                             self.current_mcid = Some(mcid);
