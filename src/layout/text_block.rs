@@ -272,7 +272,11 @@ impl TextSpan {
         // (negative determinant) carries its across-axis on the clockwise
         // side of the baseline: v is reflected, not rotated.
         let (ux, uy) = (cos, sin);
-        let (vx, vy) = if self.mirrored { (sin, -cos) } else { (-sin, cos) };
+        let (vx, vy) = if self.mirrored {
+            (sin, -cos)
+        } else {
+            (-sin, cos)
+        };
         let b = self.bbox;
         // Image of the run origin under the applied page rotation — the
         // anchor the run frame pivots about in `bbox`'s current frame.

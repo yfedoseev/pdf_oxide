@@ -115,7 +115,10 @@ fn rotate90_page_span_page_box_is_not_double_transformed() {
     assert!(!rotated.is_empty(), "fixture produced no rotated spans");
 
     for s in rotated {
-        assert_eq!(s.page_rotation_applied, 90, "span bbox was not mapped into the displayed frame");
+        assert_eq!(
+            s.page_rotation_applied, 90,
+            "span bbox was not mapped into the displayed frame"
+        );
         let page = s.page_bbox();
         // Baseline of the displayed horizontal run: y = 612 − 200 = 412, at
         // the mapped rect's top edge (the image of the run origin).
