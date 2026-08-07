@@ -283,7 +283,11 @@ fn glued_cell_table_pdf() -> Vec<u8> {
     // 10pt, so the cell builder joins them with no separator.
     content.extend_from_slice(b"BT /F1 10 Tf 1 0 0 1 110 670 Tm (12,3) Tj ET\n");
     content.extend_from_slice(b"BT /F2 10 Tf 1 0 0 1 130 670 Tm (45) Tj ET\n");
-    for (x, y, text) in [(260, 670, "Gamma"), (110, 620, "Delta"), (260, 620, "Epsilon")] {
+    for (x, y, text) in [
+        (260, 670, "Gamma"),
+        (110, 620, "Delta"),
+        (260, 620, "Epsilon"),
+    ] {
         content.extend_from_slice(
             format!("BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n").as_bytes(),
         );
@@ -335,10 +339,7 @@ fn table_extraction_absorbs_spans_glued_into_one_cell_token() {
         "no cell glued the two runs into one token; the rewrite case is not exercised"
     );
 
-    let (a, b) = (
-        nonspace_char_counts(&with_tables),
-        nonspace_char_counts(&without),
-    );
+    let (a, b) = (nonspace_char_counts(&with_tables), nonspace_char_counts(&without));
     assert_eq!(
         a, b,
         "tables on/off disagree on character content — a glued span was duplicated or \

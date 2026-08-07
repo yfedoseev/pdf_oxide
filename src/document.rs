@@ -5917,8 +5917,8 @@ impl PdfDocument {
                 // path keeps whole-token matching: it has no containment
                 // evidence, so fragments would let distant same-substring
                 // text vanish.
-                fn take_one<'a>(
-                    work: &mut std::collections::HashMap<&'a str, usize>,
+                fn take_one(
+                    work: &mut std::collections::HashMap<&str, usize>,
                     tok: &str,
                     allow_fragment: bool,
                 ) -> bool {
@@ -5957,8 +5957,8 @@ impl PdfDocument {
                 // text-fallback paths cannot drift apart — they must draw on
                 // the SAME accounting. All-or-nothing: a span either fits
                 // the cell's remaining budget whole or leaves it untouched.
-                fn try_consume<'a>(
-                    remaining: &mut std::collections::HashMap<&'a str, usize>,
+                fn try_consume(
+                    remaining: &mut std::collections::HashMap<&str, usize>,
                     span_tokens: &[(&str, usize)],
                     allow_fragment: bool,
                 ) -> bool {
