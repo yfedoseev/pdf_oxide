@@ -2171,11 +2171,10 @@ mod tests {
         tally.record("no outline", 0x41, 7);
         tally.record("no glyph id", 0x42, 0);
         tally.record("no outline", 0x43, 9);
-        let warning = tally.warning("AAAAAA+Broken").expect("recorded drops must warn");
-        assert_eq!(
-            warning.category,
-            crate::extractors::warnings::WarningCategory::GlyphDropped
-        );
+        let warning = tally
+            .warning("AAAAAA+Broken")
+            .expect("recorded drops must warn");
+        assert_eq!(warning.category, crate::extractors::warnings::WarningCategory::GlyphDropped);
         assert!(warning.message.contains("AAAAAA+Broken"));
         assert!(warning.message.contains("3 glyph(s)"));
         assert!(warning.message.contains("0x41"));
