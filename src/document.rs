@@ -24273,11 +24273,13 @@ mod tests {
             );
         };
         slot(
-            &doc.extract_text_with_extra_spans(0, vec![extra.clone()], &opts).unwrap(),
+            &doc.extract_text_with_extra_spans(0, vec![extra.clone()], &opts)
+                .unwrap(),
             "extract_text_with_extra_spans",
         );
         slot(
-            &doc.to_markdown_with_extra_spans(0, &[extra.clone()], &opts).unwrap(),
+            &doc.to_markdown_with_extra_spans(0, std::slice::from_ref(&extra), &opts)
+                .unwrap(),
             "to_markdown_with_extra_spans",
         );
         slot(

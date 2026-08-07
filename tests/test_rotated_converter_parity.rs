@@ -219,7 +219,9 @@ fn converters_agree_with_extract_text_when_rotated_lines_have_multiple_spans() {
     let from_text = reading_order(&doc.extract_text(0).expect("extract text"));
     // The fixture must reach the framed path — mapped lines pair the spans.
     assert!(
-        from_text.windows(4).any(|w| w == ["alpha", "one", "beta", "two"]),
+        from_text
+            .windows(4)
+            .any(|w| w == ["alpha", "one", "beta", "two"]),
         "extract_text did not pair the rotated line's spans: {from_text:?}"
     );
 
