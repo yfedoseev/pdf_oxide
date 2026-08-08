@@ -2,19 +2,6 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [Unreleased]
-
-### Fixed
-
-- **Character-mode extraction (`extract_chars()`) parsed content streams with a different parser than span-mode extraction** — the two parsers reconstruct the graphics state around a text region by different routes, so on graphics-heavy pages over 256KB they could agree on every text operator and still apply a different CTM: rotated text came back at rotation 0 and glyphs were dropped (e.g. a 90°-rotated chart axis lost entirely). Character mode now runs the same streaming parser as span mode, and `parse_content_stream_text_only` is deprecated (#1006).
-
-### Contributors
-
-Issues reported by:
-- **@tobocop2** — #1006 (`extract_chars` and `extract_spans` disagree on rotated text)
-
-Thank you!
-
 ## [0.3.77] - 2026-07-27
 
 > Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
