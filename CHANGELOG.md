@@ -2,19 +2,6 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [Unreleased]
-
-### Fixed
-
-- **`extract_text_lines()` returned a rotated line as one line per text run** — a 90°-rotated line drawn as several `Tm`-positioned runs (the way a rotated table row is authored, one run per cell) came back as one `TextLine` per run instead of one per visual line, unlike `extract_text()`, which assembles the same page correctly. Quarter-turn runs sharing their perpendicular offset now group into one line; pages with a non-zero `/Rotate` keep the previous one-line-per-run behavior (#983).
-
-### Contributors
-
-Issues reported by:
-- **@tobocop2** — #983 (`extract_text_lines()` returns a rotated table one word per line)
-
-Thank you!
-
 ## [0.3.77] - 2026-07-27
 
 > Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
