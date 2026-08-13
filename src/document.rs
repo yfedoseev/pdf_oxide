@@ -17793,6 +17793,15 @@ impl PdfDocument {
                 Operator::CloseFillStroke => {
                     extractor.close_fill_and_stroke(FillRule::NonZero);
                 },
+                Operator::FillStroke => {
+                    extractor.fill_and_stroke(FillRule::NonZero);
+                },
+                Operator::FillStrokeEvenOdd => {
+                    extractor.fill_and_stroke(FillRule::EvenOdd);
+                },
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => {
                     extractor.end_path();
                 },
@@ -18390,6 +18399,11 @@ impl PdfDocument {
                 Operator::Fill => extractor.fill(FillRule::NonZero),
                 Operator::FillEvenOdd => extractor.fill(FillRule::EvenOdd),
                 Operator::CloseFillStroke => extractor.close_fill_and_stroke(FillRule::NonZero),
+                Operator::FillStroke => extractor.fill_and_stroke(FillRule::NonZero),
+                Operator::FillStrokeEvenOdd => extractor.fill_and_stroke(FillRule::EvenOdd),
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => extractor.end_path(),
 
                 // Clipping operators
