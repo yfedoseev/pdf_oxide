@@ -12987,7 +12987,14 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // A normal PDF page is at most a few thousand points wide. A
+        // degenerate CTM can inflate span x-coordinates by orders of
+        // magnitude, which would otherwise drive the fine-resolution scan
+        // below (bounded to a >=0.5pt step) into an effectively unbounded
+        // loop. Same hazard, same bound as
+        // `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || content_w < 100.0 || content_w > MAX_CONTENT_EXTENT {
             return None;
         }
         // Column-content spans only (exclude true full-width bands). A real
@@ -13482,7 +13489,12 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // Same degenerate-CTM hazard and bound as `density_central_gutter`
+        // above / `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`: the
+        // fine-resolution scan below steps at >=0.5pt, so an unbounded
+        // `content_w` would make the loop below run effectively forever.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || content_w < 100.0 || content_w > MAX_CONTENT_EXTENT {
             return None;
         }
         let ymin = body.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
@@ -30366,6 +30378,36 @@ mod tests {
             spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
         }
         assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_rejects_degenerate_ctm_content_width() {
+        // Two "columns" separated by a 200,000pt gap — the signature of a
+        // degenerate CTM scale factor inflating span x-coordinates, not a
+        // real page (a normal page is at most a few thousand points wide).
+        // Before the MAX_CONTENT_EXTENT bound, the huge empty middle region
+        // was itself picked up as a single "corridor" and returned as a
+        // (nonsensical) gutter position; it must now be rejected outright.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn classifier_gutter_rejects_degenerate_ctm_content_width() {
+        // Same degenerate-CTM hazard as the density-probe test above, for
+        // `classifier_column_gutter`'s independent content_w computation.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::classifier_column_gutter(&spans).is_none());
     }
 
     #[test]
