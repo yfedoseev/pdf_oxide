@@ -1072,12 +1072,42 @@ fn detect_columns(
     // Sort columns by center before merge pass.
     columns.sort_by(|a, b| crate::utils::safe_float_cmp(a.x_center, b.x_center));
 
+    // `merge_threshold` is a fixed absolute-point gap; on its own it breaks
+    // down as column count grows and the table's actual pitch shrinks (a
+    // dense numeric table with a 12pt column pitch has every adjacent pair
+    // fused by even a modest fixed threshold, collapsing distinct columns
+    // into one). Scale the *effective* threshold down for narrow-pitch
+    // tables by capping it at a fraction of the table's own median
+    // inter-column gap — same ratio-based pitch reasoning as
+    // `is_regular_lattice`'s on-pitch band (`[0.6, 1.6] * median`): a gap
+    // under `0.6 * median` is off-pitch-small relative to this table's own
+    // columns and should merge regardless of the fixed threshold, while a
+    // sparse table with few, widely-spaced columns keeps the full
+    // `merge_threshold` (no median signal to scale from).
+    let effective_merge_threshold = if columns.len() >= 3 {
+        let mut gaps: Vec<f32> = columns
+            .windows(2)
+            .map(|w| w[1].x_center - w[0].x_center)
+            .filter(|g| *g > 0.0)
+            .collect();
+        if gaps.is_empty() {
+            merge_threshold
+        } else {
+            gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            let median_gap = gaps[gaps.len() / 2];
+            merge_threshold.min(median_gap * 0.6)
+        }
+    } else {
+        merge_threshold
+    };
+
     // Post-clustering merge pass: merge adjacent columns whose centers are
     // within merge_threshold of each other or whose X ranges overlap.
     let mut merged: Vec<ColumnCluster> = Vec::new();
     for col in columns {
         let should_merge = merged.last().is_some_and(|prev: &ColumnCluster| {
-            (col.x_center - prev.x_center).abs() < merge_threshold || col.x_min <= prev.x_max
+            (col.x_center - prev.x_center).abs() < effective_merge_threshold
+                || col.x_min <= prev.x_max
         });
         if should_merge {
             let prev = merged.last_mut().unwrap();
@@ -4976,6 +5006,36 @@ mod tests {
             columns.len(),
             2,
             "Spans at x=130/135/140 should merge into 1 column, plus x=50 = 2 total, got {}",
+            columns.len()
+        );
+    }
+
+    #[test]
+    fn test_detect_columns_dense_pitch_stays_distinct() {
+        // A dense numeric table: 6 columns on a 20pt pitch, each column's
+        // spans sharing an exact left-x (so the *first* clustering pass,
+        // gated on column_tolerance=15, keeps every column separate — this
+        // isolates the merge-threshold pass specifically). Under the
+        // default config's *fixed* 25pt column_merge_threshold, every
+        // adjacent 20pt gap is below the threshold, so the old code fused
+        // all 6 into 1. The threshold must scale down with this table's own
+        // (much smaller than 25pt) pitch so the columns survive distinct.
+        let mut spans = Vec::new();
+        for row in 0..3 {
+            let y = 100.0 - row as f32 * 20.0;
+            for col in 0..6 {
+                let x = 20.0 + col as f32 * 20.0;
+                spans.push(create_test_span("9", x, y, 8.0, 10.0));
+            }
+        }
+        let config = TableDetectionConfig::default();
+        let columns =
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+        assert_eq!(
+            columns.len(),
+            6,
+            "a 20pt-pitch dense table must keep all 6 columns distinct \
+             despite the 25pt fixed merge_threshold, got {}",
             columns.len()
         );
     }
