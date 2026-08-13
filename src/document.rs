@@ -12994,7 +12994,7 @@ impl PdfDocument {
         // loop. Same hazard, same bound as
         // `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`.
         const MAX_CONTENT_EXTENT: f32 = 100_000.0;
-        if !content_w.is_finite() || content_w < 100.0 || content_w > MAX_CONTENT_EXTENT {
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         // Column-content spans only (exclude true full-width bands). A real
@@ -13494,7 +13494,7 @@ impl PdfDocument {
         // fine-resolution scan below steps at >=0.5pt, so an unbounded
         // `content_w` would make the loop below run effectively forever.
         const MAX_CONTENT_EXTENT: f32 = 100_000.0;
-        if !content_w.is_finite() || content_w < 100.0 || content_w > MAX_CONTENT_EXTENT {
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         let ymin = body.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
