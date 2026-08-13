@@ -22446,14 +22446,20 @@ impl PdfDocument {
                 // Pre-decompression filtering using dictionary metadata.
                 // These checks use Width/Height/ColorSpace from the XObject dictionary
                 // which are available WITHOUT decompressing the image stream data.
-                let w = xobject_dict
-                    .get("Width")
-                    .and_then(|o| o.as_integer())
-                    .unwrap_or(0);
-                let h = xobject_dict
-                    .get("Height")
-                    .and_then(|o| o.as_integer())
-                    .unwrap_or(0);
+                // /Width and /Height may themselves be indirect references
+                // (ISO 32000-1 §7.3.10); resolve them the same way
+                // `extract_image_from_xobject` does, so an indirect width
+                // doesn't fall through to the `unwrap_or(0)` default and get
+                // silently filtered out by the `min_width`/`min_height` gate
+                // below.
+                let resolve_int = |o: &Object| -> Option<i64> {
+                    match o.as_reference() {
+                        Some(r) => self.load_object(r).ok().and_then(|v| v.as_integer()),
+                        None => o.as_integer(),
+                    }
+                };
+                let w = xobject_dict.get("Width").and_then(resolve_int).unwrap_or(0);
+                let h = xobject_dict.get("Height").and_then(resolve_int).unwrap_or(0);
                 if w < filter.min_width || h < filter.min_height {
                     return Ok(images);
                 }
