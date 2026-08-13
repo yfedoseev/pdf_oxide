@@ -20180,7 +20180,11 @@ impl PdfDocument {
                     .get_page_media_box(page_index)
                     .map(|m| m.3)
                     .unwrap_or(792.0);
-                base_spans.retain(|s| !Self::is_running_head_foot(s, media_h, &repeated));
+                let head_foot_lines =
+                    self.running_head_foot_line_bboxes(page_index, media_h, &repeated);
+                if !head_foot_lines.is_empty() {
+                    base_spans.retain(|s| !head_foot_lines.iter().any(|lb| lb.intersects(&s.bbox)));
+                }
             }
         }
 
@@ -21638,6 +21642,16 @@ impl PdfDocument {
     /// of pages — running headers/footers. Page-number digits are stripped so
     /// "Page 3"/"Page 4" collapse to one signature. Empty for documents under
     /// 3 pages (repetition can't be judged) or when nothing repeats.
+    /// Collects repetition signatures from whole assembled **lines**, not
+    /// individual spans (#1022). A genuine running header/footer is the
+    /// same complete line of text on every page it appears on; a SPAN is
+    /// often just a fragment of a line (font/color-run boundaries split one
+    /// visual line into several spans), and matching at fragment
+    /// granularity lets a phrase that coincidentally recurs across
+    /// unrelated body paragraphs — e.g. the first line of a column, which
+    /// also falls inside the geometric head/foot band in a dense
+    /// multi-column layout — masquerade as page furniture and get deleted
+    /// everywhere it occurs, including mid-sentence.
     pub(crate) fn repeated_running_head_foot(
         &self,
         threshold: f32,
@@ -21654,15 +21668,15 @@ impl PdfDocument {
         let mut occ: HashMap<String, usize> = HashMap::new();
         for p in 0..page_count {
             let media_h = self.get_page_media_box(p).map(|m| m.3).unwrap_or(792.0);
-            let Ok(spans) = self.extract_spans(p) else {
+            let Ok(lines) = self.extract_text_lines(p) else {
                 continue;
             };
             let mut seen: HashSet<String> = HashSet::new();
-            for s in &spans {
-                if !Self::in_head_foot_band(s, media_h) {
+            for line in &lines {
+                if !Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h) {
                     continue;
                 }
-                let norm = Self::normalize_band_line(&s.text);
+                let norm = Self::normalize_band_line(&line.text);
                 // Count each distinct line once per page.
                 if norm.len() > 3 && seen.insert(norm.clone()) {
                     *occ.entry(norm).or_default() += 1;
@@ -21677,9 +21691,11 @@ impl PdfDocument {
         out
     }
 
-    /// True when a span sits in the top or bottom 15% band of the page.
-    fn in_head_foot_band(s: &crate::layout::TextSpan, media_h: f32) -> bool {
-        s.bbox.y > media_h * 0.85 || (s.bbox.y + s.bbox.height) < media_h * 0.15
+    /// True when a region sits in the top or bottom 15% band of the page.
+    /// `y`/`height` are a bbox's own fields (shared by `TextSpan` and
+    /// `TextLine`, which don't share a common bbox-accessor trait).
+    fn in_head_foot_band(y: f32, height: f32, media_h: f32) -> bool {
+        y > media_h * 0.85 || (y + height) < media_h * 0.15
     }
 
     /// Normalize a band line for repetition matching: drop ASCII digits (page
@@ -21693,15 +21709,30 @@ impl PdfDocument {
             .to_lowercase()
     }
 
-    /// True when `span` is a running header/footer to strip: in the top/bottom
-    /// band and its normalized text is one of the `repeated` signatures.
-    fn is_running_head_foot(
-        span: &crate::layout::TextSpan,
+    /// Bounding boxes (on this page) of assembled lines whose normalized
+    /// text matches a `repeated_running_head_foot` signature. The
+    /// signature set is collected at whole-line granularity (see above),
+    /// but the actual stripping in `to_markdown_inner` still operates on
+    /// individual spans; this bridges the two by giving the caller the
+    /// matched lines' geometry so it can strip every span that belongs to
+    /// one, rather than re-matching (fragile) text at the span level.
+    fn running_head_foot_line_bboxes(
+        &self,
+        page_index: usize,
         media_h: f32,
         repeated: &std::collections::HashSet<String>,
-    ) -> bool {
-        Self::in_head_foot_band(span, media_h)
-            && repeated.contains(&Self::normalize_band_line(&span.text))
+    ) -> Vec<crate::geometry::Rect> {
+        let Ok(lines) = self.extract_text_lines(page_index) else {
+            return Vec::new();
+        };
+        lines
+            .into_iter()
+            .filter(|line| {
+                Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h)
+                    && repeated.contains(&Self::normalize_band_line(&line.text))
+            })
+            .map(|line| line.bbox)
+            .collect()
     }
 
     /// Extract embedded files / attachments (WS1.8a, ISO 32000-1 §7.11.4).
