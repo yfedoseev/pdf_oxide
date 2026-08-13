@@ -30220,6 +30220,167 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #979: a page with only 2 spans per column
+    /// (4 spans total) is below `min_spans_for_split` (5), so it never
+    /// reaches the geometric column-split logic the 6-span test above
+    /// exercises — every statistical prose/table classifier
+    /// (`classify_region_kind`, `detect_two_column_prose`,
+    /// `detect_narrow_gutter_prose`) also has its own internal minimum-span
+    /// floor (6/8/24) far above 4, so none of them can classify this page
+    /// either. Before the fix, the base case fell back to a flat
+    /// Y-then-X sort, interleaving the two columns (L1, R1, L2, R2)
+    /// instead of reading each column through.
+    ///
+    /// A pure geometric gutter check can't distinguish this from a 2x2
+    /// table at this scale (see `test_column_aware_sparse_2x2_table_stays_row_major`
+    /// below), so the fix defers to content-stream emission order when a
+    /// clean gutter exists — PDFium parity per the issue's own cross-tool
+    /// probe. This fixture's `sequence` mirrors the exact reporter's
+    /// repro (`reportlab` draws the whole left column, then the whole
+    /// right column): L1, L2, R1, R2.
+    #[test]
+    fn test_column_aware_sparse_two_column_follows_stream_order() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_span(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Column-major stream order, matching a two-column-prose generator
+        // that fills the left text box then the right one — exactly the
+        // reporter's `reportlab` repro.
+        let spans = vec![
+            make_span("L1", 10.0, 700.0, 0),
+            make_span("L2", 10.0, 680.0, 1),
+            make_span("R1", 200.0, 700.0, 2),
+            make_span("R2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["L1", "L2", "R1", "R2"],
+            "a sparse 2-column page below min_spans_for_split must follow \
+             content-stream order (column-major here), not interleave the \
+             columns via a flat Y-then-X sort"
+        );
+    }
+
+    /// Companion to the test above: a genuine 2x2 table emitted **row-major**
+    /// in-stream (the common table-generator pattern — draw row 1's cells
+    /// left-to-right, then row 2's) must stay row-major. The same clean
+    /// gutter exists between the two columns as in the prose case above —
+    /// nothing in this codebase can geometrically tell the two apart at
+    /// 4-span scale — so the fix's content-stream-order fallback is
+    /// correct for *both* shapes precisely because it never has to decide
+    /// between them: it just preserves however the source authored it.
+    #[test]
+    fn test_column_aware_sparse_2x2_table_stays_row_major() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_cell(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Row-major stream order: row 1's two cells, then row 2's two cells.
+        let spans = vec![
+            make_cell("R1C1", 10.0, 700.0, 0),
+            make_cell("R1C2", 200.0, 700.0, 1),
+            make_cell("R2C1", 10.0, 680.0, 2),
+            make_cell("R2C2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["R1C1", "R1C2", "R2C1", "R2C2"],
+            "a row-major-emitted 2x2 table must stay row-major, not be \
+             reshuffled into a column-major read order"
+        );
+    }
+
     // ========================================================================
     // COLUMN-ORDER: persistent-gutter-corridor accept path (#607)
     // ========================================================================
