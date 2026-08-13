@@ -62,8 +62,9 @@ fn fill_stroke_operator_is_extracted_from_form_xobject() {
     // Same rectangle, but painted inside a Form XObject invoked via `Do` —
     // exercises the second (nested-XObject) path-extraction dispatch loop.
     let content: &[u8] = b"q 1 0 0 1 0 0 cm /Fm1 Do Q";
-    let doc = PdfDocument::from_bytes(build_form_xobject_pdf(content, b"0 0 0 rg 50 50 100 75 re B"))
-        .expect("parse");
+    let doc =
+        PdfDocument::from_bytes(build_form_xobject_pdf(content, b"0 0 0 rg 50 50 100 75 re B"))
+            .expect("parse");
     let paths = doc.extract_paths(0).expect("paths");
     assert_eq!(
         paths.len(),
