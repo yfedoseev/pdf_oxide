@@ -8405,15 +8405,30 @@ impl PdfDocument {
         }
         if Self::is_column_spanning_decimal(span) {
             let dot = span.text.find('.').unwrap();
-            out.push_str(&span.text[..dot]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..dot]);
             out.push(' ');
-            out.push_str(&span.text[dot + 1..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[dot + 1..]);
         } else if let Some(split) = Self::char_widths_boundary_split(span) {
-            out.push_str(&span.text[..split]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..split]);
             out.push(' ');
-            out.push_str(&span.text[split..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[split..]);
         } else {
-            out.push_str(&span.text);
+            Self::push_str_without_soft_hyphens(out, &span.text);
+        }
+    }
+
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
+    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
+    /// it is never meaningful rendered content, so it must not survive into
+    /// flat-text output regardless of whether it sits at a line boundary (the
+    /// PDF's own line wrap is not preserved here) or mid-word within a span
+    /// whose glyphs were positioned individually.
+    #[inline]
+    fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
+        if s.contains('\u{00AD}') {
+            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
+        } else {
+            out.push_str(s);
         }
     }
 
@@ -26189,6 +26204,26 @@ mod tests {
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
         assert_eq!(out, "3.14");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_soft_hyphen_mid_word() {
+        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
+        // point only — it must never survive into extract_text/to_markdown/
+        // to_html output, even mid-word with no adjacent line break (the
+        // span was drawn as a single reflowed run, not split across lines).
+        let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "reconstruction");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_multiple_soft_hyphens() {
+        let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "unbelievable");
     }
 
     // ========================================================================
