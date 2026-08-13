@@ -435,6 +435,9 @@ impl PageRenderer {
         // of staying suppressed across all subsequent renders on this
         // long-lived PageRenderer).
         self.k_zero_warning_emitted = false;
+        // Same page scope for the glyph-drop warning latch: a new page warns
+        // again per broken font, so bulk ingestion never goes silent.
+        self.text_rasterizer.reset_page_warnings();
 
         // Refresh the excluded-layers snapshot once per page. The effective
         // set combines (a) the PDF's default-off OCGs per /OCProperties/D

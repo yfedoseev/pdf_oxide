@@ -337,9 +337,10 @@ fn render_cjk_fallback_face() -> Option<Arc<CachedFace>> {
 ///
 /// A dropped glyph is indistinguishable from real whitespace downstream: OCR
 /// transcribes the gap-filled render faithfully and the loss reaches a search
-/// index unnoticed (#991). One warning per font names the first offending
-/// code and glyph id and how many followed in the run that triggered it —
-/// enough to identify a broken font without a log line per glyph.
+/// index unnoticed (#991). One warning per font per page names the first
+/// offending code and glyph id and how many followed in the run that
+/// triggered it — enough to identify a broken font without a log line per
+/// glyph.
 #[derive(Default)]
 struct GlyphDropTally {
     count: usize,
@@ -368,29 +369,11 @@ impl GlyphDropTally {
         })
     }
 
-    /// True the first time `font_name` is seen in this process. Reporting is
-    /// per text run, and the global sink is never drained by render-only
-    /// callers, so a broken font would otherwise push one warning per Tj/TJ
-    /// element without bound (#991 asked for once per font). `MAX_WARNED_FONTS`
-    /// bounds the gate's own memory.
-    fn first_report_for(font_name: &str) -> bool {
-        const MAX_WARNED_FONTS: usize = 64;
-        static WARNED_FONTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        let Ok(mut warned) = WARNED_FONTS.lock() else {
-            return false;
-        };
-        if warned.iter().any(|w| w == font_name) || warned.len() >= MAX_WARNED_FONTS {
-            return false;
-        }
-        warned.push(font_name.to_string());
-        true
-    }
-
-    fn report(&self, font_name: &str) {
+    fn report(&self, font_name: &str, rasterizer: &TextRasterizer) {
         let Some(warning) = self.warning(font_name) else {
             return;
         };
-        if !Self::first_report_for(font_name) {
+        if !rasterizer.first_report_for(font_name) {
             return;
         }
         log::warn!(target: "pdf_oxide::fonts", "{}", warning.message);
@@ -407,6 +390,16 @@ pub struct TextRasterizer {
     /// `PageRenderer`. See the `SYSTEM_FONTDB` docstring for the
     /// measurement that motivated the switch.
     fontdb: std::sync::Arc<fontdb::Database>,
+
+    /// Fonts already named in a glyph-drop warning on the current page.
+    ///
+    /// Page-scoped like `PageRenderer::k_zero_warning_emitted`: the renderer
+    /// clears it at the start of every page via `reset_page_warnings`, so bulk
+    /// ingestion warns on every page a broken font paints. Reporting is per
+    /// text run, and the global sink is never drained by render-only callers,
+    /// so a broken font would otherwise push one warning per Tj/TJ element
+    /// (#991 asked for once per font).
+    warned_fonts: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl TextRasterizer {
@@ -414,6 +407,7 @@ impl TextRasterizer {
     pub fn new() -> Self {
         Self {
             fontdb: system_fontdb(),
+            warned_fonts: Default::default(),
         }
     }
 
@@ -422,7 +416,28 @@ impl TextRasterizer {
     /// pre-populate the database with non-system fonts.
     #[allow(dead_code)]
     pub fn with_fontdb(fontdb: std::sync::Arc<fontdb::Database>) -> Self {
-        Self { fontdb }
+        Self {
+            fontdb,
+            warned_fonts: Default::default(),
+        }
+    }
+
+    /// Forget which fonts a glyph-drop warning has named. `PageRenderer`
+    /// calls this at the start of every page, making the warning
+    /// once-per-font-per-page rather than once per process.
+    pub(crate) fn reset_page_warnings(&self) {
+        if let Ok(mut warned) = self.warned_fonts.lock() {
+            warned.clear();
+        }
+    }
+
+    /// True the first time `font_name` is seen since the last
+    /// `reset_page_warnings` call.
+    fn first_report_for(&self, font_name: &str) -> bool {
+        match self.warned_fonts.lock() {
+            Ok(mut warned) => warned.insert(font_name.to_string()),
+            Err(_) => false,
+        }
     }
 
     /// Render a text string (Tj operator).
@@ -1499,6 +1514,7 @@ impl TextRasterizer {
             font_info
                 .map(|f| f.base_font.as_str())
                 .unwrap_or("<system fallback>"),
+            self,
         );
 
         // Return the magnitude of the accumulated advance along the active
@@ -1665,7 +1681,7 @@ impl TextRasterizer {
                 }
             }
         }
-        dropped.report(&font_info.base_font);
+        dropped.report(&font_info.base_font, self);
 
         Ok(if wmode == 0 { x_cursor } else { y_cursor })
     }
@@ -2182,12 +2198,18 @@ mod tests {
         assert!(warning.message.contains("no outline"));
     }
 
-    /// A font is named once per process, not once per text run (#991).
+    /// A font is named once per page, not once per text run (#991) and not
+    /// once per process: the latch clears with `reset_page_warnings`, so the
+    /// next page names the same broken font again.
     #[test]
-    fn glyph_drop_report_is_once_per_font() {
-        assert!(GlyphDropTally::first_report_for("OncePerFont+UniqueA"));
-        assert!(!GlyphDropTally::first_report_for("OncePerFont+UniqueA"));
-        assert!(GlyphDropTally::first_report_for("OncePerFont+UniqueB"));
+    fn glyph_drop_report_is_once_per_font_per_page() {
+        let rasterizer = TextRasterizer::with_fontdb(std::sync::Arc::new(fontdb::Database::new()));
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueA"));
+        assert!(!rasterizer.first_report_for("OncePerPage+UniqueA"));
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueB"));
+
+        rasterizer.reset_page_warnings();
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueA"));
     }
 
     /// Query helper: the family name the CJK fallback resolver looks up.
