@@ -1361,6 +1361,55 @@ impl PdfDocument {
         }
     }
 
+    /// Decrypt a stream object's raw bytes for re-serialization elsewhere,
+    /// **without** decompressing it — unlike [`Self::decode_stream_with_encryption`],
+    /// which both decrypts and applies `/Filter` (needed by extraction, which
+    /// wants the final bytes). A writer that re-emits the object verbatim
+    /// (same `/Filter`, e.g. FlateDecode) wants the opposite: decrypt only,
+    /// leave the filter's compressed bytes alone, so the `/Filter` entry it
+    /// copies stays valid.
+    ///
+    /// A no-op when the document isn't encrypted or the object isn't a
+    /// stream, so callers can apply it unconditionally to every object they
+    /// copy out of `self` — e.g. every write path that copies objects from
+    /// an already-open, possibly-encrypted source document into a new
+    /// output file with no `/Encrypt` dictionary of its own (issue #1032:
+    /// those paths were re-serializing the source's raw ciphertext
+    /// verbatim, producing a structurally valid but unreadable PDF with no
+    /// error or warning).
+    pub(crate) fn decrypt_stream_for_copy(
+        &self,
+        obj: Object,
+        obj_ref: ObjectRef,
+    ) -> Result<Object> {
+        let Object::Stream { mut dict, data } = obj else {
+            return Ok(obj);
+        };
+        // Per ISO 32000-2:2020 §7.6.3, object streams and cross-reference
+        // streams are never encrypted — same exclusion as
+        // `decode_stream_with_encryption` above.
+        let is_unencrypted_stream_type = dict
+            .get("Type")
+            .and_then(|t| t.as_name())
+            .map(|name| name == "ObjStm" || name == "XRef")
+            .unwrap_or(false);
+        if is_unencrypted_stream_type {
+            return Ok(Object::Stream { dict, data });
+        }
+        let handler_ref = self.encryption_handler.lock_or_recover();
+        let Some(handler) = handler_ref.as_ref() else {
+            drop(handler_ref);
+            return Ok(Object::Stream { dict, data });
+        };
+        let decrypted = handler.decrypt_stream(&data, obj_ref.id, obj_ref.gen as u32)?;
+        drop(handler_ref);
+        dict.insert("Length".to_string(), Object::Integer(decrypted.len() as i64));
+        Ok(Object::Stream {
+            dict,
+            data: decrypted.into(),
+        })
+    }
+
     /// Open with custom extraction profile.
     ///
     /// Currently, the profile is not used at the document level but is reserved

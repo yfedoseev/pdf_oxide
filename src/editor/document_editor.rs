@@ -1550,6 +1550,27 @@ impl DocumentEditor {
     /// Write an incremental update to the PDF.
     #[cfg(not(target_arch = "wasm32"))]
     fn write_incremental(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        // Refuse rather than silently corrupt (#1032): an incremental
+        // update appends new/modified objects as plain, unencrypted bytes
+        // after the untouched original file (which keeps its own streams
+        // correctly encrypted and readable under the original password),
+        // but the trailer's /Prev chain still points back to the source's
+        // /Encrypt dictionary — a conforming reader would try to decrypt
+        // the newly-appended plaintext objects with the document's
+        // original key and corrupt them. Properly supporting this would
+        // mean re-encrypting the appended objects under the source's own
+        // key (EncryptionHandler already exposes what that needs), which
+        // is a real but separate feature; for now, direct callers to the
+        // full-rewrite path instead, which already decrypts-then-emits
+        // every copied stream plaintext.
+        if self.source.is_encrypted() {
+            return Err(Error::InvalidPdf(
+                "incremental save is not supported for encrypted documents; \
+                 use save_to_bytes()/save_with_options(SaveOptions::full_rewrite()) instead"
+                    .to_string(),
+            ));
+        }
+
         // Read original file
         let original_bytes = self.read_source_bytes()?;
         let original_len = original_bytes.len();
@@ -1834,6 +1855,19 @@ impl DocumentEditor {
         reachable
     }
 
+    /// Load an object from `self.source` for copying into the output file,
+    /// decrypting its stream data (if any) so it survives into an output
+    /// with no `/Encrypt` dictionary of its own (#1032). A no-op beyond the
+    /// plain load when the source isn't encrypted. Every `self.source.load_object`
+    /// call in `write_full_to_writer` whose result can reach the output
+    /// writer goes through this instead of the raw accessor — the one
+    /// exception is `collect_reachable_ids`'s graph walk just above, which
+    /// only inspects references and never emits bytes.
+    fn load_source_object(&self, r: ObjectRef) -> Result<Object> {
+        let obj = self.source.load_object(r)?;
+        self.source.decrypt_stream_for_copy(obj, r)
+    }
+
     /// Write a full rewrite of the PDF to a generic writer.
     fn write_full_to_writer(
         &mut self,
@@ -1844,6 +1878,17 @@ impl DocumentEditor {
             generate_file_id, Algorithm, EncryptDictBuilder, EncryptionWriteHandler,
         };
         use flate2::{write::ZlibEncoder, Compression};
+
+        // Fail closed rather than silently copying unreadable ciphertext
+        // (#1032): every stream object read from `self.source` below goes
+        // through `load_source_object` to decrypt it, but that requires an
+        // authenticated encryption handler. An encrypted-but-unauthenticated
+        // source has no key to decrypt with at all — refuse rather than
+        // write out raw source ciphertext with no /Encrypt dict, which
+        // silently produces a structurally valid but unreadable PDF.
+        if self.source.is_encrypted() && !self.source.is_authenticated() {
+            return Err(Error::EncryptedPdf);
+        }
 
         /// Compress a stream object with FlateDecode if it has no filter yet.
         fn compress_stream_if_raw(obj: Object) -> Object {
@@ -2121,7 +2166,7 @@ impl DocumentEditor {
                         .and_then(|d| d.get("AcroForm"))
                         .and_then(|o| o.as_reference())
                     {
-                        if let Ok(af) = self.source.load_object(af_ref) {
+                        if let Ok(af) = self.load_source_object(af_ref) {
                             if let Some(orig_fields) = af
                                 .as_dict()
                                 .and_then(|d| d.get("Fields"))
@@ -2245,7 +2290,7 @@ impl DocumentEditor {
         // Get and write pages tree
         if let Some(catalog_dict) = catalog_obj.as_dict() {
             if let Some(pages_ref) = catalog_dict.get("Pages").and_then(|p| p.as_reference()) {
-                let pages_obj = self.source.load_object(pages_ref)?;
+                let pages_obj = self.load_source_object(pages_ref)?;
 
                 // Rebuild Pages tree: filter by page_order, reorder, append merged pages
                 let final_pages_obj = if let Some(pages_dict) = pages_obj.as_dict() {
@@ -2311,7 +2356,7 @@ impl DocumentEditor {
                         let mut page_index = 0;
                         for kid in kids {
                             if let Some(page_ref) = kid.as_reference() {
-                                let page_obj = self.source.load_object(page_ref)?;
+                                let page_obj = self.load_source_object(page_ref)?;
 
                                 // Resolve the original source page index for all HashMap lookups.
                                 // Merged pages (appended after source pages) use the loop counter.
@@ -2621,7 +2666,7 @@ impl DocumentEditor {
                                                         .get("Parent")
                                                         .and_then(|p| p.as_reference())
                                                         .and_then(|r| {
-                                                            self.source.load_object(r).ok()
+                                                            self.load_source_object(r).ok()
                                                         });
                                                     let mut inherited_font: Option<Object> = None;
                                                     let mut guard = 0;
@@ -2646,7 +2691,7 @@ impl DocumentEditor {
                                                             .get("Parent")
                                                             .and_then(|p| p.as_reference())
                                                             .and_then(|r| {
-                                                                self.source.load_object(r).ok()
+                                                                self.load_source_object(r).ok()
                                                             });
                                                     }
                                                     let mut seeded: HashMap<String, Object> =
@@ -2712,7 +2757,7 @@ impl DocumentEditor {
                                     let mut resources_dict = match resources {
                                         Some(Object::Dictionary(d)) => d,
                                         Some(Object::Reference(res_ref)) => {
-                                            match self.source.load_object(res_ref) {
+                                            match self.load_source_object(res_ref) {
                                                 Ok(Object::Dictionary(d)) => d,
                                                 _ => HashMap::new(),
                                             }
@@ -2724,7 +2769,7 @@ impl DocumentEditor {
                                     let mut xobject_dict = match resources_dict.get("XObject") {
                                         Some(Object::Dictionary(d)) => d.clone(),
                                         Some(Object::Reference(xobj_ref)) => {
-                                            match self.source.load_object(*xobj_ref) {
+                                            match self.load_source_object(*xobj_ref) {
                                                 Ok(Object::Dictionary(d)) => d,
                                                 _ => HashMap::new(),
                                             }
@@ -2865,7 +2910,7 @@ impl DocumentEditor {
                                     let mut resources_dict = match resources {
                                         Some(Object::Dictionary(d)) => d,
                                         Some(Object::Reference(res_ref)) => {
-                                            match self.source.load_object(res_ref) {
+                                            match self.load_source_object(res_ref) {
                                                 Ok(Object::Dictionary(d)) => d,
                                                 _ => HashMap::new(),
                                             }
@@ -2877,7 +2922,7 @@ impl DocumentEditor {
                                     let mut xobject_dict = match resources_dict.get("XObject") {
                                         Some(Object::Dictionary(d)) => d.clone(),
                                         Some(Object::Reference(xobj_ref)) => {
-                                            match self.source.load_object(*xobj_ref) {
+                                            match self.load_source_object(*xobj_ref) {
                                                 Ok(Object::Dictionary(d)) => d,
                                                 _ => HashMap::new(),
                                             }
@@ -2907,7 +2952,7 @@ impl DocumentEditor {
                                         let annots_array = match annots {
                                             Object::Array(arr) => arr,
                                             Object::Reference(annots_ref) => {
-                                                match self.source.load_object(annots_ref) {
+                                                match self.load_source_object(annots_ref) {
                                                     Ok(Object::Array(arr)) => arr,
                                                     _ => vec![],
                                                 }
@@ -2920,7 +2965,7 @@ impl DocumentEditor {
                                         for annot_ref in annots_array {
                                             if let Some(ref_obj) = annot_ref.as_reference() {
                                                 if let Ok(annot_obj) =
-                                                    self.source.load_object(ref_obj)
+                                                    self.load_source_object(ref_obj)
                                                 {
                                                     if let Some(annot_dict) = annot_obj.as_dict() {
                                                         let subtype = annot_dict
@@ -2961,7 +3006,7 @@ impl DocumentEditor {
                                         {
                                             Some(Object::Array(arr)) => arr,
                                             Some(Object::Reference(annots_ref)) => {
-                                                match self.source.load_object(annots_ref) {
+                                                match self.load_source_object(annots_ref) {
                                                     Ok(Object::Array(arr)) => arr,
                                                     _ => vec![],
                                                 }
@@ -3226,7 +3271,7 @@ impl DocumentEditor {
                                                 .and_then(|c| c.as_reference())
                                             {
                                                 let contents_obj =
-                                                    self.source.load_object(contents_ref)?;
+                                                    self.load_source_object(contents_ref)?;
                                                 let offset = writer.stream_position()?;
                                                 let bytes = serialize_obj(
                                                     &serializer,
@@ -3251,7 +3296,7 @@ impl DocumentEditor {
                                         page_dict.get("Resources").and_then(|r| r.as_reference())
                                     {
                                         let mut resources_obj =
-                                            self.source.load_object(resources_ref)?;
+                                            self.load_source_object(resources_ref)?;
 
                                         // Inject new XObject refs into Resources dict
                                         if !new_xobject_refs.is_empty() {
@@ -3379,7 +3424,7 @@ impl DocumentEditor {
                                                     Object::Dictionary(d) => Some(d.clone()),
                                                     Object::Reference(r) => {
                                                         let loaded =
-                                                            self.source.load_object(*r).map_err(|e| {
+                                                            self.load_source_object(*r).map_err(|e| {
                                                                 log::warn!("Failed to load resource object {} during save: {}", r.id, e);
                                                                 e
                                                             }).ok();
@@ -3411,7 +3456,7 @@ impl DocumentEditor {
                                                         {
                                                             if !written_ids.contains(&ref_obj.id) {
                                                                 if let Ok(xobj_obj) =
-                                                                    self.source.load_object(ref_obj)
+                                                                    self.load_source_object(ref_obj)
                                                                 {
                                                                     let offset =
                                                                         writer.stream_position()?;
@@ -3440,7 +3485,7 @@ impl DocumentEditor {
                                                     Object::Dictionary(d) => Some(d.clone()),
                                                     Object::Reference(r) => {
                                                         let loaded =
-                                                            self.source.load_object(*r).map_err(|e| {
+                                                            self.load_source_object(*r).map_err(|e| {
                                                                 log::warn!("Failed to load resource object {} during save: {}", r.id, e);
                                                                 e
                                                             }).ok();
@@ -3471,7 +3516,7 @@ impl DocumentEditor {
                                                         {
                                                             if !written_ids.contains(&ref_obj.id) {
                                                                 if let Ok(obj) =
-                                                                    self.source.load_object(ref_obj)
+                                                                    self.load_source_object(ref_obj)
                                                                 {
                                                                     let offset =
                                                                         writer.stream_position()?;
@@ -4079,7 +4124,7 @@ impl DocumentEditor {
             let loaded = if let Some(m) = self.modified_objects.get(&obj_id) {
                 Ok(m.clone())
             } else {
-                self.source.load_object(ObjectRef { id: obj_id, gen: 0 })
+                self.load_source_object(ObjectRef { id: obj_id, gen: 0 })
             };
             match loaded {
                 Ok(obj) => {
