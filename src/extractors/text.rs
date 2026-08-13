@@ -1928,9 +1928,12 @@ struct TjBuffer {
 fn snap_run_rotation(combined: &Matrix) -> f32 {
     const SNAP_TOL_DEG: f32 = 5.0;
     let (a, b, c, d) = (combined.a, combined.b, combined.c, combined.d);
-    // Pure horizontal fast path (covers virtually all text): b and c ~ 0.
+    // Pure horizontal/180° fast path: b and c ~ 0 covers both 0° (a,d > 0)
+    // and 180° (a,d < 0) — sin(0°) and sin(180°) are both 0, so the
+    // off-diagonal terms alone can't tell them apart. Check the sign of
+    // `a` (cos(0°)=1, cos(180°)=-1) to disambiguate.
     if b.abs() < 1e-4 && c.abs() < 1e-4 {
-        return 0.0;
+        return if a < 0.0 { 180.0 } else { 0.0 };
     }
     let mut deg = b.atan2(a).to_degrees();
     // Normalise to (-180, 180].
@@ -4734,9 +4737,15 @@ impl<'doc> TextExtractor<'doc> {
             //). Runs in a rotated frame never merge here; each
             // stays per-literal and the rotated-frame reading order and
             // word assembly handle them downstream.
-            let quadrant_vertical = |deg: f32| (deg - 90.0).abs() < 0.5 || (deg + 90.0).abs() < 0.5;
-            let rotation_compatible = !quadrant_vertical(current.rotation_degrees)
-                && !quadrant_vertical(span.rotation_degrees);
+            // "Never merge here" per the comment above means exactly that —
+            // any non-zero rotation on either side stays per-literal, not
+            // just the ±90° (vertical-quadrant) case. A 180°-rotated run
+            // previously slipped through this gate (only ±90° was checked),
+            // letting two upside-down lines' runs glue together under the
+            // portrait same-line test below even though 180° text advances
+            // in the opposite X direction.
+            let rotation_compatible =
+                current.rotation_degrees == 0.0 && span.rotation_degrees == 0.0;
             let y_diff = (span.bbox.y - current.bbox.y).abs();
             let same_line = y_diff < 1.0 && wmode_compatible && rotation_compatible;
 
@@ -9336,6 +9345,12 @@ mod tests {
         assert_eq!(snap_run_rotation(&m(0.0, 12.0, -12.0, 0.0)), 90.0);
         // 270° / -90° (a=0, b=-s, c=+s, d=0).
         assert_eq!(snap_run_rotation(&m(0.0, -12.0, 12.0, 0.0)), -90.0);
+        // 180° (a=-s, d=-s, b=c=0) must not alias to 0° — both have
+        // b≈0, c≈0, so only the sign of `a` (cos 0° vs cos 180°)
+        // distinguishes them.
+        assert_eq!(snap_run_rotation(&m(-12.0, 0.0, 0.0, -12.0)), 180.0);
+        // Tiny float noise on a 180° matrix still counts as 180°, not 0°.
+        assert_eq!(snap_run_rotation(&m(-12.0, 1e-5, -1e-5, -12.0)), 180.0);
         // ~88° snaps to 90.
         let r = 12.0_f32;
         let th = 88.0_f32.to_radians();
@@ -12281,6 +12296,88 @@ mod tests {
         assert_eq!(extractor.spans.len(), 1, "Adjacent spans on same line should merge");
         assert!(extractor.spans[0].text.contains("Hello"));
         assert!(extractor.spans[0].text.contains("World"));
+    }
+
+    #[test]
+    fn test_merge_adjacent_spans_180_degree_runs_never_merge() {
+        // Same shared-baseline-Y, small-gap shape as
+        // `test_merge_adjacent_spans_same_line`, but both runs are
+        // 180°-rotated (upside-down text). The rotation-compatibility gate
+        // previously only rejected ±90° (vertical-quadrant) runs, so a
+        // 180°/180° pair slipped through and merged under the portrait
+        // same-line test even though 180° text advances in the opposite X
+        // direction — exactly the hazard `snap_run_rotation`'s 180°-aliasing
+        // bug (fixed alongside this) would otherwise mask, since before
+        // that fix a 180° matrix was misreported as 0.0 in the first place.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        extractor.spans = vec![
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "Hello".to_string(),
+                bbox: Rect::new(100.0, 700.0, 30.0, 12.0),
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 180.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: "World".to_string(),
+                bbox: Rect::new(131.0, 700.0, 30.0, 12.0), // 1pt gap
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 180.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "180°-rotated runs must never merge here, even on a shared baseline-Y \
+             with a small gap"
+        );
     }
 
     #[test]
