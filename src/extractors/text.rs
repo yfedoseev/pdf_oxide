@@ -9774,6 +9774,59 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #1033: a `/PlacedPDF` marked-content scope
+    /// whose `BDC` lands inside the first prescanned (>256KB fast-path)
+    /// text region but whose matching `EMC` falls outside it — past tens
+    /// of thousands of bytes of artwork the prescan never turns into a
+    /// text region — must not suppress text in every subsequent region.
+    /// Before the fix, `inside_placed_pdf` stayed `true` forever once the
+    /// scope's `EMC` fell outside a prescanned region's byte range, since
+    /// the marked-content stack (unlike CTM/font) got no
+    /// per-region balancing.
+    #[test]
+    fn test_prescan_marked_content_scope_does_not_leak_across_regions() {
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"/PlacedPDF /MC0 BDC\n");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 700 Td (Figure Label) Tj ET\n");
+        // >256KB of filler path data (the artwork) with no BT/Do at all,
+        // so the prescan never turns it into its own text region — the
+        // EMC below lands in the gap between the two BT regions.
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        cs.extend_from_slice(b"EMC\n");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 600 Td (Body Text After Figure) Tj ET\n");
+        assert!(cs.len() > 256 * 1024, "stream must exceed 256KB prescan threshold");
+
+        let font = create_test_font();
+        let mut extractor = TextExtractor::new();
+        extractor.add_font("F1".to_string(), font);
+
+        let spans = extractor.extract_text_spans(&cs).unwrap();
+        let all_text: String = spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            !all_text.contains("Figure Label"),
+            "text inside the /PlacedPDF scope must still be suppressed, got: {all_text:?}"
+        );
+        assert!(
+            all_text.contains("Body Text After Figure"),
+            "text after the /PlacedPDF scope closes (EMC) must not be suppressed \
+             just because the EMC fell outside the prescanned region, got: {all_text:?}"
+        );
+    }
+
     #[test]
     fn test_extract_save_restore() {
         let mut extractor = TextExtractor::new();

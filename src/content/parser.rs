@@ -1449,6 +1449,20 @@ where
 
 /// Parse a sub-region of a content stream for text operators.
 /// Used by the pre-scan path to parse only identified text-bearing regions.
+///
+/// Each region is bracketed in `SaveState`/`RestoreState` by the caller, and
+/// CTM/font state is injected fresh per region — but the marked-content
+/// stack gets no such treatment, and a scope this region *opens* (BDC/BMC)
+/// without also *closing* (EMC) before the region ends would otherwise leak
+/// into every subsequent region indefinitely (#1033). This is fatal when
+/// the tag is `/PlacedPDF`: `is_content_suppressed` stays true forever,
+/// discarding all remaining text on the page. Tracks this region's own
+/// BDC/BMC vs EMC balance and emits synthetic `EndMarkedContent` operators
+/// for anything still open when the region ends — closing only what THIS
+/// region itself opened, never touching scopes open when it started (the
+/// safer half of a full cross-region marked-content-state carry, which
+/// isn't needed for the reported failure mode: it can only ever end scopes
+/// this region opened, never fabricate a scope's original tag/properties).
 fn parse_region_text_only<F>(data: &[u8], handler: &mut F) -> Result<()>
 where
     F: FnMut(Operator) -> Result<()>,
@@ -1457,6 +1471,19 @@ where
     let mut consecutive_errors: usize = 0;
     let mut inside_text = false;
     let mut op_count: usize = 0;
+    let mut mc_depth: u32 = 0;
+    let mut call = |op: Operator, handler: &mut F| -> Result<()> {
+        match &op {
+            Operator::BeginMarkedContent { .. } | Operator::BeginMarkedContentDict { .. } => {
+                mc_depth += 1;
+            },
+            Operator::EndMarkedContent => {
+                mc_depth = mc_depth.saturating_sub(1);
+            },
+            _ => {},
+        }
+        handler(op)
+    };
 
     while !input.is_empty() {
         while !input.is_empty() && input[0].is_ascii_whitespace() {
@@ -1475,7 +1502,7 @@ where
                 if matches!(op, Operator::EndText) {
                     inside_text = false;
                 }
-                handler(op)?;
+                call(op, handler)?;
                 op_count += 1;
                 input = rest;
                 consecutive_errors = 0;
@@ -1485,7 +1512,7 @@ where
                         if matches!(op, Operator::EndText) {
                             inside_text = false;
                         }
-                        handler(op)?;
+                        call(op, handler)?;
                         op_count += 1;
                         input = rest;
                         consecutive_errors = 0;
@@ -1507,7 +1534,7 @@ where
             match scan_graphics_region(input, &mut consecutive_errors) {
                 ScanResult::EndOfData => break,
                 ScanResult::FoundBT { rest } => {
-                    handler(Operator::BeginText)?;
+                    call(Operator::BeginText, handler)?;
                     op_count += 1;
                     input = rest;
                     inside_text = true;
@@ -1521,7 +1548,7 @@ where
                     after_op,
                 } => match parse_operator_with_operands(operand_start) {
                     Ok((rest2, op)) => {
-                        handler(op)?;
+                        call(op, handler)?;
                         op_count += 1;
                         input = rest2;
                     },
@@ -1535,7 +1562,7 @@ where
                     while remaining.len() > trigger_start.len() {
                         match parse_operator_with_operands(remaining) {
                             Ok((rest2, op)) => {
-                                handler(op)?;
+                                call(op, handler)?;
                                 op_count += 1;
                                 remaining = rest2;
                             },
@@ -1552,13 +1579,22 @@ where
                     consecutive_errors = 0;
                 },
                 ScanResult::SimpleOp { op, rest } => {
-                    handler(op)?;
+                    call(op, handler)?;
                     op_count += 1;
                     input = rest;
                 },
                 ScanResult::TooManyErrors { .. } => break,
             }
         }
+    }
+
+    // Balance any marked-content scope this region opened but did not
+    // close (BDC/BMC with no matching EMC before the region ended) — see
+    // the function doc comment. Closing only what this region itself
+    // opened is always safe: it never affects a scope that was already
+    // open when the region started.
+    for _ in 0..mc_depth {
+        handler(Operator::EndMarkedContent)?;
     }
 
     Ok(())
