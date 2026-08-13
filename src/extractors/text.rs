@@ -8408,11 +8408,13 @@ impl<'doc> TextExtractor<'doc> {
                 // 2-byte codes per ToUnicode codespace.
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
-                for (char_code, _) in TextCharIter::new(text, Some(font)) {
+                for (char_code, nbytes) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(char_code) * fs_factor * hs_factor;
                     w += cs_hs;
-                    // Standard PDF space character (code 32) triggers word spacing
-                    if char_code == 32 {
+                    // Per ISO 32000-1:2008 §9.3.3: Tw applies only to the
+                    // single-byte character code 32 — a 2-byte CID 32 inside
+                    // an Identity-H/CJK font must not take Tw.
+                    if nbytes == 1 && char_code == 32 {
                         w += ws_hs;
                     }
                     w_sum += w;
@@ -8428,11 +8430,13 @@ impl<'doc> TextExtractor<'doc> {
                 // axis per §9.3.4).
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
-                for (char_code, _) in TextCharIter::new(text, Some(font)) {
+                for (char_code, nbytes) in TextCharIter::new(text, Some(font)) {
                     let w1y = font.get_vertical_metrics(char_code).w1y;
                     let mut w = w1y * fs_factor;
                     w += char_space;
-                    if char_code == 32 {
+                    // Per ISO 32000-1:2008 §9.3.3: Tw applies only to the
+                    // single-byte character code 32.
+                    if nbytes == 1 && char_code == 32 {
                         w += word_space;
                     }
                     w_sum += w;
