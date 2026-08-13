@@ -90,8 +90,7 @@ fn build_pdf_with_utf16_title() -> Vec<u8> {
 
 #[test]
 fn info_title_decodes_utf16be_bom_correctly() {
-    let mut editor =
-        DocumentEditor::open_from_bytes(build_pdf_with_utf16_title()).expect("open pdf");
+    let mut editor = DocumentEditor::from_bytes(build_pdf_with_utf16_title()).expect("open pdf");
     let info = editor.get_info().expect("get_info");
 
     assert_eq!(
