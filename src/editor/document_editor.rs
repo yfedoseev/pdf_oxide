@@ -117,33 +117,39 @@ impl DocumentInfo {
     }
 
     /// Parse from a PDF Info dictionary object.
+    ///
+    /// PDF text strings are UTF-16BE-with-BOM or PDFDocEncoding, never raw
+    /// UTF-8 (ISO 32000-1:2008 §7.9.2.2) — decoded via
+    /// [`crate::optional_content::decode_pdf_text_string`], which every
+    /// other text-string call site in this codebase already uses.
     pub fn from_object(obj: &Object) -> Self {
+        use crate::optional_content::decode_pdf_text_string;
         let mut info = Self::default();
 
         if let Some(dict) = obj.as_dict() {
             if let Some(Object::String(s)) = dict.get("Title") {
-                info.title = String::from_utf8_lossy(s).to_string().into();
+                info.title = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("Author") {
-                info.author = String::from_utf8_lossy(s).to_string().into();
+                info.author = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("Subject") {
-                info.subject = String::from_utf8_lossy(s).to_string().into();
+                info.subject = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("Keywords") {
-                info.keywords = String::from_utf8_lossy(s).to_string().into();
+                info.keywords = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("Creator") {
-                info.creator = String::from_utf8_lossy(s).to_string().into();
+                info.creator = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("Producer") {
-                info.producer = String::from_utf8_lossy(s).to_string().into();
+                info.producer = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("CreationDate") {
-                info.creation_date = String::from_utf8_lossy(s).to_string().into();
+                info.creation_date = decode_pdf_text_string(s).into();
             }
             if let Some(Object::String(s)) = dict.get("ModDate") {
-                info.mod_date = String::from_utf8_lossy(s).to_string().into();
+                info.mod_date = decode_pdf_text_string(s).into();
             }
         }
 
