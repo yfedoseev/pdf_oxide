@@ -22,9 +22,8 @@ fn build_identity_h_pdf(word_space: f32) -> Vec<u8> {
     let size = 24.0f32;
     let w_units = 500u32;
 
-    let content = format!(
-        "{word_space} Tw\nBT\n/F1 {size} Tf\n1 0 0 1 40 720 Tm\n<004100200042> Tj\nET\n"
-    );
+    let content =
+        format!("{word_space} Tw\nBT\n/F1 {size} Tf\n1 0 0 1 40 720 Tm\n<004100200042> Tj\nET\n");
     let content_b = content.into_bytes();
 
     // /ToUnicode: CID 0x0041 -> 'A', CID 0x0020 -> U+0020 (space), CID 0x0042 -> 'B'.
@@ -118,8 +117,7 @@ fn word_spacing_does_not_shift_glyph_after_multibyte_cid_32() {
 #[test]
 fn word_spacing_shifts_glyph_after_single_byte_space() {
     fn build_simple_pdf(word_space: f32) -> Vec<u8> {
-        let content =
-            format!("{word_space} Tw\nBT\n/F1 24 Tf\n1 0 0 1 40 720 Tm\n(A B) Tj\nET\n");
+        let content = format!("{word_space} Tw\nBT\n/F1 24 Tf\n1 0 0 1 40 720 Tm\n(A B) Tj\nET\n");
         let content_b = content.into_bytes();
         let objs: Vec<String> = vec![
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
