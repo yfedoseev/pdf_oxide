@@ -1976,16 +1976,33 @@ impl TjBuffer {
             _ => FontWeight::Normal,
         };
         let is_italic = cached_font.as_ref().map(|f| f.is_italic()).unwrap_or(false);
-        let is_monospace = cached_font.as_ref().is_some_and(|f| {
-            if f.flags.is_some_and(|flags| flags & 1 != 0) {
-                return true;
-            }
-            let name = f.base_font.to_uppercase();
-            name.contains("COURIER")
-                || name.contains("CONSOLAS")
-                || name.contains("MONO")
-                || name.contains("FIXED")
-        });
+        // Invisible text (Tr 3/7, ISO 32000-1 §9.3.6) is never real visible
+        // monospace content — it's an OCR text-sandwich layer sitting under
+        // a scanned page image, or deliberately hidden text. Such layers
+        // commonly use a synthetic font (conventionally named
+        // "GlyphLessFont" by ocrmypdf/Tesseract and similar tools) whose
+        // FontDescriptor sets the FixedPitch flag purely for positioning
+        // simplicity — the glyphs are never rendered, so "monospace" has no
+        // visual meaning to categorize by. Downstream markdown conversion
+        // uses `is_monospace` to fence a line/paragraph as a code block; an
+        // OCR'd scanned novel's dialogue tripping this on FixedPitch alone
+        // fences narrative prose as code (#1024).
+        let is_invisible_or_glyphless = state.render_mode == 3
+            || state.render_mode == 7
+            || cached_font
+                .as_ref()
+                .is_some_and(|f| f.base_font.to_uppercase().contains("GLYPHLESS"));
+        let is_monospace = !is_invisible_or_glyphless
+            && cached_font.as_ref().is_some_and(|f| {
+                if f.flags.is_some_and(|flags| flags & 1 != 0) {
+                    return true;
+                }
+                let name = f.base_font.to_uppercase();
+                name.contains("COURIER")
+                    || name.contains("CONSOLAS")
+                    || name.contains("MONO")
+                    || name.contains("FIXED")
+            });
         let rotation_degrees = snap_run_rotation(&combined);
         // Pre-compute user-space position: text_matrix origin → CTM transform
         let text_pos = state.text_matrix.transform_point(0.0, 0.0);
@@ -9824,6 +9841,55 @@ mod tests {
             all_text.contains("Body Text After Figure"),
             "text after the /PlacedPDF scope closes (EMC) must not be suppressed \
              just because the EMC fell outside the prescanned region, got: {all_text:?}"
+        );
+    }
+
+    /// Regression test for issue #1024: invisible text (Tr 3/7) must never
+    /// be classified monospace, even under a FixedPitch-flagged or
+    /// "GlyphLessFont"-named font. Such text is an OCR text-sandwich layer
+    /// sitting under a scanned page image — a synthetic OCR font commonly
+    /// sets FixedPitch purely for positioning simplicity, since the glyphs
+    /// are never rendered. Markdown conversion uses `is_monospace` to fence
+    /// a paragraph as a code block; without this gate, a scanned novel's
+    /// OCR'd dialogue trips FixedPitch and gets served as a code block.
+    #[test]
+    fn test_invisible_text_is_never_monospace() {
+        // Invisible render mode (Tr 3) + FixedPitch-flagged font: must NOT
+        // be monospace despite the flag.
+        let mut ocr_font = create_test_font();
+        ocr_font.base_font = "GlyphLessFont".to_string();
+        ocr_font.flags = Some(1); // bit 0 = FixedPitch
+
+        let mut extractor = TextExtractor::new();
+        extractor.add_font("F1".to_string(), ocr_font);
+
+        let stream = b"BT /F1 12 Tf 3 Tr 100 700 Td (\"I don't know,\" she said.) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert!(!spans.is_empty(), "should produce at least one span");
+        assert!(
+            !spans[0].is_monospace,
+            "invisible (Tr 3) text under a FixedPitch OCR font must not be \
+             classified monospace"
+        );
+
+        // Control: the SAME FixedPitch font, but VISIBLE (default Tr 0),
+        // must still be classified monospace — the gate must not
+        // over-suppress real code/monospace content.
+        let mut visible_font = create_test_font();
+        visible_font.base_font = "Courier".to_string();
+        visible_font.flags = Some(1);
+
+        let mut extractor2 = TextExtractor::new();
+        extractor2.add_font("F2".to_string(), visible_font);
+
+        let stream2 = b"BT /F2 12 Tf 100 700 Td (let x = 1;) Tj ET";
+        let spans2 = extractor2.extract_text_spans(stream2).unwrap();
+
+        assert!(!spans2.is_empty(), "should produce at least one span");
+        assert!(
+            spans2[0].is_monospace,
+            "visible FixedPitch text must still be classified monospace"
         );
     }
 
