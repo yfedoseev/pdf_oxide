@@ -22459,7 +22459,10 @@ impl PdfDocument {
                     }
                 };
                 let w = xobject_dict.get("Width").and_then(resolve_int).unwrap_or(0);
-                let h = xobject_dict.get("Height").and_then(resolve_int).unwrap_or(0);
+                let h = xobject_dict
+                    .get("Height")
+                    .and_then(resolve_int)
+                    .unwrap_or(0);
                 if w < filter.min_width || h < filter.min_height {
                     return Ok(images);
                 }
