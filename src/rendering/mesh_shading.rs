@@ -1030,6 +1030,25 @@ fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
     if size.contains(&0) || domain.len() < m {
         return None;
     }
+    // `/Size` is document controlled. Bounding the declared grid by what the
+    // sample stream holds keeps the stride and flat-index products below from
+    // wrapping a bogus grid into a valid-looking offset.
+    let declared_bits = size
+        .iter()
+        .try_fold(1usize, |acc, &s| acc.checked_mul(s))
+        .and_then(|samples| samples.checked_mul(n))
+        .and_then(|values| values.checked_mul(bps as usize));
+    if declared_bits.is_none_or(|bits| bits > bytes.len() * 8) {
+        log::warn!(
+            "Skipping sampled function: /Size {:?} with {} outputs at {} bits declares \
+             more samples than the {}-byte sample stream holds",
+            size,
+            n,
+            bps,
+            bytes.len()
+        );
+        return None;
+    }
     let encode: Vec<f32> = dict
         .get("Encode")
         .and_then(|o| o.as_array())
