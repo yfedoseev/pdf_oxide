@@ -17212,7 +17212,22 @@ impl PdfDocument {
                 },
             }
         }
-        lines.extend(rotated_lines.into_iter().map(|(_, _, line)| line));
+        lines.extend(rotated_lines.into_iter().map(|(rot, off, mut line)| {
+            // A merged quarter-turn line collects its runs in arrival order,
+            // which is content-stream order: a subscript drawn after the
+            // line's tail lands at the end of the string. Order members
+            // along the writing axis instead — ascending y for +90,
+            // descending for -90 — the order the text assembler reads them
+            // in. Stable, so runs sharing a coordinate keep drawing order.
+            if !off.is_nan() {
+                if rot > 0.0 {
+                    line.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+                } else {
+                    line.sort_by(|a, b| b.bbox.y.total_cmp(&a.bbox.y));
+                }
+            }
+            line
+        }));
         // Reading order: sort lines by the span sequence of their first word
         // (stable so intra-line order is preserved).
         lines.sort_by_key(|line| line.first().map(|w| w.sequence).unwrap_or(usize::MAX));

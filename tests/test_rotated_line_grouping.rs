@@ -203,3 +203,41 @@ fn rotated_subscript_formula_stays_contiguous() {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join("");
     assert!(flat.contains("N2O"), "rotated subscripted formula came apart: {text:?}");
 }
+
+/// A 90-degree line whose subscript run is drawn LAST in the content stream
+/// but sits mid-line geometrically: "H" then "0" then "2", with the "2"
+/// dropped slightly off the shared baseline offset the way a chart axis
+/// label draws H2O. Arrival order would read "H 0) 2".
+fn rotated_line_with_late_subscript_pdf() -> Vec<u8> {
+    let mut content = Vec::new();
+    content.extend_from_slice(b"BT /F1 10 Tf\n");
+    for (x, y, word) in [(200, 150, "H"), (200, 175, "0"), (197, 162, "2")] {
+        content.extend_from_slice(format!("0 1 -1 0 {x} {y} Tm ({word}) Tj\n").as_bytes());
+    }
+    content.extend_from_slice(b"ET");
+    build_minimal_pdf_raw(&content, b"/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]")
+}
+
+#[test]
+fn a_merged_rotated_line_reads_in_writing_axis_order() {
+    let doc =
+        PdfDocument::from_bytes(rotated_line_with_late_subscript_pdf()).expect("parse fixture");
+    let lines = doc.extract_text_lines(0).expect("extract lines");
+    assert_eq!(
+        lines.len(),
+        1,
+        "one visual line came back as {} lines: {:?}",
+        lines.len(),
+        lines.iter().map(|l| l.text.trim()).collect::<Vec<_>>()
+    );
+    let text = &lines[0].text;
+    let (h, two, zero) = (
+        text.find('H').expect("H in line"),
+        text.find('2').expect("2 in line"),
+        text.find('0').expect("0 in line"),
+    );
+    assert!(
+        h < two && two < zero,
+        "members must read along the writing axis, not in drawing order: {text:?}"
+    );
+}
