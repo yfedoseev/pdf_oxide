@@ -4173,23 +4173,34 @@ impl PageRenderer {
                                 let mh = mask_gray.height();
                                 let iw = rgba_image.width();
                                 let ih = rgba_image.height();
-                                for y in 0..ih {
-                                    for x in 0..iw {
-                                        let mx = (x * mw / iw).min(mw - 1);
-                                        let my = (y * mh / ih).min(mh - 1);
-                                        let mask_val = mask_gray.get_pixel(mx, my)[0];
-                                        let pixel = rgba_image.get_pixel_mut(x, y);
-                                        pixel[3] =
-                                            ((pixel[3] as u32 * mask_val as u32) / 255) as u8;
+                                if mw == 0 || mh == 0 {
+                                    // No mask sample to test: leave the base
+                                    // image fully opaque rather than guessing.
+                                    log::warn!(
+                                        "Ignoring image Mask: it is {mw}x{mh} and carries \
+                                         no sample to test"
+                                    );
+                                } else {
+                                    for y in 0..ih {
+                                        let my =
+                                            ((y as u64 * mh as u64 / ih as u64) as u32).min(mh - 1);
+                                        for x in 0..iw {
+                                            let mx = ((x as u64 * mw as u64 / iw as u64) as u32)
+                                                .min(mw - 1);
+                                            let mask_val = mask_gray.get_pixel(mx, my)[0];
+                                            let pixel = rgba_image.get_pixel_mut(x, y);
+                                            pixel[3] =
+                                                ((pixel[3] as u32 * mask_val as u32) / 255) as u8;
+                                        }
                                     }
+                                    log::debug!(
+                                        "Applied image Mask ({}x{}) to image ({}x{})",
+                                        mw,
+                                        mh,
+                                        iw,
+                                        ih
+                                    );
                                 }
-                                log::debug!(
-                                    "Applied image Mask ({}x{}) to image ({}x{})",
-                                    mw,
-                                    mh,
-                                    iw,
-                                    ih
-                                );
                             }
                         },
                         Err(_) => {
@@ -4201,16 +4212,19 @@ impl PageRenderer {
                                     .map(|o| matches!(o, Object::Boolean(true)))
                                     .unwrap_or(false);
                                 if is_image_mask {
+                                    // `as u32` turns a negative /Width into a
+                                    // near-u32::MAX stride that passes the
+                                    // check below.
                                     let mw = mask_dict
                                         .get("Width")
                                         .and_then(|o| o.as_integer())
-                                        .unwrap_or(0)
-                                        as u32;
+                                        .and_then(|v| u32::try_from(v).ok())
+                                        .unwrap_or(0);
                                     let mh = mask_dict
                                         .get("Height")
                                         .and_then(|o| o.as_integer())
-                                        .unwrap_or(0)
-                                        as u32;
+                                        .and_then(|v| u32::try_from(v).ok())
+                                        .unwrap_or(0);
                                     if mw > 0 && mh > 0 {
                                         if let Ok(raw_mask_data) =
                                             doc.decode_stream_with_encryption(&mask_stream, ref_obj)
@@ -4253,9 +4267,14 @@ impl PageRenderer {
                                             let ih = rgba_image.height();
                                             let row_bytes = (mw as usize + 7) / 8;
                                             for y in 0..ih {
+                                                let my = ((y as u64 * mh as u64 / ih as u64) as u32)
+                                                    .min(mh - 1)
+                                                    as usize;
                                                 for x in 0..iw {
-                                                    let mx = (x * mw / iw).min(mw - 1) as usize;
-                                                    let my = (y * mh / ih).min(mh - 1) as usize;
+                                                    let mx = ((x as u64 * mw as u64 / iw as u64)
+                                                        as u32)
+                                                        .min(mw - 1)
+                                                        as usize;
                                                     let byte_idx = my * row_bytes + mx / 8;
                                                     let bit_idx = 7 - (mx % 8);
                                                     // PDF spec 8.9.6.2: mask bit 1 = paint (opaque), 0 = don't paint (transparent)
@@ -4534,7 +4553,10 @@ impl PageRenderer {
         name.eq_ignore_ascii_case("CCITTFaxDecode") || name.eq_ignore_ascii_case("CCF")
     }
 
-    fn image_mask_layout(
+    /// `(width, height, row_bytes, packed_len, rgba_len)` for a 1-bpc stencil,
+    /// rejecting geometry that does not fit or that no stream could back —
+    /// before anything is allocated from it.
+    pub(crate) fn image_mask_layout(
         dict: &HashMap<String, Object>,
     ) -> Result<(u32, u32, usize, usize, usize)> {
         let dimension = |key: &str| -> Result<u32> {
