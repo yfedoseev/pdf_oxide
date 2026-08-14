@@ -1135,12 +1135,11 @@ pub fn extract_image_from_xobject(
             // benefits, as both the PNG path and the rasteriser are 8-bit.
             let reduced: Vec<u8> = if bits_per_component == 16 {
                 // Rescaling 0..65535 to 0..255 leaves the raw sample space
-                // exactly as the sub-byte unpack does, and `effective_bpc`
-                // below reports 8 — so nothing downstream can infer it from
-                // the depth. A colour-key /Mask states its bounds in the
-                // file's 0..65535 space and must not be range-tested against
-                // these bytes.
-                samples_are_raw = false;
+                // exactly as the sub-byte unpack does. The flag clears at the
+                // `effective_bpc` check below, which owns the stored-versus-
+                // declared depth rule for every codec. A colour-key /Mask
+                // states its bounds in the file's 0..65535 space and must not
+                // be range-tested against these bytes.
                 decoded_data
                     .chunks_exact(2)
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))
@@ -1235,6 +1234,14 @@ pub fn extract_image_from_xobject(
     } else {
         stored_bpc
     };
+    // A stored depth that no longer matches the declared /BitsPerComponent
+    // means the samples left the space the dictionary describes: the 16-bit
+    // reduce and the JBIG2 decoder's 8-bit output both land here. Cleared
+    // centrally so a codec expansion cannot forget the flag — the JBIG2
+    // branch did, and reported raw samples at 8 bpc against a declared 1.
+    if i64::from(effective_bpc) != i64::from(bits_per_component) {
+        samples_are_raw = false;
+    }
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
     image.set_samples_are_raw(samples_are_raw);
     image.set_decode_folded_in(decode_folded_in);
