@@ -6485,7 +6485,7 @@ impl PdfDocument {
                             text.push(' ');
                         } else if y_diff > 1.0
                             && gap < -fs
-                            && (span_end_x - prev_end_x).abs() <= 0.1 * fs
+                            && (span_end_x - prev_end_x).abs() <= fs / 12.0
                             && !prev.rtl_draw_logical
                             && !span.rtl_draw_logical
                             && !crate::text::bidi::looks_rtl(&prev.text)
@@ -6501,16 +6501,18 @@ impl PdfDocument {
                             // figures from consecutive rows ("22,796" + "3,052"
                             // → "22,7963,052"). Coincident right edges plus a
                             // full-em backward gap at a real baseline offset is
-                            // the stack signature. The right-edge tolerance is
-                            // a tenth of the font size: the offset a real
-                            // column shows between differently-styled rows is
-                            // a small em-fraction (measured 0.062 em), while
-                            // unrelated ragged edges sit whole glyph advances
-                            // (~0.556 em) apart — a half-advance bound fired
-                            // on twenty times the measured column population.
-                            // The bound scales with the font instead of being
-                            // a point constant. Placed last, so it can only
-                            // add a separator where none is emitted today.
+                            // the stack signature. The right-edge tolerance
+                            // is a twelfth of the font size: the calibration
+                            // column right-aligns its negative rows 0.371 pt
+                            // left of its positive ones at 6 pt (0.062 em),
+                            // and fs/12 (0.083 em) covers that with margin
+                            // while reproducing the validated 0.5 pt band at
+                            // the calibration size. Wider em-fractions sweep
+                            // in coincidental ragged-edge alignments (a
+                            // half-advance band separated twenty times the
+                            // measured column population). Placed last, so it
+                            // can only add a separator where none is emitted
+                            // today.
                             if !hangul_midword_wrap && !text.ends_with('\n') {
                                 text.push('\n');
                             }
