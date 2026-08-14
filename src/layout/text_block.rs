@@ -777,6 +777,44 @@ impl TextBlock {
         }
     }
 
+    /// Append `other`'s glyphs to this block, growing the bbox to their union
+    /// and re-deriving the aggregate attributes.
+    ///
+    /// Incremental by design: O(len(other)) per call, so folding a run of `k`
+    /// blocks costs O(total_chars) instead of the O(n²) of rebuilding through
+    /// [`Self::from_chars`] at every step.
+    ///
+    /// Attribute rules, which are NOT the same as rebuilding from the
+    /// concatenated chars: `avg_font_size` becomes the glyph-count-weighted
+    /// mean, `dominant_font` follows the larger side, the style flags OR
+    /// together, and a differing `mcid` collapses to `None` (the union no
+    /// longer belongs to one marked-content sequence). `sequence` and
+    /// `rotation_degrees` are left as this block's — callers fold blocks from
+    /// a single run, where both already agree.
+    pub(crate) fn absorb(&mut self, other: TextBlock) {
+        let self_n = self.chars.len() as f32;
+        let other_n = other.chars.len() as f32;
+        self.bbox = self.bbox.union(&other.bbox);
+        // Both sides can be chars-empty (several call sites build blocks with
+        // no chars); a plain weighted mean would divide 0.0 by 0.0 and poison
+        // the font size with NaN, which then propagates into every downstream
+        // gap threshold.
+        if self_n + other_n > 0.0 {
+            self.avg_font_size =
+                (self.avg_font_size * self_n + other.avg_font_size * other_n) / (self_n + other_n);
+        }
+        if other_n > self_n {
+            self.dominant_font = other.dominant_font;
+        }
+        self.is_bold |= other.is_bold;
+        self.is_italic |= other.is_italic;
+        if self.mcid != other.mcid {
+            self.mcid = None;
+        }
+        self.text.push_str(&other.text);
+        self.chars.extend(other.chars);
+    }
+
     /// Get the center point of the text block.
     pub fn center(&self) -> Point {
         self.bbox.center()
