@@ -2,6 +2,20 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`render_page()` panicked on a page carrying a zero-dimension image** — a `/Width 0` or `/Height 0` image XObject blit unwrapped past the existing "skip quietly" path into a panic instead of being skipped. The zero-dimension blit is now skipped cleanly, matching the pre-existing handling for other degenerate-geometry cases (#1019).
+- **Inline-image extraction was non-deterministic on dictionaries carrying both abbreviated and full forms of the same key** (`/F` and `/Filter`, `/CS` and `/ColorSpace`, `/DP` and `/DecodeParms`) — the surviving value depended on `HashMap` iteration order, which varies by the per-process hash seed, so the same file could extract a different number of images (and apply or skip a predictor) across identical runs. The abbreviated form now always wins deterministically, matching how pdf.js resolves these keys (#1017).
+
+### Contributors
+
+Issues reported by:
+- **@tobocop2** — #1019 (rendering panics on a page carrying a zero-dimension image), #1017 (non-deterministic inline-image extraction on duplicate dictionary keys)
+
+Thank you!
+
 ## [0.3.77] - 2026-07-27
 
 > Search-index control lands in every first-party binding: `prepare_search()`/`clear_search_index()` (added to the Rust core in 0.3.76 alongside the new per-page search-index cache) can now be called from Python, JavaScript/WASM, Java/Kotlin/Scala/Clojure, Go, Ruby, PHP, Dart, R, Julia, Zig, C#, C++, Swift, Objective-C, and Elixir — not just Rust. `extract_text()`/`to_markdown()`/`to_plain_text()` no longer silently drop `/Artifact`-tagged content (running headers/footers, section identifiers) with no way to opt back in.
