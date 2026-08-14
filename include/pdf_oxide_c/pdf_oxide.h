@@ -1507,6 +1507,21 @@ void pdf_oxide_element_get_rect(const FfiElementList *elements,
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Page-space extents of the span: the rect from `pdf_oxide_element_get_rect`
+ * with any text-matrix rotation resolved into an axis-aligned page-space
+ * hull. Identical to `pdf_oxide_element_get_rect` for upright runs.
+ */
+void pdf_oxide_element_get_page_rect(const FfiElementList *elements,
+                                     int32_t index,
+                                     float *x,
+                                     float *y,
+                                     float *width,
+                                     float *height,
+                                     int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
 void pdf_oxide_elements_free(FfiElementList *handle);
 #endif
 

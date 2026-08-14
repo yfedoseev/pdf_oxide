@@ -3243,6 +3243,36 @@ pub extern "C" fn pdf_oxide_element_get_rect(
     set_error(error_code, ERR_SUCCESS);
 }
 
+/// Page-space extents of the span: the rect from `pdf_oxide_element_get_rect`
+/// with any text-matrix rotation resolved into an axis-aligned page-space
+/// hull. Identical to `pdf_oxide_element_get_rect` for upright runs.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_element_get_page_rect(
+    elements: *const FfiElementList,
+    index: i32,
+    x: *mut f32,
+    y: *mut f32,
+    width: *mut f32,
+    height: *mut f32,
+    error_code: *mut i32,
+) {
+    if elements.is_null() || x.is_null() || y.is_null() || width.is_null() || height.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return;
+    }
+    let list = handle_ref(elements);
+    if index < 0 || (index as usize) >= list.spans.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return;
+    }
+    let b = list.spans[index as usize].page_bbox();
+    write_out(x, b.x);
+    write_out(y, b.y);
+    write_out(width, b.width);
+    write_out(height, b.height);
+    set_error(error_code, ERR_SUCCESS);
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_elements_free(handle: *mut FfiElementList) {
     if !handle.is_null() {
