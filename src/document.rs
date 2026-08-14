@@ -5790,14 +5790,14 @@ impl PdfDocument {
                 // table are already covered by the inline-table flush
                 // below, so we must NOT also preserve them in the flow
                 // span list (it would produce duplicate output).
-                let mut table_cell_texts: std::collections::HashSet<String> =
+                let mut table_cell_texts: std::collections::HashSet<&str> =
                     std::collections::HashSet::new();
                 for t in &tables {
                     for row in &t.rows {
                         for cell in &row.cells {
                             let trimmed = cell.text.trim();
                             if !trimmed.is_empty() {
-                                table_cell_texts.insert(trimmed.to_string());
+                                table_cell_texts.insert(trimmed);
                             }
                         }
                     }
@@ -5811,101 +5811,168 @@ impl PdfDocument {
                 // by bbox alone would silently drop real content.
                 // Falls back to bbox-only filtering when no MCIDs are present
                 // (untagged PDFs or spatial-detection tables).
+                // Only tables with a bbox reach the inline flush below; a
+                // cell of an unflushed table renders nowhere and must not
+                // absorb anything — whether ownership is decided by MCID or
+                // by geometry.
                 let table_cell_mcids: HashSet<u32> = tables
                     .iter()
+                    .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
                         t.rows
                             .iter()
                             .flat_map(|r| r.cells.iter().flat_map(|c| c.mcids.iter().copied()))
                     })
                     .collect();
-                // Flatten every cell bbox once and index it into coarse y-bands,
-                // so the per-span containment test below scans only the cells in
-                // the span's y-band instead of every cell on the page (was
-                // O(spans x cells) on untagged table pages). A cell that contains
-                // a span necessarily shares the span's y-band, so this is
+                // Flatten every flushed cell once (bbox plus the cell, whose
+                // text and member spans drive the ownership test below) and
+                // index it into coarse y-bands, so the per-span containment
+                // test below scans only the cells in the span's y-band
+                // instead of every cell on the page (was O(spans x cells) on
+                // untagged table pages). A cell that contains a span
+                // necessarily shares the span's y-band, so this is
                 // byte-identical to the full scan.
-                let cell_bboxes: Vec<crate::geometry::Rect> = tables
+                let flushed_cells: Vec<(
+                    crate::geometry::Rect,
+                    &crate::structure::table_extractor::TableCell,
+                )> = tables
                     .iter()
+                    .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
                         t.rows
                             .iter()
-                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox))
+                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox.map(|b| (b, c))))
                     })
                     .collect();
+                // Same-text cell lookup for the fallback path: a span that no
+                // cell bbox contains can still be absorbed by a cell whose
+                // exact text it carries, as long as that cell's budget is
+                // untouched.
+                let mut cell_text_index: std::collections::HashMap<&str, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (ci, (_, c)) in flushed_cells.iter().enumerate() {
+                    let text = c.text.trim();
+                    if !text.is_empty() {
+                        cell_text_index.entry(text).or_default().push(ci);
+                    }
+                }
                 const CELL_Y_BIN: f32 = 18.0;
                 let cell_bin = |y: f32| (y / CELL_Y_BIN).floor() as i32;
                 let mut cell_y_index: std::collections::HashMap<i32, Vec<usize>> =
                     std::collections::HashMap::new();
-                for (ci, b) in cell_bboxes.iter().enumerate() {
+                for (ci, (b, _)) in flushed_cells.iter().enumerate() {
                     for bin in cell_bin(b.y)..=cell_bin(b.y + b.height) {
                         cell_y_index.entry(bin).or_default().push(ci);
                     }
                 }
-                // Returns true when span should be removed from the flow because
-                // it is owned by a table cell (will be re-emitted by render_text).
-                let span_in_table = |s: &crate::layout::TextSpan| -> bool {
-                    if !table_cell_mcids.is_empty() {
-                        if let Some(mcid) = s.mcid {
-                            // Tagged PDF: MCID decides ownership precisely.
-                            return table_cell_mcids.contains(&mcid);
+                // Per-cell token budgets. `render_text()` emits each cell's
+                // content exactly once, so a cell can absorb dropped spans
+                // totalling at most the material it was built from. Bbox
+                // containment alone cannot decide a drop: a rowspan-merged
+                // cell's bbox can cover far more spans than its text was
+                // built from (a schedule column's tall cell covering
+                // hundreds of repeated marks while holding six lines of
+                // them), and an empty cell re-emits nothing at all (a value
+                // column without row rules becomes one tall empty cell whose
+                // bbox swallows every figure in the column). A span leaves
+                // the flow only by consuming its tokens from a covering
+                // cell's budget — the fragment-level form of the same rule
+                // the text fallback needs: membership cannot see
+                // multiplicity.
+                //
+                // Budgets are denominated in the cell's member-span tokens,
+                // not its rendered text: the cell builders rewrite text
+                // while joining spans (sub-em gaps and CJK/fullwidth pairs
+                // glue two spans with no separator, column-spanning decimals
+                // split "12.11" into "12 11"), so the rendered text is not a
+                // token superset of the spans the cell was built from. The
+                // member spans are, by construction — they are clones of the
+                // same flow spans this filter walks. A cell recorded without
+                // member spans falls back to its rendered text.
+                let mut cell_remaining: Vec<std::collections::HashMap<&str, usize>> = flushed_cells
+                    .iter()
+                    .map(|(_, c)| {
+                        let mut m = std::collections::HashMap::new();
+                        if c.spans.is_empty() {
+                            for tok in c.text.split_whitespace() {
+                                *m.entry(tok).or_insert(0) += 1;
+                            }
+                        } else {
+                            for sp in &c.spans {
+                                for tok in sp.text.split_whitespace() {
+                                    *m.entry(tok).or_insert(0) += 1;
+                                }
+                            }
                         }
-                        // Tagged PDF but span has no MCID (widget/annotation):
-                        // keep in flow — better to duplicate than to silently drop.
-                        return false;
-                    }
-                    // Untagged PDF or no MCIDs in any cell: cell-bbox-based filter.
-                    // Using per-cell bboxes (rather than the coarser table bbox) prevents
-                    // dropping paragraph spans that lie inside the table's outer bounding
-                    // box but were not captured as table cells by the spatial detector.
-                    // Probe only the cells in the span's y-band (±1 bin guards the
-                    // containment tolerance). Equivalent to scanning every cell.
-                    let slo = cell_bin(s.bbox.y) - 1;
-                    let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
-                    let in_cell = (slo..=shi).any(|bin| {
-                        cell_y_index.get(&bin).is_some_and(|cands| {
-                            cands.iter().any(|&ci| {
-                                Self::contains_rect_with_tolerance(
-                                    &cell_bboxes[ci],
-                                    &s.bbox,
-                                    RETAIN_TOLERANCE,
-                                )
-                            })
-                        })
-                    });
-                    if in_cell {
-                        return true;
-                    }
-                    // Fallback: text-based match. The bbox check above uses
-                    // a tight 0.1pt tolerance and rejects spans whose font
-                    // ascent extends slightly above the cell's ink box (issue
-                    // 484: "FY 15 1st Q TTL" labels in JAL traffic table —
-                    // span height = font_size = 10.7pt, but cell bbox height
-                    // = 15.96pt covers two ink rows so the label glyphs reach
-                    // ~0.4pt above the cell's top edge). When a span's
-                    // trimmed text exactly matches some cell's text, the cell
-                    // already owns it — keeping it in flow would duplicate.
-                    let trimmed = s.text.trim();
-                    if trimmed.is_empty() {
-                        return false;
-                    }
-                    if !table_cell_texts.contains(trimmed) {
-                        return false;
-                    }
-                    // Require spatial proximity: the span must lie inside
-                    // some table's outer bbox so we don't drop body text that
-                    // coincidentally matches a cell's text elsewhere on the page.
-                    tables.iter().any(|t| {
-                        t.bbox.is_some_and(|tb| {
-                            let cx = s.bbox.x + s.bbox.width / 2.0;
-                            let cy = s.bbox.y + s.bbox.height / 2.0;
-                            cx >= tb.x - RETAIN_TOLERANCE
-                                && cx <= tb.x + tb.width + RETAIN_TOLERANCE
-                                && cy >= tb.y - RETAIN_TOLERANCE
-                                && cy <= tb.y + tb.height + RETAIN_TOLERANCE
-                        })
+                        m
                     })
-                };
+                    .collect();
+                // The detector runs on `extract_words` output, so a budget
+                // token can itself be a glued compound of several flow spans
+                // drawn with no gap ("12,3" + "45" -> "12,345"). A contained
+                // span may therefore consume a substring of one budget
+                // token; the unmatched remainder returns to the budget so
+                // the sibling fragments can follow. Absorption stays bounded
+                // by the material the cell was built from. The text-fallback
+                // path keeps whole-token matching: it has no containment
+                // evidence, so fragments would let distant same-substring
+                // text vanish.
+                fn take_one(
+                    work: &mut std::collections::HashMap<&str, usize>,
+                    tok: &str,
+                    allow_fragment: bool,
+                ) -> bool {
+                    if let Some(r) = work.get_mut(tok) {
+                        if *r > 0 {
+                            *r -= 1;
+                            return true;
+                        }
+                    }
+                    if !allow_fragment {
+                        return false;
+                    }
+                    // Shortest host wins: splits are deterministic (HashMap
+                    // iteration order is not) and minimal.
+                    let Some(host) = work
+                        .iter()
+                        .filter(|(k, n)| **n > 0 && k.len() > tok.len() && k.contains(tok))
+                        .map(|(k, _)| *k)
+                        .min_by_key(|k| (k.len(), *k))
+                    else {
+                        return false;
+                    };
+                    *work.get_mut(host).unwrap() -= 1;
+                    let start = host.find(tok).unwrap();
+                    let before = &host[..start];
+                    let after = &host[start + tok.len()..];
+                    if !before.is_empty() {
+                        *work.entry(before).or_insert(0) += 1;
+                    }
+                    if !after.is_empty() {
+                        *work.entry(after).or_insert(0) += 1;
+                    }
+                    true
+                }
+                // Test plus decrement, in one place so the containment and
+                // text-fallback paths cannot drift apart — they must draw on
+                // the SAME accounting. All-or-nothing: a span either fits
+                // the cell's remaining budget whole or leaves it untouched.
+                fn try_consume(
+                    remaining: &mut std::collections::HashMap<&str, usize>,
+                    span_tokens: &[(&str, usize)],
+                    allow_fragment: bool,
+                ) -> bool {
+                    let mut work = remaining.clone();
+                    for (tok, n) in span_tokens {
+                        for _ in 0..*n {
+                            if !take_one(&mut work, tok, allow_fragment) {
+                                return false;
+                            }
+                        }
+                    }
+                    *remaining = work;
+                    true
+                }
 
                 let preserved_label_indices: std::collections::HashSet<usize> =
                     Self::identify_multi_row_labels(&spans)
@@ -5930,22 +5997,117 @@ impl PdfDocument {
                         })
                         .collect();
 
-                if preserved_label_indices.is_empty() {
-                    spans.retain(|s| !span_in_table(s));
-                } else {
-                    let kept: Vec<crate::layout::TextSpan> = spans
-                        .drain(..)
-                        .enumerate()
-                        .filter_map(|(i, s)| {
-                            if !span_in_table(&s) || preserved_label_indices.contains(&i) {
-                                Some(s)
+                // One pass covers both cases: with no preserved labels the
+                // index test is simply never true.
+                //
+                // A cell-covered span leaves the flow by consuming its tokens
+                // from the covering cell's budget. A text-fallback span
+                // (matching a cell's exact text without lying inside any cell
+                // — the ascent-overshoot geometry the fallback exists for)
+                // claims a same-text cell whose budget is still whole. Both
+                // paths draw on the SAME per-cell budgets, so a cell that
+                // absorbed its own spans cannot also be claimed from a
+                // distance: with split accounting, a page carrying one
+                // repeated label per row dropped three spans against two
+                // rendering cells.
+                //
+                // Once every cell that could absorb a text is spoken for,
+                // further spans matching it stay in the flow, because
+                // `render_text()` will not emit them again. Membership cannot
+                // see multiplicity. Spans no cell can absorb stay in the
+                // flow: better to duplicate than to silently drop.
+                let mut kept: Vec<crate::layout::TextSpan> = Vec::with_capacity(spans.len());
+                for (i, s) in spans.drain(..).enumerate() {
+                    if preserved_label_indices.contains(&i) {
+                        kept.push(s);
+                        continue;
+                    }
+                    if !table_cell_mcids.is_empty() {
+                        // Tagged PDF: MCID decides ownership precisely. A span
+                        // with no MCID (widget/annotation) stays in flow —
+                        // better to duplicate than to silently drop.
+                        if s.mcid.is_some_and(|m| table_cell_mcids.contains(&m)) {
+                            continue;
+                        }
+                        kept.push(s);
+                        continue;
+                    }
+                    // Inner scope: every borrow of `s.text` ends before the
+                    // span is moved into `kept`.
+                    let dropped = {
+                        let trimmed = s.text.trim();
+                        // A span rarely carries more than a few tokens; a
+                        // linear-scan Vec beats allocating a HashMap per span.
+                        let mut span_tokens: Vec<(&str, usize)> = Vec::new();
+                        for tok in trimmed.split_whitespace() {
+                            if let Some(entry) = span_tokens.iter_mut().find(|(t, _)| *t == tok) {
+                                entry.1 += 1;
                             } else {
-                                None
+                                span_tokens.push((tok, 1));
                             }
-                        })
-                        .collect();
-                    spans = kept;
+                        }
+                        // Probe only the cells in the span's y-band (±1 bin
+                        // guards the containment tolerance). Equivalent to
+                        // scanning every cell.
+                        let slo = cell_bin(s.bbox.y) - 1;
+                        let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
+                        let mut decided = false;
+                        'cells: for bin in slo..=shi {
+                            let Some(cands) = cell_y_index.get(&bin) else {
+                                continue;
+                            };
+                            for &ci in cands {
+                                let (cell_bbox, _) = &flushed_cells[ci];
+                                if !Self::contains_rect_with_tolerance(
+                                    cell_bbox,
+                                    &s.bbox,
+                                    RETAIN_TOLERANCE,
+                                ) {
+                                    continue;
+                                }
+                                if try_consume(&mut cell_remaining[ci], &span_tokens, true) {
+                                    // Dropped: the cell re-emits it.
+                                    decided = true;
+                                    break 'cells;
+                                }
+                            }
+                        }
+                        // Fallback: text-based match. The bbox check above
+                        // uses a tight 0.1pt tolerance and rejects spans whose
+                        // font ascent extends slightly above the cell's ink
+                        // box (issue 484: "FY 15 1st Q TTL" labels in the JAL
+                        // traffic table). Require spatial proximity so body
+                        // text that coincidentally matches a cell's text
+                        // elsewhere on the page is not dropped.
+                        if !decided && !trimmed.is_empty() && cell_text_index.contains_key(trimmed)
+                        {
+                            let near_table = tables.iter().any(|t| {
+                                t.bbox.is_some_and(|tb| {
+                                    let cx = s.bbox.x + s.bbox.width / 2.0;
+                                    let cy = s.bbox.y + s.bbox.height / 2.0;
+                                    cx >= tb.x - RETAIN_TOLERANCE
+                                        && cx <= tb.x + tb.width + RETAIN_TOLERANCE
+                                        && cy >= tb.y - RETAIN_TOLERANCE
+                                        && cy <= tb.y + tb.height + RETAIN_TOLERANCE
+                                })
+                            });
+                            if near_table {
+                                for &ci in &cell_text_index[trimmed] {
+                                    if try_consume(&mut cell_remaining[ci], &span_tokens, false) {
+                                        // Dropped: this unclaimed cell re-emits it.
+                                        decided = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        decided
+                    };
+                    if !dropped {
+                        kept.push(s);
+                    }
                 }
+                spans = kept;
             }
 
             // Row-aware ordering: quantize Y into bands and sort band-
