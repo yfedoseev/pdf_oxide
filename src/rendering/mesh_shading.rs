@@ -962,7 +962,7 @@ fn eval_type3(
         return None;
     }
     let domain = dict.get("Domain").and_then(|o| o.as_array())?;
-    let (d0, d1) = (num(&domain[0]), num(domain.get(1)?));
+    let (d0, d1) = (num(domain.first()?), num(domain.get(1)?));
     let bounds: Vec<f32> = dict
         .get("Bounds")
         .and_then(|o| o.as_array())
