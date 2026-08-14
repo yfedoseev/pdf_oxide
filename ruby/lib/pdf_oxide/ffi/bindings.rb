@@ -1429,6 +1429,15 @@ module PdfOxide
       attach_function :pdf_oxide_crypto_set_policy, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_crypto_use_fips, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_element_count, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      # void pdf_oxide_element_get_page_rect(const FfiElementList *elements, int32_t index,
+      #                                      float *x, float *y, float *width, float *height,
+      #                                      int32_t *error_code)
+      # Page-space extents of the span: the rect from pdf_oxide_element_get_rect with any
+      # text-matrix rotation resolved into an axis-aligned page-space hull;
+      # identical to pdf_oxide_element_get_rect for upright runs.
+      attach_function :pdf_oxide_element_get_page_rect,
+                      %i[pointer int32 pointer pointer pointer pointer pointer], :void,
+                      blocking: false
       attach_function :pdf_oxide_element_get_rect, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_element_get_text, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_oxide_element_get_type, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false

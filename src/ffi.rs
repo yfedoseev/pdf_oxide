@@ -8865,6 +8865,17 @@ struct JsonElement<'a> {
     y: f32,
     width: f32,
     height: f32,
+    /// Page-space extents: the x/y/width/height rect with any text-matrix
+    /// rotation resolved into an axis-aligned page-space hull. Identical to
+    /// it for upright runs.
+    #[serde(rename = "pageX")]
+    page_x: f32,
+    #[serde(rename = "pageY")]
+    page_y: f32,
+    #[serde(rename = "pageWidth")]
+    page_width: f32,
+    #[serde(rename = "pageHeight")]
+    page_height: f32,
     /// §9.10.2 mapping-provenance label; omitted when the font is unresolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     provenance: Option<&'static str>,
@@ -9043,14 +9054,21 @@ pub extern "C" fn pdf_oxide_elements_to_json(
     let items: Vec<JsonElement> = list
         .spans
         .iter()
-        .map(|s| JsonElement {
-            r#type: "text",
-            text: &s.text,
-            x: s.bbox.x,
-            y: s.bbox.y,
-            width: s.bbox.width,
-            height: s.bbox.height,
-            provenance: s.provenance.map(|p| p.as_str()),
+        .map(|s| {
+            let pb = s.page_bbox();
+            JsonElement {
+                r#type: "text",
+                text: &s.text,
+                x: s.bbox.x,
+                y: s.bbox.y,
+                width: s.bbox.width,
+                height: s.bbox.height,
+                page_x: pb.x,
+                page_y: pb.y,
+                page_width: pb.width,
+                page_height: pb.height,
+                provenance: s.provenance.map(|p| p.as_str()),
+            }
         })
         .collect();
     match serde_json::to_string(&items) {

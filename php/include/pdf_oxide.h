@@ -518,6 +518,14 @@ void pdf_oxide_element_get_rect(const FfiElementList *elements,
                                 float *height,
                                 int32_t *error_code);
 
+void pdf_oxide_element_get_page_rect(const FfiElementList *elements,
+                                     int32_t index,
+                                     float *x,
+                                     float *y,
+                                     float *width,
+                                     float *height,
+                                     int32_t *error_code);
+
 void pdf_oxide_elements_free(FfiElementList *handle);
 
 FfiBarcodeImage *pdf_generate_qr_code(const char *data,
