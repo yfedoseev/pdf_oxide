@@ -16767,7 +16767,9 @@ impl PdfDocument {
         // Default: include /Artifact-tagged spans (matches pre-0.3.42
         // behavior). The spec-correct (§14.8.2.2.1) variant lives in
         // [`Self::extract_words_with_thresholds_no_artifacts`].
-        self.extract_words_inner(page_index, word_gap_threshold, profile, true)
+        Ok(self
+            .extract_words_inner(page_index, word_gap_threshold, profile, true)?
+            .0)
     }
 
     /// Same as [`Self::extract_words_with_thresholds`] but drops spans tagged
@@ -16779,7 +16781,9 @@ impl PdfDocument {
         word_gap_threshold: Option<f32>,
         profile: Option<crate::config::ExtractionProfile>,
     ) -> Result<Vec<crate::layout::Word>> {
-        self.extract_words_inner(page_index, word_gap_threshold, profile, false)
+        Ok(self
+            .extract_words_inner(page_index, word_gap_threshold, profile, false)?
+            .0)
     }
 
     fn extract_words_inner(
@@ -16788,7 +16792,7 @@ impl PdfDocument {
         word_gap_threshold: Option<f32>,
         profile: Option<crate::config::ExtractionProfile>,
         include_artifacts: bool,
-    ) -> Result<Vec<crate::layout::Word>> {
+    ) -> Result<(Vec<crate::layout::Word>, Vec<bool>)> {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, Word};
 
         // Span source. The default (no profile) flows through the canonical
@@ -16832,7 +16836,7 @@ impl PdfDocument {
             },
         };
         if spans.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         // Compute adaptive parameters from all characters for consistent thresholds.
@@ -16853,7 +16857,7 @@ impl PdfDocument {
             span_char_ranges.push(start..all_chars.len());
         }
         if all_chars.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
@@ -16884,6 +16888,14 @@ impl PdfDocument {
         let mut rotated_word_indices: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
         let mut words = Vec::new();
+        // continues_prev[i]: the span-level merger joined word i to word i-1
+        // with no word boundary — their glyphs are consecutive in one span
+        // with not even a whitespace char between them, and only the
+        // geometric clustering below re-split them. Kept parallel to
+        // `words` through the merge loop; consumed by the table path, which
+        // must not re-decide a join the merger already made from per-glyph
+        // advance evidence.
+        let mut continues_prev: Vec<bool> = Vec::new();
         for (span_idx, span) in spans.iter().enumerate() {
             let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
@@ -16901,29 +16913,61 @@ impl PdfDocument {
             let is_split_boundary = span.split_boundary_before;
             let is_rotated_run = span.rotation_degrees != 0.0;
 
+            // Source-index interval of each word emitted for this span,
+            // aligned to `words[first_word_idx..]`. Two words continue each
+            // other exactly when the second's lowest source index directly
+            // follows the first's highest — a dropped whitespace char (or a
+            // glyph of another word) in between would occupy that index.
+            let mut word_src_ranges: Vec<(usize, usize)> = Vec::new();
             for cluster_indices in clusters {
-                let cluster_chars: Vec<_> = cluster_indices
-                    .iter()
-                    .map(|&i| span_chars[i].clone())
-                    .collect();
-
                 let mut current_word_chars = Vec::new();
-                for c in cluster_chars {
+                let mut src_lo = usize::MAX;
+                let mut src_hi = 0usize;
+                for &ci in &cluster_indices {
+                    let c = span_chars[ci].clone();
                     if c.char.is_whitespace() || c.char == '\n' || c.char == '\r' {
                         if !current_word_chars.is_empty() {
-                            let mut word = Word::from_chars(current_word_chars);
+                            let mut word =
+                                Word::from_chars(std::mem::take(&mut current_word_chars));
                             word.sequence = span.sequence;
                             words.push(word);
-                            current_word_chars = Vec::new();
+                            continues_prev.push(false);
+                            word_src_ranges.push((src_lo, src_hi));
+                            src_lo = usize::MAX;
+                            src_hi = 0;
                         }
                     } else {
                         current_word_chars.push(c);
+                        src_lo = src_lo.min(ci);
+                        src_hi = src_hi.max(ci);
                     }
                 }
                 if !current_word_chars.is_empty() {
                     let mut word = Word::from_chars(current_word_chars);
                     word.sequence = span.sequence;
                     words.push(word);
+                    continues_prev.push(false);
+                    word_src_ranges.push((src_lo, src_hi));
+                }
+            }
+            // Rotated and vertical runs advance perpendicular to the line
+            // axis the clustering assumes, so every glyph lands in its own
+            // cluster and index adjacency would mark a whole column as one
+            // continued word. Leave those unmarked; the rotated case is also
+            // what the merge loop below skips.
+            //
+            // The mark is a source-order statement only. It deliberately
+            // carries no geometric test: `to_chars` stamps the span's single
+            // `bbox.y` onto every glyph it emits, so all words from one span
+            // share a y and no same-line test can discriminate here. Geometry
+            // is the consumer's job, where the real coordinates are in hand.
+            if !is_rotated_run && span.wmode == 0 {
+                for k in 1..word_src_ranges.len() {
+                    let (_, prev_hi) = word_src_ranges[k - 1];
+                    let (cur_lo, _) = word_src_ranges[k];
+                    if cur_lo == prev_hi + 1 {
+                        continues_prev[first_word_idx + k] = true;
+                    }
                 }
             }
 
@@ -16973,8 +17017,9 @@ impl PdfDocument {
         // `looks_rtl(a + b) == looks_rtl(a) || looks_rtl(b)`: maintain it
         // incrementally instead.
         let mut merged_rtl: Vec<bool> = Vec::with_capacity(words.len());
+        let mut merged_continues: Vec<bool> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
-        for (idx, word) in words.into_iter().enumerate() {
+        for (idx, (word, word_continues)) in words.into_iter().zip(continues_prev).enumerate() {
             let cur_rotated = rotated_word_indices.contains(&idx);
             let word_rtl = crate::text::bidi::looks_rtl(&word.text);
             if !cur_rotated && !prev_rotated && !split_boundary_word_indices.contains(&idx) {
@@ -17008,22 +17053,7 @@ impl PdfDocument {
                         // Incremental merge — O(k) per merge, O(total_chars) overall.
                         // Avoids the O(n²) clone+from_chars pattern that caused
                         // catastrophic slowdown on TOC dot-leader pages.
-                        let prev_n = prev.chars.len() as f32;
-                        let word_n = word.chars.len() as f32;
-                        prev.bbox = prev.bbox.union(&word.bbox);
-                        prev.avg_font_size = (prev.avg_font_size * prev_n
-                            + word.avg_font_size * word_n)
-                            / (prev_n + word_n);
-                        if word_n > prev_n {
-                            prev.dominant_font = word.dominant_font;
-                        }
-                        prev.is_bold |= word.is_bold;
-                        prev.is_italic |= word.is_italic;
-                        if prev.mcid != word.mcid {
-                            prev.mcid = None;
-                        }
-                        prev.text.push_str(&word.text);
-                        prev.chars.extend(word.chars);
+                        prev.absorb(word);
                         if let Some(flag) = merged_rtl.last_mut() {
                             *flag |= word_rtl;
                         }
@@ -17033,10 +17063,11 @@ impl PdfDocument {
             }
             merged.push(word);
             merged_rtl.push(word_rtl);
+            merged_continues.push(word_continues);
             prev_rotated = cur_rotated;
         }
 
-        Ok(merged)
+        Ok((merged, merged_continues))
     }
 
     /// Extract text lines from a page.
@@ -17959,27 +17990,45 @@ impl PdfDocument {
         )
     }
 
-    /// Extract tables from a page using a custom configuration (v0.3.14).
-    pub fn extract_tables_with_config(
-        &self,
-        page_index: usize,
-        config: crate::structure::spatial_table_detector::TableDetectionConfig,
-    ) -> Result<Vec<crate::structure::table_extractor::Table>> {
-        use crate::structure::spatial_table_detector::detect_tables_with_lines;
-
-        // Use words instead of spans for better granularity.
-        // This ensures that strings with spaces are split into separate columns
-        // for the spatial detector.
-        let words = self.extract_words(page_index)?;
-        // Use all table primitives (lines, rectangles, borders) not just straight lines
-        let lines: Vec<_> = self
-            .extract_paths(page_index)?
-            .into_iter()
-            .filter(|p| p.is_table_primitive())
-            .collect();
-
-        // Convert Words to TextSpans for the spatial detector
-        let spans: Vec<_> = words
+    /// Word-level span source for the spatial table detector.
+    ///
+    /// Words give the detector cell granularity (a spaced string splits into
+    /// separate columns), but the geometric word clustering re-decides every
+    /// join from raw bbox gaps — and a sub-em kerned split defeats any gap
+    /// threshold, so a word the span-level merger had correctly assembled
+    /// from per-glyph advance evidence can come back in fragments and
+    /// surface as spaces inside a table cell. Re-glue the fragments the
+    /// merger marked as boundary-free before handing spans to the detector.
+    fn extract_table_word_spans(&self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
+        let (words, continues_prev) = self.extract_words_inner(page_index, None, None, true)?;
+        let mut fused: Vec<crate::layout::Word> = Vec::with_capacity(words.len());
+        for (word, continues) in words.into_iter().zip(continues_prev) {
+            // Half-em BAND, tested on the absolute gap. Source adjacency says
+            // the producer drew these glyphs consecutively; it does not say
+            // they are typographically adjacent, so geometry still has a veto,
+            // and it needs both bounds:
+            //   above  — the merger also concatenates runs across a column
+            //            jump when neither side carries a space glyph, and
+            //            honouring that here would dissolve the grid;
+            //   below  — a large NEGATIVE gap is the signature of a backtrack
+            //            (displayed-math denominators) or a line-wrap reset,
+            //            the two cases the word merge loop guards with
+            //            `gap < -font_size` and `delta_x < -5 * font_size`.
+            //            A one-sided upper bound admits every one of them.
+            // A sub-em kerned seam — the case this whole path exists for — is
+            // ~0.2 em, comfortably inside the band from either side.
+            match fused.last_mut() {
+                Some(prev)
+                    if continues
+                        && (word.bbox.x - (prev.bbox.x + prev.bbox.width)).abs()
+                            < prev.avg_font_size.max(word.avg_font_size).max(1.0) * 0.5 =>
+                {
+                    prev.absorb(word)
+                },
+                _ => fused.push(word),
+            }
+        }
+        Ok(fused
             .into_iter()
             .map(|w| crate::layout::TextSpan {
                 provenance: None,
@@ -18013,6 +18062,26 @@ impl PdfDocument {
                 text_rise: 0.0,
                 rtl_draw_logical: false,
             })
+            .collect())
+    }
+
+    /// Extract tables from a page using a custom configuration (v0.3.14).
+    pub fn extract_tables_with_config(
+        &self,
+        page_index: usize,
+        config: crate::structure::spatial_table_detector::TableDetectionConfig,
+    ) -> Result<Vec<crate::structure::table_extractor::Table>> {
+        use crate::structure::spatial_table_detector::detect_tables_with_lines;
+
+        // Use words instead of spans for better granularity.
+        // This ensures that strings with spaces are split into separate columns
+        // for the spatial detector.
+        let spans = self.extract_table_word_spans(page_index)?;
+        // Use all table primitives (lines, rectangles, borders) not just straight lines
+        let lines: Vec<_> = self
+            .extract_paths(page_index)?
+            .into_iter()
+            .filter(|p| p.is_table_primitive())
             .collect();
 
         // Same prose-rejection filter `extract_page_tables` applies to the
@@ -19778,42 +19847,9 @@ impl PdfDocument {
         }
         let paths = table_paths;
 
-        let words = self.extract_words(page_index).unwrap_or_default();
-        let word_spans: Vec<crate::layout::TextSpan> = words
-            .into_iter()
-            .map(|w| crate::layout::TextSpan {
-                provenance: None,
-                artifact_type: None,
-                text: w.text,
-                bbox: w.bbox,
-                font_name: w.dominant_font,
-                font_size: w.avg_font_size,
-                font_weight: if w.is_bold {
-                    crate::layout::FontWeight::Bold
-                } else {
-                    crate::layout::FontWeight::Normal
-                },
-                is_italic: w.is_italic,
-                is_monospace: false,
-                color: crate::layout::Color::black(),
-                mcid: w.mcid,
-                mcid_scope: None,
-                sequence: 0,
-                split_boundary_before: false,
-                offset_semantic: false,
-                char_spacing: 0.0,
-                word_spacing: 0.0,
-                horizontal_scaling: 1.0,
-                primary_detected: false,
-                char_widths: vec![],
-                char_x_offsets: Vec::new(),
-                heading_level: None,
-                rotation_degrees: 0.0,
-                wmode: 0,
-                text_rise: 0.0,
-                rtl_draw_logical: false,
-            })
-            .collect();
+        let word_spans = self
+            .extract_table_word_spans(page_index)
+            .unwrap_or_default();
 
         // Fall back to raw spans if word extraction failed
         let input_spans = if !word_spans.is_empty() {
