@@ -2010,33 +2010,51 @@ fn decode_jpx_image(
 /// without this the decoder rejects every inline image with "XObject missing
 /// /Subtype", and the callers, which use `if let Ok(..)`, drop them SILENTLY.
 pub fn expand_inline_image_dict(
-    dict: std::collections::HashMap<String, crate::object::Object>,
+    mut dict: std::collections::HashMap<String, crate::object::Object>,
 ) -> std::collections::HashMap<String, crate::object::Object> {
     use std::collections::HashMap;
+    const KEY_ABBREVS: [(&str, &str); 9] = [
+        ("W", "Width"),
+        ("H", "Height"),
+        ("CS", "ColorSpace"),
+        ("BPC", "BitsPerComponent"),
+        ("F", "Filter"),
+        ("DP", "DecodeParms"),
+        ("IM", "ImageMask"),
+        ("I", "Interpolate"),
+        ("D", "Decode"),
+    ];
     let mut expanded = HashMap::new();
+    // A dictionary carrying BOTH forms of one key (`/F` and `/Filter`) must
+    // resolve the same way every run: the abbreviated form wins, matching
+    // pdf.js's dict.get("F", "Filter"). Draining the abbreviations first makes
+    // that precedence structural; deciding it inside a HashMap iteration made
+    // it per-process hash-seed luck.
+    for (abbrev, full) in KEY_ABBREVS {
+        let value = match dict.remove(abbrev) {
+            Some(v) => {
+                dict.remove(full);
+                Some(v)
+            },
+            None => dict.remove(full),
+        };
+        if let Some(v) = value {
+            expanded.insert(full.to_string(), v);
+        }
+    }
     for (key, value) in dict {
-        let expanded_key = match key.as_str() {
-            "W" => "Width",
-            "H" => "Height",
-            "CS" => "ColorSpace",
-            "BPC" => "BitsPerComponent",
-            "F" => "Filter",
-            "DP" => "DecodeParms",
-            "IM" => "ImageMask",
-            "I" => "Interpolate",
-            "D" => "Decode",
-            "Intent" => "Intent",
-            _ => &key,
-        };
-        // §8.9.7 Table 92: inline images abbreviate the VALUES too, not just the
-        // keys - `/CS /RGB`, `/F /Fl`. Expanding only the keys leaves the decoder
-        // looking at a colour space called "RGB", which it does not know.
-        let value = match expanded_key {
-            "ColorSpace" => expand_inline_abbrev(value, colorspace_abbrev),
-            "Filter" => expand_inline_abbrev(value, filter_abbrev),
-            _ => value,
-        };
-        expanded.insert(expanded_key.to_string(), value);
+        expanded.insert(key, value);
+    }
+    // §8.9.7 Table 92: inline images abbreviate the VALUES too, not just the
+    // keys - `/CS /RGB`, `/F /Fl`. Expanding only the keys leaves the decoder
+    // looking at a colour space called "RGB", which it does not know.
+    for (key, map) in [
+        ("ColorSpace", colorspace_abbrev as fn(&str) -> Option<&'static str>),
+        ("Filter", filter_abbrev as fn(&str) -> Option<&'static str>),
+    ] {
+        if let Some(v) = expanded.remove(key) {
+            expanded.insert(key.to_string(), expand_inline_abbrev(v, map));
+        }
     }
     // §8.9.7: the subtype is implied by `BI`, never written in the dictionary.
     // The image-XObject decoder requires it, so supply it here. Do not clobber a
@@ -2210,6 +2228,26 @@ mod inline_image_dict_tests {
         assert_eq!(out.get("ColorSpace"), Some(&Object::Name("CS0".to_string())));
         let out = expand_inline_image_dict(dict(&[("CS", Object::Name("DeviceGray".to_string()))]));
         assert_eq!(out.get("ColorSpace"), Some(&Object::Name("DeviceGray".to_string())));
+    }
+
+    /// Both forms of one key in the same dictionary (the pdf-association
+    /// duplicate-key fixture does this for /F//Filter, /W//Width, /DP//
+    /// DecodeParms): the abbreviated form must win, and deterministically —
+    /// before, the winner was HashMap iteration order, a fresh hash seed per
+    /// process, and the fixture's image count flapped between runs.
+    #[test]
+    fn abbreviated_key_beats_its_full_twin() {
+        let out = expand_inline_image_dict(dict(&[
+            ("F", Object::Name("AHx".to_string())),
+            ("Filter", Object::Name("A85".to_string())),
+            ("W", Object::Integer(20)),
+            ("Width", Object::Integer(999)),
+            ("DP", Object::Null),
+            ("DecodeParms", Object::Integer(15)),
+        ]));
+        assert_eq!(out.get("Filter"), Some(&Object::Name("ASCIIHexDecode".to_string())));
+        assert_eq!(out.get("Width"), Some(&Object::Integer(20)));
+        assert_eq!(out.get("DecodeParms"), Some(&Object::Null));
     }
 }
 
