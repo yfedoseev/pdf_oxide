@@ -332,7 +332,9 @@ mod tests {
 
         let s = String::from_utf8_lossy(&out);
         assert!(s.starts_with("q\n"), "pruned body must open with q: {s}");
-        let wrapper_q_close = s.find("Q\n").expect("closing Q for the pruned-body wrapper");
+        let wrapper_q_close = s
+            .find("Q\n")
+            .expect("closing Q for the pruned-body wrapper");
         let overlay_rg = s.find("rg\n").expect("overlay rg op");
         assert!(
             wrapper_q_close < overlay_rg,
