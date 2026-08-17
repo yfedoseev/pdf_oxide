@@ -153,6 +153,55 @@ fn word_spacing_still_applied_to_single_byte_code_32_in_composite_font() {
     );
 }
 
+/// The char path (`extract_chars`) advances the text matrix in its own loop,
+/// separate from the span accumulator; the glyph after a 2-byte CID 32 must
+/// not be displaced by Tw there either.
+#[test]
+fn char_after_two_byte_code_32_is_not_displaced_by_word_spacing() {
+    let origin_of_b = |content: &[u8]| -> f32 {
+        let doc = PdfDocument::from_bytes(build(content)).expect("parse pdf");
+        let chars = doc.extract_chars(0).expect("chars");
+        chars
+            .iter()
+            .find(|c| c.char == 'B')
+            .unwrap_or_else(|| {
+                panic!("no B char in {:?}", chars.iter().map(|c| c.char).collect::<Vec<_>>())
+            })
+            .origin_x
+    };
+    let with_tw = origin_of_b(b"BT /F1 24 Tf 50 700 Td 50 Tw <00200021> Tj ET");
+    let without_tw = origin_of_b(b"BT /F1 24 Tf 50 700 Td 0 Tw <00200021> Tj ET");
+    assert!(
+        (with_tw - without_tw).abs() < 0.01,
+        "char path applied Tw to a 2-byte CID 32: B origin {with_tw} under Tw=50, \
+         {without_tw} under Tw=0"
+    );
+}
+
+/// Char-path positive control: a single-byte code 32 in a composite font must
+/// still displace the following glyph by Tw.
+#[test]
+fn char_after_single_byte_code_32_is_displaced_by_word_spacing() {
+    let origin_of_b = |content: &[u8]| -> f32 {
+        let doc = PdfDocument::from_bytes(build_rksj(content)).expect("parse pdf");
+        let chars = doc.extract_chars(0).expect("chars");
+        chars
+            .iter()
+            .find(|c| c.char == 'B')
+            .unwrap_or_else(|| {
+                panic!("no B char in {:?}", chars.iter().map(|c| c.char).collect::<Vec<_>>())
+            })
+            .origin_x
+    };
+    let with_tw = origin_of_b(b"BT /F1 24 Tf 50 700 Td 50 Tw <412042> Tj ET");
+    let without_tw = origin_of_b(b"BT /F1 24 Tf 50 700 Td 0 Tw <412042> Tj ET");
+    assert!(
+        with_tw - without_tw > 40.0,
+        "single-byte code 32 must displace the next char by ~Tw: B origin {with_tw} \
+         under Tw=50, {without_tw} under Tw=0"
+    );
+}
+
 #[test]
 fn word_spacing_not_applied_to_two_byte_code_32() {
     // Two 1000/1000-em glyphs at 24pt from x0 = 50 → right edge 50 + 48 = 98.
