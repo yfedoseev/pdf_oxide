@@ -512,8 +512,41 @@ impl XYCutStrategy {
             return Vec::new();
         }
 
-        // Base case: small region, don't split further
+        // Base case: small region, don't split further via the recursive
+        // partitioner. Below `min_spans_for_split`, the statistical
+        // prose/table classifiers (`classify_region_kind`,
+        // `detect_two_column_prose`, `detect_narrow_gutter_prose`) all have
+        // their own internal minimum-span floors (6/8/24) far above this
+        // one and unconditionally decline to classify — so a flat
+        // "impose Y-then-X row-major order" was applied even to a genuine
+        // sparse 2-column page (#979: a 2-column, 2-row prose page —
+        // 4 spans — read back row-major/interleaved instead of
+        // column-major).
+        //
+        // A geometric gutter check alone can't distinguish "sparse 2-column
+        // prose" from "a 2x2 row-major table" at this scale either — both
+        // produce an identical clean-gutter signature, and the table-row
+        // guard inside `find_horizontal_split_indexed` needs >=3 rows to
+        // reach confidence, so it's a no-op at 2 rows. Rather than commit
+        // to a (left, right) column grouping we can't justify being
+        // correct, fall back to the page's own content-stream emission
+        // order when a clean gutter exists at all (PDFium parity, per the
+        // reporter's own cross-tool probe: PDFium performs no prose/table
+        // decision here either, it just follows stream order). This
+        // relies on the empirical tendency of table generators to emit
+        // cells row-major and column-generators to emit column-major, in
+        // the absence of any other geometric signal being decidable at
+        // this scale. Falls back to the flat Y-then-X sort when no clean
+        // gutter is found at all (ordinary short single-column snippets).
         if indices.len() < self.min_spans_for_split {
+            if self
+                .find_horizontal_split_indexed(all_spans, indices)
+                .is_some()
+            {
+                let mut stream_order: Vec<usize> = indices.to_vec();
+                stream_order.sort_by_key(|&i| all_spans[i].sequence);
+                return vec![stream_order];
+            }
             return vec![self.sort_indices(all_spans, indices)];
         }
 
