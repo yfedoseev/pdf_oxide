@@ -12593,6 +12593,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: "Hello".to_string(),
                 bbox: Rect::new(100.0, 700.0, 30.0, 12.0),
@@ -12621,6 +12623,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: "World".to_string(),
                 bbox: Rect::new(131.0, 700.0, 30.0, 12.0), // 1pt gap

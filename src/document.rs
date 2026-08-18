@@ -30387,6 +30387,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: label.to_string(),
                 bbox: Rect::new(x, y, 80.0, 12.0),
@@ -30464,6 +30466,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: label.to_string(),
                 bbox: Rect::new(x, y, 80.0, 12.0),

@@ -1602,6 +1602,8 @@ mod tests {
         let span = crate::layout::TextSpan {
             provenance: None,
             text_rise: 0.0,
+            mirrored: false,
+            page_rotation_applied: 0,
             artifact_type: None,
             text: "Rotated".into(),
             bbox: Rect::new(10.0, 200.0, 40.0, 12.0),
