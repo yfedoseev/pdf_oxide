@@ -820,7 +820,7 @@ fn extract_cell(
                         char_widths: vec![],
                         char_x_offsets: Vec::new(),
                         heading_level: None,
-                        rotation_degrees: 0.0,
+                        rotation_degrees: block.rotation_degrees,
                         wmode: 0,
                         text_rise: 0.0,
                         rtl_draw_logical: false,
@@ -1571,6 +1571,60 @@ mod tests {
         assert_eq!(
             cell.spans[1].text, " Italic",
             "wrapped-line span must carry the leading inter-block space (review #533)"
+        );
+    }
+
+    #[test]
+    fn test_extract_cell_spans_carry_rotation_degrees() {
+        use crate::layout::text_block::{Color, FontWeight};
+
+        let mut td = StructElem::new(StructType::TD);
+        td.add_child(StructChild::MarkedContentRef {
+            mcid: 1,
+            page: 0,
+            scope: crate::structure::McidScope::Page(0),
+        });
+        let mut tr = StructElem::new(StructType::TR);
+        tr.add_child(StructChild::StructElem(Box::new(td)));
+        let mut table_elem = StructElem::new(StructType::Table);
+        table_elem.add_child(StructChild::StructElem(Box::new(tr)));
+
+        let span = crate::layout::TextSpan {
+            provenance: None,
+            text_rise: 0.0,
+            artifact_type: None,
+            text: "Rotated".into(),
+            bbox: Rect::new(10.0, 200.0, 40.0, 12.0),
+            font_name: "Test".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: Some(1),
+            mcid_scope: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            primary_detected: false,
+            char_widths: vec![],
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 90.0,
+            wmode: 0,
+            rtl_draw_logical: false,
+        };
+
+        let result = extract_table_from_spans(&table_elem, &[span]).unwrap();
+        let cell = &result.rows[0].cells[0];
+        assert_eq!(cell.spans.len(), 1);
+        assert_eq!(
+            cell.spans[0].rotation_degrees, 90.0,
+            "cell span re-synthesis must carry the source block's rotation through, \
+             not silently reset it to 0.0"
         );
     }
 

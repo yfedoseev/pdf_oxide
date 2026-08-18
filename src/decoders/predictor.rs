@@ -98,7 +98,7 @@ pub struct CcittParams {
 impl Default for CcittParams {
     fn default() -> Self {
         Self {
-            k: -1, // Group 4
+            k: 0, // ISO 32000-1 Table 11: default is Group 3, pure 1-D
             columns: 1,
             rows: None,
             black_is_1: false, // PDF default: white=0, black=1

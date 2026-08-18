@@ -1141,6 +1141,11 @@ impl TextRasterizer {
         let mut y_cursor: f32 = 0.0;
         let mut last_fallback_cluster: Option<usize> = None;
         let wmode = gs.text_wmode;
+        // Per ISO 32000-1:2008 §9.3.3, Tw applies only to the single-byte
+        // character code 32 — never to the byte value 32 inside a
+        // multi-byte code (e.g. CID 32 under Identity-H/V, always 2 bytes).
+        // `font_info` is constant for the whole call, so resolve this once.
+        let word_space_eligible = get_byte_mode(font_info) != ByteMode::TwoByte;
 
         // Pre-resolve CIDs for Type0 fonts using our iterator
         let cids: Vec<u16> = if let Some(info) = font_info {
@@ -1321,12 +1326,12 @@ impl TextRasterizer {
                 if char_at_pos.is_whitespace() {
                     if wmode == 0 {
                         x_cursor += x_advance + gs.char_space;
-                        if char_at_pos == ' ' {
+                        if char_at_pos == ' ' && word_space_eligible {
                             x_cursor += gs.word_space;
                         }
                     } else {
                         y_cursor += y_step + gs.char_space;
-                        if char_at_pos == ' ' {
+                        if char_at_pos == ' ' && word_space_eligible {
                             y_cursor += gs.word_space;
                         }
                     }
@@ -1409,13 +1414,13 @@ impl TextRasterizer {
             if wmode == 0 {
                 x_cursor += x_advance_override.unwrap_or(x_advance);
                 x_cursor += gs.char_space;
-                if char_at_pos == ' ' {
+                if char_at_pos == ' ' && word_space_eligible {
                     x_cursor += gs.word_space;
                 }
             } else {
                 y_cursor += y_step;
                 y_cursor += gs.char_space;
-                if char_at_pos == ' ' {
+                if char_at_pos == ' ' && word_space_eligible {
                     y_cursor += gs.word_space;
                 }
             }
@@ -1466,7 +1471,7 @@ impl TextRasterizer {
         let wmode = gs.text_wmode;
 
         // Iterate over character codes from the raw bytes
-        for (char_code, _bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
+        for (char_code, bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
             // Map character code to GID based on font type:
             // - Type0 (CID-keyed) without CIDToGIDMap → CID is GID
             //   (Identity-H/Identity-V emission, the case our writer
@@ -1560,14 +1565,19 @@ impl TextRasterizer {
                 }
             }
 
+            // Per ISO 32000-1:2008 §9.3.3, Tw applies only to the
+            // single-byte character code 32 — a 2-byte CID 32 (0x0020)
+            // under Identity-H/V or another multi-byte CMap must not
+            // take Tw.
+            let word_space_eligible = bytes_consumed == 1 && char_code == 32;
             if wmode == 0 {
                 x_cursor += x_advance + gs.char_space;
-                if char_at_pos == ' ' {
+                if word_space_eligible {
                     x_cursor += gs.word_space;
                 }
             } else {
                 y_cursor += y_step + gs.char_space;
-                if char_at_pos == ' ' {
+                if word_space_eligible {
                     y_cursor += gs.word_space;
                 }
             }
@@ -1648,7 +1658,7 @@ impl TextRasterizer {
         let mut glyphs_painted: usize = 0;
         let mut glyphs_missing: usize = 0;
 
-        for (char_code, _) in TextCharIter::new(bytes, Some(font_info)) {
+        for (char_code, bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
             // code == CID holds by construction: the load-time gate in
             // `FontInfo::from_dict` only sets `cjk_substitution` when the
             // /Encoding resolved to `Encoding::Identity` (Identity-H/V or an
@@ -1739,14 +1749,22 @@ impl TextRasterizer {
                 glyphs_missing += 1;
             }
 
+            // Per ISO 32000-1:2008 §9.3.3, Tw applies only to the
+            // single-byte character code 32. This substitution path is
+            // only reached for Identity-encoded CIDFonts (see the
+            // `code == CID` comment above), which are always 2-byte, so
+            // `bytes_consumed == 1` never holds today — kept explicit
+            // (rather than dropping Tw unconditionally) so this stays
+            // correct if this path is ever reached for a 1-byte codespace.
+            let word_space_eligible = bytes_consumed == 1 && ch == ' ';
             if wmode == 0 {
                 x_cursor += x_advance + gs.char_space;
-                if ch == ' ' {
+                if word_space_eligible {
                     x_cursor += gs.word_space;
                 }
             } else {
                 y_cursor += y_step + gs.char_space;
-                if ch == ' ' {
+                if word_space_eligible {
                     y_cursor += gs.word_space;
                 }
             }
@@ -2013,7 +2031,7 @@ fn measure_text_bytes(
     let mut advance: f32 = 0.0;
 
     if let Some(font) = font_info {
-        for (char_code, _) in TextCharIter::new(bytes, Some(font)) {
+        for (char_code, nbytes) in TextCharIter::new(bytes, Some(font)) {
             // Per ISO 32000-1 §9.4.4 the advance formula differs by writing
             // mode:
             //   horizontal: tx = ((w0 * Tfs) + Tc + Tw) * Th
@@ -2021,17 +2039,21 @@ fn measure_text_bytes(
             // Tz is defined as glyph stretching along the *horizontal*
             // direction only (§9.3.4); it does not scale vertical w1y or
             // vertical Tc / Tw.
+            // Per §9.3.3, Tw applies only to the single-byte code 32 — a
+            // 2-byte CID 0x0020 under Identity-H/V or another multi-byte
+            // CMap must not take Tw.
+            let word_space_eligible = nbytes == 1 && char_code == 0x20;
             if wmode == 0 {
                 let glyph_adv = font.get_glyph_width(char_code) * font_size / 1000.0;
                 advance += (glyph_adv + gs.char_space) * h_scale;
-                if char_code == 0x20 {
+                if word_space_eligible {
                     advance += gs.word_space * h_scale;
                 }
             } else {
                 let w1y = font.get_vertical_metrics(char_code).w1y;
                 let glyph_adv = w1y * font_size / 1000.0;
                 advance += glyph_adv + gs.char_space;
-                if char_code == 0x20 {
+                if word_space_eligible {
                     advance += gs.word_space;
                 }
             }
@@ -2255,6 +2277,63 @@ mod tests {
         assert!(
             ((-advance) - 9.0).abs() < 0.01,
             "vertical Tc must NOT pick up Tz: expected -9, got {}",
+            advance
+        );
+    }
+
+    /// Minimal simple (non-Type0) FontInfo for word-spacing tests — every
+    /// content byte is inherently single-byte, so `get_byte_mode` always
+    /// resolves to `ByteMode::OneByte` for it.
+    fn make_simple_test_font() -> FontInfo {
+        let mut font = make_vertical_test_font();
+        font.subtype = "Type1".to_string();
+        font.encoding = Encoding::Standard("WinAnsiEncoding".to_string());
+        font.cid_to_gid_map = None;
+        font.cid_font_type = None;
+        font.wmode = 0;
+        font
+    }
+
+    /// Per ISO 32000-1:2008 §9.3.3, Tw applies only to the single-byte
+    /// character code 32 — never to the byte value 32 inside a multi-byte
+    /// code. A 2-byte Identity CID `<0020>` (code 32, but a 2-byte code)
+    /// must NOT receive word spacing, even though the raw code equals 32.
+    #[test]
+    fn measure_text_bytes_skips_tw_for_multibyte_cid_32() {
+        let font = make_vertical_test_font(); // Type0, Identity (2-byte codes)
+        let mut gs = GraphicsState::new();
+        gs.font_size = 12.0;
+        gs.text_wmode = 0;
+        gs.word_space = 100.0;
+
+        let bytes: &[u8] = &[0x00, 0x20]; // 2-byte CID 32
+        let advance = measure_text_bytes(bytes, &gs, Some(&font));
+
+        // Glyph width only (1000/1000 * 12 = 12); Tw must be excluded.
+        assert!(
+            (advance - 12.0).abs() < 0.01,
+            "Tw must not apply to a 2-byte CID 32, expected 12.0, got {}",
+            advance
+        );
+    }
+
+    /// Control for the test above: a *simple* font's single-byte code 32
+    /// is exactly the case §9.3.3 targets, so Tw must still apply there.
+    #[test]
+    fn measure_text_bytes_applies_tw_for_single_byte_code_32() {
+        let font = make_simple_test_font();
+        let mut gs = GraphicsState::new();
+        gs.font_size = 12.0;
+        gs.text_wmode = 0;
+        gs.word_space = 100.0;
+
+        let bytes: &[u8] = &[0x20]; // single-byte code 32
+        let advance = measure_text_bytes(bytes, &gs, Some(&font));
+
+        // Glyph width (12.0) + Tw (100.0) = 112.0.
+        assert!(
+            (advance - 112.0).abs() < 0.01,
+            "Tw must apply to a single-byte code 32, expected 112.0, got {}",
             advance
         );
     }

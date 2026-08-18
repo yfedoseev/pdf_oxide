@@ -686,6 +686,34 @@ class FunctionBindings
     }
 
     /**
+     * Get the encoded image bytes (PNG or JPEG, per the format the image
+     * was rendered with) from a rendered-image handle.
+     *
+     * @param CData $imageHandle The image handle (from pdfRenderPage*)
+     * @return string Encoded image binary data
+     */
+    public function pdfGetRenderedImageData(CData $imageHandle): string
+    {
+        // C: uint8_t *pdf_get_rendered_image_data(const FfiRenderedImage *img,
+        //        int32_t *data_len, int32_t *error_code)
+        $dataLen = $this->ffi->new('int32_t');
+        $errorCode = $this->ffi->new('int32_t');
+        $dataPtr = $this->ffi->pdf_get_rendered_image_data(
+            $imageHandle,
+            FFI::addr($dataLen),
+            FFI::addr($errorCode)
+        );
+        ErrorHandler::check((int) $errorCode->cdata, 'pdf_get_rendered_image_data');
+        if ($dataPtr === null) {
+            return '';
+        }
+        $bytes = FFI::string($dataPtr, (int) $dataLen->cdata);
+        // Caller-owned buffer — must free.
+        $this->ffi->free_bytes($this->ffi->cast('uint8_t*', $dataPtr));
+        return $bytes;
+    }
+
+    /**
      * Estimate rendering time for a page.
      *
      * @param CData $handle The document handle
