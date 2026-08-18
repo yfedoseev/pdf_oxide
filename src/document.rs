@@ -1361,6 +1361,55 @@ impl PdfDocument {
         }
     }
 
+    /// Decrypt a stream object's raw bytes for re-serialization elsewhere,
+    /// **without** decompressing it — unlike [`Self::decode_stream_with_encryption`],
+    /// which both decrypts and applies `/Filter` (needed by extraction, which
+    /// wants the final bytes). A writer that re-emits the object verbatim
+    /// (same `/Filter`, e.g. FlateDecode) wants the opposite: decrypt only,
+    /// leave the filter's compressed bytes alone, so the `/Filter` entry it
+    /// copies stays valid.
+    ///
+    /// A no-op when the document isn't encrypted or the object isn't a
+    /// stream, so callers can apply it unconditionally to every object they
+    /// copy out of `self` — e.g. every write path that copies objects from
+    /// an already-open, possibly-encrypted source document into a new
+    /// output file with no `/Encrypt` dictionary of its own (issue #1032:
+    /// those paths were re-serializing the source's raw ciphertext
+    /// verbatim, producing a structurally valid but unreadable PDF with no
+    /// error or warning).
+    pub(crate) fn decrypt_stream_for_copy(
+        &self,
+        obj: Object,
+        obj_ref: ObjectRef,
+    ) -> Result<Object> {
+        let Object::Stream { mut dict, data } = obj else {
+            return Ok(obj);
+        };
+        // Per ISO 32000-2:2020 §7.6.3, object streams and cross-reference
+        // streams are never encrypted — same exclusion as
+        // `decode_stream_with_encryption` above.
+        let is_unencrypted_stream_type = dict
+            .get("Type")
+            .and_then(|t| t.as_name())
+            .map(|name| name == "ObjStm" || name == "XRef")
+            .unwrap_or(false);
+        if is_unencrypted_stream_type {
+            return Ok(Object::Stream { dict, data });
+        }
+        let handler_ref = self.encryption_handler.lock_or_recover();
+        let Some(handler) = handler_ref.as_ref() else {
+            drop(handler_ref);
+            return Ok(Object::Stream { dict, data });
+        };
+        let decrypted = handler.decrypt_stream(&data, obj_ref.id, obj_ref.gen as u32)?;
+        drop(handler_ref);
+        dict.insert("Length".to_string(), Object::Integer(decrypted.len() as i64));
+        Ok(Object::Stream {
+            dict,
+            data: decrypted.into(),
+        })
+    }
+
     /// Open with custom extraction profile.
     ///
     /// Currently, the profile is not used at the document level but is reserved
@@ -8356,15 +8405,30 @@ impl PdfDocument {
         }
         if Self::is_column_spanning_decimal(span) {
             let dot = span.text.find('.').unwrap();
-            out.push_str(&span.text[..dot]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..dot]);
             out.push(' ');
-            out.push_str(&span.text[dot + 1..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[dot + 1..]);
         } else if let Some(split) = Self::char_widths_boundary_split(span) {
-            out.push_str(&span.text[..split]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..split]);
             out.push(' ');
-            out.push_str(&span.text[split..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[split..]);
         } else {
-            out.push_str(&span.text);
+            Self::push_str_without_soft_hyphens(out, &span.text);
+        }
+    }
+
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
+    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
+    /// it is never meaningful rendered content, so it must not survive into
+    /// flat-text output regardless of whether it sits at a line boundary (the
+    /// PDF's own line wrap is not preserved here) or mid-word within a span
+    /// whose glyphs were positioned individually.
+    #[inline]
+    fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
+        if s.contains('\u{00AD}') {
+            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
+        } else {
+            out.push_str(s);
         }
     }
 
@@ -12987,7 +13051,14 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // A normal PDF page is at most a few thousand points wide. A
+        // degenerate CTM can inflate span x-coordinates by orders of
+        // magnitude, which would otherwise drive the fine-resolution scan
+        // below (bounded to a >=0.5pt step) into an effectively unbounded
+        // loop. Same hazard, same bound as
+        // `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         // Column-content spans only (exclude true full-width bands). A real
@@ -13482,7 +13553,12 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // Same degenerate-CTM hazard and bound as `density_central_gutter`
+        // above / `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`: the
+        // fine-resolution scan below steps at >=0.5pt, so an unbounded
+        // `content_w` would make the loop below run effectively forever.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         let ymin = body.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
@@ -17793,6 +17869,15 @@ impl PdfDocument {
                 Operator::CloseFillStroke => {
                     extractor.close_fill_and_stroke(FillRule::NonZero);
                 },
+                Operator::FillStroke => {
+                    extractor.fill_and_stroke(FillRule::NonZero);
+                },
+                Operator::FillStrokeEvenOdd => {
+                    extractor.fill_and_stroke(FillRule::EvenOdd);
+                },
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => {
                     extractor.end_path();
                 },
@@ -18390,6 +18475,11 @@ impl PdfDocument {
                 Operator::Fill => extractor.fill(FillRule::NonZero),
                 Operator::FillEvenOdd => extractor.fill(FillRule::EvenOdd),
                 Operator::CloseFillStroke => extractor.close_fill_and_stroke(FillRule::NonZero),
+                Operator::FillStroke => extractor.fill_and_stroke(FillRule::NonZero),
+                Operator::FillStrokeEvenOdd => extractor.fill_and_stroke(FillRule::EvenOdd),
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => extractor.end_path(),
 
                 // Clipping operators
@@ -20154,7 +20244,11 @@ impl PdfDocument {
                     .get_page_media_box(page_index)
                     .map(|m| m.3)
                     .unwrap_or(792.0);
-                base_spans.retain(|s| !Self::is_running_head_foot(s, media_h, &repeated));
+                let head_foot_lines =
+                    self.running_head_foot_line_bboxes(page_index, media_h, &repeated);
+                if !head_foot_lines.is_empty() {
+                    base_spans.retain(|s| !head_foot_lines.iter().any(|lb| lb.intersects(&s.bbox)));
+                }
             }
         }
 
@@ -21612,6 +21706,16 @@ impl PdfDocument {
     /// of pages — running headers/footers. Page-number digits are stripped so
     /// "Page 3"/"Page 4" collapse to one signature. Empty for documents under
     /// 3 pages (repetition can't be judged) or when nothing repeats.
+    /// Collects repetition signatures from whole assembled **lines**, not
+    /// individual spans (#1022). A genuine running header/footer is the
+    /// same complete line of text on every page it appears on; a SPAN is
+    /// often just a fragment of a line (font/color-run boundaries split one
+    /// visual line into several spans), and matching at fragment
+    /// granularity lets a phrase that coincidentally recurs across
+    /// unrelated body paragraphs — e.g. the first line of a column, which
+    /// also falls inside the geometric head/foot band in a dense
+    /// multi-column layout — masquerade as page furniture and get deleted
+    /// everywhere it occurs, including mid-sentence.
     pub(crate) fn repeated_running_head_foot(
         &self,
         threshold: f32,
@@ -21628,15 +21732,15 @@ impl PdfDocument {
         let mut occ: HashMap<String, usize> = HashMap::new();
         for p in 0..page_count {
             let media_h = self.get_page_media_box(p).map(|m| m.3).unwrap_or(792.0);
-            let Ok(spans) = self.extract_spans(p) else {
+            let Ok(lines) = self.extract_text_lines(p) else {
                 continue;
             };
             let mut seen: HashSet<String> = HashSet::new();
-            for s in &spans {
-                if !Self::in_head_foot_band(s, media_h) {
+            for line in &lines {
+                if !Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h) {
                     continue;
                 }
-                let norm = Self::normalize_band_line(&s.text);
+                let norm = Self::normalize_band_line(&line.text);
                 // Count each distinct line once per page.
                 if norm.len() > 3 && seen.insert(norm.clone()) {
                     *occ.entry(norm).or_default() += 1;
@@ -21651,9 +21755,11 @@ impl PdfDocument {
         out
     }
 
-    /// True when a span sits in the top or bottom 15% band of the page.
-    fn in_head_foot_band(s: &crate::layout::TextSpan, media_h: f32) -> bool {
-        s.bbox.y > media_h * 0.85 || (s.bbox.y + s.bbox.height) < media_h * 0.15
+    /// True when a region sits in the top or bottom 15% band of the page.
+    /// `y`/`height` are a bbox's own fields (shared by `TextSpan` and
+    /// `TextLine`, which don't share a common bbox-accessor trait).
+    fn in_head_foot_band(y: f32, height: f32, media_h: f32) -> bool {
+        y > media_h * 0.85 || (y + height) < media_h * 0.15
     }
 
     /// Normalize a band line for repetition matching: drop ASCII digits (page
@@ -21667,15 +21773,30 @@ impl PdfDocument {
             .to_lowercase()
     }
 
-    /// True when `span` is a running header/footer to strip: in the top/bottom
-    /// band and its normalized text is one of the `repeated` signatures.
-    fn is_running_head_foot(
-        span: &crate::layout::TextSpan,
+    /// Bounding boxes (on this page) of assembled lines whose normalized
+    /// text matches a `repeated_running_head_foot` signature. The
+    /// signature set is collected at whole-line granularity (see above),
+    /// but the actual stripping in `to_markdown_inner` still operates on
+    /// individual spans; this bridges the two by giving the caller the
+    /// matched lines' geometry so it can strip every span that belongs to
+    /// one, rather than re-matching (fragile) text at the span level.
+    fn running_head_foot_line_bboxes(
+        &self,
+        page_index: usize,
         media_h: f32,
         repeated: &std::collections::HashSet<String>,
-    ) -> bool {
-        Self::in_head_foot_band(span, media_h)
-            && repeated.contains(&Self::normalize_band_line(&span.text))
+    ) -> Vec<crate::geometry::Rect> {
+        let Ok(lines) = self.extract_text_lines(page_index) else {
+            return Vec::new();
+        };
+        lines
+            .into_iter()
+            .filter(|line| {
+                Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h)
+                    && repeated.contains(&Self::normalize_band_line(&line.text))
+            })
+            .map(|line| line.bbox)
+            .collect()
     }
 
     /// Extract embedded files / attachments (WS1.8a, ISO 32000-1 §7.11.4).
@@ -22420,13 +22541,22 @@ impl PdfDocument {
                 // Pre-decompression filtering using dictionary metadata.
                 // These checks use Width/Height/ColorSpace from the XObject dictionary
                 // which are available WITHOUT decompressing the image stream data.
-                let w = xobject_dict
-                    .get("Width")
-                    .and_then(|o| o.as_integer())
-                    .unwrap_or(0);
+                // /Width and /Height may themselves be indirect references
+                // (ISO 32000-1 §7.3.10); resolve them the same way
+                // `extract_image_from_xobject` does, so an indirect width
+                // doesn't fall through to the `unwrap_or(0)` default and get
+                // silently filtered out by the `min_width`/`min_height` gate
+                // below.
+                let resolve_int = |o: &Object| -> Option<i64> {
+                    match o.as_reference() {
+                        Some(r) => self.load_object(r).ok().and_then(|v| v.as_integer()),
+                        None => o.as_integer(),
+                    }
+                };
+                let w = xobject_dict.get("Width").and_then(resolve_int).unwrap_or(0);
                 let h = xobject_dict
                     .get("Height")
-                    .and_then(|o| o.as_integer())
+                    .and_then(resolve_int)
                     .unwrap_or(0);
                 if w < filter.min_width || h < filter.min_height {
                     return Ok(images);
@@ -26074,6 +26204,26 @@ mod tests {
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
         assert_eq!(out, "3.14");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_soft_hyphen_mid_word() {
+        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
+        // point only — it must never survive into extract_text/to_markdown/
+        // to_html output, even mid-word with no adjacent line break (the
+        // span was drawn as a single reflowed run, not split across lines).
+        let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "reconstruction");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_multiple_soft_hyphens() {
+        let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "unbelievable");
     }
 
     // ========================================================================
@@ -30105,6 +30255,167 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #979: a page with only 2 spans per column
+    /// (4 spans total) is below `min_spans_for_split` (5), so it never
+    /// reaches the geometric column-split logic the 6-span test above
+    /// exercises — every statistical prose/table classifier
+    /// (`classify_region_kind`, `detect_two_column_prose`,
+    /// `detect_narrow_gutter_prose`) also has its own internal minimum-span
+    /// floor (6/8/24) far above 4, so none of them can classify this page
+    /// either. Before the fix, the base case fell back to a flat
+    /// Y-then-X sort, interleaving the two columns (L1, R1, L2, R2)
+    /// instead of reading each column through.
+    ///
+    /// A pure geometric gutter check can't distinguish this from a 2x2
+    /// table at this scale (see `test_column_aware_sparse_2x2_table_stays_row_major`
+    /// below), so the fix defers to content-stream emission order when a
+    /// clean gutter exists — PDFium parity per the issue's own cross-tool
+    /// probe. This fixture's `sequence` mirrors the exact reporter's
+    /// repro (`reportlab` draws the whole left column, then the whole
+    /// right column): L1, L2, R1, R2.
+    #[test]
+    fn test_column_aware_sparse_two_column_follows_stream_order() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_span(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Column-major stream order, matching a two-column-prose generator
+        // that fills the left text box then the right one — exactly the
+        // reporter's `reportlab` repro.
+        let spans = vec![
+            make_span("L1", 10.0, 700.0, 0),
+            make_span("L2", 10.0, 680.0, 1),
+            make_span("R1", 200.0, 700.0, 2),
+            make_span("R2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["L1", "L2", "R1", "R2"],
+            "a sparse 2-column page below min_spans_for_split must follow \
+             content-stream order (column-major here), not interleave the \
+             columns via a flat Y-then-X sort"
+        );
+    }
+
+    /// Companion to the test above: a genuine 2x2 table emitted **row-major**
+    /// in-stream (the common table-generator pattern — draw row 1's cells
+    /// left-to-right, then row 2's) must stay row-major. The same clean
+    /// gutter exists between the two columns as in the prose case above —
+    /// nothing in this codebase can geometrically tell the two apart at
+    /// 4-span scale — so the fix's content-stream-order fallback is
+    /// correct for *both* shapes precisely because it never has to decide
+    /// between them: it just preserves however the source authored it.
+    #[test]
+    fn test_column_aware_sparse_2x2_table_stays_row_major() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_cell(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Row-major stream order: row 1's two cells, then row 2's two cells.
+        let spans = vec![
+            make_cell("R1C1", 10.0, 700.0, 0),
+            make_cell("R1C2", 200.0, 700.0, 1),
+            make_cell("R2C1", 10.0, 680.0, 2),
+            make_cell("R2C2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["R1C1", "R1C2", "R2C1", "R2C2"],
+            "a row-major-emitted 2x2 table must stay row-major, not be \
+             reshuffled into a column-major read order"
+        );
+    }
+
     // ========================================================================
     // COLUMN-ORDER: persistent-gutter-corridor accept path (#607)
     // ========================================================================
@@ -30352,6 +30663,36 @@ mod tests {
             spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
         }
         assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_rejects_degenerate_ctm_content_width() {
+        // Two "columns" separated by a 200,000pt gap — the signature of a
+        // degenerate CTM scale factor inflating span x-coordinates, not a
+        // real page (a normal page is at most a few thousand points wide).
+        // Before the MAX_CONTENT_EXTENT bound, the huge empty middle region
+        // was itself picked up as a single "corridor" and returned as a
+        // (nonsensical) gutter position; it must now be rejected outright.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn classifier_gutter_rejects_degenerate_ctm_content_width() {
+        // Same degenerate-CTM hazard as the density-probe test above, for
+        // `classifier_column_gutter`'s independent content_w computation.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::classifier_column_gutter(&spans).is_none());
     }
 
     #[test]

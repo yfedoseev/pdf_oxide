@@ -1742,6 +1742,17 @@ module PdfOxide
                          pointer size_t
                          pointer],
                       :pointer
+
+      # uint8_t *pdf_get_rendered_image_data(
+      #   const FfiRenderedImage *img, int32_t *data_len, int32_t *error_code)
+      # Returns the encoded image bytes (PNG or JPEG per the format the
+      # image was rendered with). Caller-owned; free with free_bytes.
+      # Overrides the auto-generated 8-pointer placeholder declared
+      # earlier in this file — that placeholder signature does not match
+      # the real 3-argument ABI and cannot be called as-is.
+      attach_function :pdf_get_rendered_image_data,
+                      %i[pointer pointer pointer],
+                      :pointer
     end
   end
 end

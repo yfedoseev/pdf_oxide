@@ -438,26 +438,19 @@ module PdfOxide
     end
 
     def read_rendered_image_bytes(img_ptr)
-      # The cdylib renders to a "rendered image" handle.  Different
-      # accessors exist across versions; try the byte-buffer accessor
-      # first, fall back to a sensible default.
-      if Bindings.respond_to?(:pdf_oxide_rendered_image_get_bytes)
-        len_ptr = ::FFI::MemoryPointer.new(:size_t)
-        err = ::FFI::MemoryPointer.new(:int32)
-        buf = Bindings.pdf_oxide_rendered_image_get_bytes(img_ptr, len_ptr, err)
-        raise_for_code(err.read_int32, 'render_bytes')
-        return '' if buf.nil? || buf.null?
+      # The cdylib exposes the rendered-image byte buffer through
+      # pdf_get_rendered_image_data (data_len is *mut i32, not size_t);
+      # the caller owns the returned buffer and must free it via
+      # free_bytes.
+      len_ptr = ::FFI::MemoryPointer.new(:int32)
+      err = ::FFI::MemoryPointer.new(:int32)
+      buf = Bindings.pdf_get_rendered_image_data(img_ptr, len_ptr, err)
+      raise_for_code(err.read_int32, 'render_bytes')
+      return '' if buf.nil? || buf.null?
 
-        len = len_ptr.read(:size_t)
-        bytes = buf.read_string(len)
-        Bindings.free_bytes(buf) if Bindings.respond_to?(:free_bytes)
-        bytes
-      else
-        # Fall back to an empty BINARY string; render() callers see a
-        # clean error path rather than a segfault when the build is
-        # missing the rendered-image accessor.
-        ''
-      end
+      bytes = buf.read_string(len_ptr.read_int32)
+      Bindings.free_bytes(buf)
+      bytes
     end
 
     # Map a cdylib error code (`int32_t *err`) to the matching Ruby

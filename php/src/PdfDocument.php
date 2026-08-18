@@ -277,6 +277,65 @@ final class PdfDocument
         $this->bindings->pdfDocumentClearSearchIndex($this->requireHandle());
     }
 
+    // ─────────────────────── rendering ──────────────────────
+
+    /**
+     * Render a single page to PNG bytes at the supplied DPI.
+     *
+     * @throws InvalidStateException when the document has been closed
+     */
+    public function render(int $pageIndex, int $dpi = 150): string
+    {
+        $imageHandle = $this->bindings->pdfRenderPageZoom($this->requireHandle(), $pageIndex, $dpi / 72.0);
+        try {
+            return $this->bindings->pdfGetRenderedImageData($imageHandle);
+        } finally {
+            $this->bindings->pdfRenderedImageFree($imageHandle);
+        }
+    }
+
+    /**
+     * Render a single page with the full render-options surface plus
+     * Optional-Content-Group (OCG) layer filtering.
+     *
+     * @param int $format 0 = PNG, 1 = JPEG
+     * @param array{0: float, 1: float, 2: float, 3: float} $background RGBA, each 0.0..1.0
+     * @param list<string> $excludedLayers OCG `/Name`s to suppress
+     *
+     * @throws InvalidStateException when the document has been closed
+     */
+    public function renderWithLayers(
+        int $pageIndex,
+        int $dpi = 150,
+        int $format = 0,
+        array $background = [1.0, 1.0, 1.0, 1.0],
+        bool $transparent = false,
+        bool $renderAnnotations = true,
+        int $jpegQuality = 90,
+        array $excludedLayers = []
+    ): string {
+        [$bgR, $bgG, $bgB, $bgA] = $background;
+        $imageHandle = $this->bindings->pdfRenderPageWithOptionsEx(
+            $this->requireHandle(),
+            $pageIndex,
+            $dpi,
+            $format,
+            $bgR,
+            $bgG,
+            $bgB,
+            $bgA,
+            $transparent ? 1 : 0,
+            $renderAnnotations ? 1 : 0,
+            $jpegQuality,
+            $excludedLayers
+        );
+        try {
+            return $this->bindings->pdfGetRenderedImageData($imageHandle);
+        } finally {
+            $this->bindings->pdfRenderedImageFree($imageHandle);
+        }
+    }
+
     // ───────────────────── page iteration ──────────────────
 
     /**
