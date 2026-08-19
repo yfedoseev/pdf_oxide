@@ -3,6 +3,12 @@ name: Version Consistency
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
   pull_request:
     branches: [ main, develop ]
 
