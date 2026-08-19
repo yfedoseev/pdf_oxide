@@ -153,10 +153,22 @@ pub fn redact_content_stream(
         ));
     }
 
+    // Wrap the pruned body in its own outer q/Q. A content stream is under
+    // no obligation to leave the CTM at identity at end-of-stream (a
+    // trailing, unmatched `cm` — e.g. a Y-flip with no closing `Q` — is
+    // legal and common). Without this wrapper the overlay ops below, which
+    // draw in the region's absolute page-space coordinates, would inherit
+    // whatever CTM the pruned content left active and land in the wrong
+    // place. `q` at the very start of the stream saves the stream's
+    // original (identity) CTM; the matching `Q` restores it before any
+    // overlay is drawn, regardless of what the pruned operators did to the
+    // CTM in between. Same fix shape qpdf uses for the identical hazard.
     let mut body = Vec::with_capacity(content.len());
+    body.extend_from_slice(b"q\n");
     for op in &te.operators {
         serialize_operator(&mut body, op);
     }
+    body.extend_from_slice(b"Q\n");
 
     for region in &regions.regions {
         body.extend_from_slice(&region_overlay_ops(region, opts));
@@ -303,5 +315,31 @@ mod tests {
             &Stub,
         );
         let _ = redact_content_stream(b"", &regions, &RedactionOptions::default(), &Stub);
+    }
+
+    #[test]
+    fn pruned_body_wrapped_in_own_q_before_overlay() {
+        // A trailing, unmatched `cm` (e.g. a Y-flip a producer applies once
+        // and never restores — legal per ISO 32000-1: the CTM is not
+        // required to be identity at end-of-stream) must not leak into the
+        // overlay, which draws in the region's absolute page-space
+        // coordinates. The pruned body must be wrapped in its own `q`/`Q`
+        // so the overlay always starts from the stream's original CTM.
+        let doc = b"1 0 0 -1 0 792 cm\n";
+        let regions = one_region(90.0, 695.0, 160.0, 715.0);
+        let (out, _report) =
+            redact_content_stream(doc, &regions, &RedactionOptions::default(), &Stub).unwrap();
+
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.starts_with("q\n"), "pruned body must open with q: {s}");
+        let wrapper_q_close = s
+            .find("Q\n")
+            .expect("closing Q for the pruned-body wrapper");
+        let overlay_rg = s.find("rg\n").expect("overlay rg op");
+        assert!(
+            wrapper_q_close < overlay_rg,
+            "the wrapper Q must close (restoring the original CTM) before the \
+             overlay starts drawing: {s}"
+        );
     }
 }

@@ -706,6 +706,11 @@ typedef struct {
 - (nullable NSString*)provenanceAtIndex:(int32_t)index error:(NSError**)error;
 /// The element bounding box at `index`.
 - (POXBbox)rectAtIndex:(int32_t)index error:(NSError**)error;
+/// The page-space extents of the element at `index`: the rect from
+/// -rectAtIndex:error: with any text-matrix rotation resolved into an
+/// axis-aligned page-space hull. Identical to -rectAtIndex:error: for upright
+/// runs.
+- (POXBbox)pageRectAtIndex:(int32_t)index error:(NSError**)error;
 /// Serialize the whole list to JSON (nil on error).
 - (nullable NSString*)toJsonWithError:(NSError**)error;
 

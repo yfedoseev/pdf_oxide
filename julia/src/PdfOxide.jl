@@ -128,7 +128,7 @@ export annotation_is_hidden, annotation_is_marked_deleted, annotation_is_printab
 export annotation_is_read_only
 export highlight_quad_points_count, highlight_quad_point
 export link_annotation_uri, text_annotation_icon_name, annotations_to_json
-export element_type, element_text, element_rect, elements_to_json
+export element_type, element_text, element_rect, element_page_rect, elements_to_json
 export fonts_to_json, font_size, search_results_to_json
 export crypto_active_provider, crypto_cbom, crypto_fips_available, crypto_inventory
 export crypto_policy, crypto_set_policy, crypto_use_fips
@@ -6466,6 +6466,42 @@ function element_rect(l::ElementList, index::Integer)
         code,
     )
     code[] != 0 && throw(PdfOxideError(code[], "element_rect"))
+    return Bbox(Float64(x[]), Float64(y[]), Float64(w[]), Float64(h[]))
+end
+
+"""
+The `index`-th element's page-space bounding box as a `Bbox`.
+
+The rect from `element_rect` with any text-matrix rotation resolved into an
+axis-aligned page-space hull. Identical to `element_rect` for upright runs.
+"""
+function element_page_rect(l::ElementList, index::Integer)
+    x = Ref{Float32}(0)
+    y = Ref{Float32}(0)
+    w = Ref{Float32}(0)
+    h = Ref{Float32}(0)
+    code = Ref{Int32}(0)
+    ccall(
+        (:pdf_oxide_element_get_page_rect, LIB),
+        Cvoid,
+        (
+            Ptr{Cvoid},
+            Int32,
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Float32},
+            Ref{Int32},
+        ),
+        _elements(l),
+        Int32(index),
+        x,
+        y,
+        w,
+        h,
+        code,
+    )
+    code[] != 0 && throw(PdfOxideError(code[], "element_page_rect"))
     return Bbox(Float64(x[]), Float64(y[]), Float64(w[]), Float64(h[]))
 end
 
