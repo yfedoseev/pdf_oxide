@@ -1120,6 +1120,14 @@ fn find_region_start(data: &[u8], pos: usize) -> (usize, bool) {
     // Find the last unmatched q by tracking Q/q balance backwards
     let mut q_depth: i32 = 0;
     let mut best_q_pos = pos; // Default: start from text position itself
+                              // A `cm` operator encountered while `q_depth == 0` sits outside any
+                              // enclosing `q`/`Q` bracket this scan can see — a common CAD-exporter
+                              // pattern is a single top-level `cm` right at the start of the stream
+                              // (no `q` at all) establishing a scale/offset for everything after it.
+                              // This function only tracks `q`/`Q`, so on its own it would report
+                              // `best_q_pos == pos` (nothing found) and, if the scan also reached
+                              // byte 0, `hit_limit == false` — silently discarding that transform.
+    let mut saw_top_level_cm = false;
     let mut i = region.len();
 
     while i > 0 {
@@ -1157,14 +1165,33 @@ fn find_region_start(data: &[u8], pos: usize) -> (usize, bool) {
                     }
                 }
             }
+        } else if b == b'm' && i > 0 && region[i - 1] == b'c' && q_depth == 0 {
+            // Look for a standalone 'cm' operator (2-byte token) at
+            // q_depth == 0 — i.e. not nested inside an already-matched
+            // (skipped-over) q/Q pair.
+            let tok_start = i - 1;
+            let before_ok = tok_start == 0 || {
+                let prev = region[tok_start - 1];
+                prev.is_ascii_whitespace() || matches!(prev, b')' | b'>' | b']')
+            };
+            let after_ok = i + 1 >= region.len() || {
+                let next = region[i + 1];
+                next.is_ascii_whitespace() || next == b'%'
+            };
+            if before_ok && after_ok {
+                saw_top_level_cm = true;
+            }
         }
     }
 
     // We can only guarantee complete CTM context if we scanned all the way
     // to the beginning of the data. Even if we found an unmatched 'q' within
     // 4KB, there may be additional enclosing q/cm operators before the scan
-    // window that establish scaling transforms we're missing.
-    let hit_limit = scan_start > 0;
+    // window that establish scaling transforms we're missing. A top-level
+    // `cm` visible in the scanned window but outside any `q`/`Q` this
+    // function tracks needs the same fallback, even when the scan reached
+    // byte 0 of the stream.
+    let hit_limit = scan_start > 0 || saw_top_level_cm;
     (best_q_pos, hit_limit)
 }
 
@@ -1436,6 +1463,20 @@ where
 
 /// Parse a sub-region of a content stream for text operators.
 /// Used by the pre-scan path to parse only identified text-bearing regions.
+///
+/// Each region is bracketed in `SaveState`/`RestoreState` by the caller, and
+/// CTM/font state is injected fresh per region — but the marked-content
+/// stack gets no such treatment, and a scope this region *opens* (BDC/BMC)
+/// without also *closing* (EMC) before the region ends would otherwise leak
+/// into every subsequent region indefinitely (#1033). This is fatal when
+/// the tag is `/PlacedPDF`: `is_content_suppressed` stays true forever,
+/// discarding all remaining text on the page. Tracks this region's own
+/// BDC/BMC vs EMC balance and emits synthetic `EndMarkedContent` operators
+/// for anything still open when the region ends — closing only what THIS
+/// region itself opened, never touching scopes open when it started (the
+/// safer half of a full cross-region marked-content-state carry, which
+/// isn't needed for the reported failure mode: it can only ever end scopes
+/// this region opened, never fabricate a scope's original tag/properties).
 fn parse_region_text_only<F>(data: &[u8], handler: &mut F) -> Result<()>
 where
     F: FnMut(Operator) -> Result<()>,
@@ -1444,6 +1485,19 @@ where
     let mut consecutive_errors: usize = 0;
     let mut inside_text = false;
     let mut op_count: usize = 0;
+    let mut mc_depth: u32 = 0;
+    let mut call = |op: Operator, handler: &mut F| -> Result<()> {
+        match &op {
+            Operator::BeginMarkedContent { .. } | Operator::BeginMarkedContentDict { .. } => {
+                mc_depth += 1;
+            },
+            Operator::EndMarkedContent => {
+                mc_depth = mc_depth.saturating_sub(1);
+            },
+            _ => {},
+        }
+        handler(op)
+    };
 
     while !input.is_empty() {
         while !input.is_empty() && input[0].is_ascii_whitespace() {
@@ -1462,7 +1516,7 @@ where
                 if matches!(op, Operator::EndText) {
                     inside_text = false;
                 }
-                handler(op)?;
+                call(op, handler)?;
                 op_count += 1;
                 input = rest;
                 consecutive_errors = 0;
@@ -1472,7 +1526,7 @@ where
                         if matches!(op, Operator::EndText) {
                             inside_text = false;
                         }
-                        handler(op)?;
+                        call(op, handler)?;
                         op_count += 1;
                         input = rest;
                         consecutive_errors = 0;
@@ -1494,7 +1548,7 @@ where
             match scan_graphics_region(input, &mut consecutive_errors) {
                 ScanResult::EndOfData => break,
                 ScanResult::FoundBT { rest } => {
-                    handler(Operator::BeginText)?;
+                    call(Operator::BeginText, handler)?;
                     op_count += 1;
                     input = rest;
                     inside_text = true;
@@ -1508,7 +1562,7 @@ where
                     after_op,
                 } => match parse_operator_with_operands(operand_start) {
                     Ok((rest2, op)) => {
-                        handler(op)?;
+                        call(op, handler)?;
                         op_count += 1;
                         input = rest2;
                     },
@@ -1522,7 +1576,7 @@ where
                     while remaining.len() > trigger_start.len() {
                         match parse_operator_with_operands(remaining) {
                             Ok((rest2, op)) => {
-                                handler(op)?;
+                                call(op, handler)?;
                                 op_count += 1;
                                 remaining = rest2;
                             },
@@ -1539,13 +1593,22 @@ where
                     consecutive_errors = 0;
                 },
                 ScanResult::SimpleOp { op, rest } => {
-                    handler(op)?;
+                    call(op, handler)?;
                     op_count += 1;
                     input = rest;
                 },
                 ScanResult::TooManyErrors { .. } => break,
             }
         }
+    }
+
+    // Balance any marked-content scope this region opened but did not
+    // close (BDC/BMC with no matching EMC before the region ended) — see
+    // the function doc comment. Closing only what this region itself
+    // opened is always safe: it never affects a scope that was already
+    // open when the region started.
+    for _ in 0..mc_depth {
+        handler(Operator::EndMarkedContent)?;
     }
 
     Ok(())
@@ -5157,6 +5220,72 @@ mod tests {
         assert!(
             has_scaled_cm,
             "injected Cm should include outer 0.1x scaling, got: {:?}",
+            cm_ops
+        );
+    }
+
+    #[test]
+    fn test_prescan_captures_top_level_cm_with_no_enclosing_q() {
+        // Regression test for issue #974: a common CAD-exporter pattern
+        // issues a single top-level `cm` (no enclosing q/Q at all) right at
+        // the start of the stream, with text shortly after — within the
+        // same <4KB window `find_region_start` scans backward from BT.
+        // That scan only tracks q/Q; when it found no unmatched q and
+        // reached all the way back to byte 0, it reported "nothing
+        // missing" (hit_limit == false), silently discarding the leading
+        // cm. The resulting text region started exactly at BT — excluding
+        // the cm's bytes entirely — and no forward-scan fallback ever ran
+        // to recover it, so the text was parsed under an identity CTM
+        // instead of the real ~16.67x scale (matching the reported
+        // extract_spans-vs-extract_chars position mismatch).
+        let mut cs = Vec::new();
+
+        // Top-level scaling cm — NO enclosing q, unlike the other prescan
+        // tests in this module.
+        cs.extend_from_slice(b"16.6666667 0 0 16.6666667 0 0 cm\n");
+
+        cs.extend_from_slice(b"BT\n");
+        cs.extend_from_slice(b"/F1 80 Tf\n");
+        cs.extend_from_slice(b"(G0.2) Tj\n");
+        cs.extend_from_slice(b"ET\n");
+
+        // >256KB of filler AFTER the text, so the overall stream crosses
+        // the prescan fast-path threshold while the BT position itself
+        // stays well within the first 4KB find_region_start scans.
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed 256KB prescan threshold");
+
+        let mut ops = Vec::new();
+        parse_and_execute_text_only(&cs, |op| {
+            ops.push(op);
+            Ok(())
+        })
+        .unwrap();
+
+        let cm_ops: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, Operator::Cm { .. }))
+            .collect();
+        let has_scaled_cm = cm_ops.iter().any(|op| {
+            matches!(
+                op,
+                Operator::Cm { a, d, .. }
+                    if (*a - 16.666_666).abs() < 0.01 && (*d - 16.666_666).abs() < 0.01
+            )
+        });
+        assert!(
+            has_scaled_cm,
+            "the top-level 16.6667x cm (no enclosing q) must not be silently \
+             dropped, got: {:?}",
             cm_ops
         );
     }

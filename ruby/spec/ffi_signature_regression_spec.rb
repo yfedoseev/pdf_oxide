@@ -79,6 +79,31 @@ RSpec.describe 'FFI signature regressions' do
     end
   end
 
+  describe 'pdf_get_rendered_image_data (was 8-pointer placeholder + wrong accessor probed)' do
+    # Two stacked bugs: read_rendered_image_bytes probed a symbol
+    # (pdf_oxide_rendered_image_get_bytes) the cdylib never exported,
+    # silently falling back to ''; and the real accessor,
+    # pdf_get_rendered_image_data, was only declared via the
+    # auto-generated 8-pointer placeholder (real ABI takes 3 args:
+    # img, data_len, error_code). Pre-fix, render/render_with_layers
+    # returned an empty string for every PDF with no error raised.
+    it 'render returns non-empty, valid PNG bytes' do
+      PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|
+        png = doc.render(0, dpi: 72)
+        expect(png).not_to be_empty
+        expect(png.byteslice(0, 8)).to eq("\x89PNG\r\n\x1a\n".b)
+      end
+    end
+
+    it 'render_with_layers returns non-empty, valid image bytes' do
+      PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|
+        result = doc.render_with_layers(0, dpi: 72)
+        expect(result).not_to be_empty
+        expect(result.byteslice(0, 8)).to eq("\x89PNG\r\n\x1a\n".b)
+      end
+    end
+  end
+
   describe 'pdf_document_get_form_fields (A.1 — was 8-pointer placeholder)' do
     it 'returns an Array even for a fixture with no AcroForm' do
       PdfOxide::PdfDocument.open(fixture('simple.pdf')) do |doc|

@@ -489,6 +489,11 @@ final class ApiCoverageTests: XCTestCase {
         if n > 0 {
             let e = try elements.element(0)
             _ = e.type; _ = e.text; _ = e.rect
+            // The sample text is upright, so the page-space hull is the rect.
+            XCTAssertEqual(e.pageRect.x, e.rect.x, accuracy: 1e-4)
+            XCTAssertEqual(e.pageRect.y, e.rect.y, accuracy: 1e-4)
+            XCTAssertEqual(e.pageRect.width, e.rect.width, accuracy: 1e-4)
+            XCTAssertEqual(e.pageRect.height, e.rect.height, accuracy: 1e-4)
         }
         _ = try elements.all()
         XCTAssertFalse(try elements.toJson().isEmpty)

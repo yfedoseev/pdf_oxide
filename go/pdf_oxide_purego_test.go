@@ -171,6 +171,13 @@ func TestPurego_PageElements(t *testing.T) {
 	if len(elems) == 0 {
 		t.Error("PageElements(0) returned empty")
 	}
+	// The fixture is upright text, so the page-space rect is the run rect.
+	for _, e := range elems {
+		if e.PageX != e.X || e.PageY != e.Y || e.PageWidth != e.Width || e.PageHeight != e.Height {
+			t.Errorf("page rect %v,%v,%v,%v != rect %v,%v,%v,%v for upright text",
+				e.PageX, e.PageY, e.PageWidth, e.PageHeight, e.X, e.Y, e.Width, e.Height)
+		}
+	}
 }
 
 func TestPurego_Search(t *testing.T) {
