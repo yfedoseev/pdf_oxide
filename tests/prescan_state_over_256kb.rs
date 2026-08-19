@@ -51,7 +51,7 @@ fn big_stream_pdf_with_quote_spacing(aw: &str) -> Vec<u8> {
     let mut off = [0usize; 6];
     buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
     {
-        let mut obj = |buf: &mut Vec<u8>, off: &mut [usize; 6], id: usize, body: &str| {
+        let obj = |buf: &mut Vec<u8>, off: &mut [usize; 6], id: usize, body: &str| {
             off[id] = buf.len();
             buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
         };
