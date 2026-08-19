@@ -61,7 +61,7 @@ jobs:
         run: cargo build --release --lib --features ocr,rendering,signatures,barcodes,tsa-client,system-fonts
 
       - name: Install clang tooling
-        run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy
+        run: for i in 1 2 3; do sudo timeout 240 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && sudo timeout 240 apt-get install -y clang-format clang-tidy && exit 0; echo "apt attempt $i timed out or failed, retrying"; sleep 20; done; exit 1
         if: runner.os == 'Linux'
 
       - name: clang-format check (blocking)
