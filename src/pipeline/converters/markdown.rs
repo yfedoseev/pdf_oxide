@@ -1734,7 +1734,24 @@ impl MarkdownOutputConverter {
                     // A genuinely wrapped heading is re-fused downstream by
                     // merge_consecutive_same_level_headings, which demands a
                     // continuation signal.
-                    let heading_line_break = current_heading_level.is_some();
+                    // ISO 32000-1 §14.8.3 makes one BLSE a single block that
+                    // "can be split between lines of text", and an `<Hn>` is
+                    // such a block: a heading drawn on two baselines inside one
+                    // heading element is one heading. Break on a new baseline
+                    // only when it leaves that element or changes level.
+                    //
+                    // Re-fusing downstream cannot cover this. That pass needs a
+                    // continuation signal — a trailing comma, or a lowercase
+                    // opener — and a title-cased heading capitalises every
+                    // line, so `Tax and` / `Credits` reads as two headings and
+                    // stays two.
+                    let heading_continues = current_heading_level == span_heading_level
+                        && matches!(
+                            (span.block_id, prev.block_id),
+                            (Some(a), Some(b)) if a == b
+                        );
+                    let heading_line_break =
+                        current_heading_level.is_some() && !heading_continues;
                     if is_bullet || is_ordered || starts_new_list_item || heading_line_break {
                         // Bullet on new line → flush current line and start list item
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
