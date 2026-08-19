@@ -1501,3 +1501,35 @@ fn probe37_horizontal_extraction_bulk_within_bound() {
         elapsed.as_millis()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Probe 39 — a vertical (WMode 1) column positioned with a rotated per-glyph
+// Tm must stay one run.
+//
+// ISO 32000-1 §9.4.4 puts the glyph displacement along the text matrix's
+// (a, b) row only for WMode 0; for WMode 1 it runs along (c, d) — the branch
+// `GraphicsState::advance_text_matrix` already makes. Any same-line test that
+// assumes the WMode-0 axis therefore reads a vertical column's advance as a
+// perpendicular offset, refuses to continue the run, and emits one span per
+// glyph. Downstream cannot repair that: `rotation_compatible` in the span
+// merge refuses to re-join quadrant-vertical runs, so each glyph reaches the
+// output separated — spaces injected between CJK glyphs, i.e. wrong text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe39_vertical_column_with_rotated_tm_stays_one_run() {
+    // Four CIDs (A..D) drawn as a 90° tategaki column, one Tm per glyph, `e`
+    // ascending — the coherent handedness for a negative vertical advance.
+    let content = b"BT /F1 12 Tf \
+0 1 -1 0 100 700 Tm <0001> Tj \
+0 1 -1 0 112 700 Tm <0002> Tj \
+0 1 -1 0 124 700 Tm <0003> Tj \
+0 1 -1 0 136 700 Tm <0004> Tj ET";
+    let pdf = build_pdf("Identity-V", content, 1000, (880, -1000), None, None);
+    let doc = PdfDocument::from_bytes(pdf).expect("parse");
+
+    let text = doc.extract_text(0).expect("extract_text");
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join("");
+    assert!(flat.contains("ABCD"), "vertical column split glyph-by-glyph: {text:?}");
+    assert!(!text.contains("A B C D"), "spaces injected between vertical glyphs: {text:?}");
+}

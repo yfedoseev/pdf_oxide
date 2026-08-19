@@ -474,6 +474,12 @@ pub fn parse_content_stream_paths_only(data: &[u8]) -> Result<Vec<Operator>> {
 ///
 /// Same as [`parse_content_stream`]: bails out after `MAX_OPERATORS`
 /// operators or `MAX_CONSECUTIVE_ERRORS` consecutive parse failures.
+#[deprecated(
+    since = "0.3.78",
+    note = "not equivalent to `parse_and_execute_text_only`, which reconstructs the graphics \
+            state around >256KB text regions by a different route; extraction no longer calls \
+            this parser"
+)]
 pub fn parse_content_stream_text_only(data: &[u8]) -> Result<Vec<Operator>> {
     let estimated_capacity = data.len() / 40;
     let mut operators = Vec::with_capacity(estimated_capacity.min(50_000));
@@ -1268,9 +1274,17 @@ fn find_matching_et(data: &[u8], start: usize) -> Option<usize> {
 
 /// Streaming text-only parser: parse operators and call handler immediately.
 ///
-/// Same logic as `parse_content_stream_text_only` but avoids allocating a `Vec<Operator>`.
-/// Each operator is passed to `handler` as soon as it's parsed, improving cache locality
-/// and eliminating the intermediate operator vector (which can be 16MB+ for graphics-heavy pages).
+/// Each operator is passed to `handler` as soon as it's parsed, eliminating the
+/// intermediate operator vector (which can be 16MB+ for graphics-heavy pages).
+///
+/// Not equivalent to [`parse_content_stream_text_only`]: for streams over 256KB
+/// this parser prescans for text regions and reconstructs the graphics state
+/// around each one by injecting synthetic `q`/`cm`/`Tf`/`Q` operators, while the
+/// vec-building parser walks the whole stream sequentially. The two can emit the
+/// same text operators and still leave the handler with a different CTM, and
+/// they truncate differently on hostile bytes between text regions. Extraction
+/// must route every mode through this parser (see
+/// `TextExtractor::run_content_stream`).
 pub fn parse_and_execute_text_only<F>(data: &[u8], mut handler: F) -> Result<()>
 where
     F: FnMut(Operator) -> Result<()>,
@@ -3858,6 +3872,8 @@ fn scan_graphics_region<'a>(data: &'a [u8], consecutive_errors: &mut usize) -> S
 }
 
 #[cfg(test)]
+// Tests intentionally pin the deprecated `parse_content_stream_text_only`.
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -173,6 +173,8 @@ impl From<TextContent> for TextSpan {
             wmode: 0,
             text_rise: 0.0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 }
@@ -345,6 +347,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
 
         let content: TextContent = span.into();

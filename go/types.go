@@ -282,6 +282,14 @@ type Element struct {
 	Y      float32 `json:"y"`
 	Width  float32 `json:"width"`
 	Height float32 `json:"height"`
+	// PageX/PageY/PageWidth/PageHeight are the page-space extents of the
+	// element: the X/Y/Width/Height rect with any text-matrix rotation
+	// resolved into an axis-aligned page-space hull. Identical to it for
+	// upright runs.
+	PageX      float32 `json:"pageX"`
+	PageY      float32 `json:"pageY"`
+	PageWidth  float32 `json:"pageWidth"`
+	PageHeight float32 `json:"pageHeight"`
 	// Provenance is the ISO 32000-1 §9.10.2 mapping tier the span's font
 	// offered ("to_unicode"/"encoding"/"predefined_cmap"/"embedded_cmap"/
 	// "actual_text"/"fallback"), or "" when unknown. "fallback" means the

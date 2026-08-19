@@ -12,7 +12,6 @@ use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_and_execute_text_only;
 use crate::content::parse_content_stream;
-use crate::content::parse_content_stream_text_only;
 use crate::error::Result;
 use crate::extract_log_debug;
 use crate::fonts::FontInfo;
@@ -1899,6 +1898,10 @@ struct TjBuffer {
     /// Display rotation of this run in degrees, snapped to a quadrant when near
     /// one; `0.0` for ordinary horizontal text (see `snap_run_rotation`).
     rotation_degrees: f32,
+    /// Negative determinant of the composed matrix — mirrored text (see
+    /// `run_is_mirrored`), carried onto the emitted span so `page_bbox`
+    /// reflects rather than rotates its across-axis.
+    mirrored: bool,
     /// Writing mode (0 = horizontal, 1 = vertical) captured from the
     /// graphics state when the buffer started, so each emitted span
     /// carries the wmode it was rendered under. A font change flushes the
@@ -1956,6 +1959,13 @@ fn snap_run_rotation(combined: &Matrix) -> f32 {
         }
     }
     deg
+}
+
+/// Negative determinant of the composed text rendering matrix: the run is
+/// mirrored, so `rotation_degrees` alone cannot describe its frame (a mirrored
+/// 90° run and a clean 90° run carry the same angle but opposite across-axes).
+fn run_is_mirrored(combined: &Matrix) -> bool {
+    combined.a * combined.d - combined.b * combined.c < 0.0
 }
 
 impl TjBuffer {
@@ -2027,6 +2037,7 @@ impl TjBuffer {
             user_pos_y: user_pos.y,
             user_h_scale,
             rotation_degrees,
+            mirrored: run_is_mirrored(&combined),
             wmode: state.text_wmode,
             text_rise: if state.font_size > 0.0 {
                 state.text_rise / state.font_size
@@ -3779,16 +3790,7 @@ impl<'doc> TextExtractor<'doc> {
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
         extract_log_debug!("Parsing content stream for text extraction");
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))?;
-        } else {
-            // Ink filtering requires color operators (cs, rg, g, k) which the
-            // text-only parser skips. Fall back to the full parser.
-            let operators = parse_content_stream(content_stream)?;
-            for op in operators {
-                self.execute_operator(op)?;
-            }
-        }
+        self.run_content_stream(content_stream)?;
 
         // Flush any remaining Tj buffer at end of content stream
         self.flush_tj_span_buffer()?;
@@ -3869,6 +3871,33 @@ impl<'doc> TextExtractor<'doc> {
         Ok(std::mem::take(&mut self.spans))
     }
 
+    /// Feed a content stream's operators to `execute_operator`.
+    ///
+    /// The single parser dispatch for every extraction mode (chars, spans,
+    /// Form XObject recursion). The modes must differ only in how
+    /// `execute_operator` handles the show-text operators, never in which
+    /// operators reach it: char and span mode once used different parsers
+    /// (`parse_content_stream_text_only` vs `parse_and_execute_text_only`),
+    /// which reconstruct the graphics state around a text region by different
+    /// routes, so they could agree on every text operator and still hand the
+    /// extractor a different CTM. On govdocs_003_003181.pdf page 4 that cost
+    /// a 90°-rotated chart axis: char mode returned 2322 glyphs, all at
+    /// rotation 0, where span mode saw 2590 glyphs, 122 at 90°.
+    fn run_content_stream(&mut self, content_stream: &[u8]) -> Result<()> {
+        if self.excluded_inks.is_empty() {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
+        } else {
+            // Ink filtering needs the color operators (cs, rg, g, k). The
+            // text-only parser does not guarantee their delivery — its >256KB
+            // prescan route parses only text regions — so use the full parser.
+            let operators = parse_content_stream(content_stream)?;
+            for op in operators {
+                self.execute_operator(op)?;
+            }
+            Ok(())
+        }
+    }
+
     /// Extract individual characters from a PDF content stream.
     ///
     /// This is a low-level method that extracts characters one by one.
@@ -3887,14 +3916,7 @@ impl<'doc> TextExtractor<'doc> {
         self.spans.clear(); // Ensure spans are clear so they don't poison xobject_spans_cache
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
-        let operators = if self.excluded_inks.is_empty() {
-            parse_content_stream_text_only(content_stream)?
-        } else {
-            parse_content_stream(content_stream)?
-        };
-        for op in operators {
-            self.execute_operator(op)?;
-        }
+        self.run_content_stream(content_stream)?;
 
         // BUG FIX #2: Sort characters by reading order (top-to-bottom, left-to-right)
         // PDF content streams are in rendering order, not reading order.
@@ -5590,6 +5612,11 @@ impl<'doc> TextExtractor<'doc> {
                 // scale-relative (0.5× the text-space glyph height, ≥0.5pt
                 // floor) so it is correct at any font size and still
                 // splits genuine line breaks.
+                //
+                // The `f`/`e` tests below only mean "same line" and "forward"
+                // while the run advances along +x; under a rotated matrix the
+                // two axes swap. The added conjunct re-checks both along the
+                // run's own writing axis (ISO 32000-1 §9.4.4).
                 let cur_font_size = self.state_stack.current().font_size;
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
@@ -5602,7 +5629,14 @@ impl<'doc> TextExtractor<'doc> {
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c
                                 && d == buffer.start_matrix.d
-                                && e >= buffer.start_matrix.e =>
+                                && e >= buffer.start_matrix.e
+                                && Self::advances_along_writing_axis(
+                                    buffer.start_matrix,
+                                    buffer.wmode,
+                                    e,
+                                    f,
+                                    cur_font_size,
+                                ) =>
                         {
                             // Same line, same transform, LTR progression →
                             // update width to reflect actual visual extent
@@ -7238,20 +7272,7 @@ impl<'doc> TextExtractor<'doc> {
                     .push(crate::structure::McidScope::Form(xobject_ref));
 
                 self.xobject_depth += 1;
-                let parse_result = if self.excluded_inks.is_empty() {
-                    parse_and_execute_text_only(&stream_data, |op| self.execute_operator(op))
-                } else {
-                    let ops = parse_content_stream(&stream_data);
-                    match ops {
-                        Ok(ops) => {
-                            for op in ops {
-                                self.execute_operator(op)?;
-                            }
-                            Ok(())
-                        },
-                        Err(e) => Err(e),
-                    }
-                };
+                let parse_result = self.run_content_stream(&stream_data);
                 self.xobject_depth -= 1;
                 // Pop the Form XObject scope pushed before the
                 // content-stream walk. Cleared regardless of parse
@@ -7542,6 +7563,8 @@ impl<'doc> TextExtractor<'doc> {
             wmode: buffer.wmode,
             text_rise: buffer.text_rise,
             rtl_draw_logical: false,
+            mirrored: buffer.mirrored,
+            page_rotation_applied: 0,
         };
         self.span_sequence_counter += 1;
 
@@ -8074,6 +8097,8 @@ impl<'doc> TextExtractor<'doc> {
                 0.0
             },
             rtl_draw_logical: false,
+            mirrored: run_is_mirrored(&state.ctm.multiply(&state.text_matrix)),
+            page_rotation_applied: 0,
         };
 
         // Step 6: Increment sequence counter and add to spans
@@ -8804,6 +8829,8 @@ impl<'doc> TextExtractor<'doc> {
                 0.0
             },
             rtl_draw_logical: false,
+            mirrored: run_is_mirrored(&state.ctm.multiply(&state.text_matrix)),
+            page_rotation_applied: 0,
         };
         self.span_sequence_counter += 1;
 
@@ -8872,6 +8899,48 @@ impl<'doc> TextExtractor<'doc> {
         };
         *last += adv;
         buffer.accumulated_width += adv;
+    }
+
+    /// Whether `(e, f)` continues `start`'s run along that run's writing axis.
+    ///
+    /// ISO 32000-1:2008 §9.4.4 places the writing direction along the matrix's
+    /// `(a, b)` row, so the displacement resolves into a component along it
+    /// (the advance) and one perpendicular (the line offset). For any `b = 0,
+    /// a > 0` matrix the along test equals the caller's raw `e` test and the
+    /// perpendicular test is implied by the raw `f` band (`hypot(c, d) >=
+    /// |d|`, equal only when unskewed), so ANDing it in cannot change upright
+    /// output.
+    ///
+    /// WMode 1 is exempt: vertical text advances along `(c, d)` instead, the
+    /// branch [`GraphicsState::advance_text_matrix`] already makes, and reading
+    /// its advance as a perpendicular offset splits a column glyph by glyph.
+    fn advances_along_writing_axis(
+        start: Matrix,
+        wmode: u8,
+        e: f32,
+        f: f32,
+        font_size: f32,
+    ) -> bool {
+        if wmode != 0 {
+            return true;
+        }
+        // Unit vector along the writing direction. A degenerate (zero-scale)
+        // matrix has no direction to speak of; fall back to +x so such runs
+        // behave exactly as they did before this test existed.
+        let axis = (start.a * start.a + start.b * start.b).sqrt();
+        let (ux, uy) = if axis > 0.0 {
+            (start.a / axis, start.b / axis)
+        } else {
+            (1.0, 0.0)
+        };
+        let (dx, dy) = (e - start.e, f - start.f);
+        let along = ux * dx + uy * dy;
+        let perp = -uy * dx + ux * dy;
+        // Perpendicular scale; `hypot(c, d) >= |d|`, so an upright (`b == 0`)
+        // run keeps at least the raw `f` band.
+        let line_scale = (start.c * start.c + start.d * start.d).sqrt();
+        let tolerance = ((font_size * line_scale).abs() * 0.5).max(0.5);
+        perp.abs() <= tolerance && along >= 0.0
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
@@ -8981,6 +9050,8 @@ impl<'doc> TextExtractor<'doc> {
                     wmode: buffer.wmode,
                     text_rise: buffer.text_rise,
                     rtl_draw_logical: false,
+                    mirrored: buffer.mirrored,
+                    page_rotation_applied: 0,
                 };
                 self.span_sequence_counter += 1;
 
@@ -9348,6 +9419,70 @@ mod tests {
         );
     }
 
+    /// The writing-axis continuation test, quadrant by quadrant.
+    ///
+    /// Upright cases must be no stricter than the raw `e`/`f` tests they are
+    /// ANDed with — that implication is why unrotated output cannot move.
+    /// Rotated along-axis cases pin the helper alone: in the composed
+    /// predicate the raw `f` band still gates them, so there the helper is
+    /// veto-only.
+    #[test]
+    fn test_advances_along_writing_axis_by_quadrant() {
+        let m = |a, b, c, d| Matrix {
+            a,
+            b,
+            c,
+            d,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        let at = |mat: Matrix, de: f32, df: f32| {
+            TextExtractor::advances_along_writing_axis(mat, 0, mat.e + de, mat.f + df, fs)
+        };
+
+        // Must match the raw e/f test exactly.
+        let upright = m(1.0, 0.0, 0.0, 1.0);
+        assert!(at(upright, 14.0, 0.0), "upright advance must continue");
+        assert!(!at(upright, 0.0, -14.0), "upright line break must not");
+        assert!(!at(upright, -14.0, 0.0), "upright backwards must not");
+        // Perpendicular tolerance: 0.5 × font size (5pt here) admits a
+        // sub-glyph baseline offset; a full line step is vetoed.
+        assert!(at(upright, 14.0, 4.0), "upright sub-glyph offset must not be vetoed");
+        assert!(!at(upright, 14.0, 8.0), "upright line step must be vetoed");
+
+        // Advances along +y; lines separate along +x.
+        let cw = m(0.0, 1.0, -1.0, 0.0);
+        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must not be vetoed");
+        assert!(!at(cw, 14.0, 0.0), "90° line break must not continue");
+        assert!(at(cw, -4.0, 14.0), "90° sub-glyph offset must not be vetoed");
+        assert!(!at(cw, -8.0, 14.0), "90° line step must be vetoed");
+
+        // Advances along -y; the sign a single-rotation fixture cannot catch.
+        let ccw = m(0.0, -1.0, 1.0, 0.0);
+        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must not be vetoed");
+        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not continue");
+        assert!(!at(ccw, 14.0, 0.0), "270° line break must not continue");
+
+        // 180°: advances along -x.
+        let flip = m(-1.0, 0.0, 0.0, -1.0);
+        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must not be vetoed");
+        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not continue");
+
+        // No writing direction: falls back to +x, as before.
+        let degenerate = m(0.0, 0.0, 0.0, 0.0);
+        assert!(at(degenerate, 14.0, 0.0));
+        assert!(!at(degenerate, -14.0, 0.0));
+
+        // WMode 1 advances along (c, d), so this test never vetoes it.
+        for (de, df) in [(14.0, 0.0), (0.0, 14.0), (-14.0, 0.0), (0.0, -14.0)] {
+            assert!(
+                TextExtractor::advances_along_writing_axis(cw, 1, cw.e + de, cw.f + df, fs),
+                "vertical run vetoed at ({de}, {df})"
+            );
+        }
+    }
+
     #[test]
     fn test_snap_run_rotation() {
         let m = |a, b, c, d| Matrix {
@@ -9507,6 +9642,52 @@ mod tests {
             "Y position should be ~200 (got {})",
             chars[0].bbox.y
         );
+    }
+
+    /// Regression test for issue #1006: char mode must run the same parser as
+    /// span mode.
+    ///
+    /// The stream forces the streaming parser's >256KB prescan route: the
+    /// rotating `q`/`cm` sits >4KB before `BT`, so the CTM reaches the text
+    /// region only via the forward scan's injected `Cm`. The unbalanced
+    /// literal-string opens are invisible to the prescan (they lie outside
+    /// every text region) but feed the old char-mode parser,
+    /// `parse_content_stream_text_only`, over `MAX_CONSECUTIVE_ERRORS`
+    /// consecutive scan failures — it bails before `BT` and extracts nothing.
+    #[test]
+    fn test_char_mode_rotated_ctm_survives_large_hostile_stream() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"q\n0 1 -1 0 612 0 cm\n");
+        cs.extend_from_slice(&[b'('; 1500]);
+        cs.push(b'\n');
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l S\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed the 256KB prescan threshold");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 200 Td (Hello) Tj ET\nQ\n");
+
+        let chars = extractor.extract(&cs).unwrap();
+        let mut glyphs: Vec<char> = chars.iter().map(|c| c.char).collect();
+        glyphs.sort_unstable();
+        assert_eq!(glyphs, vec!['H', 'e', 'l', 'l', 'o']);
+        for c in &chars {
+            assert!(
+                (c.rotation_degrees - 90.0).abs() < 1.0,
+                "expected 90 degrees from the cm before BT, got {}",
+                c.rotation_degrees
+            );
+        }
     }
 
     /// Regression test for Issue #11: CTM scaling must affect text positions
@@ -10052,6 +10233,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -10085,6 +10268,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -10973,6 +11158,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -11986,6 +12173,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12014,6 +12203,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12067,6 +12258,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             };
 
         // (glyph, Helvetica per-em advance width)
@@ -12128,6 +12321,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
 
         // Stroke pass + fill pass at ~2 % of advance apart.
@@ -12185,6 +12380,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -12384,6 +12581,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12412,6 +12611,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12439,6 +12640,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: "Hello".to_string(),
                 bbox: Rect::new(100.0, 700.0, 30.0, 12.0),
@@ -12467,6 +12670,8 @@ mod tests {
             TextSpan {
                 provenance: None,
                 text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
                 artifact_type: None,
                 text: "World".to_string(),
                 bbox: Rect::new(131.0, 700.0, 30.0, 12.0), // 1pt gap
@@ -12536,6 +12741,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12564,6 +12771,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12611,6 +12820,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12639,6 +12850,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12679,6 +12892,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12707,6 +12922,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12735,6 +12952,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15169,6 +15388,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15197,6 +15418,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15235,6 +15458,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15263,6 +15488,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15361,6 +15588,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }];
 
         extractor.split_fused_words();
@@ -15400,6 +15629,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }];
 
         extractor.split_fused_words();
@@ -15586,6 +15817,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15614,6 +15847,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15698,6 +15933,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15726,6 +15963,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16030,6 +16269,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16058,6 +16299,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16268,6 +16511,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16296,6 +16541,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16841,6 +17088,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16869,6 +17118,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16916,6 +17167,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16944,6 +17197,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16991,6 +17246,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17019,6 +17276,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17072,6 +17331,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17100,6 +17361,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17145,6 +17408,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17173,6 +17438,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17215,6 +17482,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17243,6 +17512,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17289,6 +17560,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17317,6 +17590,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17358,6 +17633,8 @@ mod profile_based_space_tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -17490,6 +17767,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17518,6 +17797,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17573,6 +17854,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17601,6 +17884,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 

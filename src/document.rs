@@ -8405,15 +8405,30 @@ impl PdfDocument {
         }
         if Self::is_column_spanning_decimal(span) {
             let dot = span.text.find('.').unwrap();
-            out.push_str(&span.text[..dot]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..dot]);
             out.push(' ');
-            out.push_str(&span.text[dot + 1..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[dot + 1..]);
         } else if let Some(split) = Self::char_widths_boundary_split(span) {
-            out.push_str(&span.text[..split]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..split]);
             out.push(' ');
-            out.push_str(&span.text[split..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[split..]);
         } else {
-            out.push_str(&span.text);
+            Self::push_str_without_soft_hyphens(out, &span.text);
+        }
+    }
+
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
+    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
+    /// it is never meaningful rendered content, so it must not survive into
+    /// flat-text output regardless of whether it sits at a line boundary (the
+    /// PDF's own line wrap is not preserved here) or mid-word within a span
+    /// whose glyphs were positioned individually.
+    #[inline]
+    fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
+        if s.contains('\u{00AD}') {
+            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
+        } else {
+            out.push_str(s);
         }
     }
 
@@ -9098,6 +9113,8 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -9269,6 +9286,8 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -11599,6 +11618,10 @@ impl PdfDocument {
         s.bbox.y = lly + m.y;
         s.bbox.width = m.width;
         s.bbox.height = m.height;
+        // `rotation_degrees` stays raw (downstream passes select on it), so
+        // record the applied rotation for `TextSpan::page_bbox` — otherwise it
+        // would re-rotate the already-mapped rect (#806).
+        s.page_rotation_applied = rot;
     }
 
     /// Order rotated runs that were segregated out of the horizontal reading
@@ -17381,7 +17404,14 @@ impl PdfDocument {
                 );
             }
         }
-        // One line per rotated run (contiguous words sharing the same span index).
+        // Rotated runs, grouped into lines. A run's own extents are recorded in
+        // its frame, so the offset BETWEEN lines is the coordinate the run does
+        // not advance along: x for a +-90 degree run, y for 180. Runs that share
+        // that offset are one visual line however many `Tm`s drew them — a
+        // rotated table row is typically one run per cell. Grouping by run alone
+        // returns one line per cell (#983); grouping without the rotation key
+        // fuses perpendicular columns into one line (#804).
+        let mut run_first_word: Vec<(usize, usize)> = Vec::new();
         let mut run_start = 0;
         while run_start < words.len() {
             match word_rot_run[run_start] {
@@ -17391,11 +17421,90 @@ impl PdfDocument {
                     while run_end < words.len() && word_rot_run[run_end] == Some(run_id) {
                         run_end += 1;
                     }
-                    lines.push(words[run_start..run_end].to_vec());
+                    run_first_word.push((run_start, run_end));
                     run_start = run_end;
                 },
             }
         }
+
+        // On a /Rotate page `postprocess_spans` rect-maps each span's bbox into
+        // the displayed frame but leaves `rotation_degrees` describing the
+        // pre-display one, so the bbox axes and the rotation no longer agree and
+        // the offset read below would be taken off the wrong axis.
+        let page_is_unrotated = self.get_page_rotation(page_index).unwrap_or(0) == 0;
+
+        let mut rotated_lines: Vec<(f32, f32, Vec<Word>)> = Vec::new();
+        // Offsets of the quarter-turn lines, quantized to 1/100 pt, mapped to
+        // the indices of the lines carrying them. The match below used to scan
+        // every line built so far, which is O(runs^2) — and a rotated table,
+        // the exact page this grouping exists for, is where the run count
+        // climbs. The index answers the same question over a bounded range.
+        //
+        // Semantics are preserved exactly. A line's offset is frozen when it is
+        // created, and the winner is the FIRST such line in insertion order, so
+        // candidates are filtered by the original predicate and the smallest
+        // index wins. Merging neighbours instead would group differently:
+        // offsets 0, 3, 6 with tolerance 4 give {0,3},{6} under this rule but
+        // {0,3,6} under a chained merge.
+        let mut offset_index: std::collections::BTreeMap<i64, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (start, end) in run_first_word {
+            let word = &words[start];
+            let rotation = spans[word_rot_run[start].expect("rotated run")].rotation_degrees;
+            // Only a quarter-turn run has its line offset on x; 180 degrees and
+            // free angles keep one line per run, as before. Widening past this
+            // merges runs that were never one line.
+            let quarter_turn = (rotation.abs() - 90.0).abs() < 0.5;
+            if !quarter_turn || !page_is_unrotated {
+                rotated_lines.push((rotation, f32::NAN, words[start..end].to_vec()));
+                continue;
+            }
+            let across = word.bbox.x;
+            let tolerance = word.bbox.height.max(1.0) * 0.5;
+            let quantize = |v: f32| (f64::from(v) * 100.0).round() as i64;
+            // Widened by one step each way so a value sitting on a bucket edge
+            // cannot be missed by rounding. Saturating: the cast in `quantize`
+            // clamps |v| >= ~9.2e16 to i64::MAX/MIN, and a plain +-1 there
+            // overflows (panic in debug, an inverted `range` panic in release).
+            let (lo, hi) = (
+                quantize(across - tolerance).saturating_sub(1),
+                quantize(across + tolerance).saturating_add(1),
+            );
+            let winner = offset_index
+                .range(lo..=hi)
+                .flat_map(|(_, indices)| indices.iter().copied())
+                .filter(|&i| {
+                    let (rot, off, _) = &rotated_lines[i];
+                    (*rot - rotation).abs() < 0.5 && (*off - across).abs() <= tolerance
+                })
+                .min();
+            match winner {
+                Some(i) => rotated_lines[i].2.extend_from_slice(&words[start..end]),
+                None => {
+                    offset_index
+                        .entry(quantize(across))
+                        .or_default()
+                        .push(rotated_lines.len());
+                    rotated_lines.push((rotation, across, words[start..end].to_vec()));
+                },
+            }
+        }
+        lines.extend(rotated_lines.into_iter().map(|(rot, off, mut line)| {
+            // A merged quarter-turn line collects its runs in arrival order,
+            // which is content-stream order: a subscript drawn after the
+            // line's tail lands at the end of the string. Order members
+            // along the writing axis instead — ascending y for +90,
+            // descending for -90 — the order the text assembler reads them
+            // in. Stable, so runs sharing a coordinate keep drawing order.
+            if !off.is_nan() {
+                if rot > 0.0 {
+                    line.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+                } else {
+                    line.sort_by(|a, b| b.bbox.y.total_cmp(&a.bbox.y));
+                }
+            }
+            line
+        }));
         // Reading order: sort lines by the span sequence of their first word
         // (stable so intra-line order is preserved).
         lines.sort_by_key(|line| line.first().map(|w| w.sequence).unwrap_or(usize::MAX));
@@ -18131,6 +18240,8 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             })
             .collect())
     }
@@ -25605,6 +25716,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -26137,6 +26250,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -26189,6 +26304,26 @@ mod tests {
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
         assert_eq!(out, "3.14");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_soft_hyphen_mid_word() {
+        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
+        // point only — it must never survive into extract_text/to_markdown/
+        // to_html output, even mid-word with no adjacent line break (the
+        // span was drawn as a single reflowed run, not split across lines).
+        let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "reconstruction");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_multiple_soft_hyphens() {
+        let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "unbelievable");
     }
 
     // ========================================================================
@@ -30191,6 +30326,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -30217,6 +30354,171 @@ mod tests {
             labels,
             vec!["L1", "L2", "L3", "R1", "R2", "R3"],
             "ColumnAware should read left column fully before right column"
+        );
+    }
+
+    /// Regression test for issue #979: a page with only 2 spans per column
+    /// (4 spans total) is below `min_spans_for_split` (5), so it never
+    /// reaches the geometric column-split logic the 6-span test above
+    /// exercises — every statistical prose/table classifier
+    /// (`classify_region_kind`, `detect_two_column_prose`,
+    /// `detect_narrow_gutter_prose`) also has its own internal minimum-span
+    /// floor (6/8/24) far above 4, so none of them can classify this page
+    /// either. Before the fix, the base case fell back to a flat
+    /// Y-then-X sort, interleaving the two columns (L1, R1, L2, R2)
+    /// instead of reading each column through.
+    ///
+    /// A pure geometric gutter check can't distinguish this from a 2x2
+    /// table at this scale (see `test_column_aware_sparse_2x2_table_stays_row_major`
+    /// below), so the fix defers to content-stream emission order when a
+    /// clean gutter exists — PDFium parity per the issue's own cross-tool
+    /// probe. This fixture's `sequence` mirrors the exact reporter's
+    /// repro (`reportlab` draws the whole left column, then the whole
+    /// right column): L1, L2, R1, R2.
+    #[test]
+    fn test_column_aware_sparse_two_column_follows_stream_order() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_span(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Column-major stream order, matching a two-column-prose generator
+        // that fills the left text box then the right one — exactly the
+        // reporter's `reportlab` repro.
+        let spans = vec![
+            make_span("L1", 10.0, 700.0, 0),
+            make_span("L2", 10.0, 680.0, 1),
+            make_span("R1", 200.0, 700.0, 2),
+            make_span("R2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["L1", "L2", "R1", "R2"],
+            "a sparse 2-column page below min_spans_for_split must follow \
+             content-stream order (column-major here), not interleave the \
+             columns via a flat Y-then-X sort"
+        );
+    }
+
+    /// Companion to the test above: a genuine 2x2 table emitted **row-major**
+    /// in-stream (the common table-generator pattern — draw row 1's cells
+    /// left-to-right, then row 2's) must stay row-major. The same clean
+    /// gutter exists between the two columns as in the prose case above —
+    /// nothing in this codebase can geometrically tell the two apart at
+    /// 4-span scale — so the fix's content-stream-order fallback is
+    /// correct for *both* shapes precisely because it never has to decide
+    /// between them: it just preserves however the source authored it.
+    #[test]
+    fn test_column_aware_sparse_2x2_table_stays_row_major() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_cell(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Row-major stream order: row 1's two cells, then row 2's two cells.
+        let spans = vec![
+            make_cell("R1C1", 10.0, 700.0, 0),
+            make_cell("R1C2", 200.0, 700.0, 1),
+            make_cell("R2C1", 10.0, 680.0, 2),
+            make_cell("R2C2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["R1C1", "R1C2", "R2C1", "R2C2"],
+            "a row-major-emitted 2x2 table must stay row-major, not be \
+             reshuffled into a column-major read order"
         );
     }
 
@@ -30260,6 +30562,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -30980,6 +31284,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -31055,6 +31361,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -31129,6 +31437,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
