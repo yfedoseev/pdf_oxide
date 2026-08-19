@@ -3,6 +3,12 @@ name: OpenSSF Scorecard
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
   schedule:
     # Weekly on Monday at 01:30 UTC
     - cron: '30 1 * * 1'

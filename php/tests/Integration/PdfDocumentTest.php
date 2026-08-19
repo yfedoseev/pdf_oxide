@@ -146,4 +146,28 @@ final class PdfDocumentTest extends IntegrationTestCase
             $doc->close();
         }
     }
+
+    public function testRenderReturnsNonEmptyValidPng(): void
+    {
+        $doc = PdfDocument::open($this->fixture('simple.pdf'));
+        try {
+            $png = $doc->render(0, 72);
+            $this->assertNotSame('', $png);
+            $this->assertSame("\x89PNG\r\n\x1a\n", substr($png, 0, 8));
+        } finally {
+            $doc->close();
+        }
+    }
+
+    public function testRenderWithLayersReturnsNonEmptyValidImage(): void
+    {
+        $doc = PdfDocument::open($this->fixture('simple.pdf'));
+        try {
+            $png = $doc->renderWithLayers(0, dpi: 72);
+            $this->assertNotSame('', $png);
+            $this->assertSame("\x89PNG\r\n\x1a\n", substr($png, 0, 8));
+        } finally {
+            $doc->close();
+        }
+    }
 }

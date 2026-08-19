@@ -2911,13 +2911,18 @@ SEXP r_page_get_elements(SEXP ext, SEXP page) {
         code = 0;
         pdf_oxide_element_get_rect(list, i, &x, &y, &w, &h, &code);
         if (code != 0) { free_string(type); free_string(txt); pdf_oxide_elements_free(list); pdfox_raise(code, "page_get_elements"); }
-        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 3));
-        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+        float px = 0, py = 0, pw = 0, ph = 0;
+        code = 0;
+        pdf_oxide_element_get_page_rect(list, i, &px, &py, &pw, &ph, &code);
+        if (code != 0) { free_string(type); free_string(txt); pdf_oxide_elements_free(list); pdfox_raise(code, "page_get_elements"); }
+        SEXP rec = PROTECT(Rf_allocVector(VECSXP, 4));
+        SEXP nms = PROTECT(Rf_allocVector(STRSXP, 4));
         SEXP tstr = PROTECT(Rf_mkChar(type)); free_string(type);
         SET_VECTOR_ELT(rec, 0, Rf_ScalarString(tstr));          SET_STRING_ELT(nms, 0, Rf_mkChar("type"));
         SEXP txstr = PROTECT(Rf_mkChar(txt)); free_string(txt);
         SET_VECTOR_ELT(rec, 1, Rf_ScalarString(txstr));         SET_STRING_ELT(nms, 1, Rf_mkChar("text"));
         SET_VECTOR_ELT(rec, 2, make_bbox(x, y, w, h));          SET_STRING_ELT(nms, 2, Rf_mkChar("rect"));
+        SET_VECTOR_ELT(rec, 3, make_bbox(px, py, pw, ph));      SET_STRING_ELT(nms, 3, Rf_mkChar("page_rect"));
         Rf_setAttrib(rec, R_NamesSymbol, nms);
         SET_VECTOR_ELT(out, i, rec);
         UNPROTECT(4);
