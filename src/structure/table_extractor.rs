@@ -686,6 +686,10 @@ fn extract_cell(
     // Collect all MCIDs from this cell
     let mut mcids = Vec::new();
     collect_mcids(cell_elem, &mut mcids);
+    // `collect_mcids` walks the cell's subtree and can name one sequence more
+    // than once. Every repeat re-emits each block that sequence owns.
+    let mut seen = std::collections::HashSet::new();
+    mcids.retain(|mcid| seen.insert(*mcid));
 
     // Find all text blocks that match these MCIDs, joining them with position-aware
     // spacing: insert a space only when there is a genuine horizontal gap between
@@ -709,7 +713,18 @@ fn extract_cell(
                     if !cell_text.is_empty() {
                         let need_space = if let Some(prev) = prev_block {
                             let y_diff = (block.bbox.y - prev.bbox.y).abs();
-                            let line_h = prev.bbox.height.max(block.bbox.height);
+                            // Line pitch comes from the type size, not from
+                            // the box. A block spanning several lines is
+                            // taller than the pitch around it, so a box-based
+                            // threshold reads a real line break as one line.
+                            // The pair then reaches the gap test, sees no gap,
+                            // and the words glue: "of th" + "alarms" reads
+                            // "thalarms".
+                            let line_h = prev
+                                .avg_font_size
+                                .max(block.avg_font_size)
+                                .max(1.0)
+                                .min(prev.bbox.height.max(block.bbox.height));
                             if y_diff > line_h * 0.5 {
                                 // Different lines — always insert a space.
                                 true
@@ -828,7 +843,9 @@ fn extract_cell(
                         page_rotation_applied: 0,
                     });
                     prev_block = Some(block);
-                    break;
+                    // No early exit: one marked-content sequence routinely
+                    // carries several text blocks (a wrapped line, a
+                    // gap-split pair), and the cell owns all of them.
                 }
             }
         }
