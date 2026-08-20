@@ -730,11 +730,17 @@ fn extract_cell(
     let mut runs: Vec<&TextBlock> = Vec::new();
     for (scope, mcid) in &mcids {
         let sequence_start = runs.len();
-        // A block belongs to this sequence only when it came from the same
-        // content stream. Matching the number alone pulls a Form XObject's
-        // MCID 0 into the cell that owns the page's MCID 0.
+        // Where a block carries the stream the structure tree names, that
+        // stream decides and another stream's MCID 0 stays out of the cell.
+        // Where none does, the number alone decides: a producer that omits
+        // `/Stm` leaves the reference reading `Page` while the text it points
+        // at was drawn inside a form, and demanding agreement empties the cell.
+        let stream_is_named = text_blocks
+            .iter()
+            .any(|b| b.mcid == Some(*mcid) && b.mcid_scope.as_ref() == Some(scope));
         runs.extend(text_blocks.iter().filter(|b| {
-            b.mcid == Some(*mcid) && b.mcid_scope.as_ref().is_none_or(|s| s == scope)
+            b.mcid == Some(*mcid)
+                && (!stream_is_named || b.mcid_scope.as_ref() == Some(scope))
         }));
         order_sequence_runs(&mut runs[sequence_start..], page_rotation);
     }
@@ -971,6 +977,73 @@ fn collect_mcids(elem: &StructElem, mcids: &mut Vec<(McidScope, u32)>) {
 
 #[cfg(test)]
 mod tests {
+    /// A text block carrying `text` at `x` on one line, turned by `rotation`.
+    fn run_block(text: &str, x: f32, rotation: f32) -> TextBlock {
+        TextBlock {
+            chars: Vec::new(),
+            bbox: crate::geometry::Rect::new(x, 100.0, 20.0, 10.0),
+            text: text.to_string(),
+            avg_font_size: 10.0,
+            dominant_font: "Helvetica".to_string(),
+            is_bold: false,
+            is_italic: false,
+            mcid: Some(0),
+            mcid_scope: None,
+            sequence: 0,
+            rotation_degrees: rotation,
+        }
+    }
+
+    /// The order the runs come back in, by their text.
+    fn ordered(blocks: &[TextBlock], page_rotation: i32) -> Vec<&str> {
+        let mut runs: Vec<&TextBlock> = blocks.iter().collect();
+        order_sequence_runs(&mut runs, page_rotation);
+        runs.iter().map(|b| b.text.as_str()).collect()
+    }
+
+    #[test]
+    fn upright_runs_take_reading_order() {
+        // Handed over right to left, so the order has work to do.
+        let blocks = vec![run_block("second", 200.0, 0.0), run_block("first", 100.0, 0.0)];
+        assert_eq!(ordered(&blocks, 0), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn rotated_page_keeps_marked_content_order() {
+        let blocks = vec![run_block("second", 200.0, 0.0), run_block("first", 100.0, 0.0)];
+        assert_eq!(
+            ordered(&blocks, 270),
+            vec!["second", "first"],
+            "a run's box is in the displayed frame, so its order there is not reading order"
+        );
+    }
+
+    #[test]
+    fn turned_runs_keep_marked_content_order() {
+        // No page rotation, but the runs are turned by their own text matrix.
+        let blocks = vec![run_block("second", 200.0, -90.0), run_block("first", 100.0, -90.0)];
+        assert_eq!(
+            ordered(&blocks, 0),
+            vec!["second", "first"],
+            "turned runs advance along an axis a row-and-column order does not follow"
+        );
+    }
+
+    #[test]
+    fn right_to_left_runs_keep_marked_content_order() {
+        // Reading order runs right to left, so the leftmost run is read last.
+        // Ordering left to right would start the cell at the number.
+        let blocks = vec![
+            run_block("\u{05D0}\u{05D1}\u{05D2}", 200.0, 0.0),
+            run_block("50", 100.0, 0.0),
+        ];
+        assert_eq!(
+            ordered(&blocks, 0),
+            vec!["\u{05D0}\u{05D1}\u{05D2}", "50"],
+            "right-to-left cell started at the number"
+        );
+    }
+
     use super::*;
     use crate::structure::types::StructTreeRoot;
 

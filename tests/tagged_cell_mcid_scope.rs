@@ -84,7 +84,7 @@ fn cell_takes_only_its_own_streams_marked_content() {
     let tables = pdf_oxide::structure::find_table_elements_all_pages(&tree);
     let elems = tables.get(&0).cloned().unwrap_or_default();
     assert_eq!(elems.len(), 1, "one tagged table on the page");
-    let table = pdf_oxide::structure::extract_table_from_spans(&elems[0], &spans).unwrap();
+    let table = pdf_oxide::structure::extract_table_from_spans(&elems[0], &spans, 0).unwrap();
     let row = &table.rows[0];
 
     assert_eq!(

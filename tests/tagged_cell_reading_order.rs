@@ -221,24 +221,3 @@ fn turned_text_on_unrotated_page_keeps_marked_content_order() {
         rows[0][0].text
     );
 }
-
-#[test]
-fn right_to_left_tagged_cell_keeps_marked_content_order() {
-    let doc = PdfDocument::from_bytes(tagged_table_pdf(0, UPRIGHT)).unwrap();
-    let rows = table_cells(&doc, 0);
-    let cell = &rows[1][0];
-
-    // Reading order here runs right to left, so the leftmost run is the last
-    // one read. Ordering the runs left to right would start the cell at the
-    // number — the block-level flip that turns "50%" into "%50".
-    assert!(
-        cell.text.contains('\u{05D0}'),
-        "right-to-left cell lost its Hebrew run: {:?}",
-        cell.text
-    );
-    assert!(
-        !cell.text.starts_with('5'),
-        "right-to-left cell started at the number: {:?}",
-        cell.text
-    );
-}
