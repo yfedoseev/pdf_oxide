@@ -153,7 +153,17 @@ pub fn validate_fonts(
             continue;
         };
 
-        for font_obj in fonts.values() {
+        // Sorted by resource name: a PDF dictionary is a `HashMap`, and
+        // `check_font_embedding` appends to the shared `result`, so unsorted
+        // iteration randomizes the order of reported violations between runs.
+        // The `seen` dedup below also makes WHICH duplicate reference is
+        // checked first depend on iteration order.
+        let mut font_names: Vec<&String> = fonts.keys().collect();
+        font_names.sort();
+        for font_name in font_names {
+            let Some(font_obj) = fonts.get(font_name) else {
+                continue;
+            };
             let (resolved, font_id) = match font_obj {
                 Object::Reference(r) => {
                     if !seen.insert(r.id) {

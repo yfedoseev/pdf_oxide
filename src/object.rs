@@ -423,8 +423,10 @@ pub fn extract_ccitt_params_with_width(
         _ => return None,
     };
 
-    // Extract CCITT parameters with PDF defaults
-    let k = dict.get("K").and_then(|obj| obj.as_integer()).unwrap_or(-1); // Default: Group 4
+    // Extract CCITT parameters with PDF defaults.
+    // ISO 32000-1:2008 Table 11: /K absent defaults to 0 (pure 1-D Group 3),
+    // not Group 4 (-2) or mixed Group 3/4 (K > 0).
+    let k = dict.get("K").and_then(|obj| obj.as_integer()).unwrap_or(0); // Default: Group 3, 1-D
 
     let columns = dict
         .get("Columns")
@@ -945,7 +947,7 @@ mod tests {
     fn test_extract_ccitt_params_defaults() {
         let dict = Object::Dictionary(HashMap::new());
         let result = extract_ccitt_params(Some(&dict)).unwrap();
-        assert_eq!(result.k, -1); // Default: Group 4
+        assert_eq!(result.k, 0); // ISO 32000-1 Table 11 default: Group 3, 1-D
         assert_eq!(result.columns, 1);
         assert!(result.rows.is_none());
         assert!(!result.black_is_1);

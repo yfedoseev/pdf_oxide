@@ -496,6 +496,7 @@ extern "C" {
   extern void pdf_oxide_annotation_get_rect(const void* annotations, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
   extern void pdf_oxide_annotation_list_free(void* annotations);
   extern int32_t pdf_oxide_element_count(const void* elements);
+  extern void pdf_oxide_element_get_page_rect(const void* elements, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
   extern void pdf_oxide_element_get_rect(const void* elements, int32_t index, float* x, float* y, float* w, float* h, int* error_code);
   extern char* pdf_oxide_element_get_text(const void* elements, int32_t index, int* error_code);
   extern char* pdf_oxide_element_get_type(const void* elements, int32_t index, int* error_code);
@@ -4211,6 +4212,12 @@ Napi::Value GetPageElements(const Napi::CallbackInfo& info) {
     elem.Set("y", Napi::Number::New(env, ey));
     elem.Set("width", Napi::Number::New(env, ew));
     elem.Set("height", Napi::Number::New(env, eh));
+    float px, py, pw, ph;
+    pdf_oxide_element_get_page_rect(elements, i, &px, &py, &pw, &ph, &errorCode);
+    elem.Set("pageX", Napi::Number::New(env, px));
+    elem.Set("pageY", Napi::Number::New(env, py));
+    elem.Set("pageWidth", Napi::Number::New(env, pw));
+    elem.Set("pageHeight", Napi::Number::New(env, ph));
     if (type) free_string(type);
     if (text) free_string(text);
     result.Set(i, elem);

@@ -59,6 +59,8 @@ fn create_test_span(
         wmode: 0,
         text_rise: 0.0,
         rtl_draw_logical: false,
+        mirrored: false,
+        page_rotation_applied: 0,
     }
 }
 

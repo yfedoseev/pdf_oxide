@@ -3243,6 +3243,36 @@ pub extern "C" fn pdf_oxide_element_get_rect(
     set_error(error_code, ERR_SUCCESS);
 }
 
+/// Page-space extents of the span: the rect from `pdf_oxide_element_get_rect`
+/// with any text-matrix rotation resolved into an axis-aligned page-space
+/// hull. Identical to `pdf_oxide_element_get_rect` for upright runs.
+#[no_mangle]
+pub extern "C" fn pdf_oxide_element_get_page_rect(
+    elements: *const FfiElementList,
+    index: i32,
+    x: *mut f32,
+    y: *mut f32,
+    width: *mut f32,
+    height: *mut f32,
+    error_code: *mut i32,
+) {
+    if elements.is_null() || x.is_null() || y.is_null() || width.is_null() || height.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return;
+    }
+    let list = handle_ref(elements);
+    if index < 0 || (index as usize) >= list.spans.len() {
+        set_error(error_code, ERR_INVALID_PAGE);
+        return;
+    }
+    let b = list.spans[index as usize].page_bbox();
+    write_out(x, b.x);
+    write_out(y, b.y);
+    write_out(width, b.width);
+    write_out(height, b.height);
+    set_error(error_code, ERR_SUCCESS);
+}
+
 #[no_mangle]
 pub extern "C" fn pdf_oxide_elements_free(handle: *mut FfiElementList) {
     if !handle.is_null() {
@@ -8835,6 +8865,17 @@ struct JsonElement<'a> {
     y: f32,
     width: f32,
     height: f32,
+    /// Page-space extents: the x/y/width/height rect with any text-matrix
+    /// rotation resolved into an axis-aligned page-space hull. Identical to
+    /// it for upright runs.
+    #[serde(rename = "pageX")]
+    page_x: f32,
+    #[serde(rename = "pageY")]
+    page_y: f32,
+    #[serde(rename = "pageWidth")]
+    page_width: f32,
+    #[serde(rename = "pageHeight")]
+    page_height: f32,
     /// §9.10.2 mapping-provenance label; omitted when the font is unresolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     provenance: Option<&'static str>,
@@ -9013,14 +9054,21 @@ pub extern "C" fn pdf_oxide_elements_to_json(
     let items: Vec<JsonElement> = list
         .spans
         .iter()
-        .map(|s| JsonElement {
-            r#type: "text",
-            text: &s.text,
-            x: s.bbox.x,
-            y: s.bbox.y,
-            width: s.bbox.width,
-            height: s.bbox.height,
-            provenance: s.provenance.map(|p| p.as_str()),
+        .map(|s| {
+            let pb = s.page_bbox();
+            JsonElement {
+                r#type: "text",
+                text: &s.text,
+                x: s.bbox.x,
+                y: s.bbox.y,
+                width: s.bbox.width,
+                height: s.bbox.height,
+                page_x: pb.x,
+                page_y: pb.y,
+                page_width: pb.width,
+                page_height: pb.height,
+                provenance: s.provenance.map(|p| p.as_str()),
+            }
         })
         .collect();
     match serde_json::to_string(&items) {
