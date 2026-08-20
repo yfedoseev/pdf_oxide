@@ -349,7 +349,17 @@ fn merge_consecutive_same_level_headings(s: &str) -> String {
         // separate. Fusing destroyed genuinely distinct section headers.
         let wrapped_two = texts.len() == 2 && looks_like_heading_wrap(&texts[0], &texts[1]);
         if wrapped_two {
-            let merged = texts.join(" ");
+            // A fragment ending in a hyphen is a word broken across the two
+            // lines, so the halves join with nothing between them. Joining
+            // with a space would put one inside the word: `loa-` + `ded`
+            // reads `loa- ded`. This is the rule the wrap detector already
+            // applies when it takes a trailing hyphen as the continuation
+            // signal; the merge has to honour the same reading.
+            let merged = if texts[0].trim_end().ends_with('-') {
+                format!("{}{}", texts[0].trim_end(), texts[1].trim_start())
+            } else {
+                texts.join(" ")
+            };
             let hashes = "#".repeat(level);
             out.push(format!("{} {}", hashes, merged));
             i = j;
@@ -5413,6 +5423,19 @@ mod tests {
             h1_count, 3,
             "tagged distinct H1 elements must NOT be merged (spec §14.8.4.3.2), got:\n{}",
             result
+        );
+    }
+
+    /// A heading wrapped at a hyphen joins with nothing between the halves.
+    /// A space there lands inside the word.
+    #[test]
+    fn test_heading_wrapped_at_hyphen_joins_without_space() {
+        let merged = merge_consecutive_same_level_headings(
+            "### PDF with custom font loa-\n### ded successfully",
+        );
+        assert_eq!(
+            merged, "### PDF with custom font loa-ded successfully",
+            "a space was inserted at the hyphen the word broke on"
         );
     }
 
