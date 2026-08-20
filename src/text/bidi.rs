@@ -618,7 +618,10 @@ pub fn wrap_rtl_isolates(text: &str, block_is_rtl: bool) -> String {
 /// therefore not mirrored when the surrounding RTL is reversed. A separator
 /// (`.` `,` `:` and the Arabic decimal/thousands separators) is treated as part
 /// of the number only when it sits between two digits, so `1,000` and `3.14`
-/// stay intact while a trailing comma reverses as an ordinary neutral.
+/// stay intact while a trailing comma reverses as an ordinary neutral. A
+/// European terminator — `%`, a currency sign, a degree sign — joins the number
+/// whenever it touches one (UAX #9 rule W5), so `50%` keeps its sign on the
+/// side the reader expects instead of reversing away from the digits.
 ///
 /// For any run containing no digits this is byte-identical to a plain
 /// `chars().rev().collect()`, so the digit-free RTL case (the corpus-validated
@@ -654,6 +657,31 @@ pub fn reverse_rtl_keep_numbers(s: &str) -> String {
             }
             i = j;
         } else {
+            i += 1;
+        }
+    }
+    // UAX #9 W5: a sequence of European terminators adjacent to a European
+    // number becomes part of that number, so a sign touching the digits travels
+    // with them instead of reversing away as a neutral. The class comes from
+    // the `unicode-bidi` tables this module wraps rather than a second local
+    // list of sign characters.
+    let is_terminator = |c: char| unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::ET;
+    let mut i = 0;
+    while i < n {
+        if !in_num[i] {
+            i += 1;
+            continue;
+        }
+        let mut before = i;
+        while before > 0 && is_terminator(chars[before - 1]) {
+            before -= 1;
+            in_num[before] = true;
+        }
+        while i < n && in_num[i] {
+            i += 1;
+        }
+        while i < n && is_terminator(chars[i]) {
+            in_num[i] = true;
             i += 1;
         }
     }
@@ -708,6 +736,22 @@ mod tests {
         // Thousands / decimal separators between digits stay with the number.
         assert_eq!(reverse_rtl_keep_numbers(",1,000-ל"), "ל-1,000,");
         assert_eq!(reverse_rtl_keep_numbers("3.14-ל"), "ל-3.14");
+    }
+
+    #[test]
+    fn reverse_keep_numbers_keeps_a_terminator_with_its_number() {
+        // UAX #9 W5: a European terminator touching a European number joins it,
+        // so the sign stays on the side of the digits it was drawn on.
+        assert_eq!(reverse_rtl_keep_numbers("50%"), "50%");
+        assert_eq!(reverse_rtl_keep_numbers("%50"), "%50");
+        assert_eq!(reverse_rtl_keep_numbers("$50"), "$50");
+        assert_eq!(reverse_rtl_keep_numbers("47.500%-ל"), "ל-47.500%");
+    }
+
+    #[test]
+    fn reverse_keep_numbers_leaves_a_lone_terminator_alone() {
+        // No number to join, so the terminator reverses as an ordinary neutral.
+        assert_eq!(reverse_rtl_keep_numbers("%ל"), "ל%");
     }
 
     #[test]
