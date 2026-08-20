@@ -578,11 +578,34 @@ pub fn extract_table(table_elem: &StructElem, text_blocks: &[TextBlock]) -> Resu
 /// [`extract_table`] for blocks taken from a page that may carry a `/Rotate`.
 ///
 /// `page_rotation` decides only whether a sequence's runs may be reordered.
+/// The text blocks of one page, grouped by the MCID that owns them.
+///
+/// A cell names the marked-content sequences it owns, not the blocks, so the
+/// blocks a cell needs have to be found by MCID. Scanning the page for each
+/// MCID costs the whole page once per name, which on a table that covers the
+/// page is quadratic in the content of that page. The page is grouped once
+/// instead and every cell looks its names up.
+///
+/// Each group keeps the order the blocks appear in on the page, which is the
+/// order a scan of the page returned.
+type BlocksByMcid<'a> = std::collections::HashMap<u32, Vec<&'a TextBlock>>;
+
+fn group_blocks_by_mcid(text_blocks: &[TextBlock]) -> BlocksByMcid<'_> {
+    let mut by_mcid: BlocksByMcid<'_> = std::collections::HashMap::new();
+    for block in text_blocks {
+        if let Some(mcid) = block.mcid {
+            by_mcid.entry(mcid).or_default().push(block);
+        }
+    }
+    by_mcid
+}
+
 pub(crate) fn extract_table_on_page(
     table_elem: &StructElem,
     text_blocks: &[TextBlock],
     page_rotation: i32,
 ) -> Result<Table, Error> {
+    let blocks_by_mcid = group_blocks_by_mcid(text_blocks);
     let mut table = Table::new();
 
     // Check table structure
@@ -601,20 +624,20 @@ pub(crate) fn extract_table_on_page(
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TR => {
                     // Direct row in table
-                    let row = extract_row(elem, text_blocks, false, page_rotation)?;
+                    let row = extract_row(elem, &blocks_by_mcid, false, page_rotation)?;
                     table.add_row(row);
                 },
                 StructType::THead => {
                     // Header row group
-                    extract_row_group(elem, text_blocks, true, &mut table, page_rotation)?;
+                    extract_row_group(elem, &blocks_by_mcid, true, &mut table, page_rotation)?;
                 },
                 StructType::TBody => {
                     // Body row group
-                    extract_row_group(elem, text_blocks, false, &mut table, page_rotation)?;
+                    extract_row_group(elem, &blocks_by_mcid, false, &mut table, page_rotation)?;
                 },
                 StructType::TFoot => {
                     // Footer row group
-                    extract_row_group(elem, text_blocks, false, &mut table, page_rotation)?;
+                    extract_row_group(elem, &blocks_by_mcid, false, &mut table, page_rotation)?;
                 },
                 _ => {
                     // Skip other elements (caption, etc.)
@@ -635,7 +658,7 @@ pub(crate) fn extract_table_on_page(
 /// Extract rows from a row group (THead, TBody, TFoot).
 fn extract_row_group(
     group_elem: &StructElem,
-    text_blocks: &[TextBlock],
+    blocks_by_mcid: &BlocksByMcid<'_>,
     is_header: bool,
     table: &mut Table,
     page_rotation: i32,
@@ -643,7 +666,7 @@ fn extract_row_group(
     for child in &group_elem.children {
         match child {
             StructChild::StructElem(elem) if elem.struct_type == StructType::TR => {
-                let row = extract_row(elem, text_blocks, is_header, page_rotation)?;
+                let row = extract_row(elem, blocks_by_mcid, is_header, page_rotation)?;
                 table.add_row(row);
             },
             _ => {
@@ -657,7 +680,7 @@ fn extract_row_group(
 /// Extract a single row (TR element).
 fn extract_row(
     tr_elem: &StructElem,
-    text_blocks: &[TextBlock],
+    blocks_by_mcid: &BlocksByMcid<'_>,
     force_header: bool,
     page_rotation: i32,
 ) -> Result<TableRow, Error> {
@@ -668,12 +691,12 @@ fn extract_row(
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TH => {
                     // Header cell
-                    let cell = extract_cell(elem, text_blocks, true, page_rotation)?;
+                    let cell = extract_cell(elem, blocks_by_mcid, true, page_rotation)?;
                     row.add_cell(cell);
                 },
                 StructType::TD => {
                     // Data cell
-                    let cell = extract_cell(elem, text_blocks, false, page_rotation)?;
+                    let cell = extract_cell(elem, blocks_by_mcid, false, page_rotation)?;
                     row.add_cell(cell);
                 },
                 _ => {
@@ -695,7 +718,7 @@ fn extract_row(
 /// Extract a single cell (TH or TD element).
 fn extract_cell(
     cell_elem: &StructElem,
-    text_blocks: &[TextBlock],
+    blocks_by_mcid: &BlocksByMcid<'_>,
     is_header: bool,
     page_rotation: i32,
 ) -> Result<TableCell, Error> {
@@ -735,13 +758,20 @@ fn extract_cell(
         // Where none does, the number alone decides: a producer that omits
         // `/Stm` leaves the reference reading `Page` while the text it points
         // at was drawn inside a form, and demanding agreement empties the cell.
-        let stream_is_named = text_blocks
-            .iter()
-            .any(|b| b.mcid == Some(*mcid) && b.mcid_scope.as_ref() == Some(scope));
-        runs.extend(text_blocks.iter().filter(|b| {
-            b.mcid == Some(*mcid)
-                && (!stream_is_named || b.mcid_scope.as_ref() == Some(scope))
-        }));
+        //
+        // The index is keyed by the number, and one number holds few blocks,
+        // so the stream is checked on the bucket.
+        let bucket = blocks_by_mcid.get(mcid);
+        let stream_is_named = bucket
+            .is_some_and(|bs| bs.iter().any(|b| b.mcid_scope.as_ref() == Some(scope)));
+        if let Some(blocks) = bucket {
+            runs.extend(
+                blocks
+                    .iter()
+                    .copied()
+                    .filter(|b| !stream_is_named || b.mcid_scope.as_ref() == Some(scope)),
+            );
+        }
         order_sequence_runs(&mut runs[sequence_start..], page_rotation);
     }
     for block in runs {
