@@ -236,7 +236,9 @@ impl MeshParams {
         }
         let decode_arr = shading.get("Decode")?.as_array()?;
         let decode: Vec<(f32, f32)> = decode_arr
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| (num(&c[0]), num(&c[1])))
             .collect();
         // Need at least the x and y ranges plus one colour component.
@@ -1069,7 +1071,9 @@ fn eval_type0(bytes: &[u8], dict: &HashMap<String, Object>, inputs: &[f32]) -> O
         .get("Decode")
         .and_then(|o| o.as_array())
         .map(|a| {
-            a.chunks_exact(2)
+            a.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| (num(&c[0]), num(&c[1])))
                 .collect()
         })
@@ -1197,7 +1201,9 @@ fn num(o: &Object) -> f32 {
 fn pairs(o: Option<&Object>) -> Vec<[f64; 2]> {
     o.and_then(|o| o.as_array())
         .map(|a| {
-            a.chunks_exact(2)
+            a.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     let lo = c[0]
                         .as_real()
