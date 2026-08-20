@@ -19949,8 +19949,16 @@ impl PdfDocument {
                 .unwrap_or_default();
             if !table_elems.is_empty() {
                 let mut tables = Vec::new();
+                // A sequence's runs are ordered by their geometry, which only
+                // holds while the bbox and the reported rotation share a frame.
+                // On a /Rotate page they do not.
+                let page_rotation = self.get_page_rotation(page_index).unwrap_or(0);
                 for table_elem in &table_elems {
-                    match crate::structure::extract_table_from_spans(table_elem, spans) {
+                    match crate::structure::extract_table_from_spans(
+                        table_elem,
+                        spans,
+                        page_rotation,
+                    ) {
                         Ok(mut table) if !table.is_empty() => {
                             // Compute bbox from spans matching the table's MCIDs
                             if table.bbox.is_none() {

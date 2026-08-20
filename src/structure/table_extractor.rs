@@ -484,6 +484,7 @@ fn element_has_page_content(elem: &StructElem, page_num: u32) -> bool {
 pub fn extract_table_from_spans(
     table_elem: &StructElem,
     spans: &[crate::layout::TextSpan],
+    page_rotation: i32,
 ) -> Result<Table, Error> {
     // Convert spans to TextBlocks for MCID matching, applying column-spanning
     // decimal split so that "12.11" (sailing score columns) becomes "12 11".
@@ -507,7 +508,7 @@ pub fn extract_table_from_spans(
             }
         })
         .collect();
-    extract_table(table_elem, &text_blocks)
+    extract_table_on_page(table_elem, &text_blocks, page_rotation)
 }
 
 /// Return the display text for a span when used as a table cell token.
@@ -571,6 +572,17 @@ pub(super) fn span_text_for_cell(span: &crate::layout::TextSpan) -> String {
 /// # Returns
 /// * `Table` containing all rows and cells
 pub fn extract_table(table_elem: &StructElem, text_blocks: &[TextBlock]) -> Result<Table, Error> {
+    extract_table_on_page(table_elem, text_blocks, 0)
+}
+
+/// [`extract_table`] for blocks taken from a page that may carry a `/Rotate`.
+///
+/// `page_rotation` decides only whether a sequence's runs may be reordered.
+pub(crate) fn extract_table_on_page(
+    table_elem: &StructElem,
+    text_blocks: &[TextBlock],
+    page_rotation: i32,
+) -> Result<Table, Error> {
     let mut table = Table::new();
 
     // Check table structure
@@ -589,20 +601,20 @@ pub fn extract_table(table_elem: &StructElem, text_blocks: &[TextBlock]) -> Resu
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TR => {
                     // Direct row in table
-                    let row = extract_row(elem, text_blocks, false)?;
+                    let row = extract_row(elem, text_blocks, false, page_rotation)?;
                     table.add_row(row);
                 },
                 StructType::THead => {
                     // Header row group
-                    extract_row_group(elem, text_blocks, true, &mut table)?;
+                    extract_row_group(elem, text_blocks, true, &mut table, page_rotation)?;
                 },
                 StructType::TBody => {
                     // Body row group
-                    extract_row_group(elem, text_blocks, false, &mut table)?;
+                    extract_row_group(elem, text_blocks, false, &mut table, page_rotation)?;
                 },
                 StructType::TFoot => {
                     // Footer row group
-                    extract_row_group(elem, text_blocks, false, &mut table)?;
+                    extract_row_group(elem, text_blocks, false, &mut table, page_rotation)?;
                 },
                 _ => {
                     // Skip other elements (caption, etc.)
@@ -626,11 +638,12 @@ fn extract_row_group(
     text_blocks: &[TextBlock],
     is_header: bool,
     table: &mut Table,
+    page_rotation: i32,
 ) -> Result<(), Error> {
     for child in &group_elem.children {
         match child {
             StructChild::StructElem(elem) if elem.struct_type == StructType::TR => {
-                let row = extract_row(elem, text_blocks, is_header)?;
+                let row = extract_row(elem, text_blocks, is_header, page_rotation)?;
                 table.add_row(row);
             },
             _ => {
@@ -646,6 +659,7 @@ fn extract_row(
     tr_elem: &StructElem,
     text_blocks: &[TextBlock],
     force_header: bool,
+    page_rotation: i32,
 ) -> Result<TableRow, Error> {
     let mut row = TableRow::new(force_header);
 
@@ -654,12 +668,12 @@ fn extract_row(
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TH => {
                     // Header cell
-                    let cell = extract_cell(elem, text_blocks, true)?;
+                    let cell = extract_cell(elem, text_blocks, true, page_rotation)?;
                     row.add_cell(cell);
                 },
                 StructType::TD => {
                     // Data cell
-                    let cell = extract_cell(elem, text_blocks, false)?;
+                    let cell = extract_cell(elem, text_blocks, false, page_rotation)?;
                     row.add_cell(cell);
                 },
                 _ => {
@@ -683,6 +697,7 @@ fn extract_cell(
     cell_elem: &StructElem,
     text_blocks: &[TextBlock],
     is_header: bool,
+    page_rotation: i32,
 ) -> Result<TableCell, Error> {
     // Collect all MCIDs from this cell
     let mut mcids = Vec::new();
@@ -721,7 +736,7 @@ fn extract_cell(
         runs.extend(text_blocks.iter().filter(|b| {
             b.mcid == Some(*mcid) && b.mcid_scope.as_ref().is_none_or(|s| s == scope)
         }));
-        order_sequence_runs(&mut runs[sequence_start..]);
+        order_sequence_runs(&mut runs[sequence_start..], page_rotation);
     }
     for block in runs {
         let mut leading_space = false;
@@ -893,8 +908,29 @@ fn extract_cell(
 ///
 /// The sort is stable, so runs the comparator calls equal keep marked-content
 /// order.
-fn order_sequence_runs(runs: &mut [&TextBlock]) {
+fn order_sequence_runs(runs: &mut [&TextBlock], page_rotation: i32) {
     if runs.len() < 2 {
+        return;
+    }
+    // A page carrying a `/Rotate` is displayed turned, and `postprocess_spans`
+    // maps a span's bbox into that displayed frame while `rotation_degrees`
+    // still describes the frame before the turn. Ordering by the bbox there
+    // walks a sequence's runs against the direction they advance in and the
+    // cell reads backwards, so marked-content order is left alone. This is the
+    // condition `map_dominant_rotation_into_reading_frame` also declines on.
+    if page_rotation.rem_euclid(360) != 0 {
+        return;
+    }
+    // Ordering by bbox assumes an upright reading frame. A run turned by its
+    // own text matrix advances along an axis the `(y, x)` comparator does not
+    // follow, so ordering it walks the sequence backwards and the cell reads
+    // in reverse. A page can carry no `/Rotate` and still hold turned text, so
+    // this is a separate condition from the one above.
+    let upright = |deg: f32| {
+        let d = deg.rem_euclid(360.0);
+        d < 0.5 || d > 359.5
+    };
+    if !runs.iter().all(|b| upright(b.rotation_degrees)) {
         return;
     }
     let has_rtl = runs.iter().any(|b| {
@@ -1287,7 +1323,7 @@ mod tests {
             make_text_span("Unrelated", Some(99)),
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].cells.len(), 2);
         assert_eq!(result.rows[0].cells[0].text, "Hello");
@@ -1310,7 +1346,7 @@ mod tests {
         // Spans have different MCIDs
         let spans = vec![make_text_span("Other", Some(99))];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].cells[0].text, ""); // No matching content
     }
@@ -1334,7 +1370,7 @@ mod tests {
             make_text_span("Has MCID", Some(5)),
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(result.rows[0].cells[0].text, "Has MCID");
     }
 
@@ -1373,7 +1409,7 @@ mod tests {
             make_text_span("Data", Some(2)),
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert!(result.has_header);
         assert_eq!(result.rows.len(), 2);
         assert!(result.rows[0].is_header);
@@ -1387,7 +1423,7 @@ mod tests {
         let table_elem = StructElem::new(StructType::Table);
         let spans: Vec<crate::layout::TextSpan> = vec![];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert!(result.is_empty());
     }
 
@@ -1480,7 +1516,7 @@ mod tests {
             },
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(
             result.rows[0].cells[0].text, "Q（peu/d",
             "adjacent MCID spans must not get a space inserted between them"
@@ -1555,7 +1591,7 @@ mod tests {
             },
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(result.rows[0].cells[0].text, "Hello World");
     }
 
@@ -1635,7 +1671,7 @@ mod tests {
             },
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         let cell = &result.rows[0].cells[0];
         assert_eq!(cell.spans.len(), 2, "both MCID blocks must yield a span");
         assert_eq!(cell.spans[0].text, "Bold");
@@ -1704,7 +1740,7 @@ mod tests {
             rtl_draw_logical: false,
         };
 
-        let result = extract_table_from_spans(&table_elem, &[span]).unwrap();
+        let result = extract_table_from_spans(&table_elem, &[span], 0).unwrap();
         let cell = &result.rows[0].cells[0];
         assert_eq!(cell.spans.len(), 1);
         assert_eq!(
@@ -1803,7 +1839,7 @@ mod tests {
             },
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(
             result.rows[0].cells[0].text, "数≤量",
             "CJK + math-op + CJK with gap > 0.15em should not have spaces inserted: \
@@ -1883,7 +1919,7 @@ mod tests {
             },
         ];
 
-        let result = extract_table_from_spans(&table_elem, &spans).unwrap();
+        let result = extract_table_from_spans(&table_elem, &spans, 0).unwrap();
         assert_eq!(
             result.rows[0].cells[0].text, "Hello world",
             "Latin→Latin with gap > 0.15em should insert a space: got '{}'",

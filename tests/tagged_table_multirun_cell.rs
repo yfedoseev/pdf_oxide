@@ -167,7 +167,7 @@ fn cell_with_two_wrapped_lines_keeps_both() {
     ];
     let mut table = StructElem::new(StructType::Table);
     table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
-    let t = extract_table_from_spans(&table, &spans).unwrap();
+    let t = extract_table_from_spans(&table, &spans, 0).unwrap();
     assert_eq!(
         t.rows[0].cells[0].text, "Hello World",
         "second span sharing the cell's MCID was dropped"
@@ -183,7 +183,7 @@ fn cell_with_gap_separated_spans_keeps_both() {
     ];
     let mut table = StructElem::new(StructType::Table);
     table.add_child(StructChild::StructElem(Box::new(tr(vec![td(0), td(1)]))));
-    let t = extract_table_from_spans(&table, &spans).unwrap();
+    let t = extract_table_from_spans(&table, &spans, 0).unwrap();
     assert_eq!(
         t.rows[0].cells[0].text, "Total 100",
         "second span sharing the cell's MCID was dropped"

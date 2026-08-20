@@ -1,53 +1,86 @@
-//! A tagged table cell whose marked-content sequence hands over its runs in the
-//! reverse of the order the page reads must still assemble the text the reader
-//! sees — unless the sequence carries right-to-left text, where the runs keep
-//! marked-content order.
+//! A tagged table cell whose marked-content sequence hands over its runs in
+//! the reverse of the order the page reads must still assemble the text the
+//! reader sees. Ordering the runs by their boxes does that, but only where the
+//! boxes describe an upright reading frame.
 //!
 //! ISO 32000-2 §14.8.2.5.1 asks a producer to store the content of a
 //! marked-content sequence in logical order, and §14.8.4.8.3 NOTE builds the
-//! table algorithms on that. Producers exist that do not honour it: on a
-//! `/Rotate 270` page a column header is drawn from the right end of its line
-//! back to the left, so the runs arrive in descending x and the cell reads
-//! backwards.
+//! table algorithms on that. Producers exist that do not honour it, and draw a
+//! column header from the right end of its line back to the left.
 //!
-//! The page rotation is part of the defect. A run's box is mapped into the
-//! displayed frame while `rotation_degrees` still reports the frame before the
-//! rotation, so an order taken from the reported angle walks the runs against
-//! the direction they advance in. Every run here reports -90 degrees on a page
-//! displayed unrotated-side-up.
+//! Three shapes must keep marked-content order instead, because ordering them
+//! by box reads the cell backwards:
 //!
-//! The right-to-left case is a guard, not a reproducer: UAX #9 (I2/L2) keeps a
-//! numeric run left to right inside a right-to-left paragraph, and the
-//! character-level pass already resolves that, so a second permutation of the
-//! same text at run level would turn `50%` into `%50`.
+//! * a page carrying a `/Rotate`, where a run's box is mapped into the
+//!   displayed frame while `rotation_degrees` still reports the frame before
+//!   the turn;
+//! * text turned by its own text matrix on a page carrying no `/Rotate`, which
+//!   advances along an axis the row-and-column order does not follow;
+//! * right-to-left text, where UAX #9 (I2/L2) keeps a numeric run left to right
+//!   inside a right-to-left paragraph. The character-level pass already
+//!   resolves that, so a second permutation at run level turns `50%` into
+//!   `%50`.
 //!
-//! The PDF is hand-built (no third-party fixture).
+//! The PDFs are hand-built (no third-party fixture).
 
 use pdf_oxide::structure::TableCell;
 use pdf_oxide::PdfDocument;
 
-/// One `/Rotate 270` page holding a tagged two-row table.
-///
+
+/// Upright text on a page carrying no `/Rotate`, with row one's runs drawn from
+/// the right end of the line back to the left. Reading order is ascending x,
+/// and the sequence hands the runs over descending — the defect this orders out.
+const UPRIGHT: &[u8] = b"BT /F1 8.49 Tf\n\
+    /TD <</MCID 0>> BDC \
+    1 0 0 1 475.07 482.89 Tm (0^-3 cgs units\\) ) Tj \
+    1 0 0 1 470.18 482.89 Tm (1) Tj \
+    1 0 0 1 462.64 482.89 Tm ( \\() Tj \
+    1 0 0 1 457.10 482.89 Tm (K) Tj EMC\n\
+    /TD <</MCID 1>> BDC 1 0 0 1 250 482.89 Tm (cm) Tj EMC\n\
+    /TD <</MCID 2>> BDC 1 0 0 1 430 470 Tm (ABC) Tj 1 0 0 1 400 470 Tm (50) Tj EMC\n\
+    ET\n";
+
 /// The text matrix is `[0 -1 1 0]`, so every run advances along -y in user
-/// space, reads left to right once the page rotation is applied, and reports
-/// -90 degrees — the producer shape the defect comes from.
+/// space, reads left to right once a `/Rotate 270` is applied, and reports -90
+/// degrees. Row one's runs are drawn in the reverse of the order the page
+/// reads: the tail `0^-3 cgs units) ` first and the leading `K` last.
+const TURNED: &[u8] = b"BT /F1 8.49 Tf\n\
+    /TD <</MCID 0>> BDC \
+    0 -1 1 0 482.89 308.44 Tm (0^-3 cgs units\\) ) Tj \
+    0 -1 1 0 482.89 313.33 Tm (1) Tj \
+    0 -1 1 0 482.89 320.87 Tm ( \\() Tj \
+    0 -1 1 0 482.89 326.41 Tm (K) Tj EMC\n\
+    /TD <</MCID 1>> BDC 0 -1 1 0 482.89 250 Tm (cm) Tj EMC\n\
+    /TD <</MCID 2>> BDC 0 -1 1 0 470 400 Tm (ABC) Tj 0 -1 1 0 470 430 Tm (50) Tj EMC\n\
+    ET\n";
+
+/// The text matrix is `[-1 0 0 -1]`, so the runs report 180 degrees and advance
+/// along -x on a page carrying no `/Rotate`. Row one's runs are drawn in the
+/// order they read, `K` first at the right end of the line, so ordering them by
+/// box — ascending x within the row — reverses the cell.
+const HALF_TURNED: &[u8] = b"BT /F1 8.49 Tf\n\
+    /TD <</MCID 0>> BDC \
+    -1 0 0 -1 475.07 482.89 Tm (K) Tj \
+    -1 0 0 -1 470.18 482.89 Tm ( \\() Tj \
+    -1 0 0 -1 462.64 482.89 Tm (1) Tj \
+    -1 0 0 -1 457.10 482.89 Tm (0^-3 cgs units\\) ) Tj EMC\n\
+    /TD <</MCID 1>> BDC -1 0 0 -1 250 482.89 Tm (cm) Tj EMC\n\
+    /TD <</MCID 2>> BDC -1 0 0 -1 430 470 Tm (ABC) Tj -1 0 0 -1 400 470 Tm (50) Tj EMC\n\
+    ET\n";
+
+/// One page holding a tagged two-row table, drawn by `content`.
 ///
 /// Row one, cell one is a single marked-content sequence of four abutting runs
-/// drawn from the right end of the line back to the left: the tail
-/// `0^-3 cgs units) ` first and the leading `K` last. Each run starts where the
-/// one that reads before it ends, so the runs carry no gap for a joiner to
-/// find and the cell text is decided by their order alone.
-///
-/// The positions are chosen so the runs land on the frame a real producer of
-/// this shape emits: one line at y=482.89, boxes 8.49 wide, and the four runs
-/// at x=457.10, 462.64, 470.18 and 475.07 — ascending in reading order, so the
-/// sequence hands them over descending.
+/// that assemble `K (10^-3 cgs units)`. Each run starts where the one beside it
+/// ends, so the runs carry no gap for a joiner to find and the cell text is
+/// decided by their order alone. The runs sit on one line at 8.49 pt and 8.49
+/// units apart, the frame a real producer of this shape emits.
 ///
 /// Cell two is an ordinary single-run cell. Row two holds one cell whose
 /// sequence mixes a Hebrew word at the right end of the line with a number at
 /// the left, drawn right to left — which for right-to-left text *is* reading
 /// order.
-fn rotated_tagged_table_pdf() -> Vec<u8> {
+fn tagged_table_pdf(rotate: i32, content: &[u8]) -> Vec<u8> {
     // Codes A, B, C carry Hebrew through /ToUnicode; the digits map to
     // themselves through WinAnsiEncoding.
     let tounicode = "/CIDInit /ProcSet findresource begin\n\
@@ -60,16 +93,6 @@ fn rotated_tagged_table_pdf() -> Vec<u8> {
     // (792 - y - w, x), so the user-space y values below place the four runs on
     // the displayed x positions above, and the shared user x places the row on
     // its displayed line. They are drawn in the reverse of reading order.
-    let content = b"BT /F1 8.49 Tf\n\
-        /TD <</MCID 0>> BDC \
-        0 -1 1 0 482.89 308.44 Tm (0^-3 cgs units\\) ) Tj \
-        0 -1 1 0 482.89 313.33 Tm (1) Tj \
-        0 -1 1 0 482.89 320.87 Tm ( \\() Tj \
-        0 -1 1 0 482.89 326.41 Tm (K) Tj EMC\n\
-        /TD <</MCID 1>> BDC 0 -1 1 0 482.89 250 Tm (cm) Tj EMC\n\
-        /TD <</MCID 2>> BDC 0 -1 1 0 470 400 Tm (ABC) Tj 0 -1 1 0 470 430 Tm (50) Tj EMC\n\
-        ET\n";
-
     let mut buf: Vec<u8> = Vec::new();
     let mut off = vec![0usize; 15];
     let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
@@ -97,8 +120,10 @@ fn rotated_tagged_table_pdf() -> Vec<u8> {
         &mut buf,
         &mut off,
         3,
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 270 \
-         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>",
+        &format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate {rotate} \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>"
+        ),
     );
     stream(&mut buf, &mut off, 4, content);
     obj(
@@ -142,14 +167,14 @@ fn rotated_tagged_table_pdf() -> Vec<u8> {
     buf
 }
 
-/// The cells of the hand-built table, row by row.
-fn table_cells(doc: &PdfDocument) -> Vec<Vec<TableCell>> {
+/// The cells of the hand-built table, row by row, as the page rotation reports.
+fn table_cells(doc: &PdfDocument, page_rotation: i32) -> Vec<Vec<TableCell>> {
     let spans = doc.extract_spans(0).unwrap();
     let tree = doc.structure_tree().unwrap().expect("structure tree");
     let tables = pdf_oxide::structure::find_table_elements_all_pages(&tree);
     let elems = tables.get(&0).cloned().unwrap_or_default();
     assert_eq!(elems.len(), 1, "one tagged table on the page");
-    pdf_oxide::structure::extract_table_from_spans(&elems[0], &spans)
+    pdf_oxide::structure::extract_table_from_spans(&elems[0], &spans, page_rotation)
         .unwrap()
         .rows
         .iter()
@@ -158,9 +183,9 @@ fn table_cells(doc: &PdfDocument) -> Vec<Vec<TableCell>> {
 }
 
 #[test]
-fn rotated_tagged_cell_reads_in_page_order() {
-    let doc = PdfDocument::from_bytes(rotated_tagged_table_pdf()).unwrap();
-    let rows = table_cells(&doc);
+fn upright_tagged_cell_reads_in_page_order() {
+    let doc = PdfDocument::from_bytes(tagged_table_pdf(0, UPRIGHT)).unwrap();
+    let rows = table_cells(&doc, 0);
 
     assert_eq!(
         rows[0][0].text, "K (10^-3 cgs units)",
@@ -170,9 +195,37 @@ fn rotated_tagged_cell_reads_in_page_order() {
 }
 
 #[test]
+fn rotated_page_tagged_cell_keeps_marked_content_order() {
+    let doc = PdfDocument::from_bytes(tagged_table_pdf(270, TURNED)).unwrap();
+    let rows = table_cells(&doc, 270);
+
+    // The box is in the displayed frame and the reported angle is not, so an
+    // order taken from the box walks the runs against the way they advance.
+    assert!(
+        rows[0][0].text.starts_with('0'),
+        "rotated page ordered by box: {:?}",
+        rows[0][0].text
+    );
+}
+
+#[test]
+fn turned_text_on_unrotated_page_keeps_marked_content_order() {
+    let doc = PdfDocument::from_bytes(tagged_table_pdf(0, HALF_TURNED)).unwrap();
+    let rows = table_cells(&doc, 0);
+
+    // Reading order here is descending x. Ordering by box takes the row
+    // ascending and hands back the cell reversed.
+    assert!(
+        rows[0][0].text.starts_with('K'),
+        "turned text ordered by box: {:?}",
+        rows[0][0].text
+    );
+}
+
+#[test]
 fn right_to_left_tagged_cell_keeps_marked_content_order() {
-    let doc = PdfDocument::from_bytes(rotated_tagged_table_pdf()).unwrap();
-    let rows = table_cells(&doc);
+    let doc = PdfDocument::from_bytes(tagged_table_pdf(0, UPRIGHT)).unwrap();
+    let rows = table_cells(&doc, 0);
     let cell = &rows[1][0];
 
     // Reading order here runs right to left, so the leftmost run is the last
