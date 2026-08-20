@@ -570,7 +570,14 @@ impl PdfXValidator {
                     _ => continue,
                 };
 
-                for (gs_name, gs_obj) in &ext_gstate {
+                // Sorted by ExtGState name so the emitted error order is
+                // stable; see the ColorSpace sweep in validate_colors.
+                let mut gs_names: Vec<&String> = ext_gstate.keys().collect();
+                gs_names.sort();
+                for gs_name in gs_names {
+                    let Some(gs_obj) = ext_gstate.get(gs_name) else {
+                        continue;
+                    };
                     let gs_dict = match gs_obj {
                         Object::Dictionary(d) => d.clone(),
                         Object::Reference(r) => match document.load_object(*r)? {
@@ -687,7 +694,17 @@ impl PdfXValidator {
                 if let Ok(page_dict) = self.get_page_dict(document, page_num) {
                     if let Some(Object::Dictionary(resources)) = page_dict.get("Resources") {
                         if let Some(Object::Dictionary(colorspaces)) = resources.get("ColorSpace") {
-                            for (name, cs) in colorspaces {
+                            // Sorted by resource name: a PDF dictionary is a
+                            // `HashMap`, and this loop both pushes into the
+                            // emitted `color_spaces_found` list and reports
+                            // errors, so unsorted iteration randomizes a
+                            // compliance report's contents between runs.
+                            let mut cs_names: Vec<&String> = colorspaces.keys().collect();
+                            cs_names.sort();
+                            for name in cs_names {
+                                let Some(cs) = colorspaces.get(name) else {
+                                    continue;
+                                };
                                 let cs_name = self.get_colorspace_name(cs, document)?;
                                 result.stats.color_spaces_found.push(cs_name.clone());
 
@@ -736,7 +753,14 @@ impl PdfXValidator {
                         _ => continue,
                     };
 
-                    for (cs_name, cs_obj) in &colorspaces {
+                    // Sorted by resource name so the emitted error order is
+                    // stable; see the ColorSpace sweep above.
+                    let mut sorted_cs: Vec<&String> = colorspaces.keys().collect();
+                    sorted_cs.sort();
+                    for cs_name in sorted_cs {
+                        let Some(cs_obj) = colorspaces.get(cs_name) else {
+                            continue;
+                        };
                         let cs_type = self.get_colorspace_name(cs_obj, document)?;
 
                         // Device-dependent colors without output intent
@@ -782,7 +806,14 @@ impl PdfXValidator {
             if let Ok(page_dict) = self.get_page_dict(document, page_num) {
                 if let Some(Object::Dictionary(resources)) = page_dict.get("Resources") {
                     if let Some(Object::Dictionary(fonts)) = resources.get("Font") {
-                        for (name, font_ref) in fonts {
+                        // Sorted by resource name so the emitted error order is
+                        // stable; see the ColorSpace sweep above.
+                        let mut font_names: Vec<&String> = fonts.keys().collect();
+                        font_names.sort();
+                        for name in font_names {
+                            let Some(font_ref) = fonts.get(name) else {
+                                continue;
+                            };
                             result.stats.fonts_checked += 1;
 
                             let font_dict = match font_ref {
