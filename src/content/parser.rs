@@ -125,7 +125,7 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<Operator>> {
         // Parse one operator with its operands
         match parse_operator_with_operands(input) {
             Ok((rest, op)) => {
-                operators.push(op);
+                push_parsed_operator(&mut operators, op);
                 input = rest;
                 consecutive_errors = 0;
 
@@ -1828,6 +1828,19 @@ fn parse_operator_name(input: &[u8]) -> IResult<&[u8], &str> {
     Ok((input, name))
 }
 
+/// Expand operators that the typed enum does not have a dedicated
+/// variant for but that must still run a painting arm (so the path
+/// builder is cleared). `s` is close-and-stroke ≡ `h S`.
+fn push_parsed_operator(operators: &mut Vec<Operator>, op: Operator) {
+    match op {
+        Operator::Other { name, .. } if name == "s" => {
+            operators.push(Operator::ClosePath);
+            operators.push(Operator::Stroke);
+        },
+        other => operators.push(other),
+    }
+}
+
 /// Build an operator from its name and operands.
 ///
 /// This function converts the raw operator name and operands into a strongly-typed
@@ -2134,6 +2147,12 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
             }
         },
         "S" => Operator::Stroke,
+        // Close-and-stroke (ISO 32000-1 Table 60). Expanded to ClosePath +
+        // Stroke by push_parsed_operator so painting arms reset the path.
+        "s" => Operator::Other {
+            name: "s".to_string(),
+            operands: Box::new(operands.into_vec()),
+        },
         "f" | "F" => Operator::Fill, // "F" is obsolete equivalent of "f" (nonzero winding fill)
         "f*" => Operator::FillEvenOdd,
         "b" => Operator::CloseFillStroke,
@@ -4003,6 +4022,25 @@ mod tests {
         assert!(matches!(ops[1], Operator::LineTo { x, y } if x == 150.0 && y == 250.0));
         assert!(matches!(ops[2], Operator::Rectangle { .. }));
         assert!(matches!(ops[3], Operator::Stroke));
+    }
+
+    #[test]
+    fn test_parse_close_and_stroke_operator() {
+        // `s` must close AND stroke. Leaving it as Other keeps the path
+        // alive so the next fill paints the abandoned geometry (#1096).
+        let stream = b"100 200 m 150 250 l s 0 0 10 10 re f";
+        let ops = parse_content_stream(stream).unwrap();
+        assert!(matches!(ops[0], Operator::MoveTo { .. }));
+        assert!(matches!(ops[1], Operator::LineTo { .. }));
+        assert!(matches!(ops[2], Operator::ClosePath), "s must close the subpath");
+        assert!(matches!(ops[3], Operator::Stroke), "s must stroke after closing");
+        assert!(matches!(ops[4], Operator::Rectangle { .. }));
+        assert!(matches!(ops[5], Operator::Fill));
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Operator::Other { name, .. } if name == "s")),
+            "s must not fall through as Other"
+        );
     }
 
     #[test]
