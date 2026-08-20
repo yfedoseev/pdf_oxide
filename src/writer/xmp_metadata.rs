@@ -269,9 +269,15 @@ impl XmpWriter {
             ));
         }
 
-        // Custom properties
-        for (key, value) in &self.metadata.custom {
-            xml.push_str(&format!("      <{}>{}</{}>\n", key, escape_xml(value), key));
+        // Custom properties, sorted by key: `custom` is a `HashMap`, so
+        // iterating it directly writes the properties in the per-process
+        // randomized order and the packet's bytes differ between runs.
+        let mut custom_keys: Vec<&String> = self.metadata.custom.keys().collect();
+        custom_keys.sort();
+        for key in custom_keys {
+            if let Some(value) = self.metadata.custom.get(key) {
+                xml.push_str(&format!("      <{}>{}</{}>\n", key, escape_xml(value), key));
+            }
         }
 
         // Close elements
@@ -399,6 +405,27 @@ mod tests {
         assert!(xml.contains("<pdf:Producer>pdf_oxide 0.3.0</pdf:Producer>"));
         assert!(xml.contains("<pdf:Keywords>test, pdf, metadata</pdf:Keywords>"));
         assert!(xml.contains("<pdf:PDFVersion>1.7</pdf:PDFVersion>"));
+    }
+
+    #[test]
+    fn test_xmp_writer_custom_properties_sorted() {
+        let mut metadata = XmpMetadata::new();
+        metadata
+            .custom
+            .insert("zz:Last".to_string(), "z".to_string());
+        metadata
+            .custom
+            .insert("aa:First".to_string(), "a".to_string());
+        metadata
+            .custom
+            .insert("mm:Middle".to_string(), "m".to_string());
+
+        let xml = XmpWriter::new(metadata).build();
+
+        let first = xml.find("<aa:First>").expect("aa:First missing");
+        let middle = xml.find("<mm:Middle>").expect("mm:Middle missing");
+        let last = xml.find("<zz:Last>").expect("zz:Last missing");
+        assert!(first < middle && middle < last, "custom properties must emit in key order");
     }
 
     #[test]

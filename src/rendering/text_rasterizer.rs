@@ -332,6 +332,55 @@ fn render_cjk_fallback_face() -> Option<Arc<CachedFace>> {
         .clone()
 }
 
+/// Glyphs that painted nothing while the cursor advanced, tallied for one
+/// text run.
+///
+/// A dropped glyph is indistinguishable from real whitespace downstream: OCR
+/// transcribes the gap-filled render faithfully and the loss reaches a search
+/// index unnoticed (#991). One warning per font per page names the first
+/// offending code and glyph id and how many followed in the run that
+/// triggered it — enough to identify a broken font without a log line per
+/// glyph.
+#[derive(Default)]
+struct GlyphDropTally {
+    count: usize,
+    first: Option<(&'static str, u32, u16)>,
+}
+
+impl GlyphDropTally {
+    fn record(&mut self, reason: &'static str, char_code: u32, gid: u16) {
+        self.count += 1;
+        self.first.get_or_insert((reason, char_code, gid));
+    }
+
+    /// The structured warning for this run, or `None` when nothing dropped.
+    fn warning(&self, font_name: &str) -> Option<crate::extractors::warnings::Warning> {
+        let (reason, char_code, gid) = self.first?;
+        Some(crate::extractors::warnings::Warning {
+            category: crate::extractors::warnings::WarningCategory::GlyphDropped,
+            page: None,
+            message: format!(
+                "font '{font_name}' painted nothing for {} glyph(s) while advancing the cursor; \
+                 first was code 0x{char_code:X} (glyph {gid}): {reason}. The page renders with \
+                 a gap that reads as whitespace downstream.",
+                self.count
+            ),
+            spec_section: None,
+        })
+    }
+
+    fn report(&self, font_name: &str, rasterizer: &TextRasterizer) {
+        let Some(warning) = self.warning(font_name) else {
+            return;
+        };
+        if !rasterizer.first_report_for(font_name) {
+            return;
+        }
+        log::warn!(target: "pdf_oxide::fonts", "{}", warning.message);
+        crate::extractors::warnings::push_global_warning(warning);
+    }
+}
+
 /// Rasterizer for PDF text operations.
 pub struct TextRasterizer {
     /// Font database for system font fallback.
@@ -341,6 +390,16 @@ pub struct TextRasterizer {
     /// `PageRenderer`. See the `SYSTEM_FONTDB` docstring for the
     /// measurement that motivated the switch.
     fontdb: std::sync::Arc<fontdb::Database>,
+
+    /// Fonts already named in a glyph-drop warning on the current page.
+    ///
+    /// Page-scoped like `PageRenderer::k_zero_warning_emitted`: the renderer
+    /// clears it at the start of every page via `reset_page_warnings`, so bulk
+    /// ingestion warns on every page a broken font paints. Reporting is per
+    /// text run, and the global sink is never drained by render-only callers,
+    /// so a broken font would otherwise push one warning per Tj/TJ element
+    /// (#991 asked for once per font).
+    warned_fonts: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl TextRasterizer {
@@ -348,6 +407,7 @@ impl TextRasterizer {
     pub fn new() -> Self {
         Self {
             fontdb: system_fontdb(),
+            warned_fonts: Default::default(),
         }
     }
 
@@ -356,7 +416,28 @@ impl TextRasterizer {
     /// pre-populate the database with non-system fonts.
     #[allow(dead_code)]
     pub fn with_fontdb(fontdb: std::sync::Arc<fontdb::Database>) -> Self {
-        Self { fontdb }
+        Self {
+            fontdb,
+            warned_fonts: Default::default(),
+        }
+    }
+
+    /// Forget which fonts a glyph-drop warning has named. `PageRenderer`
+    /// calls this at the start of every page, making the warning
+    /// once-per-font-per-page rather than once per process.
+    pub(crate) fn reset_page_warnings(&self) {
+        if let Ok(mut warned) = self.warned_fonts.lock() {
+            warned.clear();
+        }
+    }
+
+    /// True the first time `font_name` is seen since the last
+    /// `reset_page_warnings` call.
+    fn first_report_for(&self, font_name: &str) -> bool {
+        match self.warned_fonts.lock() {
+            Ok(mut warned) => warned.insert(font_name.to_string()),
+            Err(_) => false,
+        }
     }
 
     /// Render a text string (Tj operator).
@@ -636,6 +717,10 @@ impl TextRasterizer {
         bytes: &[u8],
         font: Option<&crate::fonts::FontInfo>,
     ) -> String {
+        // No GlyphDropTally here: this decode runs before render_text routes
+        // the run, and the byte-to-GID / direct-CID paths paint correctly from
+        // raw bytes for exactly the font classes whose Unicode decode fails.
+        // Only the chosen paint path may record a drop.
         let raw_result = if let Some(font) = font {
             let mut result = String::new();
             // Use pre-computed lookup table for performance if it's a simple font
@@ -1139,6 +1224,9 @@ impl TextRasterizer {
                                      // axis receives the advance and how the glyph is positioned
                                      // relative to its horizontal origin.
         let mut y_cursor: f32 = 0.0;
+        // A glyph that paints nothing here still advances the cursor, leaving
+        // a gap indistinguishable from whitespace (#991).
+        let mut unicode_dropped = GlyphDropTally::default();
         let mut last_fallback_cluster: Option<usize> = None;
         let wmode = gs.text_wmode;
         // Per ISO 32000-1:2008 §9.3.3, Tw applies only to the single-byte
@@ -1398,11 +1486,12 @@ impl TextRasterizer {
                 }
 
                 if !has_outline {
-                    log::debug!(
-                        "No glyph outline found for char='{}' (0x{:X})",
-                        char_at_pos,
-                        char_at_pos as u32
-                    );
+                    let reason = if glyph_id == 0 {
+                        "not mapped by font or CJK fallback"
+                    } else {
+                        "no outline in font or CJK fallback"
+                    };
+                    unicode_dropped.record(reason, char_at_pos as u32, glyph_id as u16);
                 }
             }
 
@@ -1425,6 +1514,13 @@ impl TextRasterizer {
                 }
             }
         }
+
+        unicode_dropped.report(
+            font_info
+                .map(|f| f.base_font.as_str())
+                .unwrap_or("<system fallback>"),
+            self,
+        );
 
         // Return the magnitude of the accumulated advance along the active
         // writing axis. Callers that drive the text matrix forward consume
@@ -1469,6 +1565,11 @@ impl TextRasterizer {
         let mut x_cursor: f32 = 0.0;
         let mut y_cursor: f32 = 0.0;
         let wmode = gs.text_wmode;
+        // A glyph that paints nothing while the cursor still advances leaves an
+        // invisible gap, and a caller cannot tell that from real whitespace
+        // (#991). Counted per run, reported once per font, so a broken font is
+        // visible without one line per glyph.
+        let mut dropped = GlyphDropTally::default();
 
         // Iterate over character codes from the raw bytes
         for (char_code, bytes_consumed) in TextCharIter::new(bytes, Some(font_info)) {
@@ -1535,14 +1636,22 @@ impl TextRasterizer {
             let char_at_pos = char_str.chars().next().unwrap_or('\0');
 
             // Draw glyph outline
+            if gid == 0 && !char_at_pos.is_whitespace() {
+                dropped.record("no glyph id", u32::from(char_code), gid);
+            }
             if gid != 0 || char_at_pos.is_whitespace() {
                 if !char_at_pos.is_whitespace() {
                     let mut pb = PathBuilder::new();
                     let mut builder = SkiaOutlineBuilder(&mut pb);
-                    if ttf_face
+                    // Outlined once: `outline_glyph` appends to the builder,
+                    // so calling it twice would draw the glyph twice.
+                    let outlined = ttf_face
                         .outline_glyph(ttf_parser::GlyphId(gid), &mut builder)
-                        .is_some()
-                    {
+                        .is_some();
+                    if !outlined {
+                        dropped.record("no outline", u32::from(char_code), gid);
+                    }
+                    if outlined {
                         if let Some(path) = pb.finish() {
                             let (rise_x, rise_y) = if wmode == 0 {
                                 (0.0, gs.text_rise)
@@ -1582,6 +1691,7 @@ impl TextRasterizer {
                 }
             }
         }
+        dropped.report(&font_info.base_font, self);
 
         Ok(if wmode == 0 { x_cursor } else { y_cursor })
     }
@@ -2085,6 +2195,44 @@ mod tests {
     use crate::content::graphics_state::GraphicsState;
     use crate::fonts::{Encoding, FontInfo, VerticalMetrics};
     use std::collections::HashMap;
+
+    /// A run with no drops must produce no warning.
+    #[test]
+    fn empty_glyph_drop_tally_produces_no_warning() {
+        assert!(GlyphDropTally::default().warning("AnyFont").is_none());
+    }
+
+    /// The warning names the font, the first dropped glyph, and the count.
+    #[test]
+    fn glyph_drop_warning_names_font_first_glyph_and_count() {
+        let mut tally = GlyphDropTally::default();
+        tally.record("no outline", 0x41, 7);
+        tally.record("no glyph id", 0x42, 0);
+        tally.record("no outline", 0x43, 9);
+        let warning = tally
+            .warning("AAAAAA+Broken")
+            .expect("recorded drops must warn");
+        assert_eq!(warning.category, crate::extractors::warnings::WarningCategory::GlyphDropped);
+        assert!(warning.message.contains("AAAAAA+Broken"));
+        assert!(warning.message.contains("3 glyph(s)"));
+        assert!(warning.message.contains("0x41"));
+        assert!(warning.message.contains("(glyph 7)"));
+        assert!(warning.message.contains("no outline"));
+    }
+
+    /// A font is named once per page, not once per text run (#991) and not
+    /// once per process: the latch clears with `reset_page_warnings`, so the
+    /// next page names the same broken font again.
+    #[test]
+    fn glyph_drop_report_is_once_per_font_per_page() {
+        let rasterizer = TextRasterizer::with_fontdb(std::sync::Arc::new(fontdb::Database::new()));
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueA"));
+        assert!(!rasterizer.first_report_for("OncePerPage+UniqueA"));
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueB"));
+
+        rasterizer.reset_page_warnings();
+        assert!(rasterizer.first_report_for("OncePerPage+UniqueA"));
+    }
 
     /// Query helper: the family name the CJK fallback resolver looks up.
     #[cfg(feature = "cjk-render-fallback")]

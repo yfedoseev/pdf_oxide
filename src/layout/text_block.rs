@@ -837,9 +837,16 @@ impl TextBlock {
         for c in &chars {
             *font_counts.entry(c.font_name.clone()).or_insert(0) += 1;
         }
+        // Explicit tie-break, not `max_by_key`: it returns the LAST maximal
+        // element, and over a `HashMap` that is the per-process-randomized
+        // iteration order. A block whose two fonts carry the same character
+        // count would otherwise pick a different dominant font per process.
+        // Ties resolve to the lexicographically smaller font name.
         let dominant_font = font_counts
             .iter()
-            .max_by_key(|(_, count)| *count)
+            .max_by(|(a_font, a_count), (b_font, b_count)| {
+                a_count.cmp(b_count).then_with(|| b_font.cmp(a_font))
+            })
             .map(|(font, _)| font.clone())
             .unwrap_or_default();
 
@@ -1017,6 +1024,49 @@ mod tests {
             descent: -0.35 * 12.0,
             matrix: None,
         }
+    }
+
+    // A block whose two fonts carry equal character counts must resolve to the
+    // lexicographically smaller name, every run. `max_by_key` over the backing
+    // `HashMap` returned whichever entry the per-process-randomized iteration
+    // order visited last, so this assertion failed roughly half the time before
+    // the explicit tie-break.
+    #[test]
+    fn dominant_font_tie_resolves_to_lexicographically_smaller_name() {
+        let mut chars = Vec::new();
+        for (i, c) in "abcd".chars().enumerate() {
+            let mut ch = mock_char(c, i as f32 * 10.0, 0.0);
+            ch.font_name = "Times".to_string();
+            chars.push(ch);
+        }
+        for (i, c) in "efgh".chars().enumerate() {
+            let mut ch = mock_char(c, 40.0 + i as f32 * 10.0, 0.0);
+            ch.font_name = "Courier".to_string();
+            chars.push(ch);
+        }
+        let block = TextBlock::from_chars(chars);
+        assert_eq!(
+            block.dominant_font, "Courier",
+            "4 chars of Times vs 4 of Courier must resolve to the smaller name"
+        );
+    }
+
+    // The tie-break must not disturb the ordinary case.
+    #[test]
+    fn dominant_font_unique_winner_is_unaffected_by_tie_break() {
+        let mut chars = Vec::new();
+        for (i, c) in "abcdef".chars().enumerate() {
+            let mut ch = mock_char(c, i as f32 * 10.0, 0.0);
+            ch.font_name = "Times".to_string();
+            chars.push(ch);
+        }
+        for (i, c) in "gh".chars().enumerate() {
+            let mut ch = mock_char(c, 60.0 + i as f32 * 10.0, 0.0);
+            ch.font_name = "Courier".to_string();
+            chars.push(ch);
+        }
+        let block = TextBlock::from_chars(chars);
+        assert_eq!(block.dominant_font, "Times");
     }
 
     #[test]
