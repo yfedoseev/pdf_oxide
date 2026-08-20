@@ -20,6 +20,24 @@ ignore = [
     # migrating to a fully constant-time implementation); re-audit
     # when the #208 signing half lands.
     "RUSTSEC-2023-0071",
+
+    # arrayref 0.3.9 — yanked from crates.io 2026-08-20. Reached only
+    # transitively, through tiny-skia 0.12.0 / tiny-skia-path, which pin
+    # it; nothing in pdf_oxide depends on it directly. No advisory is
+    # filed against the code — 0.3.10 is the same crate published
+    # unyanked — so this is a registry-state failure, not a security one.
+    #
+    # Moving to 0.3.10 is not free: cargo resolves the bump by pulling the
+    # idna/url v1 tree (icu_collections, icu_locale_core, zerovec,
+    # form_urlencoded) into the lockfile — 282 added lines of
+    # internationalisation machinery a PDF library has no use for.
+    # `--precise` does not contain it. Growing the dependency surface to
+    # silence a yank with no security content is the worse trade.
+    #
+    # Drop this the moment tiny-skia ships a release built on an unyanked
+    # arrayref, or immediately if any real advisory is filed against
+    # 0.3.9 — note this ignores the crate, not just the yank.
+    "arrayref",
 ]
 
 [licenses]
