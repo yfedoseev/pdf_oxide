@@ -12,7 +12,6 @@ use crate::content::graphics_state::{GraphicsStateStack, Matrix};
 use crate::content::operators::{Operator, TextElement};
 use crate::content::parse_and_execute_text_only;
 use crate::content::parse_content_stream;
-use crate::content::parse_content_stream_text_only;
 use crate::error::Result;
 use crate::extract_log_debug;
 use crate::fonts::FontInfo;
@@ -1899,6 +1898,10 @@ struct TjBuffer {
     /// Display rotation of this run in degrees, snapped to a quadrant when near
     /// one; `0.0` for ordinary horizontal text (see `snap_run_rotation`).
     rotation_degrees: f32,
+    /// Negative determinant of the composed matrix — mirrored text (see
+    /// `run_is_mirrored`), carried onto the emitted span so `page_bbox`
+    /// reflects rather than rotates its across-axis.
+    mirrored: bool,
     /// Writing mode (0 = horizontal, 1 = vertical) captured from the
     /// graphics state when the buffer started, so each emitted span
     /// carries the wmode it was rendered under. A font change flushes the
@@ -1928,9 +1931,12 @@ struct TjBuffer {
 fn snap_run_rotation(combined: &Matrix) -> f32 {
     const SNAP_TOL_DEG: f32 = 5.0;
     let (a, b, c, d) = (combined.a, combined.b, combined.c, combined.d);
-    // Pure horizontal fast path (covers virtually all text): b and c ~ 0.
+    // Pure horizontal/180° fast path: b and c ~ 0 covers both 0° (a,d > 0)
+    // and 180° (a,d < 0) — sin(0°) and sin(180°) are both 0, so the
+    // off-diagonal terms alone can't tell them apart. Check the sign of
+    // `a` (cos(0°)=1, cos(180°)=-1) to disambiguate.
     if b.abs() < 1e-4 && c.abs() < 1e-4 {
-        return 0.0;
+        return if a < 0.0 { 180.0 } else { 0.0 };
     }
     let mut deg = b.atan2(a).to_degrees();
     // Normalise to (-180, 180].
@@ -1955,6 +1961,13 @@ fn snap_run_rotation(combined: &Matrix) -> f32 {
     deg
 }
 
+/// Negative determinant of the composed text rendering matrix: the run is
+/// mirrored, so `rotation_degrees` alone cannot describe its frame (a mirrored
+/// 90° run and a clean 90° run carry the same angle but opposite across-axes).
+fn run_is_mirrored(combined: &Matrix) -> bool {
+    combined.a * combined.d - combined.b * combined.c < 0.0
+}
+
 impl TjBuffer {
     /// Create a new empty buffer with current state.
     fn new(
@@ -1973,16 +1986,33 @@ impl TjBuffer {
             _ => FontWeight::Normal,
         };
         let is_italic = cached_font.as_ref().map(|f| f.is_italic()).unwrap_or(false);
-        let is_monospace = cached_font.as_ref().is_some_and(|f| {
-            if f.flags.is_some_and(|flags| flags & 1 != 0) {
-                return true;
-            }
-            let name = f.base_font.to_uppercase();
-            name.contains("COURIER")
-                || name.contains("CONSOLAS")
-                || name.contains("MONO")
-                || name.contains("FIXED")
-        });
+        // Invisible text (Tr 3/7, ISO 32000-1 §9.3.6) is never real visible
+        // monospace content — it's an OCR text-sandwich layer sitting under
+        // a scanned page image, or deliberately hidden text. Such layers
+        // commonly use a synthetic font (conventionally named
+        // "GlyphLessFont" by ocrmypdf/Tesseract and similar tools) whose
+        // FontDescriptor sets the FixedPitch flag purely for positioning
+        // simplicity — the glyphs are never rendered, so "monospace" has no
+        // visual meaning to categorize by. Downstream markdown conversion
+        // uses `is_monospace` to fence a line/paragraph as a code block; an
+        // OCR'd scanned novel's dialogue tripping this on FixedPitch alone
+        // fences narrative prose as code (#1024).
+        let is_invisible_or_glyphless = state.render_mode == 3
+            || state.render_mode == 7
+            || cached_font
+                .as_ref()
+                .is_some_and(|f| f.base_font.to_uppercase().contains("GLYPHLESS"));
+        let is_monospace = !is_invisible_or_glyphless
+            && cached_font.as_ref().is_some_and(|f| {
+                if f.flags.is_some_and(|flags| flags & 1 != 0) {
+                    return true;
+                }
+                let name = f.base_font.to_uppercase();
+                name.contains("COURIER")
+                    || name.contains("CONSOLAS")
+                    || name.contains("MONO")
+                    || name.contains("FIXED")
+            });
         let rotation_degrees = snap_run_rotation(&combined);
         // Pre-compute user-space position: text_matrix origin → CTM transform
         let text_pos = state.text_matrix.transform_point(0.0, 0.0);
@@ -2007,6 +2037,7 @@ impl TjBuffer {
             user_pos_y: user_pos.y,
             user_h_scale,
             rotation_degrees,
+            mirrored: run_is_mirrored(&combined),
             wmode: state.text_wmode,
             text_rise: if state.font_size > 0.0 {
                 state.text_rise / state.font_size
@@ -3759,16 +3790,7 @@ impl<'doc> TextExtractor<'doc> {
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
         extract_log_debug!("Parsing content stream for text extraction");
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))?;
-        } else {
-            // Ink filtering requires color operators (cs, rg, g, k) which the
-            // text-only parser skips. Fall back to the full parser.
-            let operators = parse_content_stream(content_stream)?;
-            for op in operators {
-                self.execute_operator(op)?;
-            }
-        }
+        self.run_content_stream(content_stream)?;
 
         // Flush any remaining Tj buffer at end of content stream
         self.flush_tj_span_buffer()?;
@@ -3849,6 +3871,33 @@ impl<'doc> TextExtractor<'doc> {
         Ok(std::mem::take(&mut self.spans))
     }
 
+    /// Feed a content stream's operators to `execute_operator`.
+    ///
+    /// The single parser dispatch for every extraction mode (chars, spans,
+    /// Form XObject recursion). The modes must differ only in how
+    /// `execute_operator` handles the show-text operators, never in which
+    /// operators reach it: char and span mode once used different parsers
+    /// (`parse_content_stream_text_only` vs `parse_and_execute_text_only`),
+    /// which reconstruct the graphics state around a text region by different
+    /// routes, so they could agree on every text operator and still hand the
+    /// extractor a different CTM. On govdocs_003_003181.pdf page 4 that cost
+    /// a 90°-rotated chart axis: char mode returned 2322 glyphs, all at
+    /// rotation 0, where span mode saw 2590 glyphs, 122 at 90°.
+    fn run_content_stream(&mut self, content_stream: &[u8]) -> Result<()> {
+        if self.excluded_inks.is_empty() {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
+        } else {
+            // Ink filtering needs the color operators (cs, rg, g, k). The
+            // text-only parser does not guarantee their delivery — its >256KB
+            // prescan route parses only text regions — so use the full parser.
+            let operators = parse_content_stream(content_stream)?;
+            for op in operators {
+                self.execute_operator(op)?;
+            }
+            Ok(())
+        }
+    }
+
     /// Extract individual characters from a PDF content stream.
     ///
     /// This is a low-level method that extracts characters one by one.
@@ -3867,14 +3916,7 @@ impl<'doc> TextExtractor<'doc> {
         self.spans.clear(); // Ensure spans are clear so they don't poison xobject_spans_cache
         self.placed_pdf_keep = Self::placed_pdf_text_dominates(content_stream);
 
-        let operators = if self.excluded_inks.is_empty() {
-            parse_content_stream_text_only(content_stream)?
-        } else {
-            parse_content_stream(content_stream)?
-        };
-        for op in operators {
-            self.execute_operator(op)?;
-        }
+        self.run_content_stream(content_stream)?;
 
         // BUG FIX #2: Sort characters by reading order (top-to-bottom, left-to-right)
         // PDF content streams are in rendering order, not reading order.
@@ -4734,9 +4776,15 @@ impl<'doc> TextExtractor<'doc> {
             //). Runs in a rotated frame never merge here; each
             // stays per-literal and the rotated-frame reading order and
             // word assembly handle them downstream.
-            let quadrant_vertical = |deg: f32| (deg - 90.0).abs() < 0.5 || (deg + 90.0).abs() < 0.5;
-            let rotation_compatible = !quadrant_vertical(current.rotation_degrees)
-                && !quadrant_vertical(span.rotation_degrees);
+            // "Never merge here" per the comment above means exactly that —
+            // any non-zero rotation on either side stays per-literal, not
+            // just the ±90° (vertical-quadrant) case. A 180°-rotated run
+            // previously slipped through this gate (only ±90° was checked),
+            // letting two upside-down lines' runs glue together under the
+            // portrait same-line test below even though 180° text advances
+            // in the opposite X direction.
+            let rotation_compatible =
+                current.rotation_degrees == 0.0 && span.rotation_degrees == 0.0;
             let y_diff = (span.bbox.y - current.bbox.y).abs();
             let same_line = y_diff < 1.0 && wmode_compatible && rotation_compatible;
 
@@ -5564,6 +5612,11 @@ impl<'doc> TextExtractor<'doc> {
                 // scale-relative (0.5× the text-space glyph height, ≥0.5pt
                 // floor) so it is correct at any font size and still
                 // splits genuine line breaks.
+                //
+                // The `f`/`e` tests below only mean "same line" and "forward"
+                // while the run advances along +x; under a rotated matrix the
+                // two axes swap. The added conjunct re-checks both along the
+                // run's own writing axis (ISO 32000-1 §9.4.4).
                 let cur_font_size = self.state_stack.current().font_size;
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
@@ -5576,7 +5629,14 @@ impl<'doc> TextExtractor<'doc> {
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c
                                 && d == buffer.start_matrix.d
-                                && e >= buffer.start_matrix.e =>
+                                && e >= buffer.start_matrix.e
+                                && Self::advances_along_writing_axis(
+                                    buffer.start_matrix,
+                                    buffer.wmode,
+                                    e,
+                                    f,
+                                    cur_font_size,
+                                ) =>
                         {
                             // Same line, same transform, LTR progression →
                             // update width to reflect actual visual extent
@@ -7212,20 +7272,7 @@ impl<'doc> TextExtractor<'doc> {
                     .push(crate::structure::McidScope::Form(xobject_ref));
 
                 self.xobject_depth += 1;
-                let parse_result = if self.excluded_inks.is_empty() {
-                    parse_and_execute_text_only(&stream_data, |op| self.execute_operator(op))
-                } else {
-                    let ops = parse_content_stream(&stream_data);
-                    match ops {
-                        Ok(ops) => {
-                            for op in ops {
-                                self.execute_operator(op)?;
-                            }
-                            Ok(())
-                        },
-                        Err(e) => Err(e),
-                    }
-                };
+                let parse_result = self.run_content_stream(&stream_data);
                 self.xobject_depth -= 1;
                 // Pop the Form XObject scope pushed before the
                 // content-stream walk. Cleared regardless of parse
@@ -7516,6 +7563,8 @@ impl<'doc> TextExtractor<'doc> {
             wmode: buffer.wmode,
             text_rise: buffer.text_rise,
             rtl_draw_logical: false,
+            mirrored: buffer.mirrored,
+            page_rotation_applied: 0,
         };
         self.span_sequence_counter += 1;
 
@@ -8048,6 +8097,8 @@ impl<'doc> TextExtractor<'doc> {
                 0.0
             },
             rtl_draw_logical: false,
+            mirrored: run_is_mirrored(&state.ctm.multiply(&state.text_matrix)),
+            page_rotation_applied: 0,
         };
 
         // Step 6: Increment sequence counter and add to spans
@@ -8408,11 +8459,13 @@ impl<'doc> TextExtractor<'doc> {
                 // 2-byte codes per ToUnicode codespace.
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
-                for (char_code, _) in TextCharIter::new(text, Some(font)) {
+                for (char_code, nbytes) in TextCharIter::new(text, Some(font)) {
                     let mut w = font.get_glyph_width(char_code) * fs_factor * hs_factor;
                     w += cs_hs;
-                    // Standard PDF space character (code 32) triggers word spacing
-                    if char_code == 32 {
+                    // Per ISO 32000-1:2008 §9.3.3: Tw applies only to the
+                    // single-byte character code 32 — a 2-byte CID 32 inside
+                    // an Identity-H/CJK font must not take Tw.
+                    if nbytes == 1 && char_code == 32 {
                         w += ws_hs;
                     }
                     w_sum += w;
@@ -8428,11 +8481,13 @@ impl<'doc> TextExtractor<'doc> {
                 // axis per §9.3.4).
                 buffer.append(text)?;
                 let mut w_sum = 0.0f32;
-                for (char_code, _) in TextCharIter::new(text, Some(font)) {
+                for (char_code, nbytes) in TextCharIter::new(text, Some(font)) {
                     let w1y = font.get_vertical_metrics(char_code).w1y;
                     let mut w = w1y * fs_factor;
                     w += char_space;
-                    if char_code == 32 {
+                    // Per ISO 32000-1:2008 §9.3.3: Tw applies only to the
+                    // single-byte character code 32.
+                    if nbytes == 1 && char_code == 32 {
                         w += word_space;
                     }
                     w_sum += w;
@@ -8774,6 +8829,8 @@ impl<'doc> TextExtractor<'doc> {
                 0.0
             },
             rtl_draw_logical: false,
+            mirrored: run_is_mirrored(&state.ctm.multiply(&state.text_matrix)),
+            page_rotation_applied: 0,
         };
         self.span_sequence_counter += 1;
 
@@ -8842,6 +8899,48 @@ impl<'doc> TextExtractor<'doc> {
         };
         *last += adv;
         buffer.accumulated_width += adv;
+    }
+
+    /// Whether `(e, f)` continues `start`'s run along that run's writing axis.
+    ///
+    /// ISO 32000-1:2008 §9.4.4 places the writing direction along the matrix's
+    /// `(a, b)` row, so the displacement resolves into a component along it
+    /// (the advance) and one perpendicular (the line offset). For any `b = 0,
+    /// a > 0` matrix the along test equals the caller's raw `e` test and the
+    /// perpendicular test is implied by the raw `f` band (`hypot(c, d) >=
+    /// |d|`, equal only when unskewed), so ANDing it in cannot change upright
+    /// output.
+    ///
+    /// WMode 1 is exempt: vertical text advances along `(c, d)` instead, the
+    /// branch [`GraphicsState::advance_text_matrix`] already makes, and reading
+    /// its advance as a perpendicular offset splits a column glyph by glyph.
+    fn advances_along_writing_axis(
+        start: Matrix,
+        wmode: u8,
+        e: f32,
+        f: f32,
+        font_size: f32,
+    ) -> bool {
+        if wmode != 0 {
+            return true;
+        }
+        // Unit vector along the writing direction. A degenerate (zero-scale)
+        // matrix has no direction to speak of; fall back to +x so such runs
+        // behave exactly as they did before this test existed.
+        let axis = (start.a * start.a + start.b * start.b).sqrt();
+        let (ux, uy) = if axis > 0.0 {
+            (start.a / axis, start.b / axis)
+        } else {
+            (1.0, 0.0)
+        };
+        let (dx, dy) = (e - start.e, f - start.f);
+        let along = ux * dx + uy * dy;
+        let perp = -uy * dx + ux * dy;
+        // Perpendicular scale; `hypot(c, d) >= |d|`, so an upright (`b == 0`)
+        // run keeps at least the raw `f` band.
+        let line_scale = (start.c * start.c + start.d * start.d).sqrt();
+        let tolerance = ((font_size * line_scale).abs() * 0.5).max(0.5);
+        perp.abs() <= tolerance && along >= 0.0
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
@@ -8951,6 +9050,8 @@ impl<'doc> TextExtractor<'doc> {
                     wmode: buffer.wmode,
                     text_rise: buffer.text_rise,
                     rtl_draw_logical: false,
+                    mirrored: buffer.mirrored,
+                    page_rotation_applied: 0,
                 };
                 self.span_sequence_counter += 1;
 
@@ -8997,7 +9098,7 @@ impl<'doc> TextExtractor<'doc> {
         // Get current font from cached reference
         let font = self.cached_current_font.as_deref();
 
-        for (char_code, _) in TextCharIter::new(text, font) {
+        for (char_code, nbytes) in TextCharIter::new(text, font) {
             // Get current text matrix (may be updated by previous characters in this string)
             let state = self.state_stack.current();
             let text_matrix = state.text_matrix;
@@ -9043,10 +9144,14 @@ impl<'doc> TextExtractor<'doc> {
             //   vertical:   ty = w1y * Tfs + Tc + Tw    (NO Th — Tz is a
             //               glyph-stretching factor on the X axis only;
             //               see §9.3.4).
+            // Word spacing applies only to the SINGLE-BYTE code 32
+            // (ISO 32000-1 §9.3.3), never to a multi-byte code whose value
+            // happens to be 32.
+            let ws_applies = char_code == 32 && nbytes == 1;
             let mut tx = if wmode == 0 {
                 glyph_width_user_space
                     + char_space * hs_factor
-                    + if char_code == 32 {
+                    + if ws_applies {
                         word_space * hs_factor
                     } else {
                         0.0
@@ -9055,7 +9160,7 @@ impl<'doc> TextExtractor<'doc> {
                 let w1y = font
                     .map(|f| f.get_vertical_metrics(char_code).w1y)
                     .unwrap_or(crate::fonts::VerticalMetrics::SPEC_DEFAULT.w1y);
-                w1y * fs_factor + char_space + if char_code == 32 { word_space } else { 0.0 }
+                w1y * fs_factor + char_space + if ws_applies { word_space } else { 0.0 }
             };
 
             // For TextChar, we use the device-space width
@@ -9314,6 +9419,70 @@ mod tests {
         );
     }
 
+    /// The writing-axis continuation test, quadrant by quadrant.
+    ///
+    /// Upright cases must be no stricter than the raw `e`/`f` tests they are
+    /// ANDed with — that implication is why unrotated output cannot move.
+    /// Rotated along-axis cases pin the helper alone: in the composed
+    /// predicate the raw `f` band still gates them, so there the helper is
+    /// veto-only.
+    #[test]
+    fn test_advances_along_writing_axis_by_quadrant() {
+        let m = |a, b, c, d| Matrix {
+            a,
+            b,
+            c,
+            d,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        let at = |mat: Matrix, de: f32, df: f32| {
+            TextExtractor::advances_along_writing_axis(mat, 0, mat.e + de, mat.f + df, fs)
+        };
+
+        // Must match the raw e/f test exactly.
+        let upright = m(1.0, 0.0, 0.0, 1.0);
+        assert!(at(upright, 14.0, 0.0), "upright advance must continue");
+        assert!(!at(upright, 0.0, -14.0), "upright line break must not");
+        assert!(!at(upright, -14.0, 0.0), "upright backwards must not");
+        // Perpendicular tolerance: 0.5 × font size (5pt here) admits a
+        // sub-glyph baseline offset; a full line step is vetoed.
+        assert!(at(upright, 14.0, 4.0), "upright sub-glyph offset must not be vetoed");
+        assert!(!at(upright, 14.0, 8.0), "upright line step must be vetoed");
+
+        // Advances along +y; lines separate along +x.
+        let cw = m(0.0, 1.0, -1.0, 0.0);
+        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must not be vetoed");
+        assert!(!at(cw, 14.0, 0.0), "90° line break must not continue");
+        assert!(at(cw, -4.0, 14.0), "90° sub-glyph offset must not be vetoed");
+        assert!(!at(cw, -8.0, 14.0), "90° line step must be vetoed");
+
+        // Advances along -y; the sign a single-rotation fixture cannot catch.
+        let ccw = m(0.0, -1.0, 1.0, 0.0);
+        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must not be vetoed");
+        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not continue");
+        assert!(!at(ccw, 14.0, 0.0), "270° line break must not continue");
+
+        // 180°: advances along -x.
+        let flip = m(-1.0, 0.0, 0.0, -1.0);
+        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must not be vetoed");
+        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not continue");
+
+        // No writing direction: falls back to +x, as before.
+        let degenerate = m(0.0, 0.0, 0.0, 0.0);
+        assert!(at(degenerate, 14.0, 0.0));
+        assert!(!at(degenerate, -14.0, 0.0));
+
+        // WMode 1 advances along (c, d), so this test never vetoes it.
+        for (de, df) in [(14.0, 0.0), (0.0, 14.0), (-14.0, 0.0), (0.0, -14.0)] {
+            assert!(
+                TextExtractor::advances_along_writing_axis(cw, 1, cw.e + de, cw.f + df, fs),
+                "vertical run vetoed at ({de}, {df})"
+            );
+        }
+    }
+
     #[test]
     fn test_snap_run_rotation() {
         let m = |a, b, c, d| Matrix {
@@ -9332,6 +9501,12 @@ mod tests {
         assert_eq!(snap_run_rotation(&m(0.0, 12.0, -12.0, 0.0)), 90.0);
         // 270° / -90° (a=0, b=-s, c=+s, d=0).
         assert_eq!(snap_run_rotation(&m(0.0, -12.0, 12.0, 0.0)), -90.0);
+        // 180° (a=-s, d=-s, b=c=0) must not alias to 0° — both have
+        // b≈0, c≈0, so only the sign of `a` (cos 0° vs cos 180°)
+        // distinguishes them.
+        assert_eq!(snap_run_rotation(&m(-12.0, 0.0, 0.0, -12.0)), 180.0);
+        // Tiny float noise on a 180° matrix still counts as 180°, not 0°.
+        assert_eq!(snap_run_rotation(&m(-12.0, 1e-5, -1e-5, -12.0)), 180.0);
         // ~88° snaps to 90.
         let r = 12.0_f32;
         let th = 88.0_f32.to_radians();
@@ -9467,6 +9642,52 @@ mod tests {
             "Y position should be ~200 (got {})",
             chars[0].bbox.y
         );
+    }
+
+    /// Regression test for issue #1006: char mode must run the same parser as
+    /// span mode.
+    ///
+    /// The stream forces the streaming parser's >256KB prescan route: the
+    /// rotating `q`/`cm` sits >4KB before `BT`, so the CTM reaches the text
+    /// region only via the forward scan's injected `Cm`. The unbalanced
+    /// literal-string opens are invisible to the prescan (they lie outside
+    /// every text region) but feed the old char-mode parser,
+    /// `parse_content_stream_text_only`, over `MAX_CONSECUTIVE_ERRORS`
+    /// consecutive scan failures — it bails before `BT` and extracts nothing.
+    #[test]
+    fn test_char_mode_rotated_ctm_survives_large_hostile_stream() {
+        let mut extractor = TextExtractor::new();
+        let font = create_test_font();
+        extractor.add_font("F1".to_string(), font);
+
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"q\n0 1 -1 0 612 0 cm\n");
+        cs.extend_from_slice(&[b'('; 1500]);
+        cs.push(b'\n');
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l S\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        assert!(cs.len() > 256 * 1024, "stream must exceed the 256KB prescan threshold");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 200 Td (Hello) Tj ET\nQ\n");
+
+        let chars = extractor.extract(&cs).unwrap();
+        let mut glyphs: Vec<char> = chars.iter().map(|c| c.char).collect();
+        glyphs.sort_unstable();
+        assert_eq!(glyphs, vec!['H', 'e', 'l', 'l', 'o']);
+        for c in &chars {
+            assert!(
+                (c.rotation_degrees - 90.0).abs() < 1.0,
+                "expected 90 degrees from the cm before BT, got {}",
+                c.rotation_degrees
+            );
+        }
     }
 
     /// Regression test for Issue #11: CTM scaling must affect text positions
@@ -9755,6 +9976,108 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #1033: a `/PlacedPDF` marked-content scope
+    /// whose `BDC` lands inside the first prescanned (>256KB fast-path)
+    /// text region but whose matching `EMC` falls outside it — past tens
+    /// of thousands of bytes of artwork the prescan never turns into a
+    /// text region — must not suppress text in every subsequent region.
+    /// Before the fix, `inside_placed_pdf` stayed `true` forever once the
+    /// scope's `EMC` fell outside a prescanned region's byte range, since
+    /// the marked-content stack (unlike CTM/font) got no
+    /// per-region balancing.
+    #[test]
+    fn test_prescan_marked_content_scope_does_not_leak_across_regions() {
+        let mut cs = Vec::new();
+        cs.extend_from_slice(b"/PlacedPDF /MC0 BDC\n");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 700 Td (Figure Label) Tj ET\n");
+        // >256KB of filler path data (the artwork) with no BT/Do at all,
+        // so the prescan never turns it into its own text region — the
+        // EMC below lands in the gap between the two BT regions.
+        for i in 0..13000u32 {
+            let line = format!(
+                "{}.0 {}.0 m {}.0 {}.0 l n\n",
+                i % 500,
+                (i * 7) % 500,
+                (i * 3) % 500,
+                (i * 11) % 500
+            );
+            cs.extend_from_slice(line.as_bytes());
+        }
+        cs.extend_from_slice(b"EMC\n");
+        cs.extend_from_slice(b"BT /F1 12 Tf 100 600 Td (Body Text After Figure) Tj ET\n");
+        assert!(cs.len() > 256 * 1024, "stream must exceed 256KB prescan threshold");
+
+        let font = create_test_font();
+        let mut extractor = TextExtractor::new();
+        extractor.add_font("F1".to_string(), font);
+
+        let spans = extractor.extract_text_spans(&cs).unwrap();
+        let all_text: String = spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            !all_text.contains("Figure Label"),
+            "text inside the /PlacedPDF scope must still be suppressed, got: {all_text:?}"
+        );
+        assert!(
+            all_text.contains("Body Text After Figure"),
+            "text after the /PlacedPDF scope closes (EMC) must not be suppressed \
+             just because the EMC fell outside the prescanned region, got: {all_text:?}"
+        );
+    }
+
+    /// Regression test for issue #1024: invisible text (Tr 3/7) must never
+    /// be classified monospace, even under a FixedPitch-flagged or
+    /// "GlyphLessFont"-named font. Such text is an OCR text-sandwich layer
+    /// sitting under a scanned page image — a synthetic OCR font commonly
+    /// sets FixedPitch purely for positioning simplicity, since the glyphs
+    /// are never rendered. Markdown conversion uses `is_monospace` to fence
+    /// a paragraph as a code block; without this gate, a scanned novel's
+    /// OCR'd dialogue trips FixedPitch and gets served as a code block.
+    #[test]
+    fn test_invisible_text_is_never_monospace() {
+        // Invisible render mode (Tr 3) + FixedPitch-flagged font: must NOT
+        // be monospace despite the flag.
+        let mut ocr_font = create_test_font();
+        ocr_font.base_font = "GlyphLessFont".to_string();
+        ocr_font.flags = Some(1); // bit 0 = FixedPitch
+
+        let mut extractor = TextExtractor::new();
+        extractor.add_font("F1".to_string(), ocr_font);
+
+        let stream = b"BT /F1 12 Tf 3 Tr 100 700 Td (\"I don't know,\" she said.) Tj ET";
+        let spans = extractor.extract_text_spans(stream).unwrap();
+
+        assert!(!spans.is_empty(), "should produce at least one span");
+        assert!(
+            !spans[0].is_monospace,
+            "invisible (Tr 3) text under a FixedPitch OCR font must not be \
+             classified monospace"
+        );
+
+        // Control: the SAME FixedPitch font, but VISIBLE (default Tr 0),
+        // must still be classified monospace — the gate must not
+        // over-suppress real code/monospace content.
+        let mut visible_font = create_test_font();
+        visible_font.base_font = "Courier".to_string();
+        visible_font.flags = Some(1);
+
+        let mut extractor2 = TextExtractor::new();
+        extractor2.add_font("F2".to_string(), visible_font);
+
+        let stream2 = b"BT /F2 12 Tf 100 700 Td (let x = 1;) Tj ET";
+        let spans2 = extractor2.extract_text_spans(stream2).unwrap();
+
+        assert!(!spans2.is_empty(), "should produce at least one span");
+        assert!(
+            spans2[0].is_monospace,
+            "visible FixedPitch text must still be classified monospace"
+        );
+    }
+
     #[test]
     fn test_extract_save_restore() {
         let mut extractor = TextExtractor::new();
@@ -9910,6 +10233,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -9943,6 +10268,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -10831,6 +11158,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -11844,6 +12173,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -11872,6 +12203,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -11925,6 +12258,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             };
 
         // (glyph, Helvetica per-em advance width)
@@ -11986,6 +12321,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
 
         // Stroke pass + fill pass at ~2 % of advance apart.
@@ -12043,6 +12380,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -12242,6 +12581,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12270,6 +12611,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12277,6 +12620,92 @@ mod tests {
         assert_eq!(extractor.spans.len(), 1, "Adjacent spans on same line should merge");
         assert!(extractor.spans[0].text.contains("Hello"));
         assert!(extractor.spans[0].text.contains("World"));
+    }
+
+    #[test]
+    fn test_merge_adjacent_spans_180_degree_runs_never_merge() {
+        // Same shared-baseline-Y, small-gap shape as
+        // `test_merge_adjacent_spans_same_line`, but both runs are
+        // 180°-rotated (upside-down text). The rotation-compatibility gate
+        // previously only rejected ±90° (vertical-quadrant) runs, so a
+        // 180°/180° pair slipped through and merged under the portrait
+        // same-line test even though 180° text advances in the opposite X
+        // direction — exactly the hazard `snap_run_rotation`'s 180°-aliasing
+        // bug (fixed alongside this) would otherwise mask, since before
+        // that fix a 180° matrix was misreported as 0.0 in the first place.
+        let mut extractor = TextExtractor::new();
+        extractor.merging_config = SpanMergingConfig::legacy();
+
+        extractor.spans = vec![
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: "Hello".to_string(),
+                bbox: Rect::new(100.0, 700.0, 30.0, 12.0),
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 180.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: "World".to_string(),
+                bbox: Rect::new(131.0, 700.0, 30.0, 12.0), // 1pt gap
+                font_name: "F1".to_string(),
+                font_size: 12.0,
+                font_weight: FontWeight::Normal,
+                color: Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 1,
+                split_boundary_before: false,
+                offset_semantic: false,
+                is_italic: false,
+                is_monospace: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 180.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            },
+        ];
+
+        extractor.merge_adjacent_spans();
+        assert_eq!(
+            extractor.spans.len(),
+            2,
+            "180°-rotated runs must never merge here, even on a shared baseline-Y \
+             with a small gap"
+        );
     }
 
     #[test]
@@ -12312,6 +12741,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12340,6 +12771,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12387,6 +12820,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12415,6 +12850,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -12455,6 +12892,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12483,6 +12922,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -12511,6 +12952,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -14945,6 +15388,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -14973,6 +15418,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15011,6 +15458,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15039,6 +15488,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15137,6 +15588,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }];
 
         extractor.split_fused_words();
@@ -15176,6 +15629,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }];
 
         extractor.split_fused_words();
@@ -15362,6 +15817,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15390,6 +15847,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15474,6 +15933,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15502,6 +15963,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -15806,6 +16269,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -15834,6 +16299,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16044,6 +16511,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16072,6 +16541,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16617,6 +17088,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16645,6 +17118,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16692,6 +17167,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16720,6 +17197,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16767,6 +17246,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16795,6 +17276,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16848,6 +17331,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16876,6 +17361,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16921,6 +17408,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -16949,6 +17438,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -16991,6 +17482,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17019,6 +17512,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17065,6 +17560,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17093,6 +17590,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17134,6 +17633,8 @@ mod profile_based_space_tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -17266,6 +17767,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17294,6 +17797,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 
@@ -17349,6 +17854,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
             TextSpan {
                 provenance: None,
@@ -17377,6 +17884,8 @@ mod profile_based_space_tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             },
         ];
 

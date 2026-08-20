@@ -6,6 +6,9 @@
 //! - xref_reconstruction.rs (49% → higher)
 //! - structure/parser.rs (6.6% → higher)
 
+// Some tests intentionally pin the deprecated `parse_content_stream_text_only`.
+#![allow(deprecated)]
+
 use pdf_oxide::content::operators::Operator;
 use pdf_oxide::content::parser::{
     parse_content_stream, parse_content_stream_images_only, parse_content_stream_text_only,

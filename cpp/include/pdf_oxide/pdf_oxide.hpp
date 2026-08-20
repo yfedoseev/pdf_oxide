@@ -176,6 +176,10 @@ struct Element {
     std::string type;
     std::string text;
     Bbox rect;
+    /// Page-space extents of the span: `rect` with any text-matrix rotation
+    /// resolved into an axis-aligned page-space hull. Identical to `rect` for
+    /// upright runs.
+    Bbox page_rect;
     /// ISO 32000-1 §9.10.2 mapping-provenance label ("to_unicode"/"encoding"/
     /// "predefined_cmap"/"embedded_cmap"/"actual_text"/"fallback"), or empty
     /// when unknown. "fallback" means the text is a fabricated glyph-index echo,
@@ -933,6 +937,10 @@ class Document {
                 pdf_oxide_element_get_rect(list, i, &b.x, &b.y, &b.width, &b.height,
                                            &code);
                 e.rect = b;
+                Bbox pb{0, 0, 0, 0};
+                pdf_oxide_element_get_page_rect(list, i, &pb.x, &pb.y, &pb.width,
+                                                &pb.height, &code);
+                e.page_rect = pb;
                 out.push_back(std::move(e));
             }
         } catch (...) {

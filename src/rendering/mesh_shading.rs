@@ -82,9 +82,23 @@ pub(crate) fn render_mesh_shading(
 
     // Resolve a set of stream/function colour components to RGBA, routing
     // through `/Function` first when present.
+    // A Type 0 function carries its samples in a stream. `to_rgba` runs once
+    // per grid point — up to 129x129 for a Type 1 shading — so decoding that
+    // stream inside the evaluation made the cost of the samples proportional
+    // to the grid rather than paid once. Decode it here instead.
+    let sampled_bytes: Option<Vec<u8>> = function.as_ref().and_then(|f| {
+        let is_sampled = f
+            .as_dict()
+            .and_then(|d| d.get("FunctionType"))
+            .and_then(|o| o.as_integer())
+            == Some(0);
+        is_sampled.then(|| f.decode_stream_data().ok()).flatten()
+    });
+
     let to_rgba = |comps: &[f32]| -> (f32, f32, f32, f32) {
         let cs_comps: Vec<f32> = match &function {
-            Some(f) => eval_pdf_function(f, doc, comps).unwrap_or_else(|| comps.to_vec()),
+            Some(f) => eval_pdf_function(f, doc, comps, sampled_bytes.as_deref())
+                .unwrap_or_else(|| comps.to_vec()),
             None => comps.to_vec(),
         };
         resolve_color(&cs_comps).unwrap_or((0.0, 0.0, 0.0, 1.0))
@@ -899,13 +913,20 @@ fn blend_premul(dest: &mut [u8], off: usize, r: f32, g: f32, b: f32, a: f32) {
 /// components. Supports an array of 1-output functions plus function types
 /// 0 (sampled), 2 (exponential), 3 (stitching) and 4 (PostScript). Returns
 /// `None` for unsupported shapes so callers fall back to the raw inputs.
-fn eval_pdf_function(func: &Object, doc: &PdfDocument, inputs: &[f32]) -> Option<Vec<f32>> {
+fn eval_pdf_function(
+    func: &Object,
+    doc: &PdfDocument,
+    inputs: &[f32],
+    sampled_bytes: Option<&[u8]>,
+) -> Option<Vec<f32>> {
     if let Object::Array(arr) = func {
         // An array of n single-output functions, one per colour component.
         let mut out = Vec::with_capacity(arr.len());
         for f in arr {
             let resolved = doc.resolve_object(f).ok()?;
-            let mut r = eval_pdf_function(&resolved, doc, inputs)?;
+            // Each element is its own function; the caller's prepared stream
+            // belongs to `func`, not to these.
+            let mut r = eval_pdf_function(&resolved, doc, inputs, None)?;
             out.append(&mut r);
         }
         return Some(out);
@@ -916,7 +937,12 @@ fn eval_pdf_function(func: &Object, doc: &PdfDocument, inputs: &[f32]) -> Option
     match ftype {
         2 => eval_type2(dict, inputs),
         3 => eval_type3(dict, doc, inputs),
-        0 => eval_type0(func, dict, inputs),
+        0 => match sampled_bytes {
+            Some(bytes) => eval_type0(bytes, dict, inputs),
+            // No prepared stream: a nested or array member, which this
+            // optimisation does not cover. It still decodes per call.
+            None => eval_type0(&func.decode_stream_data().ok()?, dict, inputs),
+        },
         4 => eval_type4(func, dict, inputs),
         _ => None,
     }
@@ -994,7 +1020,7 @@ fn eval_type3(
         e0 + (xc - lo) * (e1 - e0) / (hi - lo)
     };
     let sub = doc.resolve_object(&funcs[k]).ok()?;
-    eval_pdf_function(&sub, doc, &[xe])
+    eval_pdf_function(&sub, doc, &[xe], None)
 }
 
 /// Type 4 PostScript calculator function.
@@ -1011,8 +1037,7 @@ fn eval_type4(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
 /// input dimensions (enough for Type 1 shadings and 1-D `/Function` mesh
 /// colours). Bounded sample reads; returns `None` for out-of-support
 /// shapes.
-fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> Option<Vec<f32>> {
-    let bytes = func.decode_stream_data().ok()?;
+fn eval_type0(bytes: &[u8], dict: &HashMap<String, Object>, inputs: &[f32]) -> Option<Vec<f32>> {
     let domain = pairs(dict.get("Domain"));
     let range = pairs(dict.get("Range"));
     let size: Vec<usize> = dict
@@ -1091,7 +1116,7 @@ fn eval_type0(func: &Object, dict: &HashMap<String, Object>, inputs: &[f32]) -> 
         (0..n)
             .map(|o| {
                 let bit_off = (flat * n + o) * bps as usize;
-                let raw = read_bits_at(&bytes, bit_off, bps).unwrap_or(0);
+                let raw = read_bits_at(bytes, bit_off, bps).unwrap_or(0);
                 (raw as f64 / max_sample) as f32
             })
             .collect()
@@ -1344,6 +1369,170 @@ mod tests {
         // A corner well outside the triangle stays background (transparent).
         let corner = (48 * 50 + 48) * 4;
         assert_eq!(data[corner + 3], 0, "outside triangle stays background");
+    }
+
+    /// Minimal PDF document used purely as a `&PdfDocument` argument.
+    /// `eval_pdf_function` touches it only to resolve `Reference` objects;
+    /// the fixtures below are inline, so any successfully-parsed PDF works.
+    fn fixture_doc() -> PdfDocument {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"%PDF-1.4\n");
+        let cat_off = buf.len();
+        buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let pages_off = buf.len();
+        buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let xref_off = buf.len();
+        buf.extend_from_slice(b"xref\n0 3\n0000000000 65535 f \n");
+        buf.extend_from_slice(format!("{:010} 00000 n \n", cat_off).as_bytes());
+        buf.extend_from_slice(format!("{:010} 00000 n \n", pages_off).as_bytes());
+        buf.extend_from_slice(
+            format!("trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", xref_off)
+                .as_bytes(),
+        );
+        PdfDocument::from_bytes(buf).expect("fixture PDF parses")
+    }
+
+    /// Sampled (Type 0) function stream: 2 inputs, 2×2 grid, 8-bit RGB
+    /// samples — red, green, blue, yellow at the four grid corners.
+    fn sampled_rgb_function() -> Object {
+        let mut dict = HashMap::new();
+        dict.insert("FunctionType".to_string(), Object::Integer(0));
+        dict.insert(
+            "Domain".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        dict.insert(
+            "Range".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        dict.insert(
+            "Size".to_string(),
+            Object::Array(vec![Object::Integer(2), Object::Integer(2)]),
+        );
+        dict.insert("BitsPerSample".to_string(), Object::Integer(8));
+        // Sample order: (0,0) (1,0) (0,1) (1,1).
+        let samples: [u8; 12] = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
+        Object::Stream {
+            dict,
+            data: bytes::Bytes::copy_from_slice(&samples),
+        }
+    }
+
+    /// The prepared-bytes fast path and the per-call decode fallback must
+    /// agree on every input, and both must yield the grid's interpolated
+    /// values — a wrong or empty prepared buffer reads as all-zero samples
+    /// (`read_bits_at` → `unwrap_or(0)`) and fails the expected values.
+    #[test]
+    fn type0_prepared_bytes_matches_per_call_decode() {
+        let doc = fixture_doc();
+        let func = sampled_rgb_function();
+        let prepared = func.decode_stream_data().expect("stream decodes");
+
+        let cases: &[([f32; 2], [f32; 3])] = &[
+            ([0.0, 0.0], [1.0, 0.0, 0.0]),
+            ([1.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 1.0], [0.0, 0.0, 1.0]),
+            ([1.0, 1.0], [1.0, 1.0, 0.0]),
+            ([0.5, 0.5], [0.5, 0.5, 0.25]),
+            ([0.25, 0.75], [0.375, 0.25, 0.5625]),
+        ];
+        for (inputs, expected) in cases {
+            let fast = eval_pdf_function(&func, &doc, inputs, Some(&prepared))
+                .expect("fast path evaluates");
+            let slow =
+                eval_pdf_function(&func, &doc, inputs, None).expect("fallback path evaluates");
+            assert_eq!(fast, slow, "paths diverge at {inputs:?}");
+            assert_eq!(fast.len(), 3);
+            for (o, (&got, &want)) in fast.iter().zip(expected).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "output {o} at {inputs:?}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// End-to-end: a Type 1 shading whose `/Function` is a sampled stream
+    /// goes through the hoisted-bytes path in `render_mesh_shading`; every
+    /// probed pixel must match a per-point fallback evaluation of the same
+    /// function.
+    #[test]
+    fn type1_shading_renders_sampled_function_via_prepared_bytes() {
+        let doc = fixture_doc();
+        let func = sampled_rgb_function();
+
+        let mut shading = HashMap::new();
+        shading.insert("ShadingType".to_string(), Object::Integer(1));
+        shading.insert(
+            "Domain".to_string(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        shading.insert(
+            "Matrix".to_string(),
+            Object::Array(vec![
+                Object::Real(16.0),
+                Object::Real(0.0),
+                Object::Real(0.0),
+                Object::Real(16.0),
+                Object::Real(0.0),
+                Object::Real(0.0),
+            ]),
+        );
+        shading.insert("Function".to_string(), func.clone());
+
+        let mut pixmap = Pixmap::new(16, 16).unwrap();
+        let resolve = |c: &[f32]| -> Option<(f32, f32, f32, f32)> {
+            Some((
+                c.first().copied().unwrap_or(0.0),
+                c.get(1).copied().unwrap_or(0.0),
+                c.get(2).copied().unwrap_or(0.0),
+                1.0,
+            ))
+        };
+        render_mesh_shading(
+            &mut pixmap,
+            &shading,
+            &Object::Dictionary(shading.clone()),
+            1,
+            Transform::identity(),
+            &doc,
+            None,
+            &resolve,
+        )
+        .unwrap();
+
+        let data = pixmap.data();
+        for &(px, py) in &[(4usize, 4usize), (12, 4), (4, 12), (12, 12), (8, 8)] {
+            let (u, v) = ((px as f32 + 0.5) / 16.0, (py as f32 + 0.5) / 16.0);
+            let want =
+                eval_pdf_function(&func, &doc, &[u, v], None).expect("fallback path evaluates");
+            let o = (py * 16 + px) * 4;
+            assert_eq!(data[o + 3], 255, "pixel ({px},{py}) must be opaque");
+            for (ch, &w) in want.iter().enumerate().take(3) {
+                let got = data[o + ch] as f32 / 255.0;
+                assert!(
+                    (got - w).abs() < 8.0 / 255.0,
+                    "pixel ({px},{py}) channel {ch}: got {got}, want {w}"
+                );
+            }
+        }
     }
 
     /// Type 2 exponential function evaluates the endpoint interpolation.
