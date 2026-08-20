@@ -36,8 +36,9 @@ ignore = [
     #
     # Drop this the moment tiny-skia ships a release built on an unyanked
     # arrayref, or immediately if any real advisory is filed against
-    # 0.3.9 — note this ignores the crate, not just the yank.
-    "arrayref",
+    # 0.3.9. Scoped to the exact version, so every other arrayref
+    # release stays fully checked.
+    "arrayref@0.3.9",
 ]
 
 [licenses]
