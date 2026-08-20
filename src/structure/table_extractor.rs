@@ -706,164 +706,155 @@ fn extract_cell(
     // in the reporter's 54-PDF corpus.
     let mut cell_spans: Vec<TextSpan> = Vec::new();
     let mut prev_block: Option<&TextBlock> = None;
+    // The runs this cell owns, sequence by sequence. One marked-content
+    // sequence routinely carries several text blocks (a wrapped line, a
+    // gap-split pair) and the cell owns all of them, so every block a sequence
+    // owns is collected. Each sequence's runs are then put into reading order,
+    // while the sequences themselves stay in the order the structure tree names
+    // them.
+    let mut runs: Vec<&TextBlock> = Vec::new();
     for (scope, mcid) in &mcids {
-        // An MCID is numbered within the content stream that draws it
-        // (ISO 32000-1 §14.7.4.3), so a page and a Form XObject drawn on it may
-        // both number a sequence 0. Where both exist, the stream the structure
-        // tree names decides, and the other stream's text stays out of the cell.
-        //
-        // Where no block carries that stream the number alone decides. A
-        // producer that omits `/Stm` leaves the reference reading `Page`, while
-        // the text it points at was drawn inside a form; requiring the streams
-        // to agree there would empty the cell.
-        let stream_is_named = text_blocks
-            .iter()
-            .any(|b| b.mcid == Some(*mcid) && b.mcid_scope.as_ref() == Some(scope));
-        for block in text_blocks {
-            if let Some(block_mcid) = block.mcid {
-                let same_stream =
-                    !stream_is_named || block.mcid_scope.as_ref() == Some(scope);
-                if block_mcid == *mcid && same_stream {
-                    let mut leading_space = false;
-                    if !cell_text.is_empty() {
-                        let need_space = if let Some(prev) = prev_block {
-                            let y_diff = (block.bbox.y - prev.bbox.y).abs();
-                            // Line pitch comes from the type size, not from
-                            // the box. A block spanning several lines is
-                            // taller than the pitch around it, so a box-based
-                            // threshold reads a real line break as one line.
-                            // The pair then reaches the gap test, sees no gap,
-                            // and the words glue: "of th" + "alarms" reads
-                            // "thalarms".
-                            let line_h = prev
-                                .avg_font_size
-                                .max(block.avg_font_size)
-                                .max(1.0)
-                                .min(prev.bbox.height.max(block.bbox.height));
-                            if y_diff > line_h * 0.5 {
-                                // Different lines — always insert a space.
-                                true
-                            } else {
-                                // Same line — only insert a space when there is an actual
-                                // horizontal gap (> 15% of font size, matching document.rs).
-                                let gap = block.bbox.x - (prev.bbox.x + prev.bbox.width);
-                                let font_size =
-                                    prev.avg_font_size.max(block.avg_font_size).max(1.0);
-                                if gap <= font_size * 0.15 {
-                                    false
-                                } else {
-                                    // Suppress space insertion when one side is CJK and the
-                                    // other is CJK or a fullwidth/math operator (e.g. ≤, ＜, μ).
-                                    // This mirrors the CJK-pair suppression in document.rs and
-                                    // converters/mod.rs (Issue #485).
-                                    #[inline(always)]
-                                    fn is_cjk(c: char) -> bool {
-                                        matches!(c,
-                                            '\u{3040}'..='\u{309F}' |   // Hiragana
-                                            '\u{30A0}'..='\u{30FF}' |   // Katakana
-                                            '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs
-                                            '\u{AC00}'..='\u{D7AF}' |   // Hangul
-                                            '\u{3400}'..='\u{4DBF}' |   // CJK Extension A
-                                            '\u{20000}'..='\u{2A6DF}'   // CJK Extension B
-                                        )
-                                    }
-                                    #[inline(always)]
-                                    fn is_fw_math(c: char) -> bool {
-                                        matches!(c,
-                                            '\u{FF0B}' | '\u{FF0D}' |
-                                            '\u{FF1A}' | '\u{FF1B}' |
-                                            '\u{FF1C}'..='\u{FF1E}' |
-                                            '\u{2260}' | '\u{2248}' |
-                                            '\u{2264}'..='\u{2265}' |
-                                            '\u{00B5}' | '\u{03BC}' |
-                                            '\u{00B1}' | '\u{00D7}' | '\u{00F7}'
-                                        )
-                                    }
-                                    let p_last = prev.text.chars().next_back();
-                                    let b_first = block.text.chars().next();
-                                    let suppress = if let (Some(p), Some(b)) = (p_last, b_first) {
-                                        let p_cjk = is_cjk(p);
-                                        let b_cjk = is_cjk(b);
-                                        (p_cjk || is_fw_math(p))
-                                            && (b_cjk || is_fw_math(b))
-                                            && (p_cjk || b_cjk)
-                                    } else {
-                                        false
-                                    };
-                                    !suppress
-                                }
-                            }
-                        } else {
-                            !cell_text.ends_with(' ')
-                        };
-                        if need_space {
-                            cell_text.push(' ');
-                            leading_space = true;
-                        }
-                    }
-                    cell_text.push_str(&block.text);
-                    // Synthesize a minimal TextSpan capturing the block's
-                    // style. Only the fields the markdown converter
-                    // consults (text, font_weight, is_italic, font_size,
-                    // bbox) need real values — everything else is filled
-                    // from sensible defaults. Carry the inter-block space
-                    // into the span text as well: the markdown/HTML table
-                    // renderers reconstruct spacing from the spans (not from
-                    // cell_text), and their horizontal-gap heuristic cannot
-                    // see a line wrap, so without this they glue tokens
-                    // across wrapped lines. Both renderers already treat a
-                    // leading space in the span text as authoritative
-                    // (their `already_has_space` guard), so this never
-                    // double-spaces.
-                    let span_text = if leading_space {
-                        let mut s = String::with_capacity(block.text.len() + 1);
-                        s.push(' ');
-                        s.push_str(&block.text);
-                        s
+        let sequence_start = runs.len();
+        // A block belongs to this sequence only when it came from the same
+        // content stream. Matching the number alone pulls a Form XObject's
+        // MCID 0 into the cell that owns the page's MCID 0.
+        runs.extend(text_blocks.iter().filter(|b| {
+            b.mcid == Some(*mcid) && b.mcid_scope.as_ref().is_none_or(|s| s == scope)
+        }));
+        order_sequence_runs(&mut runs[sequence_start..]);
+    }
+    for block in runs {
+        let mut leading_space = false;
+        if !cell_text.is_empty() {
+            let need_space = if let Some(prev) = prev_block {
+                let y_diff = (block.bbox.y - prev.bbox.y).abs();
+                // Line pitch comes from the type size, not from
+                // the box. A block spanning several lines is
+                // taller than the pitch around it, so a box-based
+                // threshold reads a real line break as one line.
+                // The pair then reaches the gap test, sees no gap,
+                // and the words glue: "of th" + "alarms" reads
+                // "thalarms".
+                let line_h = prev
+                    .avg_font_size
+                    .max(block.avg_font_size)
+                    .max(1.0)
+                    .min(prev.bbox.height.max(block.bbox.height));
+                if y_diff > line_h * 0.5 {
+                    // Different lines — always insert a space.
+                    true
+                } else {
+                    // Same line — only insert a space when there is an actual
+                    // horizontal gap (> 15% of font size, matching document.rs).
+                    let gap = block.bbox.x - (prev.bbox.x + prev.bbox.width);
+                    let font_size = prev.avg_font_size.max(block.avg_font_size).max(1.0);
+                    if gap <= font_size * 0.15 {
+                        false
                     } else {
-                        block.text.clone()
-                    };
-                    cell_spans.push(TextSpan {
-                        provenance: None,
-                        artifact_type: None,
-                        text: span_text,
-                        bbox: block.bbox,
-                        font_name: block.dominant_font.clone(),
-                        font_size: block.avg_font_size,
-                        font_weight: if block.is_bold {
-                            FontWeight::Bold
+                        // Suppress space insertion when one side is CJK and the
+                        // other is CJK or a fullwidth/math operator (e.g. ≤, ＜, μ).
+                        // This mirrors the CJK-pair suppression in document.rs and
+                        // converters/mod.rs (Issue #485).
+                        #[inline(always)]
+                        fn is_cjk(c: char) -> bool {
+                            matches!(c,
+                                '\u{3040}'..='\u{309F}' |   // Hiragana
+                                '\u{30A0}'..='\u{30FF}' |   // Katakana
+                                '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs
+                                '\u{AC00}'..='\u{D7AF}' |   // Hangul
+                                '\u{3400}'..='\u{4DBF}' |   // CJK Extension A
+                                '\u{20000}'..='\u{2A6DF}'   // CJK Extension B
+                            )
+                        }
+                        #[inline(always)]
+                        fn is_fw_math(c: char) -> bool {
+                            matches!(c,
+                                '\u{FF0B}' | '\u{FF0D}' |
+                                '\u{FF1A}' | '\u{FF1B}' |
+                                '\u{FF1C}'..='\u{FF1E}' |
+                                '\u{2260}' | '\u{2248}' |
+                                '\u{2264}'..='\u{2265}' |
+                                '\u{00B5}' | '\u{03BC}' |
+                                '\u{00B1}' | '\u{00D7}' | '\u{00F7}'
+                            )
+                        }
+                        let p_last = prev.text.chars().next_back();
+                        let b_first = block.text.chars().next();
+                        let suppress = if let (Some(p), Some(b)) = (p_last, b_first) {
+                            let p_cjk = is_cjk(p);
+                            let b_cjk = is_cjk(b);
+                            (p_cjk || is_fw_math(p)) && (b_cjk || is_fw_math(b)) && (p_cjk || b_cjk)
                         } else {
-                            FontWeight::Normal
-                        },
-                        is_italic: block.is_italic,
-                        is_monospace: false,
-                        color: Color::black(),
-                        mcid: block.mcid,
-                        mcid_scope: block.mcid_scope.clone(),
-                        sequence: 0,
-                        offset_semantic: false,
-                        split_boundary_before: false,
-                        char_spacing: 0.0,
-                        word_spacing: 0.0,
-                        horizontal_scaling: 100.0,
-                        primary_detected: false,
-                        char_widths: vec![],
-                        char_x_offsets: Vec::new(),
-                        heading_level: None,
-                        rotation_degrees: block.rotation_degrees,
-                        wmode: 0,
-                        text_rise: 0.0,
-                        rtl_draw_logical: false,
-                        mirrored: false,
-                        page_rotation_applied: 0,
-                    });
-                    prev_block = Some(block);
-                    // No early exit: one marked-content sequence routinely
-                    // carries several text blocks (a wrapped line, a
-                    // gap-split pair), and the cell owns all of them.
+                            false
+                        };
+                        !suppress
+                    }
                 }
+            } else {
+                !cell_text.ends_with(' ')
+            };
+            if need_space {
+                cell_text.push(' ');
+                leading_space = true;
             }
         }
+        cell_text.push_str(&block.text);
+        // Synthesize a minimal TextSpan capturing the block's
+        // style. Only the fields the markdown converter
+        // consults (text, font_weight, is_italic, font_size,
+        // bbox) need real values — everything else is filled
+        // from sensible defaults. Carry the inter-block space
+        // into the span text as well: the markdown/HTML table
+        // renderers reconstruct spacing from the spans (not from
+        // cell_text), and their horizontal-gap heuristic cannot
+        // see a line wrap, so without this they glue tokens
+        // across wrapped lines. Both renderers already treat a
+        // leading space in the span text as authoritative
+        // (their `already_has_space` guard), so this never
+        // double-spaces.
+        let span_text = if leading_space {
+            let mut s = String::with_capacity(block.text.len() + 1);
+            s.push(' ');
+            s.push_str(&block.text);
+            s
+        } else {
+            block.text.clone()
+        };
+        cell_spans.push(TextSpan {
+            provenance: None,
+            artifact_type: None,
+            text: span_text,
+            bbox: block.bbox,
+            font_name: block.dominant_font.clone(),
+            font_size: block.avg_font_size,
+            font_weight: if block.is_bold {
+                FontWeight::Bold
+            } else {
+                FontWeight::Normal
+            },
+            is_italic: block.is_italic,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: block.mcid,
+            mcid_scope: block.mcid_scope.clone(),
+            sequence: 0,
+            offset_semantic: false,
+            split_boundary_before: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            char_widths: vec![],
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: block.rotation_degrees,
+            wmode: 0,
+            text_rise: 0.0,
+            rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
+        });
+        prev_block = Some(block);
     }
 
     let mut cell = TableCell::new(cell_text.trim().to_string(), is_header);
@@ -871,6 +862,50 @@ fn extract_cell(
     cell.spans = cell_spans;
 
     Ok(cell)
+}
+
+/// Put the runs of one marked-content sequence into reading order.
+///
+/// ISO 32000-2 §14.8.2.5.1 asks a producer to keep the content of one
+/// marked-content sequence in logical order, and §14.8.4.8.3 NOTE builds the
+/// table algorithms on that. Producers exist that do not honour it: a rotated
+/// column header can be drawn from the right end of its line back to the left,
+/// so the sequence hands the cell its runs in the reverse of the order the page
+/// reads. `PdfDocument::order_mcid_spans`, the sibling assembler for tagged
+/// prose, already orders a sequence's runs geometrically when the sequence
+/// carries no right-to-left character; a cell follows the same rule, so the two
+/// surfaces read the same document the same way. Order *between* sequences
+/// stays as the structure tree gives it — that is the producer's declared
+/// logical order, and geometry never overrides it.
+///
+/// A sequence holding any right-to-left character keeps marked-content order.
+/// UAX #9 (I2/L2) keeps a numeric run left to right inside a right-to-left
+/// paragraph, and [`crate::text::bidi::reverse_rtl_keep_numbers`] resolves that
+/// at character level; a second permutation of the same text at run level
+/// fights it and turns `50%` into `%50`. `order_mcid_spans` keeps raw order
+/// where right-to-left and Latin text mix for the same reason.
+///
+/// The order comes from the run boxes alone, never from `rotation_degrees`: on
+/// a page with a `/Rotate` entry a run's box is mapped into the displayed frame
+/// while its reported angle still describes the frame before the rotation, so
+/// an order taken from the angle walks the runs against the direction they
+/// advance in.
+///
+/// The sort is stable, so runs the comparator calls equal keep marked-content
+/// order.
+fn order_sequence_runs(runs: &mut [&TextBlock]) {
+    if runs.len() < 2 {
+        return;
+    }
+    let has_rtl = runs.iter().any(|b| {
+        b.text
+            .chars()
+            .any(|c| crate::text::rtl_detector::is_rtl_text(c as u32))
+    });
+    if has_rtl {
+        return;
+    }
+    runs.sort_by(|a, b| crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x));
 }
 
 /// Recursively collect all MCIDs from a structure element and its children.
