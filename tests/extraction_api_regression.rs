@@ -277,20 +277,35 @@ fn preserve_unmapped_glyphs_setter_round_trips() {
 
 #[test]
 fn preserve_unmapped_glyphs_gates_all_filter_sites() {
-    let source = include_str!("../src/extractors/text.rs");
-    // Verify the gate is applied at every FFFD filter site. Each
-    // filter must read the flag; otherwise the issue is only partly
-    // fixed.
-    let occurrences = source.matches("preserve_unmapped_glyphs()").count();
-    // 1 helper definition + 8 filter-site gates = at least 9 mentions.
-    // The bound is conservative — if more sites are added later that
-    // honor the flag, the count grows but the test stays valid.
+    // Every site that drops a U+FFFD must read the flag, or the flag only
+    // half works. The sites live in two places: the extraction entry points
+    // read the global directly, and the shared decoder takes it as
+    // `DecodePolicy::preserve_unmapped`.
+    let text = include_str!("../src/extractors/text.rs");
+    let decoder = include_str!("../src/fonts/unicode_decode.rs");
+
+    let direct = text.matches("preserve_unmapped_glyphs()").count();
     assert!(
-        occurrences >= 9,
-        "expected ≥9 references to preserve_unmapped_glyphs (1 def + 8+ gates), found {}",
-        occurrences,
+        direct >= 9 - DECODER_FILTER_SITES,
+        "extraction dropped a gate: found {direct} references to preserve_unmapped_glyphs()",
+    );
+
+    // In the decoder, a filter that does not consult the policy is a hole:
+    // count the filters and the gates and require them to match.
+    let filters = decoder.matches("char_str != \"\\u{FFFD}\"").count();
+    let gated = decoder.matches("|| policy.preserve_unmapped").count();
+    assert_eq!(
+        filters, gated,
+        "a U+FFFD filter in the shared decoder does not consult the policy",
+    );
+    assert_eq!(
+        filters, DECODER_FILTER_SITES,
+        "the decoder's filter-site count moved; check each site still gates",
     );
 }
+
+/// U+FFFD filter sites the shared decoder owns, each gated by the policy.
+const DECODER_FILTER_SITES: usize = 3;
 
 /// `flatten_warnings()` accessor
 /// on `PdfDocument` returns structured warnings (typed
