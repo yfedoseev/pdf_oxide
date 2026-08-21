@@ -200,6 +200,19 @@ is the scarcest resource here — scarcer than code. These rules exist because
 volume can cost more maintainer time than the contribution saves, however good
 the underlying work is.
 
+**Plainly, so nobody has to infer it: sustained spamming gets an account
+blocked.** A blocked account cannot comment, cannot open issues, and cannot
+submit pull requests — GitHub applies it to all three at once and to every
+repository owned by the maintainer. Existing contributions stay in the history;
+what ends is the ability to add more.
+
+That is the last step, and it is reserved for two things: continuing after a
+written request to stop, and programmatic submission of any kind. It is not for
+being prolific, not for being wrong, and not for disagreeing with the
+maintainer — people do all three here regularly and are welcome to. If you are
+reading this and wondering whether it applies to you, it almost certainly does
+not.
+
 - **One topic, one thread.** Post a point once, in the most relevant issue or
   PR. If it applies to several PRs, post it once and link to it. **Do not paste
   the same comment into multiple threads** — that turns one point into one
@@ -538,7 +551,9 @@ low-effort AI output consumes disproportionate reviewer time.
   reviewing it, please don't open the PR.**
 
 Good-faith first-timers who slip up will simply be pointed back here. Repeated,
-bad-faith, time-wasting submissions lead to being blocked from the project.
+time-wasting submissions lead to being blocked — see
+[Communication volume](#communication-volume) for what blocking means and the
+steps that come before it.
 
 ## Coding standards
 
