@@ -164,7 +164,9 @@ fn rendered_is_black(pdf: Vec<u8>) -> Vec<bool> {
     assert_eq!((rendered.width, rendered.height), (8, 1));
     rendered
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|pixel| pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128)
         .collect()
 }

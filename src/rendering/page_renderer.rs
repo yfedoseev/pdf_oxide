@@ -435,6 +435,9 @@ impl PageRenderer {
         // of staying suppressed across all subsequent renders on this
         // long-lived PageRenderer).
         self.k_zero_warning_emitted = false;
+        // Same page scope for the glyph-drop warning latch: a new page warns
+        // again per broken font, so bulk ingestion never goes silent.
+        self.text_rasterizer.reset_page_warnings();
 
         // Refresh the excluded-layers snapshot once per page. The effective
         // set combines (a) the PDF's default-off OCGs per /OCProperties/D
@@ -2217,7 +2220,12 @@ impl PageRenderer {
                     // outline) is treated as degenerate and leaves the clip
                     // unchanged rather than collapsing it to empty.
                     if let Some(scratch) = text_clip_accum.take() {
-                        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+                        let has_coverage = scratch
+                            .data()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|px| px[3] != 0);
                         if has_coverage {
                             let text_mask = tiny_skia::Mask::from_pixmap(
                                 scratch.as_ref(),
@@ -5103,7 +5111,7 @@ impl PageRenderer {
                 (fg.clamp(0.0, 1.0) * 255.0) as u32,
                 (fb.clamp(0.0, 1.0) * 255.0) as u32,
             );
-            for px in cell.data_mut().chunks_exact_mut(4) {
+            for px in cell.data_mut().as_chunks_mut::<4>().0 {
                 let a = px[3] as u32;
                 px[0] = (fr * a / 255) as u8;
                 px[1] = (fg * a / 255) as u8;
@@ -5114,7 +5122,7 @@ impl PageRenderer {
         // Average (premultiplied) cell colour, used both for the geometry
         // fallback and to skip fully-transparent cells.
         let (mut sr, mut sg, mut sb, mut sa) = (0u64, 0u64, 0u64, 0u64);
-        for px in cell.data().chunks_exact(4) {
+        for px in cell.data().as_chunks::<4>().0 {
             sr += px[0] as u64;
             sg += px[1] as u64;
             sb += px[2] as u64;
@@ -5639,7 +5647,13 @@ impl PageRenderer {
         paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         paint.anti_alias = true;
         scratch.stroke_path(path, &paint, &stroke, transform, clip);
-        let buf: Vec<u8> = scratch.data().chunks_exact(4).map(|px| px[3]).collect();
+        let buf: Vec<u8> = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect();
         Some(buf)
     }
 
@@ -5696,7 +5710,13 @@ impl PageRenderer {
     /// AA-edge partial coverage. The buffer is then handed to the
     /// spot-mirror's coverage-aware path verbatim.
     fn extract_alpha_as_coverage(pixmap: &Pixmap) -> Vec<u8> {
-        pixmap.data().chunks_exact(4).map(|px| px[3]).collect()
+        pixmap
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect()
     }
 
     /// WS1.5b — union a clip-mode (`Tr` 4–7) `Tj` / `'` / `"` show's glyph
@@ -9348,7 +9368,7 @@ fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>> {
     // Demultiply: tiny_skia stores premultiplied RGBA; PNG expects straight alpha.
     let src = pixmap.data();
     let mut data = src.to_vec();
-    for chunk in data.chunks_exact_mut(4) {
+    for chunk in data.as_chunks_mut::<4>().0 {
         let a = chunk[3];
         if a != 0 && a != 255 {
             let a32 = a as u32;
@@ -9516,7 +9536,7 @@ fn parse_color_key_mask(arr: &[Object], ncomp: usize) -> Option<Vec<(u32, u32)>>
         return None;
     }
     let mut ranges = Vec::with_capacity(ncomp);
-    for pair in arr.chunks_exact(2) {
+    for pair in arr.as_chunks::<2>().0 {
         let lo = pair[0].as_integer()?;
         let hi = pair[1].as_integer()?;
         if lo < 0 || hi < 0 || lo > hi {
@@ -10402,7 +10422,12 @@ mod tests {
         scratch.fill_rect(sil, &paint, Transform::identity(), None);
 
         // Degenerate guard: a silhouette WITH coverage reports true.
-        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        let has_coverage = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| px[3] != 0);
         assert!(has_coverage, "painted silhouette must report coverage");
 
         // Existing clip: top half of the page (y in 0..10) fully inside.
@@ -10433,7 +10458,12 @@ mod tests {
     fn text_clip_empty_accumulator_is_degenerate() {
         use tiny_skia::Pixmap;
         let scratch = Pixmap::new(16, 16).unwrap(); // fresh -> fully transparent
-        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        let has_coverage = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| px[3] != 0);
         assert!(!has_coverage, "empty accumulator must be treated as no clip change");
     }
 
@@ -10997,7 +11027,7 @@ mod tests {
         // yields zero; the d1 stencil taking the current fill colour yields a
         // solid red rectangle.
         let mut red = 0usize;
-        for px in img.data.chunks_exact(4) {
+        for px in img.data.as_chunks::<4>().0 {
             if px[0] > 200 && px[1] < 80 && px[2] < 80 {
                 red += 1;
             }

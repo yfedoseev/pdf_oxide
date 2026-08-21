@@ -820,10 +820,12 @@ fn extract_cell(
                         char_widths: vec![],
                         char_x_offsets: Vec::new(),
                         heading_level: None,
-                        rotation_degrees: 0.0,
+                        rotation_degrees: block.rotation_degrees,
                         wmode: 0,
                         text_rise: 0.0,
                         rtl_draw_logical: false,
+                        mirrored: false,
+                        page_rotation_applied: 0,
                     });
                     prev_block = Some(block);
                     break;
@@ -1179,6 +1181,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -1375,6 +1379,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         let spans = vec![
             crate::layout::TextSpan {
@@ -1453,6 +1459,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // Line 1: "Hello" ends at x=100, y=200.  Line 2: "World" starts at x=10, y=188.
         // y_diff = 12 > line_h * 0.5 = 6 → different lines → space inserted.
@@ -1530,6 +1538,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // Line 1: bold "Bold" (y=200).  Line 2 (wrapped): italic "Italic" (y=188).
         let spans = vec![
@@ -1571,6 +1581,62 @@ mod tests {
         assert_eq!(
             cell.spans[1].text, " Italic",
             "wrapped-line span must carry the leading inter-block space (review #533)"
+        );
+    }
+
+    #[test]
+    fn test_extract_cell_spans_carry_rotation_degrees() {
+        use crate::layout::text_block::{Color, FontWeight};
+
+        let mut td = StructElem::new(StructType::TD);
+        td.add_child(StructChild::MarkedContentRef {
+            mcid: 1,
+            page: 0,
+            scope: crate::structure::McidScope::Page(0),
+        });
+        let mut tr = StructElem::new(StructType::TR);
+        tr.add_child(StructChild::StructElem(Box::new(td)));
+        let mut table_elem = StructElem::new(StructType::Table);
+        table_elem.add_child(StructChild::StructElem(Box::new(tr)));
+
+        let span = crate::layout::TextSpan {
+            provenance: None,
+            text_rise: 0.0,
+            mirrored: false,
+            page_rotation_applied: 0,
+            artifact_type: None,
+            text: "Rotated".into(),
+            bbox: Rect::new(10.0, 200.0, 40.0, 12.0),
+            font_name: "Test".to_string(),
+            font_size: 12.0,
+            font_weight: FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: Color::black(),
+            mcid: Some(1),
+            mcid_scope: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 1.0,
+            primary_detected: false,
+            char_widths: vec![],
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 90.0,
+            wmode: 0,
+            rtl_draw_logical: false,
+        };
+
+        let result = extract_table_from_spans(&table_elem, &[span]).unwrap();
+        let cell = &result.rows[0].cells[0];
+        assert_eq!(cell.spans.len(), 1);
+        assert_eq!(
+            cell.spans[0].rotation_degrees, 90.0,
+            "cell span re-synthesis must carry the source block's rotation through, \
+             not silently reset it to 0.0"
         );
     }
 
@@ -1633,6 +1699,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // "数" ends at x=10+10=20; "≤" starts at x=23 → gap=3.0 > 1.5 → gap branch fires
         // CJK("数")→math_op("≤") with at least one CJK side → suppress space
@@ -1719,6 +1787,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         };
         // "Hello" ends at 50; "world" starts at 53 → gap=3.0 > 1.5 → space inserted
         // Neither side is CJK, so the CJK suppression must NOT fire.

@@ -8,11 +8,12 @@
 #   pdf_render_page_with_options_ex         — render + OCG layer filtering
 # pdf_oxide_word_get_rotation — word glyph-run rotation
 # pdf_oxide_path_get_rendered_bbox — stroke-inflated path bbox
+# pdf_oxide_element_get_page_rect — page-space element rect
 #
 # Simple int toggles assert invokable (and that the prior value round-trips).
 # The render entry needs a real document, so it asserts return-or-error.
-# The word/path accessors have no list constructor exposed in Ruby yet
-# (extract_words / extract_paths are placeholder-typed), so they assert
+# The word/path/element accessors have no list constructor exposed in Ruby yet
+# (extract_words / extract_paths / extract_elements are placeholder-typed), so they assert
 # the documented null-handle contract: sentinel value + ERR_INVALID_ARG,
 # which exercises the real symbol and its argument signature end-to-end.
 
@@ -89,6 +90,23 @@ RSpec.describe 'C-ABI coverage: extended symbols' do
     h = ::FFI::MemoryPointer.new(:float)
     err = ::FFI::MemoryPointer.new(:int32)
     PdfOxide::Bindings.pdf_oxide_path_get_rendered_bbox(::FFI::Pointer::NULL, 0, x, y, w, h, err)
+    expect(err.read_int32).to eq(1) # ERR_INVALID_ARG
+    expect([x, y, w, h].map(&:read_float)).to all(eq(0.0)) # untouched zero-init buffers
+  end
+
+  it 'binds pdf_oxide_element_get_page_rect (null-handle contract)' do
+    expect(PdfOxide::Bindings).to respond_to(:pdf_oxide_element_get_page_rect)
+
+    # void pdf_oxide_element_get_page_rect(elements, index, x, y, w, h, err)
+    # sets ERR_INVALID_ARG (1) and leaves the out-params untouched for a
+    # null element-list handle. Same shape as pdf_oxide_element_get_rect —
+    # the two agree for upright text and diverge only on rotated runs.
+    x = ::FFI::MemoryPointer.new(:float)
+    y = ::FFI::MemoryPointer.new(:float)
+    w = ::FFI::MemoryPointer.new(:float)
+    h = ::FFI::MemoryPointer.new(:float)
+    err = ::FFI::MemoryPointer.new(:int32)
+    PdfOxide::Bindings.pdf_oxide_element_get_page_rect(::FFI::Pointer::NULL, 0, x, y, w, h, err)
     expect(err.read_int32).to eq(1) # ERR_INVALID_ARG
     expect([x, y, w, h].map(&:read_float)).to all(eq(0.0)) # untouched zero-init buffers
   end

@@ -926,14 +926,25 @@ pub fn extract_image_from_xobject(
         return Err(Error::Image(format!("XObject subtype is not Image: {}", subtype)));
     }
 
+    // /Width and /Height may be indirect references (ISO 32000-1 §7.3.10
+    // permits any object entry to be an indirect reference); resolve them
+    // the same way the /ColorSpace resolution just below does.
+    let resolve_int = |obj: &Object| -> Option<i64> {
+        if let (Some(d), Some(r)) = (doc, obj.as_reference()) {
+            d.load_object(r).ok().and_then(|o| o.as_integer())
+        } else {
+            obj.as_integer()
+        }
+    };
+
     let width = dict
         .get("Width")
-        .and_then(|obj| obj.as_integer())
+        .and_then(resolve_int)
         .ok_or_else(|| Error::Image("Image missing /Width".to_string()))? as u32;
 
     let height = dict
         .get("Height")
-        .and_then(|obj| obj.as_integer())
+        .and_then(resolve_int)
         .ok_or_else(|| Error::Image("Image missing /Height".to_string()))? as u32;
 
     let bits_per_component = dict
@@ -1141,7 +1152,9 @@ pub fn extract_image_from_xobject(
                 // states its bounds in the file's 0..65535 space and must not
                 // be range-tested against these bytes.
                 decoded_data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))
                     .collect()
             } else {
@@ -1821,7 +1834,7 @@ pub fn cmyk_to_rgb_with_transform(
         return t.convert_cmyk_buffer(cmyk);
     }
     let mut rgb = Vec::with_capacity((cmyk.len() / 4) * 3);
-    for chunk in cmyk.chunks_exact(4) {
+    for chunk in cmyk.as_chunks::<4>().0 {
         let [r, g, b] = cmyk_pixel_to_rgb(chunk[0], chunk[1], chunk[2], chunk[3]);
         rgb.push(r);
         rgb.push(g);
@@ -1950,7 +1963,7 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
 
     // §10.3.5 additive-clamp fallback.
     let mut rgb = Vec::with_capacity(pixel_count * 3);
-    for chunk in straight_cmyk.chunks_exact(4) {
+    for chunk in straight_cmyk.as_chunks::<4>().0 {
         let [r, g, b] = cmyk_pixel_to_rgb(chunk[0], chunk[1], chunk[2], chunk[3]);
         rgb.push(r);
         rgb.push(g);
@@ -3315,14 +3328,22 @@ pub(crate) fn image_handle_from_xobject<'doc>(
     paint_order: usize,
     color_space_resources: &std::collections::HashMap<String, crate::object::Object>,
 ) -> Option<PdfImageHandle<'doc>> {
+    // /Width and /Height may be indirect references (ISO 32000-1 §7.3.10);
+    // resolve them the same way `extract_image_from_xobject` does.
+    let resolve_int = |o: &crate::object::Object| -> Option<i64> {
+        match o.as_reference() {
+            Some(r) => doc.load_object(r).ok().and_then(|v| v.as_integer()),
+            None => o.as_integer(),
+        }
+    };
     let w = xobject_dict
         .get("Width")
-        .and_then(|o| o.as_integer())
+        .and_then(resolve_int)
         .filter(|&n| n > 0)
         .map(|n| n as u32)?;
     let h = xobject_dict
         .get("Height")
-        .and_then(|o| o.as_integer())
+        .and_then(resolve_int)
         .filter(|&n| n > 0)
         .map(|n| n as u32)?;
     let bpc = xobject_dict

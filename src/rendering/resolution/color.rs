@@ -1049,7 +1049,9 @@ fn evaluate_type3_stitching(
 
 /// Flatten a `[min1 max1 min2 max2 ...]` PDF array into `[[min, max], ...]`.
 fn array_to_pairs(arr: &[Object]) -> Vec<[f64; 2]> {
-    arr.chunks_exact(2)
+    arr.as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| [object_to_f64(&c[0]), object_to_f64(&c[1])])
         .collect()
 }

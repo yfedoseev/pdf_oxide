@@ -159,7 +159,9 @@ fn device_cmyk_vector_and_text_render_via_process_inks_not_additive_clamp() {
     //     mark on the page is pure black. The additive clamp would fill
     //     both the K swatch and the K text with (0,0,0) pixels. ---
     let pure_black = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[3] > 0 && px[0] == 0 && px[1] == 0 && px[2] == 0)
         .count();
     assert_eq!(

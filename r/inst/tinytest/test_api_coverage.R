@@ -363,6 +363,15 @@ rot7 <- tryCatch(pdf_page_get_rotation(doc7, 0L), error = function(e) e)
 expect_true(is.numeric(rot7) || inherits(rot7, "error"))  # pdf_page_get_rotation
 els <- tryCatch(pdf_page_get_elements(doc7, 0L), error = function(e) e)
 expect_true(is.list(els) || inherits(els, "error"))       # pdf_page_get_elements
+# page_rect: this document is upright, so it must match rect element for element.
+if (is.list(els) && length(els) > 0) {
+  for (el in els) {
+    expect_true(all(c("x", "y", "width", "height") %in% names(el$page_rect)))
+    expect_equal(c(el$page_rect$x, el$page_rect$y,
+                   el$page_rect$width, el$page_rect$height),
+                 c(el$rect$x, el$rect$y, el$rect$width, el$rect$height))
+  }
+}
 
 # ── PHASE-7: OCR (no model files -> invoke + assert returns or raises) ─────────
 nocr <- tryCatch(pdf_ocr_page_needs_ocr(doc7, 0L), error = function(e) e)
