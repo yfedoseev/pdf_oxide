@@ -2662,8 +2662,10 @@ pdf_page_get_rotation <- function(doc, page) {
 #'
 #' @param doc A `pdfoxide_document`.
 #' @param page 0-based page index.
-#' @return A list of `Element` records, each `list(type=, text=, rect=)` where
-#'   `rect` is `list(x=, y=, width=, height=)`.
+#' @return A list of `Element` records, each `list(type=, text=, rect=,
+#'   page_rect=)` where `rect` is `list(x=, y=, width=, height=)`. `page_rect`
+#'   is the same rect with any text-matrix rotation resolved into an
+#'   axis-aligned page-space hull; identical to `rect` for upright runs.
 #' @export
 pdf_page_get_elements <- function(doc, page) {
   .Call(C_r_page_get_elements, doc, as.integer(page))

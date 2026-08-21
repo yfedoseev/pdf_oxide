@@ -3053,7 +3053,7 @@ impl WasmPdfDocument {
             .inner
             .lock()
             .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
-        for chunk in rects.chunks_exact(4) {
+        for chunk in rects.as_chunks::<4>().0.iter() {
             let (llx, lly, urx, ury) = (chunk[0], chunk[1], chunk[2], chunk[3]);
             inner
                 .erase_region(
@@ -3065,7 +3065,9 @@ impl WasmPdfDocument {
         drop(inner);
 
         let rect_arrays: Vec<[f32; 4]> = rects
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| [c[0], c[1], c[2], c[3]])
             .collect();
         let editor_arc = self.ensure_editor()?;

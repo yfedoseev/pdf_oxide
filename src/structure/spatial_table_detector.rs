@@ -1072,12 +1072,42 @@ fn detect_columns(
     // Sort columns by center before merge pass.
     columns.sort_by(|a, b| crate::utils::safe_float_cmp(a.x_center, b.x_center));
 
+    // `merge_threshold` is a fixed absolute-point gap; on its own it breaks
+    // down as column count grows and the table's actual pitch shrinks (a
+    // dense numeric table with a 12pt column pitch has every adjacent pair
+    // fused by even a modest fixed threshold, collapsing distinct columns
+    // into one). Scale the *effective* threshold down for narrow-pitch
+    // tables by capping it at a fraction of the table's own median
+    // inter-column gap — same ratio-based pitch reasoning as
+    // `is_regular_lattice`'s on-pitch band (`[0.6, 1.6] * median`): a gap
+    // under `0.6 * median` is off-pitch-small relative to this table's own
+    // columns and should merge regardless of the fixed threshold, while a
+    // sparse table with few, widely-spaced columns keeps the full
+    // `merge_threshold` (no median signal to scale from).
+    let effective_merge_threshold = if columns.len() >= 3 {
+        let mut gaps: Vec<f32> = columns
+            .windows(2)
+            .map(|w| w[1].x_center - w[0].x_center)
+            .filter(|g| *g > 0.0)
+            .collect();
+        if gaps.is_empty() {
+            merge_threshold
+        } else {
+            gaps.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+            let median_gap = gaps[gaps.len() / 2];
+            merge_threshold.min(median_gap * 0.6)
+        }
+    } else {
+        merge_threshold
+    };
+
     // Post-clustering merge pass: merge adjacent columns whose centers are
     // within merge_threshold of each other or whose X ranges overlap.
     let mut merged: Vec<ColumnCluster> = Vec::new();
     for col in columns {
         let should_merge = merged.last().is_some_and(|prev: &ColumnCluster| {
-            (col.x_center - prev.x_center).abs() < merge_threshold || col.x_min <= prev.x_max
+            (col.x_center - prev.x_center).abs() < effective_merge_threshold
+                || col.x_min <= prev.x_max
         });
         if should_merge {
             let prev = merged.last_mut().unwrap();
@@ -3534,17 +3564,15 @@ fn has_vertical_ruling_evidence(lines: &[crate::elements::PathContent], h_edges:
     })
 }
 
-/// Detect tables in regions bounded by horizontal rules (H-lines) when no vertical
-/// lines are present.  Groups H-edges by Y-position to find horizontal table
-/// boundaries, then runs text-edge detection on the spans within each bounded
-/// region.  This is the "H-lines define regions, text defines columns" hybrid.
-fn detect_tables_from_horizontal_rules(
-    spans: &[TextSpan],
-    h_edges: &[Edge],
-    config: &TableDetectionConfig,
-) -> Vec<Table> {
-    const MIN_RULE_WIDTH: f32 = 100.0;
-    const Y_SNAP: f32 = 4.0;
+/// Group wide H-edges into x-range-coherent FAMILIES, in emission order,
+/// so only rules that could bound the same table ever pair up. This fixes
+/// two failure shapes in one move: a page of scattered fraction bars never
+/// forms a family (no fake table from unrelated equation rules), and a
+/// decorative dashed border whose y-position interleaves a real table's
+/// rules lands in its own family instead of splitting the table's rules
+/// apart in the adjacent-pair walk (which silently dropped the table on
+/// real dash-boxed pages).
+fn x_coherent_rule_families<'a>(wide: &[&'a Edge]) -> Vec<Vec<&'a Edge>> {
     // A table's boundary rules line up: booktabs top/sub-header/bottom
     // rules share their x-range to within a point (overlap/union ≈ 1.0),
     // while unrelated wide strokes — displayed-equation fraction bars,
@@ -3553,23 +3581,6 @@ fn detect_tables_from_horizontal_rules(
     // differ). 0.85 splits the two populations with margin on both sides.
     const X_COHERENCE: f32 = 0.85;
 
-    // Keep only wide H-edges.
-    let wide: Vec<&Edge> = h_edges
-        .iter()
-        .filter(|e| (e.end - e.start) >= MIN_RULE_WIDTH)
-        .collect();
-    if wide.len() < 2 {
-        return Vec::new();
-    }
-
-    // Group the wide edges into x-range-coherent FAMILIES and window
-    // within each family, so only rules that could bound the same table
-    // ever pair up. This fixes two failure shapes in one move: a page of
-    // scattered fraction bars never forms a family (no fake table from
-    // unrelated equation rules), and a decorative dashed border whose
-    // y-position interleaves a real table's rules lands in its own family
-    // instead of splitting the table's rules apart in the adjacent-pair
-    // walk (which silently dropped the table on real dash-boxed pages).
     let mut uf = UnionFind::new(wide.len());
     for i in 0..wide.len() {
         for j in (i + 1)..wide.len() {
@@ -3581,13 +3592,54 @@ fn detect_tables_from_horizontal_rules(
             }
         }
     }
-    let mut families: HashMap<usize, Vec<&Edge>> = HashMap::new();
+    // Keyed by union-find root in a BTreeMap, not a HashMap: HashMap iteration
+    // order is randomized per process, and the sort below cannot recover from
+    // that on its own. Families are grouped by X-RANGE COHERENCE, so `coord`
+    // (the Y of a horizontal rule) is not unique across families — two rule
+    // families side by side, or a decorative border sharing a table's top-rule
+    // Y, tie on `a[0].coord`. `sort_by` is stable, so a tie leaves the input
+    // order intact, and with a HashMap that input order is per-process random:
+    // the two families then emit their tables in a different order each run,
+    // which reorders the rendered table blocks in the assembled page text.
+    // The BTreeMap makes the collected order deterministic; the root tiebreak
+    // makes the emitted order a total order over the families, so it depends
+    // only on page geometry and edge input order. Each family's `Vec` is pushed
+    // in ascending `wide` index order, so `a[0]` is still the family's first
+    // rule and non-tied pages sort exactly as before (byte-identical).
+    let mut families: std::collections::BTreeMap<usize, Vec<&'a Edge>> =
+        std::collections::BTreeMap::new();
     for (i, e) in wide.iter().enumerate() {
         families.entry(uf.find(i)).or_default().push(e);
     }
-    // Deterministic family order (HashMap iteration is randomized).
-    let mut families: Vec<Vec<&Edge>> = families.into_values().collect();
-    families.sort_by(|a, b| crate::utils::safe_float_cmp(a[0].coord, b[0].coord));
+    let mut families: Vec<(usize, Vec<&'a Edge>)> = families.into_iter().collect();
+    families.sort_by(|(root_a, a), (root_b, b)| {
+        crate::utils::safe_float_cmp(a[0].coord, b[0].coord).then_with(|| root_a.cmp(root_b))
+    });
+    families.into_iter().map(|(_root, f)| f).collect()
+}
+
+/// Detect tables in regions bounded by horizontal rules (H-lines) when no vertical
+/// lines are present.  Groups H-edges by Y-position to find horizontal table
+/// boundaries, then runs text-edge detection on the spans within each bounded
+/// region.  This is the "H-lines define regions, text defines columns" hybrid.
+fn detect_tables_from_horizontal_rules(
+    spans: &[TextSpan],
+    h_edges: &[Edge],
+    config: &TableDetectionConfig,
+) -> Vec<Table> {
+    const MIN_RULE_WIDTH: f32 = 100.0;
+    const Y_SNAP: f32 = 4.0;
+
+    // Keep only wide H-edges.
+    let wide: Vec<&Edge> = h_edges
+        .iter()
+        .filter(|e| (e.end - e.start) >= MIN_RULE_WIDTH)
+        .collect();
+    if wide.len() < 2 {
+        return Vec::new();
+    }
+
+    let families = x_coherent_rule_families(&wide);
 
     let mut tables = Vec::new();
 
@@ -4711,6 +4763,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
     fn make_h_line(x: f32, y: f32, width: f32) -> crate::elements::PathContent {
@@ -4976,6 +5030,36 @@ mod tests {
             columns.len(),
             2,
             "Spans at x=130/135/140 should merge into 1 column, plus x=50 = 2 total, got {}",
+            columns.len()
+        );
+    }
+
+    #[test]
+    fn test_detect_columns_dense_pitch_stays_distinct() {
+        // A dense numeric table: 6 columns on a 20pt pitch, each column's
+        // spans sharing an exact left-x (so the *first* clustering pass,
+        // gated on column_tolerance=15, keeps every column separate — this
+        // isolates the merge-threshold pass specifically). Under the
+        // default config's *fixed* 25pt column_merge_threshold, every
+        // adjacent 20pt gap is below the threshold, so the old code fused
+        // all 6 into 1. The threshold must scale down with this table's own
+        // (much smaller than 25pt) pitch so the columns survive distinct.
+        let mut spans = Vec::new();
+        for row in 0..3 {
+            let y = 100.0 - row as f32 * 20.0;
+            for col in 0..6 {
+                let x = 20.0 + col as f32 * 20.0;
+                spans.push(create_test_span("9", x, y, 8.0, 10.0));
+            }
+        }
+        let config = TableDetectionConfig::default();
+        let columns =
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+        assert_eq!(
+            columns.len(),
+            6,
+            "a 20pt-pitch dense table must keep all 6 columns distinct \
+             despite the 25pt fixed merge_threshold, got {}",
             columns.len()
         );
     }
@@ -5461,6 +5545,82 @@ mod tests {
         assert_eq!(edges.len(), 1, "Segments at near-identical coords should snap and join");
         assert!((edges[0].start - 36.0).abs() < 0.01, "Joined edge should start at 36");
         assert!((edges[0].end - 170.0).abs() < 0.01, "Joined edge should end at 170");
+    }
+
+    #[test]
+    fn rule_families_tied_on_first_coord_emit_in_input_order() {
+        // Eight side-by-side families (disjoint x-ranges, so none unify),
+        // every family's first rule at the same y: `a[0].coord` ties across
+        // all of them, so only the root tiebreak orders the output. Under
+        // the pre-fix HashMap grouping this order was per-process hash
+        // order (8! arrangements), so this assertion fails on all but the
+        // seed that happens to sort.
+        let edges: Vec<Edge> = (0..8)
+            .flat_map(|k| {
+                let x0 = 200.0 * k as f32;
+                [
+                    Edge {
+                        coord: 700.0,
+                        start: x0,
+                        end: x0 + 150.0,
+                    },
+                    Edge {
+                        coord: 600.0,
+                        start: x0,
+                        end: x0 + 150.0,
+                    },
+                ]
+            })
+            .collect();
+        let wide: Vec<&Edge> = edges.iter().collect();
+
+        let families = x_coherent_rule_families(&wide);
+
+        assert_eq!(families.len(), 8, "Disjoint x-ranges should stay separate families");
+        for (k, family) in families.iter().enumerate() {
+            assert_eq!(family.len(), 2);
+            assert!((family[0].coord - 700.0).abs() < 0.01, "First rule should be the top rule");
+            assert!(
+                (family[0].start - 200.0 * k as f32).abs() < 0.01,
+                "Tied families should emit in input order, family {k} out of place"
+            );
+        }
+    }
+
+    #[test]
+    fn rule_families_with_distinct_first_coords_order_by_coord() {
+        // Distinct `a[0].coord` values: the coord key alone decides, so the
+        // input (and root) order must NOT leak through — the family given
+        // second sorts first because its top rule has the smaller y.
+        let edges = [
+            Edge {
+                coord: 500.0,
+                start: 0.0,
+                end: 150.0,
+            },
+            Edge {
+                coord: 400.0,
+                start: 0.0,
+                end: 150.0,
+            },
+            Edge {
+                coord: 300.0,
+                start: 300.0,
+                end: 450.0,
+            },
+            Edge {
+                coord: 200.0,
+                start: 300.0,
+                end: 450.0,
+            },
+        ];
+        let wide: Vec<&Edge> = edges.iter().collect();
+
+        let families = x_coherent_rule_families(&wide);
+
+        assert_eq!(families.len(), 2);
+        assert!((families[0][0].coord - 300.0).abs() < 0.01);
+        assert!((families[1][0].coord - 500.0).abs() < 0.01);
     }
 
     #[test]
@@ -7219,6 +7379,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 

@@ -88,17 +88,40 @@ impl PageFontStats {
             return Self::default();
         }
 
+        // Both modes are picked with an explicit tie-break, NOT `max_by_key`.
+        // `max_by_key` returns the LAST maximal element, and over a `HashMap`
+        // "last" is whichever bucket the per-process-randomized iteration order
+        // happens to visit last. When the top two buckets carry the SAME
+        // character count — two font sizes each covering half the page, a page
+        // set in two fonts of equal mass — the winner was a coin flip per
+        // process, so `dominant_em` and `body_font_name` differed between runs
+        // of the same binary on the same page. `dominant_em` then feeds the
+        // column-shape gate in `is_multi_column_page` (`cluster_gap`), which
+        // selects the reading-order branch in `assemble_text_from_spans`, so
+        // the flip reordered the whole page's extracted text.
+        //
+        // Ties resolve to the SMALLER size bucket and the lexicographically
+        // smaller font name. Smaller-wins is the conservative direction for the
+        // size: `dominant_em` is meant to be the BODY em, headings are the
+        // larger size, and a tighter `cluster_gap` makes the multi-column gate
+        // stricter rather than looser. Same idiom as the mode pick in
+        // `crate::pipeline::converters` and the cmap pick in
+        // `crate::extractors::text`.
         let dominant_em = {
             let (bucket, _) = size_buckets
                 .iter()
-                .max_by_key(|(_, &count)| count)
+                .max_by(|(a_bucket, a_count), (b_bucket, b_count)| {
+                    a_count.cmp(b_count).then_with(|| b_bucket.cmp(a_bucket))
+                })
                 .expect("size_buckets non-empty checked above");
             (*bucket as f32) / 4.0
         };
 
         let body_font_name = font_buckets
             .iter()
-            .max_by_key(|(_, &count)| count)
+            .max_by(|(a_name, a_count), (b_name, b_count)| {
+                a_count.cmp(b_count).then_with(|| b_name.cmp(a_name))
+            })
             .map(|(name, _)| (*name).to_string())
             .unwrap_or_default();
 
@@ -232,6 +255,68 @@ mod tests {
             "expected ~6.0, got {}",
             stats.dominant_char_width
         );
+    }
+
+    // A tie in the size histogram must resolve to the SMALLER bucket, every
+    // run. Both sizes carry exactly 50 characters, so `max_by_key` over the
+    // backing `HashMap` would return whichever bucket the per-process-
+    // randomized iteration order visited last — this test failed roughly half
+    // the time before the explicit tie-break.
+    #[test]
+    fn size_histogram_tie_resolves_to_smaller_bucket() {
+        let mut spans = Vec::new();
+        let mut y = 720.0;
+        for _ in 0..10 {
+            spans.push(span("abcde", 72.0, y, "Helvetica", 10.0));
+            y -= 12.0;
+        }
+        for _ in 0..10 {
+            spans.push(span("abcde", 300.0, y, "Helvetica", 14.0));
+            y -= 16.0;
+        }
+        let stats = PageFontStats::from_spans(&spans);
+        assert_eq!(
+            stats.dominant_em, 10.0,
+            "50 chars at 10 pt vs 50 chars at 14 pt must resolve to the smaller em"
+        );
+    }
+
+    // Same defect on the font histogram: equal character mass in two fonts
+    // must resolve to the lexicographically smaller name.
+    #[test]
+    fn font_histogram_tie_resolves_to_lexicographically_smaller_name() {
+        let mut spans = Vec::new();
+        let mut y = 720.0;
+        for _ in 0..10 {
+            spans.push(span("abcde", 72.0, y, "Helvetica", 12.0));
+            spans.push(span("vwxyz", 300.0, y, "Arial", 12.0));
+            y -= 14.4;
+        }
+        let stats = PageFontStats::from_spans(&spans);
+        assert_eq!(
+            stats.body_font_name, "Arial",
+            "equal character mass in two fonts must resolve to the smaller name"
+        );
+    }
+
+    // The tie-break must not disturb the ordinary case: a clear winner is
+    // still the clear winner, whichever side of the tie-break it sits on.
+    #[test]
+    fn unique_mode_is_unaffected_by_tie_break_direction() {
+        let mut spans = Vec::new();
+        let mut y = 720.0;
+        // Larger size holds strictly more character mass, so it must win even
+        // though ties resolve toward the smaller bucket.
+        for _ in 0..4 {
+            spans.push(span("ab", 72.0, y, "Helvetica", 9.0));
+            y -= 11.0;
+        }
+        for _ in 0..10 {
+            spans.push(span("abcdefghij", 300.0, y, "Helvetica", 18.0));
+            y -= 21.0;
+        }
+        let stats = PageFontStats::from_spans(&spans);
+        assert_eq!(stats.dominant_em, 18.0);
     }
 
     #[test]
