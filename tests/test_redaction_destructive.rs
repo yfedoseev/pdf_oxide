@@ -131,6 +131,141 @@ fn destructive_redaction_is_idempotent() {
     assert!(!page0_text(&twice).contains(SECRET), "secret reappeared after re-redaction");
 }
 
+/// #1107: a page dict may have `/Contents` as an indirect reference to an
+/// object that is itself an array of stream references — a third legal
+/// shape beyond a direct single-stream reference or a direct array written
+/// inline in the page dict (ISO 32000-1:2008 Table 30 types `/Contents` as
+/// "stream or array" with no direct/indirect qualifier, unlike e.g.
+/// `/Parent` in the same table which explicitly requires "an indirect
+/// reference").
+/// This asserts the real, secret-relevant behavior — same
+/// control/G6-byte-scan/G1-re-extraction oracle as
+/// `destructive_redaction_removes_secret_text_and_bytes` above
+fn indirect_contents_array_pdf() -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut off = vec![0usize; 8];
+    let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
+        off[id] = buf.len();
+        buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+    };
+    let stream = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, data: &[u8]| {
+        off[id] = buf.len();
+        buf.extend_from_slice(
+            format!("{id} 0 obj\n<< /Length {} >>\nstream\n", data.len()).as_bytes(),
+        );
+        buf.extend_from_slice(data);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+    };
+
+    buf.extend_from_slice(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
+    obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+    obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    obj(
+        &mut buf,
+        &mut off,
+        3,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>",
+    );
+    // Object 4 is itself an array, reached only via an indirect reference —
+    // the shape `resolve_page_content_elements` now handles.
+    obj(&mut buf, &mut off, 4, "[5 0 R 6 0 R]");
+    let header = b"BT /F1 24 Tf 72 700 Td (PUBLIC HEADER LINE) Tj ET".to_vec();
+    stream(&mut buf, &mut off, 5, &header);
+    let secret_content = format!("BT /F1 24 Tf 72 650 Td ({SECRET}) Tj ET").into_bytes();
+    stream(&mut buf, &mut off, 6, &secret_content);
+    obj(&mut buf, &mut off, 7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+
+    let xref = buf.len();
+    buf.extend_from_slice(b"xref\n0 8\n0000000000 65535 f \n");
+    for id in 1..=7 {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+    }
+    buf.extend_from_slice(b"trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n");
+    buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
+    buf
+}
+
+#[test]
+fn destructive_redaction_indirect_contents_array_removes_secret_text_and_bytes() {
+    let src = indirect_contents_array_pdf();
+    assert!(
+        page0_text(&src).contains(SECRET),
+        "fixture must contain the secret before redaction"
+    );
+
+    let raw_opts = pdf_oxide::editor::SaveOptions {
+        compress: false,
+        ..pdf_oxide::editor::SaveOptions::full_rewrite()
+    };
+
+    // Control: unredacted, saved through the exact same uncompressed path,
+    // must still contain the literal secret bytes — proves the byte scan
+    // below is a valid oracle.
+    {
+        let mut ctrl =
+            DocumentEditor::from_bytes(indirect_contents_array_pdf()).expect("open control");
+        let ctrl_bytes = ctrl
+            .save_to_bytes_with_options(raw_opts.clone())
+            .expect("save control pdf");
+        assert!(
+            ctrl_bytes
+                .windows(SECRET.len())
+                .any(|w| w == SECRET.as_bytes()),
+            "control: uncompressed save must preserve the literal secret"
+        );
+    }
+
+    let mut ed = DocumentEditor::from_bytes(src).expect("open editor");
+    // Region over the secret's baseline only (y ~650) — leaves the header
+    // line (y ~700) untouched, so success here can't be explained by
+    // redacting the whole page.
+    ed.add_redaction(0, [0.0, 630.0, 612.0, 680.0], None)
+        .expect("queue redaction");
+    let report = ed
+        .apply_redactions_destructive(RedactionOptions::default())
+        .expect(
+            "apply_redactions_destructive must not error on an indirect \
+                 reference to an array of stream references",
+        );
+    assert!(report.glyphs_removed > 0, "expected glyphs removed, report={report:?}");
+
+    let out = ed
+        .save_to_bytes_with_options(raw_opts)
+        .expect("save redacted pdf");
+
+    // G6: the secret literal must not survive anywhere in the raw saved
+    // bytes — not just absent from the *live* /Contents, but genuinely
+    // dropped, including as an orphaned object. This is what the parallel
+    // orphan-id fix in `apply_redactions_destructive_for_page` actually
+    // buys: fixing only the crash without it would still pass a
+    // text-re-extraction-only check while leaving this assertion failing.
+    if let Some(pos) = out
+        .windows(SECRET.len())
+        .position(|w| w == SECRET.as_bytes())
+    {
+        let lo = pos.saturating_sub(120);
+        let hi = (pos + SECRET.len() + 120).min(out.len());
+        let ctx = String::from_utf8_lossy(&out[lo..hi]);
+        panic!(
+            "G6 VIOLATION: secret at byte {pos}/{}, indirect-reference-to-array \
+             page. Context:\n>>>{}<<<",
+            out.len(),
+            ctx
+        );
+    }
+
+    // re-extraction must not yield the secret either.
+    let text = page0_text(&out);
+    assert!(!text.contains(SECRET), "secret still recoverable via text extraction: {text:?}");
+    // Unrelated header text on the other stream in the same array must
+    // survive — proves this isn't a whole-page wipe.
+    assert!(
+        text.contains("PUBLIC HEADER LINE"),
+        "unredacted header text from the other stream must survive: {text:?}"
+    );
+}
+
 /// `redaction_count` reflects queued programmatic regions.
 #[test]
 fn redaction_count_tracks_queued_regions() {

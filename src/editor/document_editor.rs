@@ -2838,11 +2838,14 @@ impl DocumentEditor {
                                 // Destructive redaction (#231): REPLACE the
                                 // page /Contents with the single rewritten
                                 // stream (secret physically removed + opaque
-                                // overlay). The old content object becomes
-                                // unreferenced and is dropped by the
-                                // garbage-collected full rewrite (no residual
-                                // recoverable bytes, G6). /Redact annotations
-                                // are removed (ISO 32000-1 §12.5.6.23).
+                                // overlay). The old content stream ids are
+                                // kept out of the output via
+                                // `redacted_orphan_ids` (populated in
+                                // `apply_redactions_destructive_for_page`),
+                                // hard-dropped at write time independent of
+                                // reachability (no residual recoverable
+                                // bytes, G6). /Redact annotations are
+                                // removed (ISO 32000-1 §12.5.6.23).
                                 if let (Some((_, redacted_id)), Some(page_dict)) =
                                     (&destructive_redaction, final_page_obj.as_dict())
                                 {
@@ -6985,35 +6988,104 @@ impl DocumentEditor {
         Ok(annots + prog)
     }
 
-    /// Decode a source page's `/Contents` to raw bytes (the `/Contents`
-    /// array, if any, is the logical concatenation of its streams,
-    /// ISO 32000-1:2008 §7.8.2). Empty if the page has no contents.
-    fn get_page_content_bytes(&mut self, source_page: usize) -> Result<Vec<u8>> {
+    /// Resolve a page's `/Contents` into its ordered list of content-stream
+    /// elements: `(Option<ObjectRef>, Object)` pairs — the object reference,
+    /// when this element was reached via an indirect reference (needed by
+    /// callers that must track object ids, e.g. orphaning pre-redaction
+    /// stream bytes so they can't survive a save even as an unreferenced
+    /// object), paired with the resolved object itself (expected to be a
+    /// `Stream`; decoding it is the caller's job).
+    ///
+    /// `/Contents` is typed "stream or array" with no direct/indirect
+    /// qualifier (ISO 32000-1:2008 Table 30), unlike e.g. `/Parent` in the
+    /// same table which explicitly requires "an indirect reference" — so by
+    /// §7.3.10 ("Any object in a PDF file may be labelled as an indirect
+    /// object") both a direct array and an indirect reference to an array
+    /// are legal, in addition to the direct-single-stream-reference case.
+    /// This is the single place that handles all of them, so future callers
+    /// don't have to redrive this analysis (and drift out of sync with each
+    /// other) themselves:
+    /// - a direct reference to a single stream
+    /// - a direct array of stream references, written inline in the page
+    ///   dictionary
+    /// - an indirect reference to an object that is itself an array
+    ///
+    /// A bare `Stream` written directly as `/Contents`' value with no
+    /// reference at all is not actually legal (§7.3.7: "All streams shall
+    /// be indirect objects") — the `other` fallback arm below exists only
+    /// to not panic on that malformed shape, not because it's spec-legal.
+    ///
+    /// `Object::Null` array entries are skipped: some producers leave one
+    /// behind after deleting a stream, and `Null` is a generic `Object`
+    /// value, so it's syntactically valid there even though §7.3.9 itself
+    /// only specifically calls out null-as-a-dictionary-value.
+    fn resolve_page_content_elements(
+        &self,
+        source_page: usize,
+    ) -> Result<Vec<(Option<ObjectRef>, Object)>> {
+        fn push_element(
+            source: &PdfDocument,
+            item: &Object,
+            out: &mut Vec<(Option<ObjectRef>, Object)>,
+        ) -> Result<()> {
+            match item {
+                Object::Null => {},
+                Object::Reference(r) => out.push((Some(*r), source.load_object(*r)?)),
+                other => out.push((None, other.clone())),
+            }
+            Ok(())
+        }
+
         let page_ref = self.source.get_page_ref(source_page)?;
         let page_obj = self.source.load_object(page_ref)?;
         let page_dict = page_obj
             .as_dict()
             .ok_or_else(|| Error::InvalidPdf("Page is not a dictionary".to_string()))?;
         let contents = match page_dict.get("Contents") {
+            Some(Object::Null) | None => return Ok(Vec::new()),
             Some(c) => c.clone(),
-            None => return Ok(Vec::new()),
         };
+
+        let mut out = Vec::new();
         match contents {
-            Object::Reference(r) => Ok(self.source.load_object(r)?.decode_stream_data()?),
-            Object::Array(arr) => {
-                let mut data = Vec::new();
-                for item in arr {
-                    if let Object::Reference(r) = item {
-                        if let Ok(s) = self.source.load_object(r)?.decode_stream_data() {
-                            data.extend_from_slice(&s);
-                            data.push(b'\n');
-                        }
+            Object::Reference(r) => {
+                let resolved = self.source.load_object(r)?;
+                if let Object::Array(arr) = &resolved {
+                    for item in arr {
+                        push_element(&self.source, item, &mut out)?;
                     }
+                } else {
+                    out.push((Some(r), resolved));
                 }
-                Ok(data)
             },
-            _ => Ok(Vec::new()),
+            Object::Array(arr) => {
+                for item in &arr {
+                    push_element(&self.source, item, &mut out)?;
+                }
+            },
+            other => out.push((None, other)),
         }
+        Ok(out)
+    }
+
+    /// Decode a source page's `/Contents` to raw bytes
+    /// the `/Contents` array, if any, is the logical concatenation of its
+    /// streams — ISO 32000-1:2008 §7.7.3.3, Table 30's `/Contents` row:
+    ///  "If the value is an array, the effect shall be as if all of the streams
+    ///   in the array were concatenated, in order, to form a single stream").
+    /// Empty if the page has no contents.
+    fn get_page_content_bytes(&mut self, source_page: usize) -> Result<Vec<u8>> {
+        let elements = self.resolve_page_content_elements(source_page)?;
+        let mut data = Vec::new();
+        for (r, obj) in elements {
+            let decoded = match r {
+                Some(r) => self.source.decode_stream_with_encryption(&obj, r)?,
+                None => obj.decode_stream_data()?,
+            };
+            data.extend_from_slice(&decoded);
+            data.push(b'\n');
+        }
+        Ok(data)
     }
 
     /// Build the [`crate::redaction::FontInfoMetrics`] for a source page
@@ -7156,25 +7228,16 @@ impl DocumentEditor {
         }
         let fonts = self.build_page_font_metrics(src)?;
         let (bytes, rep) = redact_content_stream(&content, &rs, opts, &fonts)?;
-        // Record the original /Contents object ids so the save path
-        // hard-drops them (G6) — the secret must not survive even as
-        // an orphaned, GC-missed object.
-        if let Ok(page_ref) = self.source.get_page_ref(src) {
-            if let Ok(page_obj) = self.source.load_object(page_ref) {
-                if let Some(d) = page_obj.as_dict() {
-                    match d.get("Contents") {
-                        Some(Object::Reference(r)) => {
-                            self.redacted_orphan_ids.insert(r.id);
-                        },
-                        Some(Object::Array(arr)) => {
-                            for it in arr {
-                                if let Object::Reference(r) = it {
-                                    self.redacted_orphan_ids.insert(r.id);
-                                }
-                            }
-                        },
-                        _ => {},
-                    }
+        // Record the original /Contents stream object ids so the save path
+        // hard-drops them — the secret must not survive even as an
+        // orphaned, GC-missed object. Uses the same shape-resolution as
+        // `get_page_content_bytes` (`resolve_page_content_elements`) so
+        // this can't drift out of sync with what was actually decoded and
+        // redacted above.
+        if let Ok(elements) = self.resolve_page_content_elements(src) {
+            for (maybe_obj_ref, _) in elements {
+                if let Some(obj_ref) = maybe_obj_ref {
+                    self.redacted_orphan_ids.insert(obj_ref.id);
                 }
             }
         }
@@ -7475,41 +7538,20 @@ impl DocumentEditor {
             return Err(Error::InvalidPdf("Page has been deleted".to_string()));
         }
 
-        // Get page reference
-        let page_ref = self.source.get_page_ref(original_page_idx as usize)?;
-        let page_obj = self.source.load_object(page_ref)?;
-        let page_dict = page_obj
-            .as_dict()
-            .ok_or_else(|| Error::InvalidPdf("Page is not a dictionary".to_string()))?;
-
-        // Get Contents
-        let contents = match page_dict.get("Contents") {
-            Some(c) => c.clone(),
-            None => return Ok(Vec::new()),
-        };
-
         // Load content stream data
-        let content_data = match contents {
-            Object::Reference(ref_obj) => {
-                let obj = self.source.load_object(ref_obj)?;
-                obj.decode_stream_data()?
-            },
-            Object::Array(arr) => {
-                // Concatenate multiple content streams
-                let mut data = Vec::new();
-                for item in arr {
-                    if let Object::Reference(ref_obj) = item {
-                        let obj = self.source.load_object(ref_obj)?;
-                        if let Ok(stream_data) = obj.decode_stream_data() {
-                            data.extend_from_slice(&stream_data);
-                            data.push(b'\n');
-                        }
-                    }
-                }
-                data
-            },
-            _ => return Ok(Vec::new()),
-        };
+        // if any stream fails to decode, silently skip over that one
+        let elements = self.resolve_page_content_elements(original_page_idx as usize)?;
+        let mut content_data = Vec::new();
+        for (maybe_obj_ref, obj) in elements {
+            let decoded = match maybe_obj_ref {
+                Some(obj_ref) => self.source.decode_stream_with_encryption(&obj, obj_ref),
+                None => obj.decode_stream_data(),
+            };
+            if let Ok(decoded) = decoded {
+                content_data.extend_from_slice(&decoded);
+                content_data.push(b'\n');
+            }
+        }
 
         // Parse the content stream
         let operators = parse_content_stream(&content_data)?;
