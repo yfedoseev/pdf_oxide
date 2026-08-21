@@ -589,7 +589,9 @@ mod tests {
             true
         }
         fn decode(&self, _f: &str, s: &[u8]) -> Vec<(u32, Vec<u8>)> {
-            s.chunks_exact(2)
+            s.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| (u32::from(u16::from_be_bytes([p[0], p[1]])), p.to_vec()))
                 .collect()
         }

@@ -9775,7 +9775,9 @@ impl PdfDocument {
             // UTF-16BE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -9784,7 +9786,9 @@ impl PdfDocument {
             // UTF-16LE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -29302,15 +29306,13 @@ mod tests {
 
         push!("<< /Type /Catalog /Pages 2 0 R >>"); // 1
         push!("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
-        push!(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+        push!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
-        )); // 3
-        push!(format!(
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+            .to_string()); // 3
+        push!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
              /Encoding << /Type /Encoding /Differences [1 /fi] >> \
              /ToUnicode 6 0 R >>"
-        )); // 4
+            .to_string()); // 4
         push!(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content)); // 5
         push!(format!("<< /Length {} >>\nstream\n{}endstream", cmap.len(), cmap)); // 6
 

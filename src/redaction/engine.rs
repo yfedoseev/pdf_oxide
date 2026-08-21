@@ -100,7 +100,9 @@ impl FontMetrics for FontInfoMetrics {
             // byte is malformed; `redaction_safe_show` refuses such a show
             // before it reaches here, so emit only whole 2-byte codes.
             return s
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| (u32::from(u16::from_be_bytes([pair[0], pair[1]])), pair.to_vec()))
                 .collect();
         }
