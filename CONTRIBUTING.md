@@ -233,6 +233,18 @@ the underlying work is.
   Again this is about rate, not tooling. Generate the work however you like;
   submit it at a rate a person can respond to.
 
+  **This one is enforced automatically.** A `Submission rate limit` workflow
+  closes an issue or pull request opened less than **5 minutes** after your
+  previous one, and flags a comment posted less than **60 seconds** after your
+  previous one. Closed items can simply be reopened once the gap has passed —
+  nothing is lost and it is not a rejection. Comments are never deleted; the
+  workflow only leaves a note.
+
+  Comments get the shorter window deliberately: answering three review threads
+  in five minutes is ordinary participation, while nineteen comments in eighteen
+  seconds is not, so the comment window targets bursts rather than conversation.
+  Maintainers and toolchain bots (Dependabot and similar) are exempt.
+
   An account treated this way is **added to the auto-reject list** — its new
   issues and pull requests are closed automatically on arrival, without review.
   Removal is by asking, and by not doing it again.
@@ -578,7 +590,14 @@ request from a non-maintainer:
   `approved`-label events in order and keeping the last one performed by an
   account that actually holds write access.
 
-A separate workflow, **Auto-reject list**, closes new issues and pull requests
+A separate workflow, **Submission rate limit**, closes an issue or pull request
+opened within 5 minutes of the same account's previous one, and flags a comment
+posted within 60 seconds of their previous one. Thresholds are repository
+variables (`RATE_MIN_GAP_ISSUES`, `RATE_MIN_GAP_PRS`, `RATE_MIN_GAP_COMMENTS`);
+setting one to `0` disables that surface. Write-access accounts and toolchain
+bots are exempt.
+
+A further workflow, **Auto-reject list**, closes new issues and pull requests
 from accounts whose intake has been capped under
 [Communication volume](#communication-volume). It does not touch comments or
 existing open work, and it never applies to anyone with write access.
