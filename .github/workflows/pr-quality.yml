@@ -3,6 +3,16 @@
 #   - title:     PR title must follow Conventional Commits (load-bearing for squash-merge)
 #   - no-binary: block committed compiled/library artifacts (reinforces Binary-Artifacts + fixture policy)
 #   - ai-label:  label (never block) PRs whose commits disclose AI co-authorship
+#   - one-open-pr: close a second concurrently-open PR from the same author
+#   - accepted-issue: close a PR with no linked issue; fail one whose issue
+#                     is unapproved or assigned to someone else
+#   - has-test:      a fix/feat PR must add at least one test
+#
+# The last two are intake gates. They exist because review is serial (one
+# maintainer) while submission is not, so without a cap the queue is bounded
+# only by the maintainer's endurance. Both decide on mechanical facts — how many
+# PRs an author has open, whether a maintainer replied on the issue — so neither
+# requires judgment, and neither costs maintainer time to apply.
 #
 # Security: uses `pull_request_target` for write access on fork PRs, but only
 # reads strings from the event payload / REST API via github-script and never
@@ -96,3 +106,276 @@ jobs:
             if (!existing.includes('ai-assisted')) {
               await github.rest.issues.addLabels({ ...common, labels: ['ai-assisted'] });
             }
+
+  one-open-pr:
+    name: One open PR per contributor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            // Maintainers and collaborators are exempt: the limit rations
+            // *review* capacity, and they supply it rather than consume it.
+            const exempt = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            if (exempt.includes(pr.author_association)) return;
+            if (pr.draft) return;   // drafts are not asking for review yet
+            // Trivial classes named in CONTRIBUTING as not counting.
+            if (/^(docs|ci|chore|revert)(\(|:)/i.test(pr.title || '')) return;
+
+            const others = (await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            })).filter(p =>
+              p.number !== pr.number &&
+              p.user && p.user.login === pr.user.login &&
+              !p.draft &&
+              !/^(docs|ci|chore|revert)(\(|:)/i.test(p.title || '')
+            );
+            if (!others.length) return;
+
+            const list = others.map(p => '#' + p.number).join(', ');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: [
+                'Closing automatically: this project allows **one open pull request at a time**',
+                'per non-maintainer contributor, and you already have ' + others.length + ' open (' + list + ').',
+                '',
+                'This is not a judgement about the change. Review here is serial — one maintainer,',
+                'and every open PR needs a full read, a corpus sweep and a green CI cycle, and has to',
+                'be re-checked each time something lands ahead of it. Several at once cost far more',
+                'in total than the same work landed one at a time.',
+                '',
+                'Please reopen this once your earlier PR resolves. If you have found other unrelated',
+                'bugs meanwhile, **open issues** for them — the diagnosis is valuable on its own and',
+                'costs far less to carry than an open PR.',
+                '',
+                'See [One open PR at a time](https://github.com/' + context.repo.owner + '/' +
+                  context.repo.repo + '/blob/main/CONTRIBUTING.md#before-you-open-a-pull-request).',
+              ].join('\n'),
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: 'closed',
+            });
+
+  accepted-issue:
+    name: Linked issue is approved and assigned to you
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const exempt = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            if (exempt.includes(pr.author_association)) return;
+            if (pr.draft) return;
+            if (/^(docs|ci|chore|revert)(\(|:)/i.test(pr.title || '')) return;
+
+            const author = pr.user && pr.user.login;
+            const body = pr.body || '';
+            const refs = [...new Set(
+              [...body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)].map(m => parseInt(m[1], 10))
+            )];
+
+            const docs = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo +
+                         '/blob/main/CONTRIBUTING.md#before-you-open-a-pull-request';
+
+            if (!refs.length) {
+              // Distinguish "referenced the issue imperfectly" from "no issue at
+              // all". Only the second is a drive-by, and only it is closed —
+              // auto-closing costs the contributor a reopen, so it is reserved
+              // for the unambiguous case.
+              const anyIssueNumber = /#\d+/.test(body);
+              if (anyIssueNumber) {
+                return core.setFailed(
+                  'This PR mentions an issue but does not link it in a closing form. Put ' +
+                  '"Closes #NNN" in the PR description (not the commit message) so the issue ' +
+                  'closes on merge and this check can find it. See ' + docs
+                );
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  'Closing automatically: this PR does not reference an issue.',
+                  '',
+                  'Work here starts from an issue that a maintainer has approved and assigned —',
+                  'opening a pull request is not how work is claimed. This is not about the quality',
+                  'of the change: it costs a maintainer one line to say "go ahead" or "we would fix',
+                  'that differently", and it saves you writing a change that was never going to land.',
+                  '',
+                  'What to do:',
+                  '',
+                  '1. Open an issue describing the problem. A reproducer and one line is enough.',
+                  '2. Wait for a maintainer to comment `/approve` and assign it to you.',
+                  '3. Reopen this PR (or open a new one) with `Closes #NNN` in the description.',
+                  '',
+                  'Typo, documentation, CI and revert PRs are exempt and can be opened directly.',
+                  '',
+                  'See [Before you open a pull request](' + docs + ').',
+                ].join('\n'),
+              });
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                state: 'closed',
+              });
+              return;
+            }
+
+            // Who counts as a maintainer is decided by actual repository
+            // permission, not by `author_association` on a comment and not by
+            // who happened to apply a label. Triage access is enough to add a
+            // label but must NOT be enough to approve work.
+            const permCache = new Map();
+            const isMaintainer = async (login) => {
+              if (!login) return false;
+              if (permCache.has(login)) return permCache.get(login);
+              let ok = false;
+              try {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner, repo: context.repo.repo, username: login,
+                });
+                ok = ['admin', 'maintain', 'write'].includes(data.permission);
+              } catch (e) { ok = false; }   // not a collaborator at all
+              permCache.set(login, ok);
+              return ok;
+            };
+
+            const problems = [];
+            for (const n of refs) {
+              let issue, comments, events;
+              try {
+                issue = (await github.rest.issues.get({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: n,
+                })).data;
+                comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: n, per_page: 100,
+                });
+                events = await github.paginate(github.rest.issues.listEvents, {
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: n, per_page: 100,
+                });
+              } catch (e) {
+                problems.push('#' + n + ': could not be read (wrong repo?)');
+                continue;
+              }
+
+              // Build one chronological list of approval-affecting acts, so the
+              // most recent maintainer verdict wins regardless of its form.
+              const acts = [];
+              for (const c of comments) {
+                const m = (c.body || '').match(/^\s*\/(approve|unapprove)\b/mi);
+                if (m) acts.push({
+                  at: c.created_at,
+                  by: c.user && c.user.login,
+                  approve: m[1].toLowerCase() === 'approve',
+                });
+              }
+              for (const e of events) {
+                if ((e.event === 'labeled' || e.event === 'unlabeled') &&
+                    e.label && e.label.name === 'approved') {
+                  acts.push({
+                    at: e.created_at,
+                    by: e.actor && e.actor.login,
+                    approve: e.event === 'labeled',
+                  });
+                }
+              }
+              acts.sort((a, b) => new Date(a.at) - new Date(b.at));
+
+              let approved = false;
+              let selfApproveAttempt = false;
+              for (const a of acts) {
+                if (!(await isMaintainer(a.by))) {
+                  if (a.approve) selfApproveAttempt = true;   // ignored, but worth saying
+                  continue;
+                }
+                approved = a.approve;
+              }
+
+              const assignees = (issue.assignees || []).map(a => a.login);
+              const assignedToAuthor = assignees.includes(author);
+
+              if (!approved) {
+                problems.push(
+                  '#' + n + ': not approved by a maintainer' +
+                  (selfApproveAttempt
+                    ? ' (an `/approve` or `approved` label from someone without write access does not count)'
+                    : ' — a maintainer must comment `/approve`')
+                );
+              } else if (!assignedToAuthor) {
+                problems.push(
+                  '#' + n + ': approved, but assigned to ' +
+                  (assignees.length ? assignees.map(a => '@' + a).join(', ') : 'nobody') +
+                  ' rather than @' + author
+                );
+              } else {
+                return;   // one fully-satisfying issue is enough
+              }
+            }
+
+            core.setFailed(
+              'The linked issue is not cleared for implementation:\n' +
+              problems.map(p => '  - ' + p).join('\n') +
+              '\n\nA maintainer approves an issue by commenting `/approve` and assigning it to ' +
+              'whoever will implement it. Assignment is how work is claimed here — it prevents two ' +
+              'people building the same fix, and it means the maintainer has agreed both the ' +
+              'approach and who is doing it. See ' + docs
+            );
+
+  has-test:
+    name: Change ships a test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (pr.draft) return;
+            // Only behaviour changes need a test. Docs/CI/chore/revert/perf-only
+            // and pure refactors are judged by the reviewer, not here.
+            if (!/^(fix|feat)(\(|!|:)/i.test(pr.title || '')) return;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            // A test is a new #[test]/#[tokio::test]/#[rstest] attribute anywhere
+            // in the diff — this crate keeps unit tests inline under #[cfg(test)]
+            // as well as in tests/, so looking only at tests/ would be wrong.
+            const addsTest = files.some(f =>
+              (f.patch || '')
+                .split('\n')
+                .some(l => /^\+\s*#\[(tokio::)?(test|rstest)\b/.test(l))
+            );
+            if (addsTest) return;
+
+            const touchesTestFile = files.some(f =>
+              f.filename.startsWith('tests/') && f.status !== 'removed'
+            );
+
+            core.setFailed(
+              (touchesTestFile
+                ? 'This PR changes files under tests/ but does not add a new test case. '
+                : 'This PR does not add a test. ') +
+              'Every bug fix ships a regression test that fails without the fix, added in a ' +
+              'commit before the fix commit. If this change genuinely cannot be tested — a ' +
+              'pure refactor, or a defect only reproducible on a document that cannot be ' +
+              'shared — say so in the PR description and a maintainer will waive this. ' +
+              'See https://github.com/' + context.repo.owner + '/' + context.repo.repo +
+              '/blob/main/CONTRIBUTING.md#testing-and-regression-requirements'
+            );
