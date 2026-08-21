@@ -15,7 +15,7 @@
 use crate::error::Error;
 use crate::geometry::Rect;
 use crate::layout::{Color, FontWeight, TextBlock, TextSpan};
-use crate::structure::types::{StructChild, StructElem, StructType};
+use crate::structure::types::{McidScope, StructChild, StructElem, StructType};
 
 /// A complete extracted table with rows and optional header information.
 #[derive(Debug, Clone)]
@@ -501,6 +501,7 @@ pub fn extract_table_from_spans(
                 is_bold: s.font_weight.is_bold(),
                 is_italic: s.is_italic,
                 mcid: s.mcid,
+                mcid_scope: s.mcid_scope.clone(),
                 sequence: s.sequence,
                 rotation_degrees: s.rotation_degrees,
             }
@@ -689,7 +690,7 @@ fn extract_cell(
     // `collect_mcids` walks the cell's subtree and can name one sequence more
     // than once. Every repeat re-emits each block that sequence owns.
     let mut seen = std::collections::HashSet::new();
-    mcids.retain(|mcid| seen.insert(*mcid));
+    mcids.retain(|entry| seen.insert(entry.clone()));
 
     // Find all text blocks that match these MCIDs, joining them with position-aware
     // spacing: insert a space only when there is a genuine horizontal gap between
@@ -705,10 +706,24 @@ fn extract_cell(
     // in the reporter's 54-PDF corpus.
     let mut cell_spans: Vec<TextSpan> = Vec::new();
     let mut prev_block: Option<&TextBlock> = None;
-    for mcid in &mcids {
+    for (scope, mcid) in &mcids {
+        // An MCID is numbered within the content stream that draws it
+        // (ISO 32000-1 §14.7.4.3), so a page and a Form XObject drawn on it may
+        // both number a sequence 0. Where both exist, the stream the structure
+        // tree names decides, and the other stream's text stays out of the cell.
+        //
+        // Where no block carries that stream the number alone decides. A
+        // producer that omits `/Stm` leaves the reference reading `Page`, while
+        // the text it points at was drawn inside a form; requiring the streams
+        // to agree there would empty the cell.
+        let stream_is_named = text_blocks
+            .iter()
+            .any(|b| b.mcid == Some(*mcid) && b.mcid_scope.as_ref() == Some(scope));
         for block in text_blocks {
             if let Some(block_mcid) = block.mcid {
-                if block_mcid == *mcid {
+                let same_stream =
+                    !stream_is_named || block.mcid_scope.as_ref() == Some(scope);
+                if block_mcid == *mcid && same_stream {
                     let mut leading_space = false;
                     if !cell_text.is_empty() {
                         let need_space = if let Some(prev) = prev_block {
@@ -824,7 +839,7 @@ fn extract_cell(
                         is_monospace: false,
                         color: Color::black(),
                         mcid: block.mcid,
-                        mcid_scope: None,
+                        mcid_scope: block.mcid_scope.clone(),
                         sequence: 0,
                         offset_semantic: false,
                         split_boundary_before: false,
@@ -852,18 +867,25 @@ fn extract_cell(
     }
 
     let mut cell = TableCell::new(cell_text.trim().to_string(), is_header);
-    cell.mcids = mcids;
+    cell.mcids = mcids.into_iter().map(|(_, mcid)| mcid).collect();
     cell.spans = cell_spans;
 
     Ok(cell)
 }
 
 /// Recursively collect all MCIDs from a structure element and its children.
-fn collect_mcids(elem: &StructElem, mcids: &mut Vec<u32>) {
+/// Collect the marked-content sequences a cell owns, each with the content
+/// stream that emits it.
+///
+/// An MCID is numbered within the content stream that draws it (ISO 32000-1
+/// §14.7.4.3), not within the page, so a page and a Form XObject drawn on it
+/// may both use MCID 0 for unrelated content. Carrying the scope out with the
+/// number is what keeps the two apart.
+fn collect_mcids(elem: &StructElem, mcids: &mut Vec<(McidScope, u32)>) {
     for child in &elem.children {
         match child {
-            StructChild::MarkedContentRef { mcid, .. } => {
-                mcids.push(*mcid);
+            StructChild::MarkedContentRef { mcid, scope, .. } => {
+                mcids.push((scope.clone(), *mcid));
             },
             StructChild::StructElem(child_elem) => {
                 // Recursively collect from child elements

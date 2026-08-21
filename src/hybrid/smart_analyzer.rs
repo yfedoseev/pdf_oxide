@@ -274,6 +274,7 @@ mod tests {
             is_bold: false,
             is_italic: false,
             mcid: None,
+            mcid_scope: None,
             sequence: 0,
             rotation_degrees: 0.0,
         }

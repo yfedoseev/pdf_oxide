@@ -791,6 +791,11 @@ pub struct TextBlock {
     pub is_italic: bool,
     /// Marked Content ID (for Tagged PDFs)
     pub mcid: Option<u32>,
+    /// Content stream the `mcid` is numbered within (ISO 32000-1 §14.7.4.3).
+    /// An MCID is unique only inside its own stream, so a page and a Form
+    /// XObject drawn on it may both number a sequence 0. Consumers that look
+    /// a sequence up must key by `(mcid_scope, mcid)`, never the number alone.
+    pub mcid_scope: Option<crate::structure::McidScope>,
     /// Content-stream emission order of the originating span(s) — lets
     /// callers tell "drawn consecutively in the content stream" apart
     /// from "merely spatially close" (e.g. table cells vs. overlays).
@@ -877,6 +882,7 @@ impl TextBlock {
             is_bold,
             is_italic,
             mcid,
+            mcid_scope: None,
             sequence: 0,
             rotation_degrees,
         }
