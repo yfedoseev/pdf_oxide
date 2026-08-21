@@ -4231,6 +4231,14 @@ impl PyTextSpan {
             self.inner.bbox.height,
         )
     }
+    /// Where the run physically sits on the page: `bbox` with any text-matrix
+    /// rotation resolved into an axis-aligned page-space hull. Identical to
+    /// `bbox` for upright runs.
+    #[getter]
+    fn page_bbox(&self) -> (f32, f32, f32, f32) {
+        let b = self.inner.page_bbox();
+        (b.x, b.y, b.width, b.height)
+    }
     #[getter]
     fn font_name(&self) -> &str {
         &self.inner.font_name

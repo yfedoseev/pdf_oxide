@@ -148,6 +148,24 @@ pub struct TextSpan {
     /// both use base-form characters (no presentation forms, no `/ReversedChars`).
     #[serde(skip_serializing_if = "is_false", default)]
     pub rtl_draw_logical: bool,
+    /// True when the composed text rendering matrix has a negative
+    /// determinant — the run is mirrored, so its glyph-up axis is the writing
+    /// axis *reflected*, not rotated (`snap_run_rotation` likewise refuses to
+    /// snap these so they are never confused with a clean rotation).
+    /// [`Self::page_bbox`] reflects the across-axis for such runs instead of
+    /// rotating it. Runtime metadata — deliberately not serialized.
+    #[serde(skip)]
+    pub mirrored: bool,
+    /// Clockwise page `/Rotate` (`0`/`90`/`180`/`270`) already folded into
+    /// [`Self::bbox`] by span postprocessing; `0` means `bbox` is raw user
+    /// space. On a `/Rotate`d page rotated-content bboxes are rewritten into
+    /// the displayed frame while `rotation_degrees` keeps the raw content
+    /// angle (it is the marker the reading-order passes select on), so
+    /// [`Self::page_bbox`] needs this to reconstruct the run frame without
+    /// double-transforming (#806). Runtime metadata — deliberately not
+    /// serialized.
+    #[serde(skip)]
+    pub page_rotation_applied: i32,
     /// Provenance of this span's Unicode text — which ISO 32000-1 §9.10.2
     /// mapping tier the font offered, as a
     /// [`MappingProvenance`](crate::fonts::MappingProvenance). `None` when the
@@ -206,12 +224,92 @@ impl Default for TextSpan {
             wmode: 0,
             text_rise: 0.0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
             provenance: None,
         }
     }
 }
 
 impl TextSpan {
+    /// Where the run physically sits on the page.
+    ///
+    /// [`Self::bbox`] carries the run's own extents: `width` is the advance
+    /// along the writing axis and `height` the font size, whatever the
+    /// rotation. That is the right frame for measuring the text, and it is the
+    /// frame every existing consumer already reads, so it is left alone — but
+    /// it means a run drawn with `Tm [0 1 -1 0]` reports a wide, short box for
+    /// text that is physically tall and narrow.
+    ///
+    /// This rotates those extents about the run origin into the same frame
+    /// `bbox` lives in. At `rotation_degrees == 0` it returns `bbox`
+    /// unchanged, so upright pages cannot move; free angles get the
+    /// axis-aligned hull of the rotated box. On a `/Rotate`d page, where span
+    /// postprocessing already rewrote `bbox` into the displayed frame
+    /// ([`Self::page_rotation_applied`]), the hull is built in that displayed
+    /// frame rather than re-rotating the already-mapped rect.
+    ///
+    /// Mirrors [`crate::elements::PathContent::rendered_bbox`]: a derived accessor
+    /// rather than a second stored rectangle that could drift out of sync.
+    pub fn page_bbox(&self) -> Rect {
+        if self.rotation_degrees == 0.0 {
+            return self.bbox;
+        }
+        // Conjugate the run frame by the clockwise page rotation already
+        // applied to `bbox`: the run origin's image is a fixed, known corner
+        // of the mapped rect; a rotation conjugates to itself, a mirror to
+        // `θ - 2·rot`.
+        let rot = self.page_rotation_applied.rem_euclid(360);
+        let theta = if self.mirrored {
+            self.rotation_degrees - 2.0 * rot as f32
+        } else {
+            self.rotation_degrees
+        }
+        .to_radians();
+        let (sin, cos) = theta.sin_cos();
+        // Writing axis and the across-line axis, the same pair the assembler
+        // resolves displacements onto (ISO 32000-1 §9.4.4). A mirrored run
+        // (negative determinant) carries its across-axis on the clockwise
+        // side of the baseline: v is reflected, not rotated.
+        let (ux, uy) = (cos, sin);
+        let (vx, vy) = if self.mirrored {
+            (sin, -cos)
+        } else {
+            (-sin, cos)
+        };
+        let b = self.bbox;
+        // Image of the run origin under the applied page rotation — the
+        // anchor the run frame pivots about in `bbox`'s current frame.
+        let (px, py) = match rot {
+            90 => (b.x, b.y + b.height),
+            180 => (b.x + b.width, b.y + b.height),
+            270 => (b.x + b.width, b.y),
+            _ => (b.x, b.y),
+        };
+        let corners = [
+            (b.x, b.y),
+            (b.x + b.width, b.y),
+            (b.x, b.y + b.height),
+            (b.x + b.width, b.y + b.height),
+        ]
+        .map(|(cx, cy)| {
+            let (dx, dy) = (cx - px, cy - py);
+            (px + dx * ux + dy * vx, py + dx * uy + dy * vy)
+        });
+
+        let min_x = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
+        let max_x = corners
+            .iter()
+            .map(|c| c.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
+        let max_y = corners
+            .iter()
+            .map(|c| c.1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
     /// Decompose the span into individual characters.
     pub fn to_chars(&self) -> Vec<TextChar> {
         let char_count = self.text.chars().count();
@@ -739,9 +837,16 @@ impl TextBlock {
         for c in &chars {
             *font_counts.entry(c.font_name.clone()).or_insert(0) += 1;
         }
+        // Explicit tie-break, not `max_by_key`: it returns the LAST maximal
+        // element, and over a `HashMap` that is the per-process-randomized
+        // iteration order. A block whose two fonts carry the same character
+        // count would otherwise pick a different dominant font per process.
+        // Ties resolve to the lexicographically smaller font name.
         let dominant_font = font_counts
             .iter()
-            .max_by_key(|(_, count)| *count)
+            .max_by(|(a_font, a_count), (b_font, b_count)| {
+                a_count.cmp(b_count).then_with(|| b_font.cmp(a_font))
+            })
             .map(|(font, _)| font.clone())
             .unwrap_or_default();
 
@@ -919,6 +1024,49 @@ mod tests {
             descent: -0.35 * 12.0,
             matrix: None,
         }
+    }
+
+    // A block whose two fonts carry equal character counts must resolve to the
+    // lexicographically smaller name, every run. `max_by_key` over the backing
+    // `HashMap` returned whichever entry the per-process-randomized iteration
+    // order visited last, so this assertion failed roughly half the time before
+    // the explicit tie-break.
+    #[test]
+    fn dominant_font_tie_resolves_to_lexicographically_smaller_name() {
+        let mut chars = Vec::new();
+        for (i, c) in "abcd".chars().enumerate() {
+            let mut ch = mock_char(c, i as f32 * 10.0, 0.0);
+            ch.font_name = "Times".to_string();
+            chars.push(ch);
+        }
+        for (i, c) in "efgh".chars().enumerate() {
+            let mut ch = mock_char(c, 40.0 + i as f32 * 10.0, 0.0);
+            ch.font_name = "Courier".to_string();
+            chars.push(ch);
+        }
+        let block = TextBlock::from_chars(chars);
+        assert_eq!(
+            block.dominant_font, "Courier",
+            "4 chars of Times vs 4 of Courier must resolve to the smaller name"
+        );
+    }
+
+    // The tie-break must not disturb the ordinary case.
+    #[test]
+    fn dominant_font_unique_winner_is_unaffected_by_tie_break() {
+        let mut chars = Vec::new();
+        for (i, c) in "abcdef".chars().enumerate() {
+            let mut ch = mock_char(c, i as f32 * 10.0, 0.0);
+            ch.font_name = "Times".to_string();
+            chars.push(ch);
+        }
+        for (i, c) in "gh".chars().enumerate() {
+            let mut ch = mock_char(c, 60.0 + i as f32 * 10.0, 0.0);
+            ch.font_name = "Courier".to_string();
+            chars.push(ch);
+        }
+        let block = TextBlock::from_chars(chars);
+        assert_eq!(block.dominant_font, "Times");
     }
 
     #[test]

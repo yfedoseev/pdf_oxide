@@ -117,7 +117,7 @@ fn indexed_cmyk_palette_leading_cr_preserved() {
          result indicates the palette's leading 0x0D byte was stripped"
     );
     // All pixels should be the same color (single palette entry, index 0 data).
-    for chunk in pixels.chunks_exact(3) {
+    for chunk in pixels.as_chunks::<3>().0 {
         assert_eq!(chunk[0], r);
         assert_eq!(chunk[1], g);
         assert_eq!(chunk[2], b);

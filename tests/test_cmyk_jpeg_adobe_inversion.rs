@@ -44,7 +44,7 @@ fn cmyk_jpeg_with_adobe_marker_decodes_to_bright_rgb() {
     // Expect near-white output: every channel close to 255.
     // (Exact equality is unreliable through JPEG quantisation even on a
     // solid-colour image, so accept anything above 200/255 per channel.)
-    for chunk in rgb.chunks_exact(3) {
+    for chunk in rgb.as_chunks::<3>().0 {
         assert!(
             chunk[0] > 200 && chunk[1] > 200 && chunk[2] > 200,
             "expected bright RGB from Adobe-inverted CMYK white, got {:?}",

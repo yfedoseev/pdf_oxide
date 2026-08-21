@@ -83,17 +83,15 @@ fn build_three_font_two_page_pdf(
     push!("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
 
     // 3: Page 1 — F1→10, F2→12, F3→14
-    push!(format!(
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+    push!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
          /Resources << /Font << /F1 10 0 R /F2 12 0 R /F3 14 0 R >> >> \
          /Contents 5 0 R >>"
-    ));
+        .to_string());
     // 4: Page 2 — F1→20, F2→22, F3→24
-    push!(format!(
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+    push!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
          /Resources << /Font << /F1 20 0 R /F2 22 0 R /F3 24 0 R >> >> \
          /Contents 6 0 R >>"
-    ));
+        .to_string());
 
     // 5, 6: content streams
     push!(format!("<< /Length {} >>\nstream\n{content}endstream", content.len()));
