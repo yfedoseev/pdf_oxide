@@ -947,7 +947,9 @@ pub fn extract_image_from_xobject(
             // benefits, as both the PNG path and the rasteriser are 8-bit.
             let pixels = if bits_per_component == 16 {
                 decoded_data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|sample| reduce_16_to_8(sample[0], sample[1]))
                     .collect()
             } else if bits_per_component == 1
@@ -1560,7 +1562,7 @@ pub fn cmyk_to_rgb_with_transform(
         return t.convert_cmyk_buffer(cmyk);
     }
     let mut rgb = Vec::with_capacity((cmyk.len() / 4) * 3);
-    for chunk in cmyk.chunks_exact(4) {
+    for chunk in cmyk.as_chunks::<4>().0 {
         let [r, g, b] = cmyk_pixel_to_rgb(chunk[0], chunk[1], chunk[2], chunk[3]);
         rgb.push(r);
         rgb.push(g);
@@ -1689,7 +1691,7 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
 
     // §10.3.5 additive-clamp fallback.
     let mut rgb = Vec::with_capacity(pixel_count * 3);
-    for chunk in straight_cmyk.chunks_exact(4) {
+    for chunk in straight_cmyk.as_chunks::<4>().0 {
         let [r, g, b] = cmyk_pixel_to_rgb(chunk[0], chunk[1], chunk[2], chunk[3]);
         rgb.push(r);
         rgb.push(g);

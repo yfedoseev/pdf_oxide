@@ -275,7 +275,9 @@ fn eval_separation_alt_cmyk(
                 .get("Domain")
                 .and_then(|o| o.as_array())
                 .map(|a| {
-                    a.chunks_exact(2)
+                    a.as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|c| {
                             let lo = c[0]
                                 .as_real()
@@ -294,7 +296,9 @@ fn eval_separation_alt_cmyk(
                 .get("Range")
                 .and_then(|o| o.as_array())
                 .map(|a| {
-                    a.chunks_exact(2)
+                    a.as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|c| {
                             let lo = c[0]
                                 .as_real()

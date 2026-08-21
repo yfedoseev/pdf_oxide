@@ -929,7 +929,9 @@ pub mod quad_points {
 
     /// Parse quad points from a flat array of numbers.
     pub fn parse(arr: &[f64]) -> Vec<QuadPoint> {
-        arr.chunks_exact(8)
+        arr.as_chunks::<8>()
+            .0
+            .iter()
             .map(|chunk| {
                 [
                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
