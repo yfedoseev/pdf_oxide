@@ -10,7 +10,7 @@
 //! - Uses system fonts as fallback when embedded fonts aren't available
 //! - Renders text using harfrust for shaping and tiny-skia for drawing glyph paths
 
-use super::create_fill_paint;
+use super::{create_fill_paint, guarded_fill_path};
 use crate::content::operators::TextElement;
 use crate::content::GraphicsState;
 use crate::document::PdfDocument;
@@ -1355,7 +1355,8 @@ impl TextRasterizer {
                     let glyph_transform =
                         combined_base.pre_translate(px, py).pre_scale(scale, scale);
 
-                    pixmap.fill_path(
+                    guarded_fill_path(
+                        pixmap,
                         &path,
                         paint,
                         tiny_skia::FillRule::Winding,
@@ -1422,7 +1423,8 @@ impl TextRasterizer {
                                     let cjk_transform = combined_base
                                         .pre_translate(px, py)
                                         .pre_scale(cjk_scale, -cjk_scale);
-                                    pixmap.fill_path(
+                                    guarded_fill_path(
+                                        pixmap,
                                         &cjk_path,
                                         paint,
                                         tiny_skia::FillRule::Winding,
@@ -1620,7 +1622,8 @@ impl TextRasterizer {
                             let py = y_cursor + paint_origin_dy + rise_y;
                             let glyph_transform =
                                 combined_base.pre_translate(px, py).pre_scale(scale, scale);
-                            pixmap.fill_path(
+                            guarded_fill_path(
+                                pixmap,
                                 &path,
                                 paint,
                                 tiny_skia::FillRule::Winding,
@@ -1803,7 +1806,8 @@ impl TextRasterizer {
                         let py = y_cursor + paint_origin_dy + rise_y;
                         let glyph_transform =
                             combined_base.pre_translate(px, py).pre_scale(scale, scale);
-                        pixmap.fill_path(
+                        guarded_fill_path(
+                            pixmap,
                             &path,
                             paint,
                             tiny_skia::FillRule::Winding,
@@ -1912,7 +1916,8 @@ impl TextRasterizer {
                 ) {
                     pb.push_rect(rect);
                     if let Some(path) = pb.finish() {
-                        pixmap.fill_path(
+                        guarded_fill_path(
+                            pixmap,
                             &path,
                             paint,
                             tiny_skia::FillRule::Winding,

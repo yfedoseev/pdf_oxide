@@ -147,6 +147,7 @@ use super::resolution::{
     ResolutionPipeline, SeparationBackend, SeparationSurface,
 };
 use super::text_rasterizer::TextRasterizer;
+use super::{device_bounds_rasterizable, guarded_fill_path, guarded_stroke_path};
 use crate::rendering::resolution::{DeviceColor, LogicalColor};
 use smallvec::SmallVec;
 
@@ -2511,7 +2512,7 @@ pub(crate) fn fill_separation(
     // overlapping pixels, which SourceOver gives us for free.
     paint.blend_mode = tiny_skia::BlendMode::SourceOver;
 
-    pixmap.fill_path(path, &paint, fill_rule, transform, clip);
+    guarded_fill_path(pixmap, path, &paint, fill_rule, transform, clip);
 }
 
 /// Stroke a path into the separation pixmap with the given tint value.
@@ -2547,7 +2548,7 @@ fn stroke_separation(
         stroke.dash = tiny_skia::StrokeDash::new(gs.dash_pattern.0.clone(), gs.dash_pattern.1);
     }
 
-    pixmap.stroke_path(path, &paint, &stroke, transform, clip);
+    guarded_stroke_path(pixmap, path, &paint, &stroke, transform, clip);
 }
 
 /// Apply a pending clip path to the clip stack.
@@ -2571,6 +2572,13 @@ fn apply_separation_clip(
         }
         let gs = gs_stack.current();
         let transform = combine_transforms(base_transform, &gs.ctm);
+
+        // See `apply_pending_clip` in page_renderer: a clip path beyond f32
+        // device precision is dropped, not materialized as an empty mask.
+        if !device_bounds_rasterizable(&path, transform) {
+            log::debug!("skipping clip beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
 
         if let Some(path_transformed) = path.transform(transform) {
             let mut new_mask = Mask::new(pixmap_width, pixmap_height).unwrap();

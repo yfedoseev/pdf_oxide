@@ -1,7 +1,8 @@
 //! Path rasterizer - renders PDF paths using tiny-skia.
 
 use super::{
-    create_fill_paint, create_stroke_paint, paint_with_nonsep_blend, pdf_blend_mode_is_nonseparable,
+    create_fill_paint, create_stroke_paint, guarded_fill_path, guarded_stroke_path,
+    paint_with_nonsep_blend, pdf_blend_mode_is_nonseparable,
 };
 use crate::content::GraphicsState;
 use tiny_skia::{FillRule, LineCap, LineJoin, Path, Pixmap, Stroke, Transform};
@@ -28,7 +29,7 @@ impl PathRasterizer {
         fill_rule: FillRule,
     ) {
         let paint = create_fill_paint(gs, &gs.blend_mode);
-        pixmap.fill_path(path, &paint, fill_rule, transform, None);
+        guarded_fill_path(pixmap, path, &paint, fill_rule, transform, None);
     }
 
     /// Stroke a path with the current stroke color and line style.
@@ -56,7 +57,7 @@ impl PathRasterizer {
             dash,
         };
 
-        pixmap.stroke_path(path, &paint, &stroke, transform, None);
+        guarded_stroke_path(pixmap, path, &paint, &stroke, transform, None);
     }
 
     /// Fill a path with optional clip mask.
@@ -94,13 +95,13 @@ impl PathRasterizer {
         if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
             let paint = create_fill_paint(gs, "Normal");
             paint_with_nonsep_blend(pixmap, mode, |scratch| {
-                scratch.fill_path(path, &paint, fill_rule, transform, clip_mask);
+                guarded_fill_path(scratch, path, &paint, fill_rule, transform, clip_mask);
             });
             return;
         }
 
         let paint = create_fill_paint(gs, &gs.blend_mode);
-        pixmap.fill_path(path, &paint, fill_rule, transform, clip_mask);
+        guarded_fill_path(pixmap, path, &paint, fill_rule, transform, clip_mask);
     }
 
     /// Stroke a path with optional clip mask.
@@ -145,13 +146,13 @@ impl PathRasterizer {
         if let Some(mode) = pdf_blend_mode_is_nonseparable(&gs.blend_mode) {
             let paint = create_stroke_paint(gs, "Normal");
             paint_with_nonsep_blend(pixmap, mode, |scratch| {
-                scratch.stroke_path(path, &paint, &stroke, transform, clip_mask);
+                guarded_stroke_path(scratch, path, &paint, &stroke, transform, clip_mask);
             });
             return;
         }
 
         let paint = create_stroke_paint(gs, &gs.blend_mode);
-        pixmap.stroke_path(path, &paint, &stroke, transform, clip_mask);
+        guarded_stroke_path(pixmap, path, &paint, &stroke, transform, clip_mask);
     }
 
     /// Convert PDF line cap style to tiny-skia.
