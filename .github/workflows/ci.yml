@@ -1857,7 +1857,7 @@ jobs:
           MISSING=0
           while IFS= read -r sha; do
             if ! git log -1 --format=%B "$sha" | grep -q "^Signed-off-by:"; then
-              echo "::error::Commit $sha is missing a Signed-off-by trailer"
+              echo "::error::Commit $sha is missing a Signed-off-by trailer. Sign a new commit with 'git commit -s', the last one with 'git commit --amend -s', a merge with 'git merge --signoff', or a range with 'git rebase --signoff <base>'. Merge commits are checked too, so a merge you made to sync needs its own trailer."
               MISSING=$((MISSING+1))
             fi
           done < <(git log --pretty=format:"%H" "${BASE}..${HEAD}")
