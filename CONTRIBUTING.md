@@ -218,6 +218,21 @@ the underlying work is.
   the *rate*: whatever produced them, a burst is machine output arriving at
   machine speed into a queue served by one person.
 
+- **The same rate limit applies to submissions, not just comments.** Issues and
+  pull requests opened in bursts — several within a minute, or an issue and the
+  pull request that closes it created seconds apart — are treated the same way.
+
+  An issue filed moments before its own PR is not a proposal anyone could have
+  responded to; it is paperwork generated alongside the code. The point of
+  opening an issue first is that a maintainer gets a chance to say "yes",
+  "not like that", or "we already fixed it upstream" *before* anyone writes the
+  change. Filing both at once removes that chance while appearing to follow the
+  rule, and it is why an issue now needs an explicit approval and an assignment
+  before its PR is opened.
+
+  Again this is about rate, not tooling. Generate the work however you like;
+  submit it at a rate a person can respond to.
+
   An account treated this way is **added to the auto-reject list** — its new
   issues and pull requests are closed automatically on arrival, without review.
   Removal is by asking, and by not doing it again.
@@ -252,10 +267,13 @@ In order, and proportionate to what actually happened:
 3. **Auto-reject.** The account is added to the auto-reject list: new issues and
    pull requests are closed on arrival with a pointer to this section. Existing
    open work is not touched, and commenting still works — this caps intake
-   without ending the conversation.
+   without ending the conversation. It is not permanent: ask, and it comes off.
 4. Interaction limits on the repository.
-5. **Blocking.** A blocked account cannot open issues, comment, or submit pull
-   requests, and open contributions from it may be closed unmerged.
+5. **Blocking.** A blocked account cannot comment, open issues, or submit pull
+   requests — all three surfaces at once — and open contributions from it may be
+   closed unmerged. This is the end of the ladder, not a first response: it is
+   for sustained volume after a written request, or for programmatic submission,
+   and it is the only step that is not trivially reversible.
 
 Steps 1 and 2 are skipped for automated posting: a burst goes straight to step 3,
 because there is no point asking a script to slow down.
