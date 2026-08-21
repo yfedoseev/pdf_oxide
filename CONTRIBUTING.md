@@ -13,6 +13,7 @@ anti-newcomer and not anti-AI — we are anti-slop.
 
 ## Table of Contents
 
+- [Who depends on this](#who-depends-on-this)
 - [The two rules that matter most](#the-two-rules-that-matter-most)
 - [Code of Conduct](#code-of-conduct)
 - [Before you open a pull request](#before-you-open-a-pull-request)
@@ -29,6 +30,33 @@ anti-newcomer and not anti-AI — we are anti-slop.
 - [License](#license)
 
 ---
+
+## Who depends on this
+
+Worth knowing before you read the rules, because it is where they come from.
+
+PDFOxide is a production dependency of projects with a combined **195,000+
+GitHub stars** — RAG engines, collaborative editors, AI coding agents,
+document-intelligence frameworks, and arXiv.org's own submission pipeline. The
+[Notable Users](README.md#notable-users) list in the README is verified against
+each project's public dependency manifest.
+
+It is also a library people can simply use. MIT/Apache-2.0, `cargo add` or
+`pip install`, no account, no API key, no telemetry, no hosted service in the
+path, no usage tier that expires. That is deliberate and we intend to keep it —
+a PDF toolkit that phones home is not a PDF toolkit anybody should build on.
+
+Both facts have the same consequence for contributions. A defect here does not
+surface as a failed build in one place; it surfaces as wrong text inside someone
+else's product, on a document neither of us has seen, with no error and nothing
+to alert them. Extraction fails *silently* — that is the whole difficulty of
+this domain. There is no telemetry to catch it and no server-side fix to push
+afterwards; whatever ships is what runs, in every downstream product, until the
+next release.
+
+So the bar here is higher than "the tests pass", and the rules below are the
+practical form of that bar rather than ceremony. They are also why a review can
+take a while: the maintainer is checking the thing that CI structurally cannot.
 
 ## The two rules that matter most
 
