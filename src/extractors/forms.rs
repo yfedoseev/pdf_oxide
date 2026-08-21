@@ -222,7 +222,9 @@ impl FormExtractor {
 
             // Convert bytes to u16 pairs (big-endian)
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
                 .collect();
 
