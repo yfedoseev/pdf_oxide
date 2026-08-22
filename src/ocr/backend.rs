@@ -185,7 +185,9 @@ pub(crate) struct TractBackend {
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
-type TractPlan = tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>;
+// tract 0.23 fixed TypedRunnableModel's fact/op parameters into the alias
+// itself, so it no longer takes the model type as a generic argument.
+type TractPlan = tract_onnx::prelude::TypedRunnableModel;
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
@@ -226,7 +228,9 @@ impl TractBackend {
             .map_err(|e| OcrError::InferenceError(format!("tract: optimize: {}", e)))?
             .into_runnable()
             .map_err(|e| OcrError::InferenceError(format!("tract: runnable: {}", e)))?;
-        let arc = std::sync::Arc::new(runnable);
+        // tract 0.23's `into_runnable` returns the plan already behind an Arc,
+        // so wrapping it again would nest two.
+        let arc = runnable;
         plans.insert(key, arc.clone());
         Ok(arc)
     }
@@ -259,7 +263,13 @@ impl InferenceBackend for TractBackend {
             .ok_or_else(|| OcrError::InferenceError("tract: no output tensor".to_string()))?;
 
         let out_shape: Vec<usize> = out.shape().to_vec();
-        let out_data = out
+        // tract 0.23 moved the flat-slice accessor off Tensor and onto a plain
+        // (contiguous, natural-stride) view, which `try_as_plain` reports on
+        // rather than silently returning None for a strided tensor.
+        let out_plain = out
+            .try_as_plain()
+            .map_err(|e| OcrError::InferenceError(format!("tract: output layout: {}", e)))?;
+        let out_data = out_plain
             .as_slice::<f32>()
             .map_err(|e| OcrError::InferenceError(format!("tract: extract output: {}", e)))?;
         ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&out_shape), out_data.to_vec())

@@ -154,7 +154,7 @@ ttf-parser = "0.25" # TrueType/OpenType parsing: embedded-font cmap, glyph outli
 # Unmaintained (RUSTSEC-2026-0192); fontations (skrifa) migration is upstream-gated — rationale in osv-scanner.toml.
 subsetter = "0.2" # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
 # EmbeddedFont to shrink embedded fonts to only the glyphs actually used.
-taffy = { version = "0.12", default-features = false, features = [
+taffy = { version = "0.13", default-features = false, features = [
     "std",
     "taffy_tree",
     "block_layout",
@@ -201,7 +201,7 @@ aws-lc-rs = { version = "1", optional = true, features = ["fips"] }
 x509-parser = { version = "0.18", optional = true }   # X.509 certificate parsing
 cms = { version = "0.2", optional = true }            # CMS/PKCS#7 signatures
 rsa = { version = "0.9", optional = true }            # RSA signing
-der = { version = "0.7", optional = true }            # DER encoding
+der = { version = "0.7", optional = true }            # DER encoding — held at 0.7: cms has no stable der-0.8 release
 spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.7
 pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
 pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
@@ -239,7 +239,7 @@ linfa = { version = "0.8", optional = true }
 linfa-clustering = { version = "0.8", optional = true }
 
 # ML (CPU-only)
-tract-onnx = { version = "0.22", optional = true }
+tract-onnx = { version = "0.23", optional = true }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 
 # OCR - PaddleOCR via ONNX Runtime (optional)
@@ -281,8 +281,8 @@ tiny-skia = { version = "0.12", optional = true }
 fast_image_resize = { version = "6", optional = true }                          # SIMD-accelerated image downscaling
 hayro-jbig2 = { version = "0.3", optional = true, default-features = false }    # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
 hayro-jpeg2000 = { version = "0.4", optional = true, default-features = false } # Pure-Rust JPEG 2000 decoder, no_std + WASM-safe (Apache-2.0 OR MIT)
-fontdb = { version = "0.23", optional = true }
-harfrust = { version = "0.12", optional = true }
+fontdb = { version = "0.24", optional = true }
+harfrust = { version = "0.13", optional = true }
 
 uuid = { version = "1.23", features = ["v4", "js"] }
 
