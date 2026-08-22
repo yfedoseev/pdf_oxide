@@ -154,7 +154,7 @@ ttf-parser = "0.25" # TrueType/OpenType parsing: embedded-font cmap, glyph outli
 # Unmaintained (RUSTSEC-2026-0192); fontations (skrifa) migration is upstream-gated — rationale in osv-scanner.toml.
 subsetter = "0.2" # Binary TrueType/OpenType subsetting (Typst's; MIT/Apache). Used by writer-side
 # EmbeddedFont to shrink embedded fonts to only the glyphs actually used.
-taffy = { version = "0.12", default-features = false, features = [
+taffy = { version = "0.13", default-features = false, features = [
     "std",
     "taffy_tree",
     "block_layout",
@@ -176,7 +176,7 @@ unicode-normalization = "0.1"                                # NFC composition o
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
 jpeg-decoder = "0.3"                                                                       # Direct decoder access for CMYK JPEGs (Adobe inversion handling)
-base64 = "0.22"                                                                            # For embedding images as data URIs
+base64 = "0.23"                                                                            # For embedding images as data URIs
 fax = "0.3"                                                                                # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
 
 # Encryption support
@@ -199,22 +199,21 @@ aws-lc-rs = { version = "1", optional = true, features = ["fips"] }
 # Dependabot PRs #469/#467/#429/#389 track the 0.8 stack upgrades; merge once CI green.
 # cms 0.3 is still pre-release; upgrade cms + rsa + pkcs1 together when stable.
 x509-parser = { version = "0.18", optional = true }   # X.509 certificate parsing
-cms = { version = "0.2", optional = true }            # CMS/PKCS#7 signatures
-rsa = { version = "0.9", optional = true }            # RSA signing
-der = { version = "0.7", optional = true }            # DER encoding
-spki = { version = "0.7", optional = true }           # SubjectPublicKeyInfo — matches der 0.7
-pkcs1 = { version = "0.7", optional = true }          # PKCS#1 RSA format
-pkcs8 = { version = "0.10", optional = true }         # PKCS#8 private keys
-p12-keystore = { version = "0.3.0", optional = true } # PKCS#12 (.p12/.pfx) parsing
-signature = { version = "2.2", optional = true }      # Signature traits
+cms = { version = "0.3.0-pre.1", optional = true }    # CMS/PKCS#7 — pinned exactly by pkcs12, which p12-keystore pulls
+rsa = { version = "0.10.0-rc.18", optional = true }   # RSA signing — rc line is what cms 0.3 requires
+der = { version = "0.8", optional = true }            # DER encoding
+spki = { version = "0.8", optional = true }           # SubjectPublicKeyInfo — matches der 0.8
+pkcs1 = { version = "0.8.0-rc.4", optional = true }   # PKCS#1 RSA format — rc line is what rsa 0.10 requires
+pkcs8 = { version = "0.11", optional = true }         # PKCS#8 private keys
+p12-keystore = { version = "0.3.1", optional = true } # PKCS#12 (.p12/.pfx) parsing
+signature = { version = "3.0", optional = true }      # Signature traits
 sha1 = { version = "0.11", optional = true }          # SHA-1 for legacy signatures
 # sha2 v0.10 alias: rsa 0.9 and p256/p384 0.13 require digest 0.10 trait bounds.
 # Our main codebase uses sha2 0.11 (digest 0.11). The alias lets the signatures
 # module use sha2 0.10 types specifically where rsa::pss / ecdsa crate generics
 # require it, without changing the rest of the codebase. See issue #420.
-sha2_v10 = { package = "sha2", version = "0.10", optional = true }
-p256 = { version = "0.14", optional = true }                       # ECDSA P-256 signature verification
-p384 = { version = "0.14", optional = true }                       # ECDSA P-384 signature verification
+p256 = { version = "0.14", optional = true } # ECDSA P-256 signature verification
+p384 = { version = "0.14", optional = true } # ECDSA P-384 signature verification
 
 # Parallel extraction
 rayon = { version = "1.12", optional = true }
@@ -281,8 +280,8 @@ tiny-skia = { version = "0.12", optional = true }
 fast_image_resize = { version = "6", optional = true }                          # SIMD-accelerated image downscaling
 hayro-jbig2 = { version = "0.3", optional = true, default-features = false }    # Pure-Rust JBIG2 decoder (Apache-2.0 OR MIT)
 hayro-jpeg2000 = { version = "0.4", optional = true, default-features = false } # Pure-Rust JPEG 2000 decoder, no_std + WASM-safe (Apache-2.0 OR MIT)
-fontdb = { version = "0.23", optional = true }
-harfrust = { version = "0.12", optional = true }
+fontdb = { version = "0.24", optional = true }
+harfrust = { version = "0.13", optional = true }
 
 uuid = { version = "1.23", features = ["v4", "js"] }
 
@@ -292,9 +291,7 @@ barcoders = { version = "2.0", optional = true, features = ["image"] }
 
 # Office document creation and export via office_oxide (always required)
 office_oxide = { version = "0.1.8", default-features = false }
-x509-tsp = { version = "0.1", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
-cmpv2 = { version = "0.2", optional = true }
 
 # `getrandom`'s `wasm_js` backend is only meaningful when targeting
 # `wasm32-unknown-unknown` (browser / WASI runtimes that route entropy
@@ -487,8 +484,6 @@ signatures = [
     "dep:p12-keystore",
     "dep:signature",
     "dep:sha1",
-    "dep:x509-tsp",
-    "dep:sha2_v10",
     "dep:p256",
     "dep:p384",
 ]
@@ -497,7 +492,7 @@ signatures = [
 # for POSTing the TimeStampReq to a Time Stamp Authority. Kept behind a
 # dedicated feature so embedded / WASM / AOT C# builds don't pull in an
 # HTTP stack unless the consumer actually needs it.
-tsa-client = ["signatures", "dep:ureq", "dep:cmpv2"]
+tsa-client = ["signatures", "dep:ureq"]
 
 # Barcode/QR code generation
 barcodes = ["dep:qrcode", "dep:barcoders"]

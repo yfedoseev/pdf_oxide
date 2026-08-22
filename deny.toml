@@ -9,16 +9,15 @@ unmaintained = "none"
 yanked = "deny"
 # Ignore certain advisories (use sparingly).
 ignore = [
-    # RUSTSEC-2023-0071 — Marvin Attack on RustCrypto's `rsa 0.9.x`.
-    # Timing side-channel in the private-key decrypt/sign path.
-    # pdf_oxide uses `rsa` only for signature *verification*
-    # (public-key modexp against the signer's embedded cert), which
-    # the advisory does not implicate. Signing is still a stub
-    # (`src/signatures/signer.rs::create_pkcs7_signature`), so no
-    # private-key operation happens at runtime yet. Drop this ignore
-    # the moment a patched `rsa` release ships (RustCrypto are
-    # migrating to a fully constant-time implementation); re-audit
-    # when the #208 signing half lands.
+
+    # RUSTSEC-2023-0071 — the RSA "Marvin Attack" timing sidechannel.
+    # Still unpatched upstream: rsa 0.10.0-rc.18 is affected exactly as 0.9
+    # was, and the advisory records "No safe upgrade is available!". Reached
+    # only under `signatures`, so it is absent from a default build — which
+    # is why a default-feature `cargo deny` run reports clean and CI's
+    # `--all-features` run does not. Verify with
+    # `cargo deny --all-features check advisories`, never the default.
+    # Drop this the moment a constant-time rsa release ships.
     "RUSTSEC-2023-0071",
 
     # arrayref 0.3.9 — yanked from crates.io 2026-08-20. Reached only

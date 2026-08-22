@@ -14,12 +14,12 @@
 
 use crate::error::{Error, Result};
 use crate::signatures::timestamp::HashAlgorithm;
+use crate::signatures::tsp::{MessageImprint, TimeStampReq, TimeStampResp, TspVersion};
 use crate::signatures::Timestamp;
 use cms::cert::x509::spki::AlgorithmIdentifier;
 use der::asn1::OctetString;
 use der::{Any, Decode, Encode};
 use std::time::Duration;
-use x509_tsp::{MessageImprint, TimeStampReq, TimeStampResp, TspVersion};
 
 /// Configuration for a [`TsaClient`].
 #[derive(Debug, Clone)]
@@ -90,7 +90,7 @@ impl TsaClient {
             Error::InvalidPdf(format!("TSA response is not a valid TimeStampResp: {e}"))
         })?;
 
-        use cmpv2::status::PkiStatus;
+        use crate::signatures::tsp::PkiStatus;
         // PkiStatus = Accepted(0) | GrantedWithMods(1) | (…rejections).
         // Anything other than the two "your token is here" states is a
         // rejection — surface the failure rather than try to interpret

@@ -98,13 +98,13 @@ pub fn build_signing_certificate_v2(
     let cert = X509Certificate::from_der(cert_der)
         .map_err(|e| Error::InvalidPdf(format!("ESS: cannot parse signer certificate: {e}")))?;
     let issuer_der = cert
-        .tbs_certificate
-        .issuer
+        .tbs_certificate()
+        .issuer()
         .to_der()
         .map_err(|e| Error::InvalidPdf(format!("ESS: cannot DER-encode issuer: {e}")))?;
     let serial_der = cert
-        .tbs_certificate
-        .serial_number
+        .tbs_certificate()
+        .serial_number()
         .to_der()
         .map_err(|e| Error::InvalidPdf(format!("ESS: cannot DER-encode serial: {e}")))?;
 
