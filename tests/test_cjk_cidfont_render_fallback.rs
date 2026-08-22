@@ -112,7 +112,9 @@ fn build_cjk_no_embed_pdf() -> Vec<u8> {
 
 /// Count pixels darker than near-white in a raw premultiplied-RGBA8 buffer.
 fn dark_pixel_count(data: &[u8]) -> usize {
-    data.chunks_exact(4)
+    data.as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 200 || px[1] < 200 || px[2] < 200)
         .count()
 }

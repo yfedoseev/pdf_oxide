@@ -7131,6 +7131,23 @@ namespace PdfOxide.Internal
             out int errorCode);
 
         /// <summary>
+        /// Gets the page-space extents of an element: the rectangle from
+        /// <c>pdf_oxide_element_get_rect</c> with any text-matrix rotation resolved
+        /// into an axis-aligned page-space hull. Identical to
+        /// <c>pdf_oxide_element_get_rect</c> for upright runs.
+        /// </summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_oxide_element_get_page_rect", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial void pdf_oxide_element_get_page_rect(
+            NativeHandle elements,
+            int index,
+            out float x,
+            out float y,
+            out float width,
+            out float height,
+            out int errorCode);
+
+        /// <summary>
         /// Frees an element list handle.
         /// </summary>
         [LibraryImport(LibName, EntryPoint = "pdf_oxide_elements_free", StringMarshalling = StringMarshalling.Utf8)]

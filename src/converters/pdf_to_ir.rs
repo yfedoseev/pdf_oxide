@@ -1155,7 +1155,13 @@ fn detect_columns(all_lines: &[Vec<TextSpan>], page_w_pt: f32) -> Option<ColumnL
         for &x in xs {
             *bins.entry((x / BIN_PT).round() as i32).or_insert(0) += 1;
         }
-        let (&best_b, &best_n) = bins.iter().max_by_key(|(_, &n)| n)?;
+        // Explicit tie-break, not `max_by_key`: it returns the LAST maximal
+        // element, and over a `HashMap` that is the per-process-randomized
+        // iteration order, so two equally-populated bins picked a different
+        // column left-edge per process. Ties resolve to the smaller bin.
+        let (&best_b, &best_n) = bins
+            .iter()
+            .max_by(|(a_bin, a_n), (b_bin, b_n)| a_n.cmp(b_n).then_with(|| b_bin.cmp(a_bin)))?;
         Some((best_b as f32 * BIN_PT, best_n))
     };
 
@@ -1418,5 +1424,36 @@ mod merge_lines_tests {
     #[test]
     fn existing_whitespace_seam_unchanged() {
         assert_eq!(merged_text(&[line("hello "), line("world")]), "hello world");
+    }
+
+    /// The column-left histogram inside `detect_columns` ties 4-to-4 between
+    /// the x=50 and x=100 bins. `max_by_key` over the backing `HashMap`
+    /// returned whichever bin the per-process-randomized iteration order
+    /// visited last, so the derived column width flapped between runs. The
+    /// tie must resolve to the SMALLER bin (x=50), giving a 250 pt column
+    /// (5000 twips) rather than the 200 pt (4000 twips) the other bin yields.
+    #[test]
+    fn column_left_histogram_tie_resolves_to_smaller_bin() {
+        fn span_at(x: f32, w: f32) -> TextSpan {
+            TextSpan {
+                text: "x".to_string(),
+                bbox: crate::geometry::Rect::new(x, 0.0, w, 12.0),
+                ..Default::default()
+            }
+        }
+        // Eight two-column lines. Four start column 1 at x=50, four at x=100
+        // — an exact tie. Column 1 always ends at x=250; column 2 always
+        // starts at x=350, so the gutter and midline gates all pass.
+        let mut lines: Vec<Vec<TextSpan>> = Vec::new();
+        for i in 0..8 {
+            let left_x = if i < 4 { 50.0 } else { 100.0 };
+            lines.push(vec![span_at(left_x, 250.0 - left_x), span_at(350.0, 200.0)]);
+        }
+        let layout = detect_columns(&lines, 612.0).expect("two-column layout expected");
+        assert_eq!(
+            layout.column_widths_twips,
+            vec![5000, 5000],
+            "tie must resolve to the smaller column-left bin (x=50 → 250 pt columns)"
+        );
     }
 }

@@ -147,6 +147,7 @@ use super::resolution::{
     ResolutionPipeline, SeparationBackend, SeparationSurface,
 };
 use super::text_rasterizer::TextRasterizer;
+use super::{device_bounds_rasterizable, guarded_fill_path, guarded_stroke_path};
 use crate::rendering::resolution::{DeviceColor, LogicalColor};
 use smallvec::SmallVec;
 
@@ -2511,7 +2512,7 @@ pub(crate) fn fill_separation(
     // overlapping pixels, which SourceOver gives us for free.
     paint.blend_mode = tiny_skia::BlendMode::SourceOver;
 
-    pixmap.fill_path(path, &paint, fill_rule, transform, clip);
+    guarded_fill_path(pixmap, path, &paint, fill_rule, transform, clip);
 }
 
 /// Stroke a path into the separation pixmap with the given tint value.
@@ -2547,7 +2548,7 @@ fn stroke_separation(
         stroke.dash = tiny_skia::StrokeDash::new(gs.dash_pattern.0.clone(), gs.dash_pattern.1);
     }
 
-    pixmap.stroke_path(path, &paint, &stroke, transform, clip);
+    guarded_stroke_path(pixmap, path, &paint, &stroke, transform, clip);
 }
 
 /// Apply a pending clip path to the clip stack.
@@ -2571,6 +2572,13 @@ fn apply_separation_clip(
         }
         let gs = gs_stack.current();
         let transform = combine_transforms(base_transform, &gs.ctm);
+
+        // See `apply_pending_clip` in page_renderer: a clip path beyond f32
+        // device precision is dropped, not materialized as an empty mask.
+        if !device_bounds_rasterizable(&path, transform) {
+            log::debug!("skipping clip beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
 
         if let Some(path_transformed) = path.transform(transform) {
             let mut new_mask = Mask::new(pixmap_width, pixmap_height).unwrap();
@@ -2896,49 +2904,66 @@ fn paint_image_to_plates(
     // extractor exposes RGB after Indexed expansion; for separation
     // routing we only consume CMYK / Separation / DeviceN paths (the
     // shapes above), so anything else falls through to skip.
-    let (samples, stride) = match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
-        // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
-        (
-            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
-            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
-            ImageData::Raw {
-                pixels,
-                format: PixelFormat::CMYK,
+    // `decode_pre_applied`: whether /Decode is ALREADY mapped into these
+    // samples (ISO 32000-1 §8.9.5.2), in which case re-applying it here would
+    // double-invert. For extractor-provided Raw buffers this is exactly what
+    // the extractor recorded — notably it is false when the extractor could
+    // not interpret the array (e.g. a DeviceN whose ink count differs from
+    // the colour space's declared component count), so this path still owes
+    // the image its /Decode. JPEG samples are decoded locally and always do.
+    // Deliberately not `!samples_are_raw()`: that is the wider "were these
+    // samples rescaled at all" fact, true for every sub-byte and 16-bit
+    // image, and reading it here drops the /Decode those images are owed.
+    let extractor_decode_applied = pdf_image.decode_folded_in();
+    let (samples, stride, decode_pre_applied) =
+        match (resolved_space.clone(), extractor_cs, pdf_image.data()) {
+            // Raw CMYK pixel buffer (Flate / CCITT / etc. on a DeviceCMYK image).
+            (
+                ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+                PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+                ImageData::Raw {
+                    pixels,
+                    format: PixelFormat::CMYK,
+                },
+            ) => (pixels.clone(), 4usize, extractor_decode_applied),
+            // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
+            (
+                ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
+                PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
+                ImageData::Jpeg(bytes),
+            ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4, false),
+            // Separation: 1 channel.
+            (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
+                (pixels.clone(), 1, extractor_decode_applied)
             },
-        ) => (pixels.clone(), 4usize),
-        // JPEG-encoded DeviceCMYK image — decode to raw CMYK preserving APP14 inversion.
-        (
-            ResolvedSpace::Cmyk | ResolvedSpace::IccCmyk,
-            PdfCs::DeviceCMYK | PdfCs::ICCBased(4),
-            ImageData::Jpeg(bytes),
-        ) => (crate::extractors::images::decode_cmyk_jpeg_to_raw_cmyk(bytes)?, 4),
-        // Separation: 1 channel.
-        (ResolvedSpace::Separation(_), PdfCs::Separation, ImageData::Raw { pixels, .. }) => {
-            (pixels.clone(), 1)
-        },
-        // DeviceN: N channels (extractor reports DeviceN with N components).
-        (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
-            (pixels.clone(), names.len().max(1))
-        },
-        // Shape mismatch (e.g. extractor reports a different colour space than
-        // the dict declared after our resolver ran). Drop silently — the
-        // resolver result wins for routing semantics but we won't fabricate
-        // channels we don't have.
-        _ => {
-            log::debug!(
-                "Image XObject '{name}': shape mismatch between resolved colour space \
+            // DeviceN: N channels (extractor reports DeviceN with N components).
+            (ResolvedSpace::DeviceN(ref names), PdfCs::DeviceN, ImageData::Raw { pixels, .. }) => {
+                (pixels.clone(), names.len().max(1), extractor_decode_applied)
+            },
+            // Shape mismatch (e.g. extractor reports a different colour space than
+            // the dict declared after our resolver ran). Drop silently — the
+            // resolver result wins for routing semantics but we won't fabricate
+            // channels we don't have.
+            _ => {
+                log::debug!(
+                    "Image XObject '{name}': shape mismatch between resolved colour space \
                  and extractor sample format; skipping"
-            );
-            return Ok(());
-        },
-    };
+                );
+                return Ok(());
+            },
+        };
     let _ = color_state; // currently unused outside the image-mask path
 
     // §8.9.5.2: /Decode maps raw sample values into the colour space's range.
     // For per-plate routing the colour space is treated as identity, so the
     // only effect that matters is inversion (`/Decode [1 0]` on a Separation
-    // image, etc.). Default identity is `[0 1]` per channel.
-    let decode = read_decode_array(dict, stride);
+    // image, etc.). Default identity is `[0 1]` per channel. Only consulted
+    // for sample sources the extractor has not already mapped.
+    let decode = if decode_pre_applied {
+        None
+    } else {
+        read_decode_array(dict, stride)
+    };
 
     let gs = gs_stack.current();
     let transform = combine_transforms(base_transform, &gs.ctm);
@@ -3057,12 +3082,15 @@ fn paint_image_mask_to_plates(
         Object::Stream { dict, .. } => dict,
         _ => return Ok(()),
     };
-    let w = dict.get("Width").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
-    let h = dict.get("Height").and_then(|o| o.as_integer()).unwrap_or(0) as usize;
-    let pixel_count = w * h;
-    if pixel_count == 0 {
+    // Same geometry contract as the stencil path in `page_renderer`, which
+    // already rejects non-positive and unbacked dimensions before allocating.
+    let layout = crate::rendering::page_renderer::PageRenderer::image_mask_layout(dict);
+    let Ok((w32, h32, _row_bytes, packed_len, _rgba_len)) = layout else {
+        log::warn!("Skipping image mask '{name}': {}", layout.unwrap_err());
         return Ok(());
-    }
+    };
+    let (w, h) = (w32 as usize, h32 as usize);
+    let pixel_count = w * h;
     let bpc = dict
         .get("BitsPerComponent")
         .and_then(|o| o.as_integer())
@@ -3080,10 +3108,18 @@ fn paint_image_mask_to_plates(
     } else {
         xobject.decode_stream_data()?
     };
-    let mut stencil = expand_1bpc_to_8bpc(&packed, w as u32, h as u32);
-    if stencil.len() < pixel_count {
+    // Checked before expanding, because `expand_1bpc_to_8bpc` zero-pads and
+    // would size the buffer from the declaration: `/Width 2147483648 /Height
+    // 2147483648` is representable and asks for 2^62 bytes.
+    if packed.len() < packed_len {
+        log::warn!(
+            "Skipping image mask '{name}': {w}x{h} needs {packed_len} bytes, the stream \
+             carries {}",
+            packed.len()
+        );
         return Ok(());
     }
+    let mut stencil = expand_1bpc_to_8bpc(&packed, w32, h32);
 
     // §8.9.6.2: decoded sample value 0 marks the pixel with the current
     // colour; value 1 leaves it transparent. /Decode defaults to [0 1] —

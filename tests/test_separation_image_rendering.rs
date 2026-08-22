@@ -296,12 +296,19 @@ fn build_pdf_with_16bpc_cmyk_image(samples: &[u8], width: u32, height: u32) -> V
     finalize_pdf(buf, offsets)
 }
 
-/// §8.9.5: BitsPerComponent ∈ {1, 2, 4, 8, 16}. The current routing path
-/// reads 8-bit interleaved samples. A 16-bpc image must not be mis-read
-/// as 8-bpc and paint garbage onto plates — until full BPC expansion lands,
-/// the routing path skips with a log entry, leaving plates untouched.
+/// §8.9.5: BitsPerComponent ∈ {1, 2, 4, 8, 16}. A 16-bpc image is reduced to
+/// one byte per component during extraction, so by the time routing sees it
+/// the samples are 8-bit and it is routed rather than skipped. What must hold
+/// is that the reduction preserved channel identity: reading the high byte of
+/// each 16-bit sample as a separate channel would smear the C channel across
+/// M and Y.
+///
+/// The name this carried — `non_8bpc_image_is_skipped_not_mis_routed` — stopped
+/// being true once extraction reduced 16-bpc samples: nothing is skipped here,
+/// and asserting only that M/Y/K stay clean passes whether the image routes or
+/// is dropped entirely. The Cyan assertion is what distinguishes them.
 #[test]
-fn non_8bpc_image_is_skipped_not_mis_routed() {
+fn sixteen_bpc_cmyk_image_routes_with_channels_intact() {
     // 2×2 16-bpc image. All four pixels have C = 0xFFFF, M=Y=K=0. If the
     // renderer mis-reads as 8-bpc it would paint nonzero values on Magenta
     // and Yellow (reading the high byte of each 16-bit sample as a separate
@@ -316,6 +323,16 @@ fn non_8bpc_image_is_skipped_not_mis_routed() {
     let doc =
         PdfDocument::from_bytes(build_pdf_with_16bpc_cmyk_image(&samples, 2, 2)).expect("parse");
     let plates = render_separations(&doc, 0, 72).expect("render");
+
+    // The C channel is full ink, so the Cyan plate must actually be painted.
+    // Without this the M/Y/K assertions below hold trivially for an image that
+    // never reached the plates at all.
+    let cyan = plate(&plates, "Cyan");
+    assert!(
+        sample(cyan, 50, 50) > 200,
+        "16-bpc C=0xFFFF must reduce to full ink on the Cyan plate; got {}",
+        sample(cyan, 50, 50)
+    );
 
     // M / Y / K plates must stay clean even though the 8-bpc misread would
     // pick up nonzero bytes from the 16-bit C channel.
@@ -399,6 +416,84 @@ fn separation_image_decode_array_inverts_routing() {
         sample(pantone, 50, 50) > 200,
         "Inverted Separation image: raw 0 + /Decode [1 0] → full tint on the spot plate; got {}",
         sample(pantone, 50, 50)
+    );
+}
+
+/// A 16-bpc Separation image whose `/Decode` array is longer than the colour
+/// space's component count. The extractor's parser is exact (`len == ncomp*2`)
+/// and rejects it, so nothing is folded into the samples; this path's parser is
+/// lenient (`len >= ncomp*2`) and still owes the image the inversion.
+fn build_pdf_with_16bpc_separation_overlong_decode(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let content = b"q\n50 0 0 50 25 25 cm\n/Im1 Do\nQ\n";
+    let mut buf = Vec::new();
+    let mut offsets = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+           /Contents 4 0 R \
+           /Resources << /XObject << /Im1 5 0 R >> \
+                        /ColorSpace << /CS1 6 0 R >> >> >>\nendobj\n",
+    );
+    offsets.push(buf.len());
+    let hdr = format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len());
+    buf.extend_from_slice(hdr.as_bytes());
+    buf.extend_from_slice(content);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+    offsets.push(buf.len());
+    let img_hdr = format!(
+        "5 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+         /ColorSpace /CS1 /BitsPerComponent 16 \
+         /Decode [1 0 1 0] /Length {len} >>\nstream\n",
+        w = width,
+        h = height,
+        len = samples.len()
+    );
+    buf.extend_from_slice(img_hdr.as_bytes());
+    buf.extend_from_slice(samples);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(b"6 0 obj\n[/Separation /Pantone-185 /DeviceCMYK 7 0 R]\nendobj\n");
+    offsets.push(buf.len());
+    buf.extend_from_slice(
+        b"7 0 obj\n<< /FunctionType 2 /Domain [0 1] /N 1 \
+            /C0 [0 0 0 0] /C1 [0 0.85 0.45 0] >>\nendobj\n",
+    );
+    finalize_pdf(buf, offsets)
+}
+
+/// §8.9.5.2: plate routing applies `/Decode` itself, so it must key off "was a
+/// `/Decode` folded in", not the wider "were these samples rescaled at all".
+/// Reducing 16-bit samples to 8 rescales them without applying any map, so
+/// reading the wider fact here drops an inversion the image is still owed.
+#[test]
+fn plate_routing_applies_decode_the_extractor_rejected() {
+    // 2×1, one component, 16 bpc: pixel 0 full ink, pixel 1 none. Under the
+    // `/Decode [1 0]` inversion the plate must come out the other way round.
+    let samples: Vec<u8> = vec![0xFF, 0xFF, 0x00, 0x00];
+    let doc =
+        PdfDocument::from_bytes(build_pdf_with_16bpc_separation_overlong_decode(&samples, 2, 1))
+            .expect("parse");
+    let plates = render_separations(&doc, 0, 72).expect("render");
+    let pantone = plate(&plates, "Pantone-185");
+    assert!(
+        sample(pantone, 30, 50) < 16,
+        "raw-full-ink pixel inverts to no ink under /Decode [1 0]; got {}",
+        sample(pantone, 30, 50)
+    );
+    assert!(
+        sample(pantone, 70, 50) > 200,
+        "raw-no-ink pixel inverts to full ink under /Decode [1 0]; got {}",
+        sample(pantone, 70, 50)
     );
 }
 

@@ -815,6 +815,14 @@ defmodule PdfOxideTest do
       assert ok_or_error(PdfOxide.element_type(elems, 0))
       assert ok_or_error(PdfOxide.element_text(elems, 0))
       assert ok_or_error(PdfOxide.element_rect(elems, 0))
+      assert ok_or_error(PdfOxide.element_page_rect(elems, 0))
+
+      # The sample is upright text, so the page-space rect is the run rect.
+      case PdfOxide.element_rect(elems, 0) do
+        {:ok, box} -> assert PdfOxide.element_page_rect(elems, 0) == {:ok, box}
+        {:error, _} -> :ok
+      end
+
       assert ok_or_error(PdfOxide.elements_to_json(elems))
       PdfOxide.element_list_close(elems)
     end
