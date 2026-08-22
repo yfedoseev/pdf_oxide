@@ -824,6 +824,15 @@ end
             catch e
                 @test e isa PdfOxideError
             end
+            try
+                r = element_page_rect(els, 0)                 # element_page_rect
+                @test r isa Bbox
+                # The fixture is upright text, so the two rects agree.
+                b = element_rect(els, 0)
+                @test (r.x, r.y, r.width, r.height) == (b.x, b.y, b.width, b.height)
+            catch e
+                @test e isa PdfOxideError
+            end
         end
         close!(els)
     end

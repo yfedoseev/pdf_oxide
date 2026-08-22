@@ -593,6 +593,11 @@ int main() {
             (void)e.type;
             (void)e.text;
             (void)e.rect;
+            // the sample is upright text: the page-space hull is the run rect
+            CHECK(e.page_rect.x == e.rect.x);
+            CHECK(e.page_rect.y == e.rect.y);
+            CHECK(e.page_rect.width == e.rect.width);
+            CHECK(e.page_rect.height == e.rect.height);
         }
     }
 

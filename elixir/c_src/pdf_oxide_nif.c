@@ -4392,6 +4392,24 @@ static ERL_NIF_TERM element_get_rect(ErlNifEnv *env, int argc, const ERL_NIF_TER
                             enif_make_tuple4(env, enif_make_double(env, x), enif_make_double(env, y),
                                              enif_make_double(env, w), enif_make_double(env, h)));
 }
+/* Page-space extents: element_get_rect with any text-matrix rotation resolved
+   into an axis-aligned page-space hull. Same rect for upright runs. */
+static ERL_NIF_TERM element_get_page_rect(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    ElemsRes *r;
+    int index;
+    if (!enif_get_resource(env, a[0], ELEMS_RES, (void **)&r) ||
+        !enif_get_int(env, a[1], &index))
+        return enif_make_badarg(env);
+    if (!r->h) return enif_make_badarg(env);
+    float x = 0, y = 0, w = 0, h = 0;
+    int32_t code = 0;
+    pdf_oxide_element_get_page_rect(r->h, index, &x, &y, &w, &h, &code);
+    if (code != 0) return err_tuple(env, code);
+    return enif_make_tuple2(env, enif_make_atom(env, "ok"),
+                            enif_make_tuple4(env, enif_make_double(env, x), enif_make_double(env, y),
+                                             enif_make_double(env, w), enif_make_double(env, h)));
+}
 static ERL_NIF_TERM elements_to_json(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
     (void)argc;
     ElemsRes *r;
@@ -4891,6 +4909,7 @@ static ErlNifFunc funcs[] = {
     {"element_get_type", 2, element_get_type, 0},
     {"element_get_text", 2, element_get_text, 0},
     {"element_get_rect", 2, element_get_rect, 0},
+    {"element_get_page_rect", 2, element_get_page_rect, 0},
     {"elements_to_json", 1, elements_to_json, DIRTY},
     {"font_get_size", 3, font_get_size, DIRTY},
     {"fonts_to_json", 2, fonts_to_json, DIRTY},

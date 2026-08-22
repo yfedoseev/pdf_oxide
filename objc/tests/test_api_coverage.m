@@ -637,6 +637,10 @@ int main(void) {
                     (void)[els textAtIndex:0 error:&ie];       // element text
                     POXBbox r = [els rectAtIndex:0 error:&ie]; // element rect
                     CHECK(r.width >= 0 && r.height >= 0);
+                    POXBbox pr = [els pageRectAtIndex:0 error:&ie]; // element page rect
+                    // The sample is upright, so the two rects are identical.
+                    CHECK(pr.x == r.x && pr.y == r.y && pr.width == r.width &&
+                          pr.height == r.height);
                 }
                 NSError* je = nil;
                 NSString* json = [els toJsonWithError:&je]; // elements to json

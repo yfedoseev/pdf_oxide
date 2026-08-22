@@ -4536,6 +4536,16 @@ static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
     return box;
 }
 
+- (POXBbox)pageRectAtIndex:(int32_t)index error:(NSError**)error {
+    int32_t code = 0;
+    float x = 0, y = 0, w = 0, h = 0;
+    pdf_oxide_element_get_page_rect(_handle, index, &x, &y, &w, &h, &code);
+    if (code != 0 && error)
+        *error = POXMakeError(code, @"elementPageRect");
+    POXBbox box = {x, y, w, h};
+    return box;
+}
+
 - (NSString*)toJsonWithError:(NSError**)error {
     int32_t code = 0;
     return POXTakeString(pdf_oxide_elements_to_json(_handle, &code), code,
