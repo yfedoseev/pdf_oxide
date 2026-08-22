@@ -50,7 +50,7 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
@@ -60,6 +60,6 @@ jobs:
         run: cargo build --lib
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v3
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           category: "/language:${{ matrix.language }}"
