@@ -285,7 +285,7 @@ impl Transform {
             }
         }
         let mut out = Vec::with_capacity((cmyk.len() / 4) * 3);
-        for ch in cmyk.chunks_exact(4) {
+        for ch in cmyk.as_chunks::<4>().0 {
             let rgb = self.convert_cmyk_pixel(ch[0], ch[1], ch[2], ch[3]);
             out.extend_from_slice(&rgb);
         }

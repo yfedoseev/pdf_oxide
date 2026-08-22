@@ -13,11 +13,14 @@ anti-newcomer and not anti-AI — we are anti-slop.
 
 ## Table of Contents
 
+- [Who depends on this](#who-depends-on-this)
 - [The two rules that matter most](#the-two-rules-that-matter-most)
 - [Code of Conduct](#code-of-conduct)
 - [Before you open a pull request](#before-you-open-a-pull-request)
+- [Communication volume](#communication-volume)
 - [Development setup](#development-setup)
 - [Testing and regression requirements](#testing-and-regression-requirements)
+- [How review works, and when a PR is closed](#how-review-works-and-when-a-pr-is-closed)
 - [Test fixture policy](#test-fixture-policy)
 - [AI-assisted contributions](#ai-assisted-contributions)
 - [Coding standards](#coding-standards)
@@ -27,6 +30,33 @@ anti-newcomer and not anti-AI — we are anti-slop.
 - [License](#license)
 
 ---
+
+## Who depends on this
+
+Worth knowing before you read the rules, because it is where they come from.
+
+PDFOxide is a production dependency of projects with a combined **195,000+
+GitHub stars** — RAG engines, collaborative editors, AI coding agents,
+document-intelligence frameworks, and arXiv.org's own submission pipeline. The
+[Notable Users](README.md#notable-users) list in the README is verified against
+each project's public dependency manifest.
+
+It is also a library people can simply use. MIT/Apache-2.0, `cargo add` or
+`pip install`, no account, no API key, no telemetry, no hosted service in the
+path, no usage tier that expires. That is deliberate and we intend to keep it —
+a PDF toolkit that phones home is not a PDF toolkit anybody should build on.
+
+Both facts have the same consequence for contributions. A defect here does not
+surface as a failed build in one place; it surfaces as wrong text inside someone
+else's product, on a document neither of us has seen, with no error and nothing
+to alert them. Extraction fails *silently* — that is the whole difficulty of
+this domain. There is no telemetry to catch it and no server-side fix to push
+afterwards; whatever ships is what runs, in every downstream product, until the
+next release.
+
+So the bar here is higher than "the tests pass", and the rules below are the
+practical form of that bar rather than ceremony. They are also why a review can
+take a while: the maintainer is checking the thing that CI structurally cannot.
 
 ## The two rules that matter most
 
@@ -67,8 +97,51 @@ issue or contacting the maintainer.
   approach. Large features built without that agreement are frequently declined
   no matter how good the code is — the design, not the effort, is the sticking
   point.
-- For a **bug fix**, an issue is recommended but not required; the reproducer
-  (below) is what matters.
+- For a **bug fix**, open an issue too. It does not need discussion — a
+  reproducer and a one-line description are enough.
+
+**An issue must be approved *and assigned to you* before you open the PR.**
+Two separate things, both required, both checked automatically:
+
+1. **Approved by a maintainer.** Someone with write access to this repository
+   comments `/approve` on the issue, or applies the `approved` label. A reply, a
+   thumbs-up, or a question is *not* approval — approval is a deliberate act, so
+   that "a maintainer engaged with it" cannot be mistaken for "a maintainer
+   agreed to it".
+
+   **Approval from anyone without write access does not count**, in either form.
+   That includes the issue's own author and anyone with triage access who can
+   apply labels: the check verifies the approver's actual repository permission,
+   not their comment badge or their ability to set a label. Self-approval is not
+   a thing here.
+
+   Approval can be withdrawn later with `/unapprove`, or by removing the label;
+   the most recent maintainer act is the one that counts.
+2. **Assigned to you.** The maintainer assigns the issue to whoever will
+   implement it. Assignment is how work is claimed here: it stops two people
+   building the same fix, and it means the maintainer has agreed not just the
+   approach but who is doing it. An issue approved and assigned to someone else
+   is not yours to implement — say so in the issue and ask.
+
+If you want to work on something, say so in the issue and ask to be assigned.
+Opening a PR is not how you claim work.
+
+**A pull request that references no issue at all is closed automatically.**
+That is what the existing rule about drive-by PRs means in practice — work here
+starts from an approved, assigned issue, and opening a PR is not how work is
+claimed. Reference the issue in the **PR description** with `Closes #NNN` (not
+in the commit message — it survives rebases better there).
+
+**A PR whose linked issue is unapproved, or assigned to somebody else, fails its
+checks and is not reviewed** — but is left open, because that is usually a
+timing problem rather than a violation: the maintainer approving and assigning
+the issue is enough to clear it, with nothing for you to redo. This is not bureaucracy and it is not about
+trust — it costs a maintainer one line to say "go ahead" or "we'd fix that
+differently", and it costs you nothing compared with discovering the same thing
+after you have written the change and run a corpus sweep.
+
+- **Trivially exempt** from all of the above: typo and documentation fixes, CI
+  repairs, and reverts of your own merged work. Open those directly.
 - Reference the issue in the **PR description** with `Closes #NNN` (not in the
   commit message — it survives rebases better there).
 
@@ -76,13 +149,163 @@ issue or contacting the maintainer.
 correctness with performance. Grab-bag PRs are unreviewable and get split.
 Complete the change within the PR — no "finish it later" TODOs for new features.
 
-**3. Write the PR in your own words.** The description must explain *what
+**3. One open PR at a time per non-maintainer contributor.** Review is the
+scarcest resource on this project, not code. A second PR from the same author
+while an earlier one is still open **will be closed automatically**, with a link
+back to this section — reopen it once your first PR resolves (merged, closed, or
+superseded). This applies regardless of how the PRs were produced or how good
+the diagnosis behind them is: a burst of simultaneous PRs from one author costs
+far more reviewer time in aggregate than the same fixes landed one at a time,
+each actually verified before the next starts. Applies to every non-maintainer
+contributor equally, human or AI-assisted.
+
+- **Exceptions.** Documentation typos, CI fixes, and reverts of your own merged
+  work do not count against the limit.
+- **The maintainer may lift the limit** for a specific contributor or a specific
+  piece of work. Ask in the issue.
+- **Stacked or dependent work is one PR**, or opened one at a time in dependency
+  order. If a change is genuinely too large to review in one piece, say so in
+  the issue *first* and agree a split — do not open the split yourself as five
+  simultaneous PRs.
+
+If you have found several unrelated bugs, that is genuinely valuable — **open
+issues for them**. Issues cost the maintainer far less than open PRs, they do
+not rot against a moving `main`, and they let fixes be sequenced deliberately
+instead of competing at once. The diagnosis work (reproducer, root cause, spec
+citation) is valuable on its own, and a maintainer may pick it up directly.
+
+**4. Keep the PR small enough to review.** For changes to extraction, layout,
+rendering or font handling, a PR over roughly **400 changed lines** should be
+split, or should say in its description why it cannot be. These paths are
+heuristic and reviewed by reading, not by trusting the tests; past a few hundred
+lines that stops being possible. Size is also the best available predictor of a
+PR never landing at all.
+
+**5. Do not re-submit a closed PR's work as a new PR.** If an approach was
+declined, the way back in is an issue agreeing a different approach — not the
+same change under a new number.
+
+**6. Write the PR in your own words.** The description must explain *what
 problem you're solving and why this approach*. If you can't describe the change
 in your own words, it isn't ready.
 
-**4. Run the full local gate before pushing** (see
+**7. Run the full local gate before pushing** (see
 [CI gates](#continuous-integration-gates)) — a green subset is necessary, not
 sufficient.
+
+## Communication volume
+
+This project is maintained by one person in their free time. Reviewer attention
+is the scarcest resource here — scarcer than code. These rules exist because
+volume can cost more maintainer time than the contribution saves, however good
+the underlying work is.
+
+**Plainly, so nobody has to infer it: sustained spamming gets an account
+blocked.** A blocked account cannot comment, cannot open issues, and cannot
+submit pull requests — GitHub applies it to all three at once and to every
+repository owned by the maintainer. Existing contributions stay in the history;
+what ends is the ability to add more.
+
+That is the last step, and it is reserved for two things: continuing after a
+written request to stop, and programmatic submission of any kind. It is not for
+being prolific, not for being wrong, and not for disagreeing with the
+maintainer — people do all three here regularly and are welcome to. If you are
+reading this and wondering whether it applies to you, it almost certainly does
+not.
+
+- **One topic, one thread.** Post a point once, in the most relevant issue or
+  PR. If it applies to several PRs, post it once and link to it. **Do not paste
+  the same comment into multiple threads** — that turns one point into one
+  notification per thread, and the maintainer reads all of them.
+- **No automated or scripted commenting.** Comments must be posted by a human,
+  one at a time.
+
+  **An account that posts faster than a person writes is treated as a bot**,
+  whatever is behind it. Concretely: several comments within a minute, or the
+  same text posted across multiple threads in one burst. Nobody composes
+  nineteen comments in eighteen seconds, and content does not change that — a
+  well-argued point delivered nineteen times is nineteen notifications, and the
+  maintainer reads all of them.
+
+  This is not a rule against using tools to help you write. It is a rule about
+  the *rate*: whatever produced them, a burst is machine output arriving at
+  machine speed into a queue served by one person.
+
+- **The same rate limit applies to submissions, not just comments.** Issues and
+  pull requests opened in bursts — several within a minute, or an issue and the
+  pull request that closes it created seconds apart — are treated the same way.
+
+  An issue filed moments before its own PR is not a proposal anyone could have
+  responded to; it is paperwork generated alongside the code. The point of
+  opening an issue first is that a maintainer gets a chance to say "yes",
+  "not like that", or "we already fixed it upstream" *before* anyone writes the
+  change. Filing both at once removes that chance while appearing to follow the
+  rule, and it is why an issue now needs an explicit approval and an assignment
+  before its PR is opened.
+
+  Again this is about rate, not tooling. Generate the work however you like;
+  submit it at a rate a person can respond to.
+
+  **This one is enforced automatically.** A `Submission rate limit` workflow
+  closes an issue or pull request opened less than **5 minutes** after your
+  previous one, and flags a comment posted less than **60 seconds** after your
+  previous one. Closed items can simply be reopened once the gap has passed —
+  nothing is lost and it is not a rejection. Comments are never deleted; the
+  workflow only leaves a note.
+
+  Comments get the shorter window deliberately: answering three review threads
+  in five minutes is ordinary participation, while nineteen comments in eighteen
+  seconds is not, so the comment window targets bursts rather than conversation.
+  Maintainers and toolchain bots (Dependabot and similar) are exempt.
+
+  An account treated this way is **added to the auto-reject list** — its new
+  issues and pull requests are closed automatically on arrival, without review.
+  Removal is by asking, and by not doing it again.
+- **Correct in place.** If a claim turns out to be wrong, edit the original
+  comment or post one correction. Do not stack successive revisions of the same
+  claim as new comments on the same thread.
+- **Measure before you post.** Do not report a finding, a regression, or a
+  stability claim you have not actually run. "I inferred it" costs the
+  maintainer a real investigation. Say plainly what you measured, on what, and
+  what you did not.
+- **Scope claims to your evidence.** A result from your corpus is a result from
+  your corpus. Do not present it as a property of this project's baseline, and
+  do not ask for work to be resequenced on evidence the maintainer cannot
+  reproduce.
+- **Prefer fewer, denser messages.** A single well-organised comment is worth
+  more than six partial ones. If you find yourself posting repeatedly to the
+  same PR in one day, collect it into one update instead.
+- **Do not use direct messages, email, or social media to chase a review.** The
+  PR thread is the channel. Out-of-band pressure to prioritise your work is not
+  acceptable.
+
+The same effort test from the previous section applies to conversation, not just
+code: **if reading your messages costs more than the problem they describe, they
+are a net loss to the project.**
+
+### When these are not followed
+
+In order, and proportionate to what actually happened:
+
+1. Duplicate or cross-posted comments are hidden as off-topic.
+2. A single written request to consolidate.
+3. **Auto-reject.** The account is added to the auto-reject list: new issues and
+   pull requests are closed on arrival with a pointer to this section. Existing
+   open work is not touched, and commenting still works — this caps intake
+   without ending the conversation. It is not permanent: ask, and it comes off.
+4. Interaction limits on the repository.
+5. **Blocking.** A blocked account cannot comment, open issues, or submit pull
+   requests — all three surfaces at once — and open contributions from it may be
+   closed unmerged. This is the end of the ladder, not a first response: it is
+   for sustained volume after a written request, or for programmatic submission,
+   and it is the only step that is not trivially reversible.
+
+Steps 1 and 2 are skipped for automated posting: a burst goes straight to step 3,
+because there is no point asking a script to slow down.
+
+Good-faith contributors who overdo it will simply be asked once. Blocking is for
+sustained volume after a request, or for automated posting — not for being
+enthusiastic, and not for disagreeing with the maintainer.
 
 ## Development setup
 
@@ -122,10 +345,14 @@ merge code that isn't tested** (à la qpdf), and **a bug-fix test must fail
 before your change and pass after** (à la pdfplumber/pypdf). Concretely:
 
 ### 1. Every bug fix ships a regression test that fails without the fix
-Add the test in a commit **before** the fix commit (or otherwise be ready to
-show it goes red when the fix is reverted). Reviewers verify this. A test that
-passes even when the feature is a no-op is worse than no test — it gives false
-confidence.
+Add the test in a commit **before** the fix commit, so that checking out the
+fix commit's parent and running the new test shows it red. Reviewers verify
+this, and CI checks it. A test that passes even when the feature is a no-op is
+worse than no test — it gives false confidence.
+
+Ordering the other way round ("the test is in there, revert the fix and you'll
+see") moves the work to the reviewer, who then performs the revert-and-rerun by
+hand on every PR. One commit ordering on your side removes that entirely.
 
 ### 2. Build the reproducer as a minimal *synthetic* PDF, in code
 Construct the smallest PDF that triggers the defect as bytes inside the test —
@@ -180,7 +407,36 @@ result.
 The maintainer runs the authoritative private-corpus sweep before merge — a
 clean sweep on your own corpus is necessary but not sufficient.
 
-### 4. Green across the whole feature matrix, not just `cargo test`
+### 4. If your change *broadens* something, a corpus sweep cannot validate it
+A sweep compares your branch against `main` and reports what moved. That
+measures **change**, not correctness — and for one specific class of change it is
+actively misleading.
+
+If your change causes more data to be collected, matched, or retained than
+before — first-match becomes all-matches, a filter is removed, a `break` is
+deleted, a guard is loosened, a lookup drops part of a composite key — then
+everything it *wrongly* picks up appears in the sweep as **more output**. More
+extracted text reads as recovered content. A word-count or Jaccard comparison
+cannot tell "recovered the run we were wrongly dropping" from "absorbed a run
+that belongs to something else". Both are gains.
+
+So for any broadening change you must **additionally** supply a fixture in which
+the broadened operation would pick up something it should not, and show that it
+does not:
+
+- a **colliding identifier** — the same id legitimately used by two different
+  scopes (a page and a Form XObject may each define marked-content id 0; a
+  cross-reference stream and an object stream may each define object 4)
+- a **duplicate key** — the same key present twice with different values
+- an **out-of-scope match** — data that satisfies the loosened predicate but
+  belongs to a different structure, page, or content stream
+
+Build it synthetically per §2, and state in the PR what the fixture would have
+collected without the guard. A clean sweep plus "no test for the collision case"
+is not evidence; it is the absence of evidence in exactly the place the defect
+would be.
+
+### 5. Green across the whole feature matrix, not just `cargo test`
 Default `cargo test` does **not** compile the rendering, FIPS, OCR, or binding
 tiers, and PRs regularly break exactly those. Run the tiers your change touches:
 ```bash
@@ -190,11 +446,49 @@ cargo test --features ml               # OCR / table detection
 # plus the relevant binding when you touch the C ABI (python / wasm / go / …)
 ```
 
-### 5. Prefer semantic, tolerant comparison over byte-exact goldens
+### 6. Prefer semantic, tolerant comparison over byte-exact goldens
 Compare extracted text/structure with whitespace/newline **normalization**.
 For any rendered-pixel check, use a bounded per-channel tolerance at a fixed DPI
 — never byte-exact; rendering is font- and platform-fragile. New parsing/decoding
 paths should add a property-based or fuzz test where practical.
+
+## How review works, and when a PR is closed
+
+Review here is one person reading a change carefully. It is not a loop in which
+the maintainer finds the problems and the contributor fixes them until the PR is
+acceptable — that inverts the cost, and it is how a single PR consumes a week.
+
+**What you send is expected to be complete.** CI checks the most mechanical
+part of this for you — a `fix:` or `feat:` PR that adds no test fails before a
+human looks at it — but the rest is on you. The requirements above are
+published in advance: a regression test that fails without the fix, evidence of
+no corpus regression, and — for a change that broadens what is collected — a
+fixture proving it does not over-collect. A PR missing any of these has not been
+reviewed and then rejected; it was **incomplete on arrival**, and may be closed
+without a detailed review. Reopen it when it is complete. This is the "effort
+test" from the AI-assisted section applied to review time.
+
+**Repeated findings of the same kind end the review.** Review rounds are for
+things neither of us could have anticipated. If the *same class* of problem has
+to be raised twice — still no regression test, a claim still not measured,
+unrelated changes still bundled in, a gate still failing — the PR is closed. A
+*different* problem found in a later round is normal and is not counted.
+
+This is deliberately about *repetition*, not about being wrong. Getting a hard
+change wrong is expected and is what review is for. Having to be told the same
+thing twice means the checklist was not applied, and the second telling costs
+the maintainer as much as the first.
+
+**Other reasons a PR is closed**, so none of these are a surprise:
+
+- It references no issue, or the issue is not approved and assigned to you.
+- It is a second concurrently-open PR from the same author.
+- It sits in "changes requested" without a response.
+- Its work is a re-submission of an approach already declined.
+
+None of these is a judgement about you or about the underlying diagnosis, and
+none is permanent. Closing a pull request costs nothing to undo; a review cycle
+cannot be undone at all, which is the asymmetry all of this exists to manage.
 
 ## Test fixture policy
 
@@ -223,10 +517,33 @@ low-effort AI output consumes disproportionate reviewer time.
   wrote it" is not an answer to a review question. If you can't explain the
   change without the AI, don't submit it.
 - **Write your issues, PR descriptions, and review replies yourself**, in your
-  own words. Don't paste AI-generated prose as your description.
-- **Disclose AI assistance** in the PR (which tool, and how much). You — the
-  human author — remain fully responsible for the code's correctness, licensing,
-  and provenance regardless of how it was produced.
+  own words — this covers *everything you write to a person*, not just the PR
+  body: issue text, PR descriptions, review comments, and replies in a thread.
+  Do not paste AI-generated prose into a conversation.
+
+  This is not a style preference. Generated prose is fast to produce and slow to
+  read, and it is usually longer, more confident, and less specific than what
+  the same person would have written. The maintainer then has to read all of it
+  and work out which parts are load-bearing. A three-line answer in your own
+  words is worth more here than six paragraphs, and is far more likely to be
+  acted on.
+- **Disclose AI assistance** with a commit trailer naming the tool:
+
+  ```
+  Assisted-by: claude-code
+  ```
+
+  The model is not interesting and you do not need to name it — any model can
+  produce work that is not ready, and naming one neither excuses nor condemns
+  the change. What matters is that a person is answerable for it. Say in the PR
+  description how much of the change it produced. You — the human
+  author — remain fully responsible for the code's correctness, licensing, and
+  provenance regardless of how it was produced.
+- **An AI agent may not sign off a commit.** `Signed-off-by:` is the Developer
+  Certificate of Origin: a statement by a person that they have the right to
+  contribute the code. A tool cannot make that certification, so the sign-off is
+  yours and the responsibility that comes with it is yours. Use `Assisted-by:`
+  for the tool, never `Signed-off-by:` or `Co-authored-by:`.
 - **AI-generated code must be verified on real input you actually ran.** For this
   project that means: include the synthetic reproducer and the corpus-sweep
   result. Do not submit hypothetically-correct code you haven't executed.
@@ -234,7 +551,9 @@ low-effort AI output consumes disproportionate reviewer time.
   reviewing it, please don't open the PR.**
 
 Good-faith first-timers who slip up will simply be pointed back here. Repeated,
-bad-faith, time-wasting submissions lead to being blocked from the project.
+time-wasting submissions lead to being blocked — see
+[Communication volume](#communication-volume) for what blocking means and the
+steps that come before it.
 
 ## Coding standards
 
@@ -272,6 +591,42 @@ mandatory floor mirrors what you should run locally:
 - `audit` / `deny` / `geiger` (advisories, licenses, `unsafe` surface)
 - `fixture-hygiene` (no third-party fixtures), `taplo`/`shear` (TOML/unused deps)
 - `dco` (sign-off), plus the per-binding jobs (python, wasm, go, csharp, java, …)
+
+Two of these are **intake gates**, run by `PR quality gates` on every pull
+request from a non-maintainer:
+
+- **One open PR per contributor** — a second concurrently-open PR is closed
+  automatically with a link to the rule.
+- **Linked issue is approved and assigned to you** — **closes** the PR if it
+  references no issue at all; **fails** it (leaving it open) if the issue exists
+  but nobody with write access has approved it, or if it is assigned to somebody
+  else. A PR that mentions an issue without a closing keyword is failed, not
+  closed, with a note to use `Closes #NNN`. Approval is resolved by replaying `/approve`, `/unapprove` and
+  `approved`-label events in order and keeping the last one performed by an
+  account that actually holds write access.
+
+A separate workflow, **Submission rate limit**, closes an issue or pull request
+opened within 5 minutes of the same account's previous one, and flags a comment
+posted within 60 seconds of their previous one. Thresholds are repository
+variables (`RATE_MIN_GAP_ISSUES`, `RATE_MIN_GAP_PRS`, `RATE_MIN_GAP_COMMENTS`);
+setting one to `0` disables that surface. Write-access accounts and toolchain
+bots are exempt.
+
+A further workflow, **Auto-reject list**, closes new issues and pull requests
+from accounts whose intake has been capped under
+[Communication volume](#communication-volume). It does not touch comments or
+existing open work, and it never applies to anyone with write access.
+
+A third gate applies to everyone, maintainers included:
+
+- **Change ships a test** — a `fix:` or `feat:` PR must add at least one new
+  `#[test]`. Inline `#[cfg(test)]` tests count exactly as much as files under
+  `tests/`. If a change genuinely cannot be tested — a pure refactor, or a defect
+  only reproducible on a document that cannot be shared — say so in the
+  description and a maintainer will waive it.
+
+Drafts are exempt from all three. The two intake gates additionally exempt
+`docs:`, `ci:`, `chore:` and `revert:` titles, and anyone with write access.
 
 ## Commits, DCO, and review
 

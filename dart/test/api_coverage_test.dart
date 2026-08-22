@@ -544,6 +544,13 @@ void main() {
       if (list.isNotEmpty) {
         expect(list.first.type, isA<String>());
         expect(list.first.rect, isA<Bbox>());
+        // The sample text is upright, so the page-space hull is the rect.
+        final e = list.first;
+        expect(e.pageRect, isA<Bbox>());
+        expect(e.pageRect.x, e.rect.x);
+        expect(e.pageRect.y, e.rect.y);
+        expect(e.pageRect.width, e.rect.width);
+        expect(e.pageRect.height, e.rect.height);
       }
       expect(els.toJson(), isNotEmpty);
     });

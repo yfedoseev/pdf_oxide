@@ -1046,7 +1046,9 @@ fn qa_wave5_corpus_multi_column_table_pdf_renders_non_blank() {
     let img = render_page(&doc, 0, &opts).expect("render_page succeeds on multi_column_table.pdf");
     let any_non_white = img
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|px| px[0] < 200 || px[1] < 200 || px[2] < 200);
     assert!(
         any_non_white,

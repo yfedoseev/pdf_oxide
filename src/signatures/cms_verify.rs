@@ -63,7 +63,14 @@ fn digest_oid_to_hash(oid: ObjectIdentifier) -> Option<HashAlgorithm> {
 /// the trait expects. Lets the trait stay independent of any single
 /// crypto crate's key type.
 fn project_rsa_public_key(key: &RsaPublicKey) -> (Vec<u8>, Vec<u8>) {
-    (key.n().to_bytes_be(), key.e().to_bytes_be())
+    // rsa 0.10 carries the modulus/exponent as crypto-bigint `BoxedUint`
+    // rather than num-bigint. `to_be_bytes` pads out to the type's full
+    // precision; the trimmed form is the minimal big-endian encoding the
+    // old `to_bytes_be` produced and the wire shape expects.
+    (
+        key.n().to_be_bytes_trimmed_vartime().into_vec(),
+        key.e().to_be_bytes_trimmed_vartime().into_vec(),
+    )
 }
 
 /// Outcome of a `verify_signer*` call.
@@ -115,8 +122,8 @@ fn find_signer_certificate<'a>(sd: &'a SignedData, signer: &SignerInfo) -> Optio
         };
         match &signer.sid {
             SignerIdentifier::IssuerAndSerialNumber(isn) => {
-                if cert.tbs_certificate.issuer == isn.issuer
-                    && cert.tbs_certificate.serial_number == isn.serial_number
+                if *cert.tbs_certificate().issuer() == isn.issuer
+                    && *cert.tbs_certificate().serial_number() == isn.serial_number
                 {
                     return Some(cert);
                 }
@@ -256,7 +263,7 @@ fn run_signer_crypto(sd: &SignedData) -> Result<(SignerVerify, Option<ObjectIden
         let Some(cert) = find_signer_certificate(sd, signer) else {
             return Ok((SignerVerify::Unknown, Some(digest_oid)));
         };
-        let spki = &cert.tbs_certificate.subject_public_key_info;
+        let spki = &cert.tbs_certificate().subject_public_key_info();
         if spki.algorithm.oid != OID_EC_PUBLIC_KEY {
             return Ok((SignerVerify::Unknown, Some(digest_oid)));
         }
@@ -288,13 +295,17 @@ fn run_signer_crypto(sd: &SignedData) -> Result<(SignerVerify, Option<ObjectIden
         let Some(cert) = find_signer_certificate(sd, signer) else {
             return Ok((SignerVerify::Unknown, Some(digest_oid)));
         };
-        let key_alg_oid = cert.tbs_certificate.subject_public_key_info.algorithm.oid;
+        let key_alg_oid = cert
+            .tbs_certificate()
+            .subject_public_key_info()
+            .algorithm
+            .oid;
         if key_alg_oid != OID_RSA_ENCRYPTION && key_alg_oid != OID_RSASSA_PSS {
             return Ok((SignerVerify::Unknown, Some(digest_oid)));
         }
         let spki_der = cert
-            .tbs_certificate
-            .subject_public_key_info
+            .tbs_certificate()
+            .subject_public_key_info()
             .to_der()
             .map_err(|e| Error::InvalidPdf(format!("failed to re-encode signer SPKI: {e}")))?;
         let pub_key = match RsaPublicKey::from_public_key_der(&spki_der) {
@@ -317,13 +328,19 @@ fn run_signer_crypto(sd: &SignedData) -> Result<(SignerVerify, Option<ObjectIden
     };
 
     // Only RSA keys can verify PKCS#1 v1.5 signatures.
-    if cert.tbs_certificate.subject_public_key_info.algorithm.oid != OID_RSA_ENCRYPTION {
+    if cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .algorithm
+        .oid
+        != OID_RSA_ENCRYPTION
+    {
         return Ok((SignerVerify::Unknown, Some(digest_oid)));
     }
 
     let spki_der = cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .to_der()
         .map_err(|e| Error::InvalidPdf(format!("failed to re-encode signer SPKI: {e}")))?;
     let pub_key = match RsaPublicKey::from_public_key_der(&spki_der) {
