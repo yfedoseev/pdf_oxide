@@ -207,13 +207,13 @@ impl PdfSigner {
         let cert = X509Certificate::from_der(&self.credentials.certificate)
             .map_err(|e| Error::InvalidPdf(format!("cannot parse signer certificate: {e}")))?;
         let issuer_der = cert
-            .tbs_certificate
-            .issuer
+            .tbs_certificate()
+            .issuer()
             .to_der()
             .map_err(|e| Error::InvalidPdf(format!("cannot DER-encode issuer: {e}")))?;
         let serial_der = cert
-            .tbs_certificate
-            .serial_number
+            .tbs_certificate()
+            .serial_number()
             .to_der()
             .map_err(|e| Error::InvalidPdf(format!("cannot DER-encode serial: {e}")))?;
 
@@ -238,7 +238,7 @@ impl PdfSigner {
             use rsa::traits::PublicKeyParts;
             rsa_key.n().bits()
         };
-        if crate::crypto::active_policy().rsa_modulus_allowed(modulus_bits as u32)
+        if crate::crypto::active_policy().rsa_modulus_allowed(modulus_bits)
             == crate::crypto::Decision::Deny
         {
             return Err(Error::Unsupported(format!(
