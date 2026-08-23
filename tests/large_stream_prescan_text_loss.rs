@@ -344,9 +344,5 @@ fn text_after_an_unbalanced_restore_survives_a_large_stream() {
         "control failed: the sub-threshold page did not yield the text at all, so \
          this fixture cannot say anything about the pre-scan path (got {small:?})"
     );
-    assert_eq!(
-        words(&small),
-        words(&big),
-        "linework padding alone changed the extracted text"
-    );
+    assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
 }
