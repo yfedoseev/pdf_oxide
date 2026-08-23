@@ -435,3 +435,136 @@ jobs:
               'See https://github.com/' + context.repo.owner + '/' + context.repo.repo +
               '/blob/main/CONTRIBUTING.md#testing-and-regression-requirements'
             );
+
+  # ---------------------------------------------------------------------------
+  # The regression test must actually fail without the fix.
+  #
+  # CONTRIBUTING.md §1 has always required this and said "CI checks it". Until
+  # now CI only checked that a test was *added* (see `has-test` above), not that
+  # it discriminates. A review of ~60 merged and closed changes found 21 that
+  # shipped a test which passes with the fix reverted — in six cases the test
+  # demonstrating the headline claim. This job closes that gap.
+  #
+  # It leans on the test-commit-before-fix-commit ordering CONTRIBUTING.md
+  # already mandates: check out the commit that introduces the test, run only
+  # the tests it adds, and require them to fail. No revert heuristics are
+  # needed, because the contributor has already separated the two.
+  #
+  # Scoped to `fix(...)` deliberately. A `feat(...)` test may legitimately fail
+  # to *compile* before its API exists, which is not the same thing as a test
+  # that proves nothing.
+  revert-check:
+    name: New test fails without the fix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        id: scope
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (pr.draft) { core.setOutput('run', 'false'); return; }
+            if (!/^fix(\(|!|:)/i.test(pr.title || '')) { core.setOutput('run', 'false'); return; }
+            const body = (pr.body || '').toLowerCase();
+            // Same waiver the has-test gate honours: a maintainer accepts a
+            // written justification in the PR description.
+            if (body.includes('no-revert-check')) {
+              core.notice('revert-check waived by PR description (no-revert-check).');
+              core.setOutput('run', 'false');
+              return;
+            }
+            core.setOutput('run', 'true');
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.scope.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Locate the test commit and the tests it adds
+        if: steps.scope.outputs.run == 'true'
+        id: find
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # First commit in the PR that introduces a test attribute.
+          TEST_COMMIT=""
+          for sha in $(git rev-list --reverse "$BASE..$HEAD"); do
+            if git show "$sha" -- '*.rs' | grep -qE '^\+\s*#\[(tokio::)?(test|rstest)\b'; then
+              TEST_COMMIT="$sha"
+              break
+            fi
+          done
+
+          if [ -z "$TEST_COMMIT" ]; then
+            echo "No commit in this PR adds a test; the has-test gate covers that." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Names of the test functions added by that commit.
+          NAMES=$(git show "$TEST_COMMIT" -- '*.rs' \
+            | grep -A3 -E '^\+\s*#\[(tokio::)?(test|rstest)\b' \
+            | grep -oE '^\+\s*(async )?fn [a-z0-9_]+' \
+            | sed -E 's/^\+\s*(async )?fn //' | sort -u)
+
+          if [ -z "$NAMES" ]; then
+            echo "Could not name the added tests; skipping rather than guessing." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "test_commit=$TEST_COMMIT" >> "$GITHUB_OUTPUT"
+          {
+            echo "names<<EOF"
+            echo "$NAMES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.scope.outputs.run == 'true' && steps.find.outputs.skip == 'false'
+        with:
+          rustflags: ''
+
+      - name: Require each new test to fail at the test commit
+        if: steps.scope.outputs.run == 'true' && steps.find.outputs.skip == 'false'
+        run: |
+          set -uo pipefail
+          git checkout --quiet "${{ steps.find.outputs.test_commit }}"
+
+          PASSED=""
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            echo "::group::$name"
+            OUT=$(cargo test --no-fail-fast "$name" -- --exact 2>&1) || true
+            echo "$OUT"
+            echo "::endgroup::"
+
+            if echo "$OUT" | grep -qE '^(error(\[E[0-9]+\])?|error: could not compile)'; then
+              echo "::notice::'$name' does not compile at the test commit — its test depends on the fix's API. Treated as a legitimate ordering exception."
+              continue
+            fi
+            if echo "$OUT" | grep -qE "test .*$name.* \.\.\. ok"; then
+              PASSED="$PASSED $name"
+            fi
+          done <<< "${{ steps.find.outputs.names }}"
+
+          if [ -n "$PASSED" ]; then
+            echo "::error::These tests PASS without the fix, so they do not prove it:$PASSED"
+            echo ""
+            echo "A regression test must go red when the fix is absent — CONTRIBUTING.md §1."
+            echo "A test that passes either way gives false confidence and is worse than no test."
+            echo ""
+            echo "Common causes found in review:"
+            echo "  * the fixture's geometry or values happen to satisfy the assertion already"
+            echo "  * the assertion checks a call returned, not the effect a user sees"
+            echo "  * the expected value is computed by calling the code under test"
+            echo "  * the fixture carries data the code under test never reads"
+            echo ""
+            echo "If this test genuinely cannot fail without the fix, say why in the PR"
+            echo "description and include 'no-revert-check' for a maintainer to waive."
+            exit 1
+          fi
+
+          echo "All newly added tests fail at the test commit, as required."

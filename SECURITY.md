@@ -67,7 +67,11 @@ When processing untrusted PDF files:
 
 When using pdf_oxide with untrusted PDFs:
 
-1. **Set resource limits**: Configure `ParserLimits` appropriately
+1. **Bound the process, not the parser**: the library exposes no configurable
+   limit type. Internal caps exist (decompression size, reconstruction scan
+   depth, recursion depth), but they are not tunable from the API — so enforce
+   your own budget around the call: a wall-clock timeout, an address-space or
+   cgroup memory cap, and a maximum input size you accept.
 2. **Timeout operations**: Use timeouts for PDF processing
 3. **Sandbox execution**: Run in containers or VMs when processing untrusted files
 4. **Validate sources**: Only process PDFs from trusted sources when possible

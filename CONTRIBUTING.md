@@ -354,6 +354,25 @@ Ordering the other way round ("the test is in there, revert the fix and you'll
 see") moves the work to the reviewer, who then performs the revert-and-rerun by
 hand on every PR. One commit ordering on your side removes that entirely.
 
+Three ways a test can look like it proves the fix and not prove it. Each of
+these has shipped here, so they are named rather than left to judgement:
+
+- **A fixture may not carry data the code under test never reads.** A form-field
+  test once built an `/AP /N` dictionary the code never consults — it looked like
+  it validated a specification rule and validated a name remap. Grep your
+  fixture's distinctive keys against the code path you are fixing.
+- **A test may not compute its expected value by calling the code under test.**
+  If the expectation comes from the function being tested, the test cannot detect
+  a change to it. Derive the expected value from the specification, or hard-code
+  one you worked out by hand.
+- **Changing what an existing test asserts needs a written reason.** Editing an
+  assertion is a claim that the old expectation was wrong. Say so in the PR
+  description and why. A test being in the way of your change is the case where
+  it is most likely to be right.
+
+CI enforces the first rule mechanically: for a `fix(...)` PR it checks out your
+test commit, runs the tests it adds, and requires them to go red.
+
 ### 2. Build the reproducer as a minimal *synthetic* PDF, in code
 Construct the smallest PDF that triggers the defect as bytes inside the test —
 this is the pervasive pattern across `tests/` (e.g. building `%PDF-1.x` byte
@@ -451,6 +470,24 @@ Compare extracted text/structure with whitespace/newline **normalization**.
 For any rendered-pixel check, use a bounded per-channel tolerance at a fixed DPI
 — never byte-exact; rendering is font- and platform-fragile. New parsing/decoding
 paths should add a property-based or fuzz test where practical.
+
+### 7. A claim in a comment, changelog or name must be true of the code
+
+Four doc comments and two `CHANGELOG.md` entries in recent releases asserted
+properties the merged code does not have. A changelog entry saying a bug is fixed
+when it is not is the most costly of these: a reader removes a workaround that is
+still needed.
+
+- If a doc comment says "snapped to a quadrant", the function snaps.
+- If a changelog entry says "every binding", every binding has it.
+- If a test's name says what it proves, it proves that.
+
+**If you cite a specification clause, quote the sentence you are relying on.**
+A bare section number next to code is checked by readers *against each other*
+rather than against the source — one inverted image mask survived review here for
+exactly that reason: the comment cited the clause, the code matched the comment,
+and both were wrong. A quoted sentence cannot agree with code that contradicts
+it.
 
 ## How review works, and when a PR is closed
 
