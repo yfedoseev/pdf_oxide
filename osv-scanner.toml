@@ -2,36 +2,51 @@
 #
 # Documents the (small) set of known-upstream Rust advisories that have no
 # available — or no currently *adoptable* — fix, with explicit per-CVE
-# justifications and a 90-day review horizon. Re-evaluate every release.
+# justifications and a review horizon. Re-evaluate every release.
+#
+# NOTE ON `ignoreUntil`: an expired entry does not warn — it silently stops
+# suppressing, and the scanner then fails every pull request that touches
+# Cargo.lock. Renew or remove an entry *before* its date.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
 # `paste` crate: "no longer maintained" advisory (informational, not a CVE).
-# Used transitively by build-macro crates we don't directly depend on. No
-# remote-code-execution or memory-safety implication; advisory exists solely
-# to flag the unmaintained status. Re-evaluate when transitive consumers
-# move off paste (community is migrating to `pastey` / `quote`).
-ignoreUntil = 2026-08-23
+# No remote-code-execution or memory-safety implication; the advisory exists
+# solely to flag the unmaintained status, and there is no fixed version.
+#
+# Reviewed 2026-08-23: not fixable by any version bump — it is not a direct
+# dependency and reaches the tree three independent transitive ways:
+#   tokenizers -> {paste, macro_rules_attribute -> paste}
+#   image -> ravif -> rav1e -> paste
+#   image -> exr -> pulp -> paste
+# Re-evaluate when those consumers migrate off paste (the community is moving
+# to `pastey` / plain `quote`).
+ignoreUntil = 2026-09-23
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
-# `rsa` crate: known potential Marvin-attack timing side-channel for RSA
-# decryption keys. NOT exploitable in our usage: pdf_oxide uses RSA only
-# for PAdES signature *verification* of detached signatures (never
-# decryption of attacker-controlled ciphertexts), where the timing channel
-# is not applicable. No fix version released upstream. Re-evaluate when
-# rustcrypto/RSA ships the constant-time rewrite.
-ignoreUntil = 2026-08-23
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0173"
-# `proc-macro-error2` crate: advisory marks it as unmaintained (no CVE, no
-# memory-safety implication). Pulled in transitively:
-#   env_logger → defmt → defmt-macros → proc-macro-error2
-# `env_logger` is a dev dependency only; this crate does not reach published
-# builds. No fix version available upstream. Re-evaluate when defmt or
-# env_logger migrates off proc-macro-error2.
+# `rsa` crate: Marvin-attack timing side-channel (CVE-2023-49092, CVSS 5.9).
+# The advisory records `patched = []` — *every* published version is affected
+# and no fix exists on any release line, so this cannot be closed by upgrading.
+#
+# Exposure in our usage is limited: the advisory concerns timing observable
+# against RSA *decryption* oracles. pdf_oxide performs PAdES signature
+# verification (public-key only) and detached signing with a locally-held key
+# — it never decrypts attacker-supplied ciphertext, so there is no remote
+# oracle to time. The `fips` build routes RSA through `aws-lc-rs` instead and
+# is unaffected either way.
+#
+# Reviewed 2026-08-23: we are on 0.10.0-rc.18 — the release-candidate line
+# carrying the constant-time rewrite, and the version `cms` 0.3 requires — but
+# the advisory still lists no patched range. Re-evaluate when rsa 0.10.0 ships
+# final and the advisory records a fix.
 ignoreUntil = 2026-09-23
+
+# RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained) was ignored while the
+# crate reached the tree via env_logger -> defmt -> defmt-macros. It is no
+# longer present in Cargo.lock at all, and OSV-Scanner reported the entry as
+# an unused ignore, so the suppression is removed rather than renewed. It will
+# be re-flagged normally if the crate ever returns.
 
 # RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (quick-xml < 0.41 DoS advisories)
 # were previously ignored because office_oxide 0.1.2 pulled the vulnerable
@@ -47,23 +62,19 @@ id = "RUSTSEC-2026-0192"
 # receive no further fixes; its repo has since moved under the harfbuzz org).
 # There is no patched version.
 #
-# Decision: keep waiting. Removing ttf-parser is NOT achievable by a version
-# bump — it reaches the tree three independent ways:
+# Decision: replacement is scheduled for the 0.4.0 font-stack work, not for a
+# patch release. It is not removable by a version bump — it reaches the tree
+# two ways:
 #   1. directly — we parse embedded-font cmap tables, glyph outlines, metrics
 #      and name records through it (core font parsing + the render outline
-#      path), ~29 call sites;
-#   2. fontdb (system-fonts) -> ttf-parser — latest fontdb 0.23.0 still depends
-#      on it and ships no skrifa/fontations release;
-#   3. imageproc (ml) -> ab_glyph -> owned_ttf_parser -> ttf-parser — likewise
-#      no fontations-based release exists.
-# The actively-maintained successor is `skrifa`/`read-fonts` (fontations),
-# already in our tree via subsetter (and via harfrust once the shaping
-# migration off rustybuzz lands). Fully clearing this advisory requires porting
-# our direct usage to skrifa AND replacing both fontdb and ab_glyph with
-# fontations-based equivalents — a large, multi-crate migration touching the
-# core font-parsing and render paths, with real regression risk that is
-# disproportionate while the advisory remains informational-only.
-# Re-evaluate when fontdb or ab_glyph ship a fontations backend, or when the
-# standalone font-stack migration is scheduled.
+#      path): 29 references across src/fonts/{truetype_cmap,truetype_parser,
+#      font_dict}.rs and src/rendering/text_rasterizer.rs;
+#   2. imageproc (`ocr` feature) -> ab_glyph -> owned_ttf_parser -> ttf-parser,
+#      which still ships no fontations-based release.
+# The successor stack is already in the tree — skrifa 0.42 / read-fonts via
+# subsetter and harfrust (the rustybuzz migration has landed; rustybuzz is no
+# longer a dependency), and fontdb 0.24 has itself dropped ttf-parser, so path
+# (2) of the three previously recorded here is already gone. What remains is
+# porting our own 29 direct call sites and replacing ab_glyph — core
+# font-parsing and render work with real regression risk, hence 0.4.0.
 ignoreUntil = 2026-12-31
-
