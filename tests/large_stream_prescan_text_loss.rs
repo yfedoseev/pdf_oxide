@@ -206,3 +206,72 @@ fn page_level_text_does_not_mask_lost_form_text() {
     );
     assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
 }
+
+/// A sheet that *declares* a Form XObject it never draws.
+///
+/// CONTRIBUTING §4: this change broadens what the pre-scan retains — it
+/// samples graphics state at the region start rather than the `BT`/`Do`, and
+/// falls back to a full parse when `Do` invocations outnumber `BT` blocks.
+/// Everything wrongly retained by a broadening change shows up as *more
+/// output*, which reads as recovered content, so a fixture is needed in which
+/// the broadened path would pick up something it must not.
+///
+/// The out-of-scope match here is a form present in `/XObject` resources with
+/// no `Do` that invokes it. A conformant reader paints only what the content
+/// stream draws (ISO 32000-1 §8.10.1: the form is painted *by* the `Do`
+/// operator), so its text must never appear. A fallback that enumerated
+/// resources instead of following the draw sequence would surface it — and
+/// would look like a text-recovery improvement while doing so.
+fn sheet_with_an_undrawn_form(pad: usize, n_drawn: usize) -> Vec<u8> {
+    let mut forms: Vec<(String, String)> = (0..n_drawn)
+        .map(|i| {
+            (
+                format!("Fm{i}"),
+                format!("BT /F1 12 Tf 10 10 Td (NOTE {i:03} GENERAL NOTES) Tj ET"),
+            )
+        })
+        .collect();
+    // Declared in /XObject resources, never invoked by any `Do` below.
+    forms.push(("FmGhost".to_string(), "BT /F1 12 Tf 10 10 Td (UNDRAWN GHOST) Tj ET".to_string()));
+
+    let mut c = linework(pad);
+    c.push_str("BT /F1 14 Tf 100 1600 Td (SHEET TITLE) Tj ET ");
+    for i in 0..n_drawn {
+        let x = 100 + (i % 5) * 450;
+        let y = 1500 - (i / 5) * 60;
+        c.push_str(&format!("q 1 0 0 1 {x} {y} cm /Fm{i} Do Q "));
+    }
+    one_page_pdf(&c, &forms)
+}
+
+#[test]
+fn an_undrawn_form_is_not_collected_at_either_stream_size() {
+    // 60 drawn forms against 1 page-level BT puts the Do:BT ratio well past
+    // the 10:1 point, so this exercises the fallback this change introduces —
+    // which is the broadened path §4 is asking about.
+    let small = text_of(sheet_with_an_undrawn_form(2_000, 60));
+    let big = text_of(sheet_with_an_undrawn_form(300_000, 60));
+
+    // Control: the drawn content must be present, or the fixture proves nothing.
+    assert!(
+        small.contains("SHEET TITLE") && small.contains("NOTE 059"),
+        "control fixture is wrong: drawn text missing below the threshold, got {small:?}"
+    );
+    assert!(
+        big.contains("SHEET TITLE") && big.contains("NOTE 059"),
+        "drawn text lost above the pre-scan threshold, got {big:?}"
+    );
+
+    // The §4 assertion, on BOTH sides of the threshold.
+    assert!(
+        !small.contains("UNDRAWN GHOST"),
+        "text from a never-invoked form leaked below the threshold: {small:?}"
+    );
+    assert!(
+        !big.contains("UNDRAWN GHOST"),
+        "text from a never-invoked form leaked above the threshold — the pre-scan \
+         fallback enumerated resources instead of following the draw sequence: {big:?}"
+    );
+
+    assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
+}

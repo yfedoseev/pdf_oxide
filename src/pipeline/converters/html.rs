@@ -125,6 +125,27 @@ impl HtmlOutputConverter {
     fn looks_like_non_heading(text: &str) -> bool {
         let trimmed = text.trim();
 
+        // A lone enumerator — one alphanumeric character plus terminal
+        // punctuation, e.g. "a.", "b.", "1.", "A)" — is a figure panel label
+        // or a list marker, never a section heading. It reaches here as its
+        // own span because the label is typeset separately from the caption,
+        // and it is often set larger or bolder than body text, so the
+        // font-ratio test below would otherwise promote it. Promoting it does
+        // double damage: the label becomes an <h2> that is not a heading, and
+        // the surrounding sentence is split across the heading boundary.
+        //
+        // `is_ordered_list_marker` does not catch this: it requires a space
+        // after the punctuation, and a standalone label span has nothing
+        // following it.
+        let unpunctuated = trimmed.trim_end_matches(['.', ')', ':', ']']);
+        if unpunctuated.len() < trimmed.len() && unpunctuated.chars().count() == 1 {
+            if let Some(c) = unpunctuated.chars().next() {
+                if c.is_alphanumeric() {
+                    return true;
+                }
+            }
+        }
+
         // Currency amounts: $1,234.56 or 1,234.56$ or similar
         if trimmed.contains('$')
             || trimmed.contains('\u{20AC}') // euro
