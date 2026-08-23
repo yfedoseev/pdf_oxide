@@ -122,6 +122,34 @@ jobs:
             if (pr.draft) return;   // drafts are not asking for review yet
             // Trivial classes named in CONTRIBUTING as not counting.
             if (/^(docs|ci|chore|revert)(\(|:)/i.test(pr.title || '')) return;
+            // These intake rules took effect when CONTRIBUTING.md landed. A PR
+            // opened before that could not have complied with them, so applying
+            // them retroactively rejects work for failing a rule that did not
+            // exist. Exempt anything older than the policy.
+            const POLICY_EPOCH = Date.parse('2026-08-22T08:45:07Z');
+            if (Date.parse(pr.created_at) < POLICY_EPOCH) {
+              core.notice('PR predates the intake policy — exempt.');
+              return;
+            }
+
+            // Post-once guard. These jobs re-run on every reopen and edit; without
+            // it a contributor who reopens after correcting the PR is told the same
+            // thing again. Never say the same thing twice on one PR.
+            const sayOnce = async (marker, body) => {
+              const prior = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, per_page: 100,
+              });
+              if (prior.some(c => (c.body || '').includes(marker))) {
+                core.notice('Already commented on this PR — not repeating.');
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number,
+                body: body + '\n\n<!-- ' + marker + ' -->',
+              });
+            };
 
             const others = (await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
@@ -137,11 +165,7 @@ jobs:
             if (!others.length) return;
 
             const list = others.map(p => '#' + p.number).join(', ');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              body: [
+            await sayOnce('pr-quality:one-open-pr', [
                 'Closing automatically: this project allows **one open pull request at a time**',
                 'per non-maintainer contributor, and you already have ' + others.length + ' open (' + list + ').',
                 '',
@@ -156,8 +180,7 @@ jobs:
                 '',
                 'See [One open PR at a time](https://github.com/' + context.repo.owner + '/' +
                   context.repo.repo + '/blob/main/CONTRIBUTING.md#before-you-open-a-pull-request).',
-              ].join('\n'),
-            });
+            ].join('\n'));
             await github.rest.pulls.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -178,10 +201,48 @@ jobs:
             if (pr.draft) return;
             if (/^(docs|ci|chore|revert)(\(|:)/i.test(pr.title || '')) return;
 
+            // These intake rules took effect when CONTRIBUTING.md landed. A PR
+            // opened before that could not have complied with them, so applying
+            // them retroactively rejects work for failing a rule that did not
+            // exist. Exempt anything older than the policy.
+            const POLICY_EPOCH = Date.parse('2026-08-22T08:45:07Z');
+            if (Date.parse(pr.created_at) < POLICY_EPOCH) {
+              core.notice('PR predates the intake policy — exempt.');
+              return;
+            }
+
+            // Post-once guard. These jobs re-run on every reopen and edit; without
+            // it a contributor who reopens after correcting the PR is told the same
+            // thing again. Never say the same thing twice on one PR.
+            const sayOnce = async (marker, body) => {
+              const prior = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, per_page: 100,
+              });
+              if (prior.some(c => (c.body || '').includes(marker))) {
+                core.notice('Already commented on this PR — not repeating.');
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number,
+                body: body + '\n\n<!-- ' + marker + ' -->',
+              });
+            };
+
             const author = pr.user && pr.user.login;
             const body = pr.body || '';
+            // GitHub honours several closing forms, including a full issue URL
+            // (`Closes https://github.com/o/r/issues/12`), which closes the issue
+            // on merge exactly as `Closes #12` does. Matching only the short form
+            // rejects a correctly-linked PR.
+            const CLOSING = new RegExp(
+              '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+' +
+              '(?:#|GH-|https?://github\\.com/[\\w.-]+/[\\w.-]+/issues/)(\\d+)',
+              'gi',
+            );
             const refs = [...new Set(
-              [...body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)].map(m => parseInt(m[1], 10))
+              [...body.matchAll(CLOSING)].map(m => parseInt(m[1], 10))
             )];
 
             const docs = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo +
@@ -200,11 +261,7 @@ jobs:
                   'closes on merge and this check can find it. See ' + docs
                 );
               }
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                body: [
+              await sayOnce('pr-quality:linked-issue', [
                   'Closing automatically: this PR does not reference an issue.',
                   '',
                   'Work here starts from an issue that a maintainer has approved and assigned —',
@@ -221,8 +278,7 @@ jobs:
                   'Typo, documentation, CI and revert PRs are exempt and can be opened directly.',
                   '',
                   'See [Before you open a pull request](' + docs + ').',
-                ].join('\n'),
-              });
+              ].join('\n'));
               await github.rest.pulls.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

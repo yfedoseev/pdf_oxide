@@ -8,6 +8,11 @@ All notable changes to PDFOxide are documented here.
 
 - **An element's page-space rectangle is now exposed in every language binding** — `page_bbox()` reports a rect already mapped into the page's displayed frame, so callers on a rotated page get coordinates that match what they see rather than pre-`/Rotate` space. Available across the C ABI and every binding built on it (#1056, #1057).
 
+### Changed
+
+- **Two dependencies that nothing imported were removed, taking 43 packages out of the tree** — `imageproc` and `tokenizers` were declared optional, wired into the `ocr` and `ml` features, and referenced by zero lines of Rust anywhere in the workspace. Both also sat on the `cargo-shear` ignore list, which is why the unused-dependency gate never reported them: that list exists for crates used behind a `dep:` feature gate (`cms`, `rsa`, `x509-parser` genuinely are), and these two had outlived it. Removing them drops 43 packages including the `esaxx-rs` / `onig-sys` / `spm_precompiled` C/C++ chain, `nalgebra`, and `ab_glyph`. Both are also gone from the ignore list, so the gate can police them from now on. `ocr` and `ml` build unchanged; there is no behavioural difference, because nothing was calling them.
+- **`ttf-parser` is now reached only by our own font parsing** — with `imageproc` gone, the `imageproc` → `ab_glyph` → `owned_ttf_parser` → `ttf-parser` chain leaves the tree, and `fontdb` 0.24 had already dropped its own dependency on it. That leaves no third-party consumer at all, so the planned migration onto `skrifa`/`read-fonts` (both already present via `subsetter` and `harfrust`) no longer has to wait on anyone else.
+
 ### Fixed
 
 - **`extract_chars` and `extract_spans` disagreed because they used different parsers** — the two APIs walked the content stream through separate code paths, so a page could report characters that no span contained (and vice versa), leaving callers unable to correlate the two. Both now parse through the same parser, so their output describes the same glyphs (#1006, #1010).
