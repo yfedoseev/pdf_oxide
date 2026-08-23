@@ -49,7 +49,7 @@ fn jpeg_decoder_returns_straight_cmyk_for_app14_inverted_input() {
     // Tolerant assertions: JPEG quantisation can drift values a few
     // levels even at quality 95. The point is the *direction* of the
     // inversion — pure cyan must NOT come out as M = Y = K = 255 / C = 0.
-    for (i, chunk) in decoded.chunks_exact(4).enumerate() {
+    for (i, chunk) in decoded.as_chunks::<4>().0.iter().enumerate() {
         assert!(
             chunk[0] > 200,
             "pixel {i}: Cyan channel after jpeg-decoder auto-inversion (expected ≳255); got {chunk:?}"

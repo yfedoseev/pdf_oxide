@@ -402,13 +402,14 @@ cargo build --release --lib
 
 ## Notable Users
 
-Projects using PDFOxide in production (verified against their public dependency manifests):
+PDFOxide is a production dependency of RAG engines, collaborative editors, AI coding agents, and arXiv.org's own submission pipeline. Every entry below is verified against that project's public dependency manifest — no self-reported logos, no "trusted by" wall.
 
-- **[RAGFlow](https://github.com/infiniflow/ragflow)** (85k★) — one of the most popular open-source RAG engines; PDFOxide is the primary PDF engine in its `deepdoc` parsing pipeline ([go.mod](https://github.com/infiniflow/ragflow/blob/main/go.mod))
-- **[AFFiNE](https://github.com/toeverything/AFFiNE)** (70k★) — open-source Notion/Miro alternative; powers document extraction via AFFiNE's own [`doc_extractor`](https://crates.io/crates/doc_extractor) crate ([Cargo.toml](https://github.com/toeverything/AFFiNE/blob/canary/Cargo.toml))
-- **[grok-build](https://github.com/xai-org/grok-build)** (19k★) — xAI's coding-agent TUI; uses PDFOxide's rendering feature to read PDFs in a repo ([Cargo.toml](https://github.com/xai-org/grok-build/blob/main/Cargo.toml))
-- **[Xberg](https://github.com/xberg-io/xberg)** (formerly kreuzberg, 8.7k★) — polyglot document-intelligence framework; PDFOxide is its architectural PDF engine ([Cargo.toml](https://github.com/xberg-io/xberg/blob/main/Cargo.toml))
-- **[create-context-graph](https://github.com/neo4j-labs/create-context-graph)** (Neo4j Labs) — GraphRAG context-builder; PDFOxide is its primary PDF parser ([pyproject.toml](https://github.com/neo4j-labs/create-context-graph/blob/main/pyproject.toml))
+Star counts checked 2026-08-21:
+
+- **[RAGFlow](https://github.com/infiniflow/ragflow)** (89k★) — one of the most popular open-source RAG engines; PDFOxide is the primary PDF engine in its `deepdoc` parsing pipeline ([go.mod](https://github.com/infiniflow/ragflow/blob/main/go.mod))
+- **[AFFiNE](https://github.com/toeverything/AFFiNE)** (71.7k★) — open-source Notion/Miro alternative; powers document extraction via AFFiNE's own [`doc_extractor`](https://crates.io/crates/doc_extractor) crate ([Cargo.toml](https://github.com/toeverything/AFFiNE/blob/canary/Cargo.toml))
+- **[grok-build](https://github.com/xai-org/grok-build)** (25.8k★) — xAI's coding-agent TUI; uses PDFOxide's rendering feature to read PDFs in a repo ([Cargo.toml](https://github.com/xai-org/grok-build/blob/main/Cargo.toml))
+- **[create-context-graph](https://github.com/neo4j-labs/create-context-graph)** (Neo4j Labs, 712★) — GraphRAG context-builder; PDFOxide is its primary PDF parser ([pyproject.toml](https://github.com/neo4j-labs/create-context-graph/blob/main/pyproject.toml))
 - **[arXiv submission-tools](https://github.com/arXiv/submission-tools)** — arXiv.org's own PDF validation and LaTeX-to-PDF submission pipeline
 
 Using PDFOxide in production? [Open an issue](https://github.com/yfedoseev/pdf_oxide/issues/new) to be added here.

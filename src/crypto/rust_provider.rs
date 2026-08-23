@@ -393,16 +393,16 @@ impl SignatureVerifier for RustVerifier {
                 (der::oid::db::rfc5912::ID_SHA_1, sha1::Sha1::digest(message).to_vec())
             },
             HashAlgorithm::Sha256 => {
-                use sha2_v10::Digest as _;
-                (der::oid::db::rfc5912::ID_SHA_256, sha2_v10::Sha256::digest(message).to_vec())
+                use sha2::Digest as _;
+                (der::oid::db::rfc5912::ID_SHA_256, sha2::Sha256::digest(message).to_vec())
             },
             HashAlgorithm::Sha384 => {
-                use sha2_v10::Digest as _;
-                (der::oid::db::rfc5912::ID_SHA_384, sha2_v10::Sha384::digest(message).to_vec())
+                use sha2::Digest as _;
+                (der::oid::db::rfc5912::ID_SHA_384, sha2::Sha384::digest(message).to_vec())
             },
             HashAlgorithm::Sha512 => {
-                use sha2_v10::Digest as _;
-                (der::oid::db::rfc5912::ID_SHA_512, sha2_v10::Sha512::digest(message).to_vec())
+                use sha2::Digest as _;
+                (der::oid::db::rfc5912::ID_SHA_512, sha2::Sha512::digest(message).to_vec())
             },
             HashAlgorithm::Md5 => {
                 return Err(Error::Verification(
@@ -417,8 +417,8 @@ impl SignatureVerifier for RustVerifier {
         digest_info.extend_from_slice(prefix);
         digest_info.extend_from_slice(&digest);
 
-        let n = rsa::BigUint::from_bytes_be(pubkey.modulus_be);
-        let e = rsa::BigUint::from_bytes_be(pubkey.exponent_be);
+        let n = rsa::BoxedUint::from_be_slice_vartime(pubkey.modulus_be);
+        let e = rsa::BoxedUint::from_be_slice_vartime(pubkey.exponent_be);
         let key =
             RcRsa::new(n, e).map_err(|_| Error::InvalidInput("invalid RSA modulus/exponent"))?;
         key.verify(Pkcs1v15Sign::new_unprefixed(), &digest_info, signature)
@@ -436,20 +436,20 @@ impl SignatureVerifier for RustVerifier {
         use rsa::signature::Verifier;
         use rsa::RsaPublicKey as RcRsa;
 
-        let n = rsa::BigUint::from_bytes_be(pubkey.modulus_be);
-        let e = rsa::BigUint::from_bytes_be(pubkey.exponent_be);
+        let n = rsa::BoxedUint::from_be_slice_vartime(pubkey.modulus_be);
+        let e = rsa::BoxedUint::from_be_slice_vartime(pubkey.exponent_be);
         let key =
             RcRsa::new(n, e).map_err(|_| Error::InvalidInput("invalid RSA modulus/exponent"))?;
         let sig = PssSignature::try_from(signature)
             .map_err(|_| Error::InvalidInput("malformed RSA-PSS signature bytes"))?;
         let ok = match hash {
-            HashAlgorithm::Sha256 => VerifyingKey::<sha2_v10::Sha256>::new(key)
+            HashAlgorithm::Sha256 => VerifyingKey::<sha2::Sha256>::new(key)
                 .verify(message, &sig)
                 .is_ok(),
-            HashAlgorithm::Sha384 => VerifyingKey::<sha2_v10::Sha384>::new(key)
+            HashAlgorithm::Sha384 => VerifyingKey::<sha2::Sha384>::new(key)
                 .verify(message, &sig)
                 .is_ok(),
-            HashAlgorithm::Sha512 => VerifyingKey::<sha2_v10::Sha512>::new(key)
+            HashAlgorithm::Sha512 => VerifyingKey::<sha2::Sha512>::new(key)
                 .verify(message, &sig)
                 .is_ok(),
             HashAlgorithm::Sha1 | HashAlgorithm::Md5 => {

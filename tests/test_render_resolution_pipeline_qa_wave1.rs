@@ -157,7 +157,9 @@ fn pixel_at(rgba: &[u8], x: u32, y: u32) -> (u8, u8, u8, u8) {
 /// something through the pipeline.
 #[allow(dead_code)]
 fn count_marked_pixels(rgba: &[u8]) -> usize {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .filter(|c| c[0] < 250 || c[1] < 250 || c[2] < 250)
         .count()
 }
@@ -454,7 +456,7 @@ fn qa_combo_under_rotated_scaled_ctm_paints_both_fill_and_stroke() {
     // confirm both green and red channels show up.
     let mut green_marks = 0usize;
     let mut red_marks = 0usize;
-    for c in on.chunks_exact(4) {
+    for c in on.as_chunks::<4>().0 {
         if c[1] > c[0].saturating_add(40) && c[1] > c[2].saturating_add(40) {
             green_marks += 1;
         }

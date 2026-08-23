@@ -1361,6 +1361,55 @@ impl PdfDocument {
         }
     }
 
+    /// Decrypt a stream object's raw bytes for re-serialization elsewhere,
+    /// **without** decompressing it — unlike [`Self::decode_stream_with_encryption`],
+    /// which both decrypts and applies `/Filter` (needed by extraction, which
+    /// wants the final bytes). A writer that re-emits the object verbatim
+    /// (same `/Filter`, e.g. FlateDecode) wants the opposite: decrypt only,
+    /// leave the filter's compressed bytes alone, so the `/Filter` entry it
+    /// copies stays valid.
+    ///
+    /// A no-op when the document isn't encrypted or the object isn't a
+    /// stream, so callers can apply it unconditionally to every object they
+    /// copy out of `self` — e.g. every write path that copies objects from
+    /// an already-open, possibly-encrypted source document into a new
+    /// output file with no `/Encrypt` dictionary of its own (issue #1032:
+    /// those paths were re-serializing the source's raw ciphertext
+    /// verbatim, producing a structurally valid but unreadable PDF with no
+    /// error or warning).
+    pub(crate) fn decrypt_stream_for_copy(
+        &self,
+        obj: Object,
+        obj_ref: ObjectRef,
+    ) -> Result<Object> {
+        let Object::Stream { mut dict, data } = obj else {
+            return Ok(obj);
+        };
+        // Per ISO 32000-2:2020 §7.6.3, object streams and cross-reference
+        // streams are never encrypted — same exclusion as
+        // `decode_stream_with_encryption` above.
+        let is_unencrypted_stream_type = dict
+            .get("Type")
+            .and_then(|t| t.as_name())
+            .map(|name| name == "ObjStm" || name == "XRef")
+            .unwrap_or(false);
+        if is_unencrypted_stream_type {
+            return Ok(Object::Stream { dict, data });
+        }
+        let handler_ref = self.encryption_handler.lock_or_recover();
+        let Some(handler) = handler_ref.as_ref() else {
+            drop(handler_ref);
+            return Ok(Object::Stream { dict, data });
+        };
+        let decrypted = handler.decrypt_stream(&data, obj_ref.id, obj_ref.gen as u32)?;
+        drop(handler_ref);
+        dict.insert("Length".to_string(), Object::Integer(decrypted.len() as i64));
+        Ok(Object::Stream {
+            dict,
+            data: decrypted.into(),
+        })
+    }
+
     /// Open with custom extraction profile.
     ///
     /// Currently, the profile is not used at the document level but is reserved
@@ -5389,17 +5438,30 @@ impl PdfDocument {
         if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
             return Ok(vertical);
         }
-        // Dominant text-matrix rotation (a landscape table typeset on a
-        // portrait page): the row-major assembler groups lines
-        // in the portrait frame and interleaves every rotated row. Assemble
-        // such pages in their rotated reading frame instead.
-        let base_spans = match self.map_dominant_rotation_into_reading_frame(page_index, base_spans)
-        {
-            Ok(mapped) => mapped,
-            Err(original) => original,
-        };
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// [`Self::map_dominant_rotation_into_reading_frame`] with the
+    /// mapped/unchanged distinction collapsed, for the call sites that only
+    /// want "spans as a reader sees them".
+    ///
+    /// Every library text surface goes through this — via
+    /// [`Self::assemble_text_from_spans`] or the converter pipelines. Applying
+    /// the frame at one call site made the same page read correctly through
+    /// `extract_text` and incorrectly through `to_markdown` / `to_html` /
+    /// `to_plain_text`. Callers must apply `ConversionOptions` region filters
+    /// BEFORE this: region rects are page-space coordinates, and the map
+    /// rewrites the geometry they select against.
+    fn spans_in_reading_frame(
+        &self,
+        page_index: usize,
+        spans: Vec<crate::layout::TextSpan>,
+    ) -> Vec<crate::layout::TextSpan> {
+        match self.map_dominant_rotation_into_reading_frame(page_index, spans) {
+            Ok(mapped) => mapped,
+            Err(original) => original,
+        }
     }
 
     /// Map a dominant-rotation page's spans into their rotated reading
@@ -5415,7 +5477,8 @@ impl PdfDocument {
     /// keeping output byte-identical there.
     ///
     /// Only used for plain-text assembly, where no coordinates leak to the
-    /// caller; coordinate-bearing APIs (`extract_words`) reorder in the
+    /// caller (region rects leak IN, so they are filtered out before this
+    /// runs); coordinate-bearing APIs (`extract_words`) reorder in the
     /// rotated frame but report true page-space bboxes instead (see
     /// `crate::pipeline::page_reading_order`).
     fn map_dominant_rotation_into_reading_frame(
@@ -5680,6 +5743,13 @@ impl PdfDocument {
         }
 
         let base_spans = Self::apply_region_filters(base_spans, options);
+        // Dominant text-matrix rotation (a landscape table typeset on a
+        // portrait page): the row-major assembler groups lines in the
+        // portrait frame and interleaves every rotated row. Assemble such
+        // pages in their rotated reading frame instead — after the region
+        // filters, whose rects select in page space, and before table
+        // detection, which consumes the geometry this maps.
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
         // Struct-tree-scope `/ActualText` is applied per branch below
         // — the structure-order assembler handles it natively via the
         // per-page action map, and the geometric branch applies the
@@ -5790,14 +5860,14 @@ impl PdfDocument {
                 // table are already covered by the inline-table flush
                 // below, so we must NOT also preserve them in the flow
                 // span list (it would produce duplicate output).
-                let mut table_cell_texts: std::collections::HashSet<String> =
+                let mut table_cell_texts: std::collections::HashSet<&str> =
                     std::collections::HashSet::new();
                 for t in &tables {
                     for row in &t.rows {
                         for cell in &row.cells {
                             let trimmed = cell.text.trim();
                             if !trimmed.is_empty() {
-                                table_cell_texts.insert(trimmed.to_string());
+                                table_cell_texts.insert(trimmed);
                             }
                         }
                     }
@@ -5811,101 +5881,168 @@ impl PdfDocument {
                 // by bbox alone would silently drop real content.
                 // Falls back to bbox-only filtering when no MCIDs are present
                 // (untagged PDFs or spatial-detection tables).
+                // Only tables with a bbox reach the inline flush below; a
+                // cell of an unflushed table renders nowhere and must not
+                // absorb anything — whether ownership is decided by MCID or
+                // by geometry.
                 let table_cell_mcids: HashSet<u32> = tables
                     .iter()
+                    .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
                         t.rows
                             .iter()
                             .flat_map(|r| r.cells.iter().flat_map(|c| c.mcids.iter().copied()))
                     })
                     .collect();
-                // Flatten every cell bbox once and index it into coarse y-bands,
-                // so the per-span containment test below scans only the cells in
-                // the span's y-band instead of every cell on the page (was
-                // O(spans x cells) on untagged table pages). A cell that contains
-                // a span necessarily shares the span's y-band, so this is
+                // Flatten every flushed cell once (bbox plus the cell, whose
+                // text and member spans drive the ownership test below) and
+                // index it into coarse y-bands, so the per-span containment
+                // test below scans only the cells in the span's y-band
+                // instead of every cell on the page (was O(spans x cells) on
+                // untagged table pages). A cell that contains a span
+                // necessarily shares the span's y-band, so this is
                 // byte-identical to the full scan.
-                let cell_bboxes: Vec<crate::geometry::Rect> = tables
+                let flushed_cells: Vec<(
+                    crate::geometry::Rect,
+                    &crate::structure::table_extractor::TableCell,
+                )> = tables
                     .iter()
+                    .filter(|t| t.bbox.is_some())
                     .flat_map(|t| {
                         t.rows
                             .iter()
-                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox))
+                            .flat_map(|r| r.cells.iter().filter_map(|c| c.bbox.map(|b| (b, c))))
                     })
                     .collect();
+                // Same-text cell lookup for the fallback path: a span that no
+                // cell bbox contains can still be absorbed by a cell whose
+                // exact text it carries, as long as that cell's budget is
+                // untouched.
+                let mut cell_text_index: std::collections::HashMap<&str, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (ci, (_, c)) in flushed_cells.iter().enumerate() {
+                    let text = c.text.trim();
+                    if !text.is_empty() {
+                        cell_text_index.entry(text).or_default().push(ci);
+                    }
+                }
                 const CELL_Y_BIN: f32 = 18.0;
                 let cell_bin = |y: f32| (y / CELL_Y_BIN).floor() as i32;
                 let mut cell_y_index: std::collections::HashMap<i32, Vec<usize>> =
                     std::collections::HashMap::new();
-                for (ci, b) in cell_bboxes.iter().enumerate() {
+                for (ci, (b, _)) in flushed_cells.iter().enumerate() {
                     for bin in cell_bin(b.y)..=cell_bin(b.y + b.height) {
                         cell_y_index.entry(bin).or_default().push(ci);
                     }
                 }
-                // Returns true when span should be removed from the flow because
-                // it is owned by a table cell (will be re-emitted by render_text).
-                let span_in_table = |s: &crate::layout::TextSpan| -> bool {
-                    if !table_cell_mcids.is_empty() {
-                        if let Some(mcid) = s.mcid {
-                            // Tagged PDF: MCID decides ownership precisely.
-                            return table_cell_mcids.contains(&mcid);
+                // Per-cell token budgets. `render_text()` emits each cell's
+                // content exactly once, so a cell can absorb dropped spans
+                // totalling at most the material it was built from. Bbox
+                // containment alone cannot decide a drop: a rowspan-merged
+                // cell's bbox can cover far more spans than its text was
+                // built from (a schedule column's tall cell covering
+                // hundreds of repeated marks while holding six lines of
+                // them), and an empty cell re-emits nothing at all (a value
+                // column without row rules becomes one tall empty cell whose
+                // bbox swallows every figure in the column). A span leaves
+                // the flow only by consuming its tokens from a covering
+                // cell's budget — the fragment-level form of the same rule
+                // the text fallback needs: membership cannot see
+                // multiplicity.
+                //
+                // Budgets are denominated in the cell's member-span tokens,
+                // not its rendered text: the cell builders rewrite text
+                // while joining spans (sub-em gaps and CJK/fullwidth pairs
+                // glue two spans with no separator, column-spanning decimals
+                // split "12.11" into "12 11"), so the rendered text is not a
+                // token superset of the spans the cell was built from. The
+                // member spans are, by construction — they are clones of the
+                // same flow spans this filter walks. A cell recorded without
+                // member spans falls back to its rendered text.
+                let mut cell_remaining: Vec<std::collections::HashMap<&str, usize>> = flushed_cells
+                    .iter()
+                    .map(|(_, c)| {
+                        let mut m = std::collections::HashMap::new();
+                        if c.spans.is_empty() {
+                            for tok in c.text.split_whitespace() {
+                                *m.entry(tok).or_insert(0) += 1;
+                            }
+                        } else {
+                            for sp in &c.spans {
+                                for tok in sp.text.split_whitespace() {
+                                    *m.entry(tok).or_insert(0) += 1;
+                                }
+                            }
                         }
-                        // Tagged PDF but span has no MCID (widget/annotation):
-                        // keep in flow — better to duplicate than to silently drop.
-                        return false;
-                    }
-                    // Untagged PDF or no MCIDs in any cell: cell-bbox-based filter.
-                    // Using per-cell bboxes (rather than the coarser table bbox) prevents
-                    // dropping paragraph spans that lie inside the table's outer bounding
-                    // box but were not captured as table cells by the spatial detector.
-                    // Probe only the cells in the span's y-band (±1 bin guards the
-                    // containment tolerance). Equivalent to scanning every cell.
-                    let slo = cell_bin(s.bbox.y) - 1;
-                    let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
-                    let in_cell = (slo..=shi).any(|bin| {
-                        cell_y_index.get(&bin).is_some_and(|cands| {
-                            cands.iter().any(|&ci| {
-                                Self::contains_rect_with_tolerance(
-                                    &cell_bboxes[ci],
-                                    &s.bbox,
-                                    RETAIN_TOLERANCE,
-                                )
-                            })
-                        })
-                    });
-                    if in_cell {
-                        return true;
-                    }
-                    // Fallback: text-based match. The bbox check above uses
-                    // a tight 0.1pt tolerance and rejects spans whose font
-                    // ascent extends slightly above the cell's ink box (issue
-                    // 484: "FY 15 1st Q TTL" labels in JAL traffic table —
-                    // span height = font_size = 10.7pt, but cell bbox height
-                    // = 15.96pt covers two ink rows so the label glyphs reach
-                    // ~0.4pt above the cell's top edge). When a span's
-                    // trimmed text exactly matches some cell's text, the cell
-                    // already owns it — keeping it in flow would duplicate.
-                    let trimmed = s.text.trim();
-                    if trimmed.is_empty() {
-                        return false;
-                    }
-                    if !table_cell_texts.contains(trimmed) {
-                        return false;
-                    }
-                    // Require spatial proximity: the span must lie inside
-                    // some table's outer bbox so we don't drop body text that
-                    // coincidentally matches a cell's text elsewhere on the page.
-                    tables.iter().any(|t| {
-                        t.bbox.is_some_and(|tb| {
-                            let cx = s.bbox.x + s.bbox.width / 2.0;
-                            let cy = s.bbox.y + s.bbox.height / 2.0;
-                            cx >= tb.x - RETAIN_TOLERANCE
-                                && cx <= tb.x + tb.width + RETAIN_TOLERANCE
-                                && cy >= tb.y - RETAIN_TOLERANCE
-                                && cy <= tb.y + tb.height + RETAIN_TOLERANCE
-                        })
+                        m
                     })
-                };
+                    .collect();
+                // The detector runs on `extract_words` output, so a budget
+                // token can itself be a glued compound of several flow spans
+                // drawn with no gap ("12,3" + "45" -> "12,345"). A contained
+                // span may therefore consume a substring of one budget
+                // token; the unmatched remainder returns to the budget so
+                // the sibling fragments can follow. Absorption stays bounded
+                // by the material the cell was built from. The text-fallback
+                // path keeps whole-token matching: it has no containment
+                // evidence, so fragments would let distant same-substring
+                // text vanish.
+                fn take_one(
+                    work: &mut std::collections::HashMap<&str, usize>,
+                    tok: &str,
+                    allow_fragment: bool,
+                ) -> bool {
+                    if let Some(r) = work.get_mut(tok) {
+                        if *r > 0 {
+                            *r -= 1;
+                            return true;
+                        }
+                    }
+                    if !allow_fragment {
+                        return false;
+                    }
+                    // Shortest host wins: splits are deterministic (HashMap
+                    // iteration order is not) and minimal.
+                    let Some(host) = work
+                        .iter()
+                        .filter(|(k, n)| **n > 0 && k.len() > tok.len() && k.contains(tok))
+                        .map(|(k, _)| *k)
+                        .min_by_key(|k| (k.len(), *k))
+                    else {
+                        return false;
+                    };
+                    *work.get_mut(host).unwrap() -= 1;
+                    let start = host.find(tok).unwrap();
+                    let before = &host[..start];
+                    let after = &host[start + tok.len()..];
+                    if !before.is_empty() {
+                        *work.entry(before).or_insert(0) += 1;
+                    }
+                    if !after.is_empty() {
+                        *work.entry(after).or_insert(0) += 1;
+                    }
+                    true
+                }
+                // Test plus decrement, in one place so the containment and
+                // text-fallback paths cannot drift apart — they must draw on
+                // the SAME accounting. All-or-nothing: a span either fits
+                // the cell's remaining budget whole or leaves it untouched.
+                fn try_consume(
+                    remaining: &mut std::collections::HashMap<&str, usize>,
+                    span_tokens: &[(&str, usize)],
+                    allow_fragment: bool,
+                ) -> bool {
+                    let mut work = remaining.clone();
+                    for (tok, n) in span_tokens {
+                        for _ in 0..*n {
+                            if !take_one(&mut work, tok, allow_fragment) {
+                                return false;
+                            }
+                        }
+                    }
+                    *remaining = work;
+                    true
+                }
 
                 let preserved_label_indices: std::collections::HashSet<usize> =
                     Self::identify_multi_row_labels(&spans)
@@ -5930,22 +6067,117 @@ impl PdfDocument {
                         })
                         .collect();
 
-                if preserved_label_indices.is_empty() {
-                    spans.retain(|s| !span_in_table(s));
-                } else {
-                    let kept: Vec<crate::layout::TextSpan> = spans
-                        .drain(..)
-                        .enumerate()
-                        .filter_map(|(i, s)| {
-                            if !span_in_table(&s) || preserved_label_indices.contains(&i) {
-                                Some(s)
+                // One pass covers both cases: with no preserved labels the
+                // index test is simply never true.
+                //
+                // A cell-covered span leaves the flow by consuming its tokens
+                // from the covering cell's budget. A text-fallback span
+                // (matching a cell's exact text without lying inside any cell
+                // — the ascent-overshoot geometry the fallback exists for)
+                // claims a same-text cell whose budget is still whole. Both
+                // paths draw on the SAME per-cell budgets, so a cell that
+                // absorbed its own spans cannot also be claimed from a
+                // distance: with split accounting, a page carrying one
+                // repeated label per row dropped three spans against two
+                // rendering cells.
+                //
+                // Once every cell that could absorb a text is spoken for,
+                // further spans matching it stay in the flow, because
+                // `render_text()` will not emit them again. Membership cannot
+                // see multiplicity. Spans no cell can absorb stay in the
+                // flow: better to duplicate than to silently drop.
+                let mut kept: Vec<crate::layout::TextSpan> = Vec::with_capacity(spans.len());
+                for (i, s) in spans.drain(..).enumerate() {
+                    if preserved_label_indices.contains(&i) {
+                        kept.push(s);
+                        continue;
+                    }
+                    if !table_cell_mcids.is_empty() {
+                        // Tagged PDF: MCID decides ownership precisely. A span
+                        // with no MCID (widget/annotation) stays in flow —
+                        // better to duplicate than to silently drop.
+                        if s.mcid.is_some_and(|m| table_cell_mcids.contains(&m)) {
+                            continue;
+                        }
+                        kept.push(s);
+                        continue;
+                    }
+                    // Inner scope: every borrow of `s.text` ends before the
+                    // span is moved into `kept`.
+                    let dropped = {
+                        let trimmed = s.text.trim();
+                        // A span rarely carries more than a few tokens; a
+                        // linear-scan Vec beats allocating a HashMap per span.
+                        let mut span_tokens: Vec<(&str, usize)> = Vec::new();
+                        for tok in trimmed.split_whitespace() {
+                            if let Some(entry) = span_tokens.iter_mut().find(|(t, _)| *t == tok) {
+                                entry.1 += 1;
                             } else {
-                                None
+                                span_tokens.push((tok, 1));
                             }
-                        })
-                        .collect();
-                    spans = kept;
+                        }
+                        // Probe only the cells in the span's y-band (±1 bin
+                        // guards the containment tolerance). Equivalent to
+                        // scanning every cell.
+                        let slo = cell_bin(s.bbox.y) - 1;
+                        let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
+                        let mut decided = false;
+                        'cells: for bin in slo..=shi {
+                            let Some(cands) = cell_y_index.get(&bin) else {
+                                continue;
+                            };
+                            for &ci in cands {
+                                let (cell_bbox, _) = &flushed_cells[ci];
+                                if !Self::contains_rect_with_tolerance(
+                                    cell_bbox,
+                                    &s.bbox,
+                                    RETAIN_TOLERANCE,
+                                ) {
+                                    continue;
+                                }
+                                if try_consume(&mut cell_remaining[ci], &span_tokens, true) {
+                                    // Dropped: the cell re-emits it.
+                                    decided = true;
+                                    break 'cells;
+                                }
+                            }
+                        }
+                        // Fallback: text-based match. The bbox check above
+                        // uses a tight 0.1pt tolerance and rejects spans whose
+                        // font ascent extends slightly above the cell's ink
+                        // box (issue 484: "FY 15 1st Q TTL" labels in the JAL
+                        // traffic table). Require spatial proximity so body
+                        // text that coincidentally matches a cell's text
+                        // elsewhere on the page is not dropped.
+                        if !decided && !trimmed.is_empty() && cell_text_index.contains_key(trimmed)
+                        {
+                            let near_table = tables.iter().any(|t| {
+                                t.bbox.is_some_and(|tb| {
+                                    let cx = s.bbox.x + s.bbox.width / 2.0;
+                                    let cy = s.bbox.y + s.bbox.height / 2.0;
+                                    cx >= tb.x - RETAIN_TOLERANCE
+                                        && cx <= tb.x + tb.width + RETAIN_TOLERANCE
+                                        && cy >= tb.y - RETAIN_TOLERANCE
+                                        && cy <= tb.y + tb.height + RETAIN_TOLERANCE
+                                })
+                            });
+                            if near_table {
+                                for &ci in &cell_text_index[trimmed] {
+                                    if try_consume(&mut cell_remaining[ci], &span_tokens, false) {
+                                        // Dropped: this unclaimed cell re-emits it.
+                                        decided = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        decided
+                    };
+                    if !dropped {
+                        kept.push(s);
+                    }
                 }
+                spans = kept;
             }
 
             // Row-aware ordering: quantize Y into bands and sort band-
@@ -8194,15 +8426,30 @@ impl PdfDocument {
         }
         if Self::is_column_spanning_decimal(span) {
             let dot = span.text.find('.').unwrap();
-            out.push_str(&span.text[..dot]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..dot]);
             out.push(' ');
-            out.push_str(&span.text[dot + 1..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[dot + 1..]);
         } else if let Some(split) = Self::char_widths_boundary_split(span) {
-            out.push_str(&span.text[..split]);
+            Self::push_str_without_soft_hyphens(out, &span.text[..split]);
             out.push(' ');
-            out.push_str(&span.text[split..]);
+            Self::push_str_without_soft_hyphens(out, &span.text[split..]);
         } else {
-            out.push_str(&span.text);
+            Self::push_str_without_soft_hyphens(out, &span.text);
+        }
+    }
+
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
+    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
+    /// it is never meaningful rendered content, so it must not survive into
+    /// flat-text output regardless of whether it sits at a line boundary (the
+    /// PDF's own line wrap is not preserved here) or mid-word within a span
+    /// whose glyphs were positioned individually.
+    #[inline]
+    fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
+        if s.contains('\u{00AD}') {
+            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
+        } else {
+            out.push_str(s);
         }
     }
 
@@ -8887,6 +9134,8 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -9058,6 +9307,8 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             });
         }
 
@@ -9524,7 +9775,9 @@ impl PdfDocument {
             // UTF-16BE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -9533,7 +9786,9 @@ impl PdfDocument {
             // UTF-16LE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -11388,6 +11643,10 @@ impl PdfDocument {
         s.bbox.y = lly + m.y;
         s.bbox.width = m.width;
         s.bbox.height = m.height;
+        // `rotation_degrees` stays raw (downstream passes select on it), so
+        // record the applied rotation for `TextSpan::page_bbox` — otherwise it
+        // would re-rotate the already-mapped rect (#806).
+        s.page_rotation_applied = rot;
     }
 
     /// Order rotated runs that were segregated out of the horizontal reading
@@ -12825,7 +13084,14 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // A normal PDF page is at most a few thousand points wide. A
+        // degenerate CTM can inflate span x-coordinates by orders of
+        // magnitude, which would otherwise drive the fine-resolution scan
+        // below (bounded to a >=0.5pt step) into an effectively unbounded
+        // loop. Same hazard, same bound as
+        // `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         // Column-content spans only (exclude true full-width bands). A real
@@ -13320,7 +13586,12 @@ impl PdfDocument {
             .map(|s| s.bbox.x + s.bbox.width)
             .fold(f32::NEG_INFINITY, f32::max);
         let content_w = cmax - cmin;
-        if !content_w.is_finite() || content_w < 100.0 {
+        // Same degenerate-CTM hazard and bound as `density_central_gutter`
+        // above / `pipeline::reading_order::xycut::MAX_PROJECTION_SIZE`: the
+        // fine-resolution scan below steps at >=0.5pt, so an unbounded
+        // `content_w` would make the loop below run effectively forever.
+        const MAX_CONTENT_EXTENT: f32 = 100_000.0;
+        if !content_w.is_finite() || !(100.0..=MAX_CONTENT_EXTENT).contains(&content_w) {
             return None;
         }
         let ymin = body.iter().map(|s| s.bbox.y).fold(f32::INFINITY, f32::min);
@@ -16605,7 +16876,9 @@ impl PdfDocument {
         // Default: include /Artifact-tagged spans (matches pre-0.3.42
         // behavior). The spec-correct (§14.8.2.2.1) variant lives in
         // [`Self::extract_words_with_thresholds_no_artifacts`].
-        self.extract_words_inner(page_index, word_gap_threshold, profile, true)
+        Ok(self
+            .extract_words_inner(page_index, word_gap_threshold, profile, true)?
+            .0)
     }
 
     /// Same as [`Self::extract_words_with_thresholds`] but drops spans tagged
@@ -16617,7 +16890,9 @@ impl PdfDocument {
         word_gap_threshold: Option<f32>,
         profile: Option<crate::config::ExtractionProfile>,
     ) -> Result<Vec<crate::layout::Word>> {
-        self.extract_words_inner(page_index, word_gap_threshold, profile, false)
+        Ok(self
+            .extract_words_inner(page_index, word_gap_threshold, profile, false)?
+            .0)
     }
 
     fn extract_words_inner(
@@ -16626,7 +16901,7 @@ impl PdfDocument {
         word_gap_threshold: Option<f32>,
         profile: Option<crate::config::ExtractionProfile>,
         include_artifacts: bool,
-    ) -> Result<Vec<crate::layout::Word>> {
+    ) -> Result<(Vec<crate::layout::Word>, Vec<bool>)> {
         use crate::layout::{clustering, AdaptiveLayoutParams, DocumentProperties, Word};
 
         // Span source. The default (no profile) flows through the canonical
@@ -16670,7 +16945,7 @@ impl PdfDocument {
             },
         };
         if spans.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         // Compute adaptive parameters from all characters for consistent thresholds.
@@ -16691,7 +16966,7 @@ impl PdfDocument {
             span_char_ranges.push(start..all_chars.len());
         }
         if all_chars.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let props =
             DocumentProperties::analyze(&all_chars, page_bbox).map_err(Error::LayoutAnalysis)?;
@@ -16722,6 +16997,14 @@ impl PdfDocument {
         let mut rotated_word_indices: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
         let mut words = Vec::new();
+        // continues_prev[i]: the span-level merger joined word i to word i-1
+        // with no word boundary — their glyphs are consecutive in one span
+        // with not even a whitespace char between them, and only the
+        // geometric clustering below re-split them. Kept parallel to
+        // `words` through the merge loop; consumed by the table path, which
+        // must not re-decide a join the merger already made from per-glyph
+        // advance evidence.
+        let mut continues_prev: Vec<bool> = Vec::new();
         for (span_idx, span) in spans.iter().enumerate() {
             let span_chars = &all_chars[span_char_ranges[span_idx].clone()];
             if span_chars.is_empty() {
@@ -16739,29 +17022,61 @@ impl PdfDocument {
             let is_split_boundary = span.split_boundary_before;
             let is_rotated_run = span.rotation_degrees != 0.0;
 
+            // Source-index interval of each word emitted for this span,
+            // aligned to `words[first_word_idx..]`. Two words continue each
+            // other exactly when the second's lowest source index directly
+            // follows the first's highest — a dropped whitespace char (or a
+            // glyph of another word) in between would occupy that index.
+            let mut word_src_ranges: Vec<(usize, usize)> = Vec::new();
             for cluster_indices in clusters {
-                let cluster_chars: Vec<_> = cluster_indices
-                    .iter()
-                    .map(|&i| span_chars[i].clone())
-                    .collect();
-
                 let mut current_word_chars = Vec::new();
-                for c in cluster_chars {
+                let mut src_lo = usize::MAX;
+                let mut src_hi = 0usize;
+                for &ci in &cluster_indices {
+                    let c = span_chars[ci].clone();
                     if c.char.is_whitespace() || c.char == '\n' || c.char == '\r' {
                         if !current_word_chars.is_empty() {
-                            let mut word = Word::from_chars(current_word_chars);
+                            let mut word =
+                                Word::from_chars(std::mem::take(&mut current_word_chars));
                             word.sequence = span.sequence;
                             words.push(word);
-                            current_word_chars = Vec::new();
+                            continues_prev.push(false);
+                            word_src_ranges.push((src_lo, src_hi));
+                            src_lo = usize::MAX;
+                            src_hi = 0;
                         }
                     } else {
                         current_word_chars.push(c);
+                        src_lo = src_lo.min(ci);
+                        src_hi = src_hi.max(ci);
                     }
                 }
                 if !current_word_chars.is_empty() {
                     let mut word = Word::from_chars(current_word_chars);
                     word.sequence = span.sequence;
                     words.push(word);
+                    continues_prev.push(false);
+                    word_src_ranges.push((src_lo, src_hi));
+                }
+            }
+            // Rotated and vertical runs advance perpendicular to the line
+            // axis the clustering assumes, so every glyph lands in its own
+            // cluster and index adjacency would mark a whole column as one
+            // continued word. Leave those unmarked; the rotated case is also
+            // what the merge loop below skips.
+            //
+            // The mark is a source-order statement only. It deliberately
+            // carries no geometric test: `to_chars` stamps the span's single
+            // `bbox.y` onto every glyph it emits, so all words from one span
+            // share a y and no same-line test can discriminate here. Geometry
+            // is the consumer's job, where the real coordinates are in hand.
+            if !is_rotated_run && span.wmode == 0 {
+                for k in 1..word_src_ranges.len() {
+                    let (_, prev_hi) = word_src_ranges[k - 1];
+                    let (cur_lo, _) = word_src_ranges[k];
+                    if cur_lo == prev_hi + 1 {
+                        continues_prev[first_word_idx + k] = true;
+                    }
                 }
             }
 
@@ -16811,8 +17126,9 @@ impl PdfDocument {
         // `looks_rtl(a + b) == looks_rtl(a) || looks_rtl(b)`: maintain it
         // incrementally instead.
         let mut merged_rtl: Vec<bool> = Vec::with_capacity(words.len());
+        let mut merged_continues: Vec<bool> = Vec::with_capacity(words.len());
         let mut prev_rotated = false;
-        for (idx, word) in words.into_iter().enumerate() {
+        for (idx, (word, word_continues)) in words.into_iter().zip(continues_prev).enumerate() {
             let cur_rotated = rotated_word_indices.contains(&idx);
             let word_rtl = crate::text::bidi::looks_rtl(&word.text);
             if !cur_rotated && !prev_rotated && !split_boundary_word_indices.contains(&idx) {
@@ -16846,22 +17162,7 @@ impl PdfDocument {
                         // Incremental merge — O(k) per merge, O(total_chars) overall.
                         // Avoids the O(n²) clone+from_chars pattern that caused
                         // catastrophic slowdown on TOC dot-leader pages.
-                        let prev_n = prev.chars.len() as f32;
-                        let word_n = word.chars.len() as f32;
-                        prev.bbox = prev.bbox.union(&word.bbox);
-                        prev.avg_font_size = (prev.avg_font_size * prev_n
-                            + word.avg_font_size * word_n)
-                            / (prev_n + word_n);
-                        if word_n > prev_n {
-                            prev.dominant_font = word.dominant_font;
-                        }
-                        prev.is_bold |= word.is_bold;
-                        prev.is_italic |= word.is_italic;
-                        if prev.mcid != word.mcid {
-                            prev.mcid = None;
-                        }
-                        prev.text.push_str(&word.text);
-                        prev.chars.extend(word.chars);
+                        prev.absorb(word);
                         if let Some(flag) = merged_rtl.last_mut() {
                             *flag |= word_rtl;
                         }
@@ -16871,10 +17172,11 @@ impl PdfDocument {
             }
             merged.push(word);
             merged_rtl.push(word_rtl);
+            merged_continues.push(word_continues);
             prev_rotated = cur_rotated;
         }
 
-        Ok(merged)
+        Ok((merged, merged_continues))
     }
 
     /// Extract text lines from a page.
@@ -17127,7 +17429,14 @@ impl PdfDocument {
                 );
             }
         }
-        // One line per rotated run (contiguous words sharing the same span index).
+        // Rotated runs, grouped into lines. A run's own extents are recorded in
+        // its frame, so the offset BETWEEN lines is the coordinate the run does
+        // not advance along: x for a +-90 degree run, y for 180. Runs that share
+        // that offset are one visual line however many `Tm`s drew them — a
+        // rotated table row is typically one run per cell. Grouping by run alone
+        // returns one line per cell (#983); grouping without the rotation key
+        // fuses perpendicular columns into one line (#804).
+        let mut run_first_word: Vec<(usize, usize)> = Vec::new();
         let mut run_start = 0;
         while run_start < words.len() {
             match word_rot_run[run_start] {
@@ -17137,11 +17446,90 @@ impl PdfDocument {
                     while run_end < words.len() && word_rot_run[run_end] == Some(run_id) {
                         run_end += 1;
                     }
-                    lines.push(words[run_start..run_end].to_vec());
+                    run_first_word.push((run_start, run_end));
                     run_start = run_end;
                 },
             }
         }
+
+        // On a /Rotate page `postprocess_spans` rect-maps each span's bbox into
+        // the displayed frame but leaves `rotation_degrees` describing the
+        // pre-display one, so the bbox axes and the rotation no longer agree and
+        // the offset read below would be taken off the wrong axis.
+        let page_is_unrotated = self.get_page_rotation(page_index).unwrap_or(0) == 0;
+
+        let mut rotated_lines: Vec<(f32, f32, Vec<Word>)> = Vec::new();
+        // Offsets of the quarter-turn lines, quantized to 1/100 pt, mapped to
+        // the indices of the lines carrying them. The match below used to scan
+        // every line built so far, which is O(runs^2) — and a rotated table,
+        // the exact page this grouping exists for, is where the run count
+        // climbs. The index answers the same question over a bounded range.
+        //
+        // Semantics are preserved exactly. A line's offset is frozen when it is
+        // created, and the winner is the FIRST such line in insertion order, so
+        // candidates are filtered by the original predicate and the smallest
+        // index wins. Merging neighbours instead would group differently:
+        // offsets 0, 3, 6 with tolerance 4 give {0,3},{6} under this rule but
+        // {0,3,6} under a chained merge.
+        let mut offset_index: std::collections::BTreeMap<i64, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (start, end) in run_first_word {
+            let word = &words[start];
+            let rotation = spans[word_rot_run[start].expect("rotated run")].rotation_degrees;
+            // Only a quarter-turn run has its line offset on x; 180 degrees and
+            // free angles keep one line per run, as before. Widening past this
+            // merges runs that were never one line.
+            let quarter_turn = (rotation.abs() - 90.0).abs() < 0.5;
+            if !quarter_turn || !page_is_unrotated {
+                rotated_lines.push((rotation, f32::NAN, words[start..end].to_vec()));
+                continue;
+            }
+            let across = word.bbox.x;
+            let tolerance = word.bbox.height.max(1.0) * 0.5;
+            let quantize = |v: f32| (f64::from(v) * 100.0).round() as i64;
+            // Widened by one step each way so a value sitting on a bucket edge
+            // cannot be missed by rounding. Saturating: the cast in `quantize`
+            // clamps |v| >= ~9.2e16 to i64::MAX/MIN, and a plain +-1 there
+            // overflows (panic in debug, an inverted `range` panic in release).
+            let (lo, hi) = (
+                quantize(across - tolerance).saturating_sub(1),
+                quantize(across + tolerance).saturating_add(1),
+            );
+            let winner = offset_index
+                .range(lo..=hi)
+                .flat_map(|(_, indices)| indices.iter().copied())
+                .filter(|&i| {
+                    let (rot, off, _) = &rotated_lines[i];
+                    (*rot - rotation).abs() < 0.5 && (*off - across).abs() <= tolerance
+                })
+                .min();
+            match winner {
+                Some(i) => rotated_lines[i].2.extend_from_slice(&words[start..end]),
+                None => {
+                    offset_index
+                        .entry(quantize(across))
+                        .or_default()
+                        .push(rotated_lines.len());
+                    rotated_lines.push((rotation, across, words[start..end].to_vec()));
+                },
+            }
+        }
+        lines.extend(rotated_lines.into_iter().map(|(rot, off, mut line)| {
+            // A merged quarter-turn line collects its runs in arrival order,
+            // which is content-stream order: a subscript drawn after the
+            // line's tail lands at the end of the string. Order members
+            // along the writing axis instead — ascending y for +90,
+            // descending for -90 — the order the text assembler reads them
+            // in. Stable, so runs sharing a coordinate keep drawing order.
+            if !off.is_nan() {
+                if rot > 0.0 {
+                    line.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+                } else {
+                    line.sort_by(|a, b| b.bbox.y.total_cmp(&a.bbox.y));
+                }
+            }
+            line
+        }));
         // Reading order: sort lines by the span sequence of their first word
         // (stable so intra-line order is preserved).
         lines.sort_by_key(|line| line.first().map(|w| w.sequence).unwrap_or(usize::MAX));
@@ -17600,6 +17988,15 @@ impl PdfDocument {
                 Operator::CloseFillStroke => {
                     extractor.close_fill_and_stroke(FillRule::NonZero);
                 },
+                Operator::FillStroke => {
+                    extractor.fill_and_stroke(FillRule::NonZero);
+                },
+                Operator::FillStrokeEvenOdd => {
+                    extractor.fill_and_stroke(FillRule::EvenOdd);
+                },
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => {
                     extractor.end_path();
                 },
@@ -17797,27 +18194,45 @@ impl PdfDocument {
         )
     }
 
-    /// Extract tables from a page using a custom configuration (v0.3.14).
-    pub fn extract_tables_with_config(
-        &self,
-        page_index: usize,
-        config: crate::structure::spatial_table_detector::TableDetectionConfig,
-    ) -> Result<Vec<crate::structure::table_extractor::Table>> {
-        use crate::structure::spatial_table_detector::detect_tables_with_lines;
-
-        // Use words instead of spans for better granularity.
-        // This ensures that strings with spaces are split into separate columns
-        // for the spatial detector.
-        let words = self.extract_words(page_index)?;
-        // Use all table primitives (lines, rectangles, borders) not just straight lines
-        let lines: Vec<_> = self
-            .extract_paths(page_index)?
-            .into_iter()
-            .filter(|p| p.is_table_primitive())
-            .collect();
-
-        // Convert Words to TextSpans for the spatial detector
-        let spans: Vec<_> = words
+    /// Word-level span source for the spatial table detector.
+    ///
+    /// Words give the detector cell granularity (a spaced string splits into
+    /// separate columns), but the geometric word clustering re-decides every
+    /// join from raw bbox gaps — and a sub-em kerned split defeats any gap
+    /// threshold, so a word the span-level merger had correctly assembled
+    /// from per-glyph advance evidence can come back in fragments and
+    /// surface as spaces inside a table cell. Re-glue the fragments the
+    /// merger marked as boundary-free before handing spans to the detector.
+    fn extract_table_word_spans(&self, page_index: usize) -> Result<Vec<crate::layout::TextSpan>> {
+        let (words, continues_prev) = self.extract_words_inner(page_index, None, None, true)?;
+        let mut fused: Vec<crate::layout::Word> = Vec::with_capacity(words.len());
+        for (word, continues) in words.into_iter().zip(continues_prev) {
+            // Half-em BAND, tested on the absolute gap. Source adjacency says
+            // the producer drew these glyphs consecutively; it does not say
+            // they are typographically adjacent, so geometry still has a veto,
+            // and it needs both bounds:
+            //   above  — the merger also concatenates runs across a column
+            //            jump when neither side carries a space glyph, and
+            //            honouring that here would dissolve the grid;
+            //   below  — a large NEGATIVE gap is the signature of a backtrack
+            //            (displayed-math denominators) or a line-wrap reset,
+            //            the two cases the word merge loop guards with
+            //            `gap < -font_size` and `delta_x < -5 * font_size`.
+            //            A one-sided upper bound admits every one of them.
+            // A sub-em kerned seam — the case this whole path exists for — is
+            // ~0.2 em, comfortably inside the band from either side.
+            match fused.last_mut() {
+                Some(prev)
+                    if continues
+                        && (word.bbox.x - (prev.bbox.x + prev.bbox.width)).abs()
+                            < prev.avg_font_size.max(word.avg_font_size).max(1.0) * 0.5 =>
+                {
+                    prev.absorb(word)
+                },
+                _ => fused.push(word),
+            }
+        }
+        Ok(fused
             .into_iter()
             .map(|w| crate::layout::TextSpan {
                 provenance: None,
@@ -17850,7 +18265,29 @@ impl PdfDocument {
                 wmode: 0,
                 text_rise: 0.0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             })
+            .collect())
+    }
+
+    /// Extract tables from a page using a custom configuration (v0.3.14).
+    pub fn extract_tables_with_config(
+        &self,
+        page_index: usize,
+        config: crate::structure::spatial_table_detector::TableDetectionConfig,
+    ) -> Result<Vec<crate::structure::table_extractor::Table>> {
+        use crate::structure::spatial_table_detector::detect_tables_with_lines;
+
+        // Use words instead of spans for better granularity.
+        // This ensures that strings with spaces are split into separate columns
+        // for the spatial detector.
+        let spans = self.extract_table_word_spans(page_index)?;
+        // Use all table primitives (lines, rectangles, borders) not just straight lines
+        let lines: Vec<_> = self
+            .extract_paths(page_index)?
+            .into_iter()
+            .filter(|p| p.is_table_primitive())
             .collect();
 
         // Same prose-rejection filter `extract_page_tables` applies to the
@@ -18159,6 +18596,11 @@ impl PdfDocument {
                 Operator::Fill => extractor.fill(FillRule::NonZero),
                 Operator::FillEvenOdd => extractor.fill(FillRule::EvenOdd),
                 Operator::CloseFillStroke => extractor.close_fill_and_stroke(FillRule::NonZero),
+                Operator::FillStroke => extractor.fill_and_stroke(FillRule::NonZero),
+                Operator::FillStrokeEvenOdd => extractor.fill_and_stroke(FillRule::EvenOdd),
+                Operator::CloseFillStrokeEvenOdd => {
+                    extractor.close_fill_and_stroke(FillRule::EvenOdd);
+                },
                 Operator::EndPath => extractor.end_path(),
 
                 // Clipping operators
@@ -19616,42 +20058,9 @@ impl PdfDocument {
         }
         let paths = table_paths;
 
-        let words = self.extract_words(page_index).unwrap_or_default();
-        let word_spans: Vec<crate::layout::TextSpan> = words
-            .into_iter()
-            .map(|w| crate::layout::TextSpan {
-                provenance: None,
-                artifact_type: None,
-                text: w.text,
-                bbox: w.bbox,
-                font_name: w.dominant_font,
-                font_size: w.avg_font_size,
-                font_weight: if w.is_bold {
-                    crate::layout::FontWeight::Bold
-                } else {
-                    crate::layout::FontWeight::Normal
-                },
-                is_italic: w.is_italic,
-                is_monospace: false,
-                color: crate::layout::Color::black(),
-                mcid: w.mcid,
-                mcid_scope: None,
-                sequence: 0,
-                split_boundary_before: false,
-                offset_semantic: false,
-                char_spacing: 0.0,
-                word_spacing: 0.0,
-                horizontal_scaling: 1.0,
-                primary_detected: false,
-                char_widths: vec![],
-                char_x_offsets: Vec::new(),
-                heading_level: None,
-                rotation_degrees: 0.0,
-                wmode: 0,
-                text_rise: 0.0,
-                rtl_draw_logical: false,
-            })
-            .collect();
+        let word_spans = self
+            .extract_table_word_spans(page_index)
+            .unwrap_or_default();
 
         // Fall back to raw spans if word extraction failed
         let input_spans = if !word_spans.is_empty() {
@@ -19917,9 +20326,10 @@ impl PdfDocument {
     /// [`extract_text_with_extra_spans`](Self::extract_text_with_extra_spans).
     /// The Auto extractor uses this to drop OCR'd image text into its figure's
     /// reading-order slot for Markdown, so auto markdown is a superset of native.
-    // Only the (ocr-gated) Auto extractor calls this, so compile it only with
-    // the `ocr` feature — a non-`ocr` build omits it (no dead code).
-    #[cfg(feature = "ocr")]
+    // Only the (ocr-gated) Auto extractor and the unit test that pins the
+    // extra-span reading frame call this, so it is compiled only in those
+    // configs — a plain non-`ocr` `--lib` build omits it (no dead code).
+    #[cfg(any(feature = "ocr", test))]
     pub(crate) fn to_markdown_with_extra_spans(
         &self,
         page_index: usize,
@@ -19939,11 +20349,18 @@ impl PdfDocument {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty markdown");
             return Ok(String::new());
         }
+        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor)
+        // merge before the region filter and the reading-frame map, exactly as
+        // `extract_text_with_extra_spans` merges them — mapping base spans
+        // around unmapped extras would file the extra text in the wrong
+        // reading-order slot on a rotated page.
+        let mut base_spans = self.extract_spans(page_index)?;
+        base_spans.extend_from_slice(extra_spans);
         // Apply caller-specified region filters up front so excluded content is
         // gone from EVERY downstream path — tables, headings, reading order
         // (#609: markdown previously ignored `exclude_regions`/`include_region`,
         // which were only honoured by the plain-text path).
-        let mut base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+        let mut base_spans = Self::apply_region_filters(base_spans, options);
 
         // WS2.6: strip repeated running headers/footers from untagged output
         // when requested. Opt-in (default off); the /Artifact-tag path already
@@ -19956,7 +20373,11 @@ impl PdfDocument {
                     .get_page_media_box(page_index)
                     .map(|m| m.3)
                     .unwrap_or(792.0);
-                base_spans.retain(|s| !Self::is_running_head_foot(s, media_h, &repeated));
+                let head_foot_lines =
+                    self.running_head_foot_line_bboxes(page_index, media_h, &repeated);
+                if !head_foot_lines.is_empty() {
+                    base_spans.retain(|s| !head_foot_lines.iter().any(|lb| lb.intersects(&s.bbox)));
+                }
             }
         }
 
@@ -19967,6 +20388,11 @@ impl PdfDocument {
         if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
             return Ok(vertical);
         }
+
+        // Same frame `extract_text` assembles in, applied at the same point:
+        // after the vertical-CJK check (which reads the rotation this clears)
+        // and before table detection (which consumes the geometry this maps).
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -19986,9 +20412,6 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
-        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
-        // each carrying the MCID/position that drops it into reading order.
-        spans.extend_from_slice(extra_spans);
 
         // B1: stitch a full-width line that the producer drew as adjacent
         // fragments straddling the gutter back into one span, so the column
@@ -20505,9 +20928,10 @@ impl PdfDocument {
     /// Convert a page to HTML with caller-supplied extra spans merged into the
     /// converter's reading-order pass — the HTML companion to
     /// [`to_markdown_with_extra_spans`](Self::to_markdown_with_extra_spans).
-    // Only the (ocr-gated) Auto extractor calls this, so compile it only with
-    // the `ocr` feature — a non-`ocr` build omits it (no dead code).
-    #[cfg(feature = "ocr")]
+    // Only the (ocr-gated) Auto extractor and the unit test that pins the
+    // extra-span reading frame call this, so it is compiled only in those
+    // configs — a plain non-`ocr` `--lib` build omits it (no dead code).
+    #[cfg(any(feature = "ocr", test))]
     pub(crate) fn to_html_with_extra_spans(
         &self,
         page_index: usize,
@@ -20528,9 +20952,13 @@ impl PdfDocument {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty HTML");
             return Ok(String::new());
         }
+        // Caller-supplied spans merge before the region filter and the
+        // reading-frame map — see `to_markdown_inner`.
+        let mut base_spans = self.extract_spans(page_index)?;
+        base_spans.extend_from_slice(extra_spans);
         // Region filters applied up front so excluded content is gone from every
         // downstream path (#609), matching the markdown and plain-text surfaces.
-        let base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+        let base_spans = Self::apply_region_filters(base_spans, options);
 
         // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3): emit the column-major
         // text as a single paragraph, mirroring the plain-text and markdown
@@ -20543,6 +20971,9 @@ impl PdfDocument {
                 .replace('>', "&gt;");
             return Ok(format!("<p>{}</p>", escaped.trim()));
         }
+
+        // Same frame `extract_text` assembles in — see `to_markdown_inner`.
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -20562,9 +20993,6 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
-        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
-        // each carrying the MCID/position that drops it into reading order.
-        spans.extend_from_slice(extra_spans);
 
         // B1: stitch a full-width line that the producer drew as adjacent
         // fragments straddling the gutter back into one span, so the column
@@ -20789,7 +21217,7 @@ impl PdfDocument {
         }
 
         // Step 1: Extract raw spans (unchanged - this is the foundation)
-        let mut spans = self.extract_spans(page_index)?;
+        let mut spans = self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
 
         // Step 1b: Merge widget annotation spans (form field values) if enabled
         if options.include_form_fields {
@@ -21414,6 +21842,16 @@ impl PdfDocument {
     /// of pages — running headers/footers. Page-number digits are stripped so
     /// "Page 3"/"Page 4" collapse to one signature. Empty for documents under
     /// 3 pages (repetition can't be judged) or when nothing repeats.
+    /// Collects repetition signatures from whole assembled **lines**, not
+    /// individual spans (#1022). A genuine running header/footer is the
+    /// same complete line of text on every page it appears on; a SPAN is
+    /// often just a fragment of a line (font/color-run boundaries split one
+    /// visual line into several spans), and matching at fragment
+    /// granularity lets a phrase that coincidentally recurs across
+    /// unrelated body paragraphs — e.g. the first line of a column, which
+    /// also falls inside the geometric head/foot band in a dense
+    /// multi-column layout — masquerade as page furniture and get deleted
+    /// everywhere it occurs, including mid-sentence.
     pub(crate) fn repeated_running_head_foot(
         &self,
         threshold: f32,
@@ -21430,15 +21868,15 @@ impl PdfDocument {
         let mut occ: HashMap<String, usize> = HashMap::new();
         for p in 0..page_count {
             let media_h = self.get_page_media_box(p).map(|m| m.3).unwrap_or(792.0);
-            let Ok(spans) = self.extract_spans(p) else {
+            let Ok(lines) = self.extract_text_lines(p) else {
                 continue;
             };
             let mut seen: HashSet<String> = HashSet::new();
-            for s in &spans {
-                if !Self::in_head_foot_band(s, media_h) {
+            for line in &lines {
+                if !Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h) {
                     continue;
                 }
-                let norm = Self::normalize_band_line(&s.text);
+                let norm = Self::normalize_band_line(&line.text);
                 // Count each distinct line once per page.
                 if norm.len() > 3 && seen.insert(norm.clone()) {
                     *occ.entry(norm).or_default() += 1;
@@ -21453,9 +21891,11 @@ impl PdfDocument {
         out
     }
 
-    /// True when a span sits in the top or bottom 15% band of the page.
-    fn in_head_foot_band(s: &crate::layout::TextSpan, media_h: f32) -> bool {
-        s.bbox.y > media_h * 0.85 || (s.bbox.y + s.bbox.height) < media_h * 0.15
+    /// True when a region sits in the top or bottom 15% band of the page.
+    /// `y`/`height` are a bbox's own fields (shared by `TextSpan` and
+    /// `TextLine`, which don't share a common bbox-accessor trait).
+    fn in_head_foot_band(y: f32, height: f32, media_h: f32) -> bool {
+        y > media_h * 0.85 || (y + height) < media_h * 0.15
     }
 
     /// Normalize a band line for repetition matching: drop ASCII digits (page
@@ -21469,15 +21909,30 @@ impl PdfDocument {
             .to_lowercase()
     }
 
-    /// True when `span` is a running header/footer to strip: in the top/bottom
-    /// band and its normalized text is one of the `repeated` signatures.
-    fn is_running_head_foot(
-        span: &crate::layout::TextSpan,
+    /// Bounding boxes (on this page) of assembled lines whose normalized
+    /// text matches a `repeated_running_head_foot` signature. The
+    /// signature set is collected at whole-line granularity (see above),
+    /// but the actual stripping in `to_markdown_inner` still operates on
+    /// individual spans; this bridges the two by giving the caller the
+    /// matched lines' geometry so it can strip every span that belongs to
+    /// one, rather than re-matching (fragile) text at the span level.
+    fn running_head_foot_line_bboxes(
+        &self,
+        page_index: usize,
         media_h: f32,
         repeated: &std::collections::HashSet<String>,
-    ) -> bool {
-        Self::in_head_foot_band(span, media_h)
-            && repeated.contains(&Self::normalize_band_line(&span.text))
+    ) -> Vec<crate::geometry::Rect> {
+        let Ok(lines) = self.extract_text_lines(page_index) else {
+            return Vec::new();
+        };
+        lines
+            .into_iter()
+            .filter(|line| {
+                Self::in_head_foot_band(line.bbox.y, line.bbox.height, media_h)
+                    && repeated.contains(&Self::normalize_band_line(&line.text))
+            })
+            .map(|line| line.bbox)
+            .collect()
     }
 
     /// Extract embedded files / attachments (WS1.8a, ISO 32000-1 §7.11.4).
@@ -22222,13 +22677,22 @@ impl PdfDocument {
                 // Pre-decompression filtering using dictionary metadata.
                 // These checks use Width/Height/ColorSpace from the XObject dictionary
                 // which are available WITHOUT decompressing the image stream data.
-                let w = xobject_dict
-                    .get("Width")
-                    .and_then(|o| o.as_integer())
-                    .unwrap_or(0);
+                // /Width and /Height may themselves be indirect references
+                // (ISO 32000-1 §7.3.10); resolve them the same way
+                // `extract_image_from_xobject` does, so an indirect width
+                // doesn't fall through to the `unwrap_or(0)` default and get
+                // silently filtered out by the `min_width`/`min_height` gate
+                // below.
+                let resolve_int = |o: &Object| -> Option<i64> {
+                    match o.as_reference() {
+                        Some(r) => self.load_object(r).ok().and_then(|v| v.as_integer()),
+                        None => o.as_integer(),
+                    }
+                };
+                let w = xobject_dict.get("Width").and_then(resolve_int).unwrap_or(0);
                 let h = xobject_dict
                     .get("Height")
-                    .and_then(|o| o.as_integer())
+                    .and_then(resolve_int)
                     .unwrap_or(0);
                 if w < filter.min_width || h < filter.min_height {
                     return Ok(images);
@@ -23738,6 +24202,93 @@ mod tests {
         assert!(
             a < b && b < ins && ins < c,
             "injected span not placed in MCID-1 slot (expected ALPHA<BRAVO<INSERTED<CHARLIE): {out:?}"
+        );
+    }
+
+    /// An extra span dropped onto a dominant-rotation page must land in the
+    /// same reading-order slot on every surface: the extras merge before the
+    /// reading-frame map. Mapping base spans around an unmapped extra files
+    /// the extra text after the page in md/html but mid-page in text.
+    #[test]
+    fn extra_span_shares_the_reading_frame_on_every_surface() {
+        // Three 90°-rotated lines; the mapped frame puts them at
+        // y' = 612 - x: ALPHA 412, BRAVO 384, CHARLIE 356. The unrotated
+        // extra at (242, 100) maps to y' = 370 — between BRAVO and CHARLIE.
+        let mut content: Vec<u8> = b"BT /F1 10 Tf\n".to_vec();
+        for (x, text) in [(200, "ALPHA"), (228, "BRAVO"), (256, "CHARLIE")] {
+            content.extend_from_slice(format!("0 1 -1 0 {x} 150 Tm ({text}) Tj\n").as_bytes());
+        }
+        content.extend_from_slice(b"ET");
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut off = vec![0usize; 6];
+        let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
+            off[id] = buf.len();
+            buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+        };
+        buf.extend_from_slice(b"%PDF-1.4\n");
+        obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+        obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        obj(
+            &mut buf,
+            &mut off,
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>",
+        );
+        off[4] = buf.len();
+        buf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        buf.extend_from_slice(&content);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+        obj(
+            &mut buf,
+            &mut off,
+            5,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        );
+        let xref = buf.len();
+        buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for id in 1..=5 {
+            buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+        }
+        buf.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n");
+        buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
+
+        let doc = PdfDocument::from_bytes(buf).unwrap();
+        let extra = crate::layout::TextSpan {
+            text: "INSERTED".to_string(),
+            bbox: crate::geometry::Rect::new(242.0, 100.0, 50.0, 10.0),
+            font_size: 10.0,
+            ..Default::default()
+        };
+        let opts = crate::converters::ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        };
+
+        let slot = |out: &str, surface: &str| {
+            let (a, b, ins, c) =
+                (out.find("ALPHA"), out.find("BRAVO"), out.find("INSERTED"), out.find("CHARLIE"));
+            assert!(
+                a.is_some() && a < b && b < ins && ins < c,
+                "{surface}: expected ALPHA<BRAVO<INSERTED<CHARLIE: {out:?}"
+            );
+        };
+        slot(
+            &doc.extract_text_with_extra_spans(0, vec![extra.clone()], &opts)
+                .unwrap(),
+            "extract_text_with_extra_spans",
+        );
+        slot(
+            &doc.to_markdown_with_extra_spans(0, std::slice::from_ref(&extra), &opts)
+                .unwrap(),
+            "to_markdown_with_extra_spans",
+        );
+        slot(
+            &doc.to_html_with_extra_spans(0, &[extra], &opts).unwrap(),
+            "to_html_with_extra_spans",
         );
     }
 
@@ -25292,6 +25843,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -25824,6 +26377,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -25876,6 +26431,26 @@ mod tests {
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
         assert_eq!(out, "3.14");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_soft_hyphen_mid_word() {
+        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
+        // point only — it must never survive into extract_text/to_markdown/
+        // to_html output, even mid-word with no adjacent line break (the
+        // span was drawn as a single reflowed run, not split across lines).
+        let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "reconstruction");
+    }
+
+    #[test]
+    fn test_push_span_text_strips_multiple_soft_hyphens() {
+        let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
+        let mut out = String::new();
+        PdfDocument::push_span_text(&mut out, &span);
+        assert_eq!(out, "unbelievable");
     }
 
     // ========================================================================
@@ -28731,15 +29306,13 @@ mod tests {
 
         push!("<< /Type /Catalog /Pages 2 0 R >>"); // 1
         push!("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
-        push!(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+        push!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
-        )); // 3
-        push!(format!(
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+            .to_string()); // 3
+        push!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
              /Encoding << /Type /Encoding /Differences [1 /fi] >> \
              /ToUnicode 6 0 R >>"
-        )); // 4
+            .to_string()); // 4
         push!(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content)); // 5
         push!(format!("<< /Length {} >>\nstream\n{}endstream", cmap.len(), cmap)); // 6
 
@@ -29878,6 +30451,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -29904,6 +30479,171 @@ mod tests {
             labels,
             vec!["L1", "L2", "L3", "R1", "R2", "R3"],
             "ColumnAware should read left column fully before right column"
+        );
+    }
+
+    /// Regression test for issue #979: a page with only 2 spans per column
+    /// (4 spans total) is below `min_spans_for_split` (5), so it never
+    /// reaches the geometric column-split logic the 6-span test above
+    /// exercises — every statistical prose/table classifier
+    /// (`classify_region_kind`, `detect_two_column_prose`,
+    /// `detect_narrow_gutter_prose`) also has its own internal minimum-span
+    /// floor (6/8/24) far above 4, so none of them can classify this page
+    /// either. Before the fix, the base case fell back to a flat
+    /// Y-then-X sort, interleaving the two columns (L1, R1, L2, R2)
+    /// instead of reading each column through.
+    ///
+    /// A pure geometric gutter check can't distinguish this from a 2x2
+    /// table at this scale (see `test_column_aware_sparse_2x2_table_stays_row_major`
+    /// below), so the fix defers to content-stream emission order when a
+    /// clean gutter exists — PDFium parity per the issue's own cross-tool
+    /// probe. This fixture's `sequence` mirrors the exact reporter's
+    /// repro (`reportlab` draws the whole left column, then the whole
+    /// right column): L1, L2, R1, R2.
+    #[test]
+    fn test_column_aware_sparse_two_column_follows_stream_order() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_span(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Column-major stream order, matching a two-column-prose generator
+        // that fills the left text box then the right one — exactly the
+        // reporter's `reportlab` repro.
+        let spans = vec![
+            make_span("L1", 10.0, 700.0, 0),
+            make_span("L2", 10.0, 680.0, 1),
+            make_span("R1", 200.0, 700.0, 2),
+            make_span("R2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["L1", "L2", "R1", "R2"],
+            "a sparse 2-column page below min_spans_for_split must follow \
+             content-stream order (column-major here), not interleave the \
+             columns via a flat Y-then-X sort"
+        );
+    }
+
+    /// Companion to the test above: a genuine 2x2 table emitted **row-major**
+    /// in-stream (the common table-generator pattern — draw row 1's cells
+    /// left-to-right, then row 2's) must stay row-major. The same clean
+    /// gutter exists between the two columns as in the prose case above —
+    /// nothing in this codebase can geometrically tell the two apart at
+    /// 4-span scale — so the fix's content-stream-order fallback is
+    /// correct for *both* shapes precisely because it never has to decide
+    /// between them: it just preserves however the source authored it.
+    #[test]
+    fn test_column_aware_sparse_2x2_table_stays_row_major() {
+        use crate::geometry::Rect;
+        use crate::layout::{Color, FontWeight, TextSpan};
+        use crate::pipeline::reading_order::{
+            ReadingOrderContext as ROContext, ReadingOrderStrategy, XYCutStrategy,
+        };
+
+        fn make_cell(label: &str, x: f32, y: f32, sequence: usize) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                mirrored: false,
+                page_rotation_applied: 0,
+                artifact_type: None,
+                text: label.to_string(),
+                bbox: Rect::new(x, y, 80.0, 12.0),
+                font_size: 12.0,
+                font_name: "Test".to_string(),
+                font_weight: FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                mcid: None,
+                mcid_scope: None,
+                sequence,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+            }
+        }
+
+        // Row-major stream order: row 1's two cells, then row 2's two cells.
+        let spans = vec![
+            make_cell("R1C1", 10.0, 700.0, 0),
+            make_cell("R1C2", 200.0, 700.0, 1),
+            make_cell("R2C1", 10.0, 680.0, 2),
+            make_cell("R2C2", 200.0, 680.0, 3),
+        ];
+
+        let strategy = XYCutStrategy::new();
+        let context = ROContext::new();
+        let ordered = strategy
+            .apply(spans, &context)
+            .expect("XYCut should not fail");
+        let labels: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
+
+        assert_eq!(
+            labels,
+            vec!["R1C1", "R1C2", "R2C1", "R2C2"],
+            "a row-major-emitted 2x2 table must stay row-major, not be \
+             reshuffled into a column-major read order"
         );
     }
 
@@ -29947,6 +30687,8 @@ mod tests {
             rotation_degrees: 0.0,
             wmode: 0,
             rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
         }
     }
 
@@ -30154,6 +30896,36 @@ mod tests {
             spans.push(corridor_span("colC", 230.0, y, 60.0)); // →290
         }
         assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn density_gutter_rejects_degenerate_ctm_content_width() {
+        // Two "columns" separated by a 200,000pt gap — the signature of a
+        // degenerate CTM scale factor inflating span x-coordinates, not a
+        // real page (a normal page is at most a few thousand points wide).
+        // Before the MAX_CONTENT_EXTENT bound, the huge empty middle region
+        // was itself picked up as a single "corridor" and returned as a
+        // (nonsensical) gutter position; it must now be rejected outright.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::density_central_gutter(&spans).is_none());
+    }
+
+    #[test]
+    fn classifier_gutter_rejects_degenerate_ctm_content_width() {
+        // Same degenerate-CTM hazard as the density-probe test above, for
+        // `classifier_column_gutter`'s independent content_w computation.
+        let mut spans = Vec::new();
+        for i in 0..8 {
+            let y = 700.0 - i as f32 * 12.0;
+            spans.push(corridor_span("left col text here", 50.0, y, 60.0));
+            spans.push(corridor_span("right col text here", 200_050.0, y, 60.0));
+        }
+        assert!(PdfDocument::classifier_column_gutter(&spans).is_none());
     }
 
     #[test]
@@ -30637,6 +31409,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -30712,6 +31486,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 
@@ -30786,6 +31562,8 @@ mod tests {
                 rotation_degrees: 0.0,
                 wmode: 0,
                 rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
             }
         }
 

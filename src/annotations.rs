@@ -616,7 +616,9 @@ impl PdfDocument {
 
                 // Group into 8-value quads
                 let quads: Vec<[f64; 8]> = nums
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|chunk| {
                         let mut quad = [0.0; 8];
                         quad.copy_from_slice(chunk);
