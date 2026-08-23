@@ -301,3 +301,52 @@ fn a_single_drawn_form_survives_a_large_stream() {
     assert!(!big.contains("UNDRAWN GHOST"), "undrawn form leaked: {big:?}");
     assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
 }
+
+/// A marked-content block whose `BDC`..`BT` window carries a `Q` with no
+/// matching `q`. Plan sheets emit this when a layer's clip is released
+/// mid-block: the enclosing save was opened further up the stream, or never,
+/// and the restore lands inside the marked-content run.
+///
+/// The scale is set at the top level and is NOT re-established after the `Q`,
+/// so the graphics state the text needs exists only in the reconstruction.
+/// Extending the region back over the `BDC` would replay that unmatched `Q`
+/// inside the SaveState/RestoreState wrapper, popping the *injected* save and
+/// discarding the CTM — the text then draws at 1:1 instead of 0.12 and lands
+/// outside the MediaBox, where the off-page filter deletes it. The region must
+/// start at the `BT` instead, giving up the marked-content context rather than
+/// the geometry.
+fn unbalanced_restore_sheet(pad: usize) -> Vec<u8> {
+    let mut c = linework(pad);
+    // Sheet scale, set at the top level with no enclosing save.
+    c.push_str("0.12 0 0 0.12 0 0 cm ");
+    c.push_str("/OC /MC7 BDC ");
+    // Clip released inside the block: BDC..BT now holds an unmatched `Q`.
+    c.push_str("Q ");
+    // Placed so it is on-page under the 0.12 sheet scale and far off-page
+    // without it, which is what makes the two paths distinguishable at all.
+    c.push_str(
+        "BT /F1 58.66 Tf 1 0 0 1 10000 10000 Tm \
+         (RELEASED CLIP NOTES) Tj ET ",
+    );
+    c.push_str("EMC ");
+    one_page_pdf(&c, &[])
+}
+
+#[test]
+fn text_after_an_unbalanced_restore_survives_a_large_stream() {
+    let small = text_of(unbalanced_restore_sheet(1_000));
+    let big = text_of(unbalanced_restore_sheet(300_000));
+    // Control: the shape must extract below the pre-scan threshold, or the
+    // comparison below would pass on two identical failures — which is how the
+    // 60-form fixtures in this file passed while bypassing the pre-scan.
+    assert!(
+        small.contains("RELEASED CLIP NOTES"),
+        "control failed: the sub-threshold page did not yield the text at all, so \
+         this fixture cannot say anything about the pre-scan path (got {small:?})"
+    );
+    assert_eq!(
+        words(&small),
+        words(&big),
+        "linework padding alone changed the extracted text"
+    );
+}
