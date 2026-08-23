@@ -1060,9 +1060,24 @@ fn prescan_text_regions(data: &[u8]) -> Option<PrescanResult> {
         let region_starts: Vec<usize> = text_positions
             .iter()
             .map(|&tp| {
-                let start = find_preceding_marked_content(data, tp);
-                if has_unbalanced_restore(data, start, tp) {
+                let mc = find_preceding_marked_content(data, tp);
+                let start = if has_unbalanced_restore(data, mc, tp) {
                     tp
+                } else {
+                    mc
+                };
+                // A `Do` region must contain the XObject NAME as well as the
+                // operator: `region_end` is `tp + 2`, which covers only the
+                // `Do` token, so the operand can only come from the start. It
+                // normally does, because the marked-content extension reaches
+                // back past it — but a producer that emits `... cm /Fm0 Do Q`
+                // with no enclosing BDC/BMC leaves `start == tp`, and the
+                // region replays a bare `Do` with an empty operand stack. The
+                // form is then never invoked and every glyph it draws is lost.
+                // Widening to the operand costs nothing when the extension
+                // already covered it.
+                if data[tp] != b'B' && start >= tp {
+                    find_name_operand_start(data, tp)
                 } else {
                     start
                 }
@@ -1258,6 +1273,32 @@ fn find_preceding_marked_content(data: &[u8], pos: usize) -> usize {
         }
     }
     pos
+}
+
+/// Start of the `/Name` operand immediately preceding the operator at `pos`.
+///
+/// Walks back over inter-token whitespace and then over one regular-character
+/// run, returning the index of its leading `/`. Falls back to `pos` when the
+/// preceding token is not a name, so a malformed stream cannot widen a region
+/// arbitrarily.
+fn find_name_operand_start(data: &[u8], pos: usize) -> usize {
+    fn is_regular(b: u8) -> bool {
+        !b.is_ascii_whitespace()
+            && !matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'%')
+    }
+    let mut i = pos;
+    while i > 0 && data[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let token_end = i;
+    while i > 0 && is_regular(data[i - 1]) {
+        i -= 1;
+    }
+    if i < token_end && data[i] == b'/' {
+        i
+    } else {
+        pos
+    }
 }
 
 /// Whether `data[start..end]` contains a `Q` with no matching `q` before it.

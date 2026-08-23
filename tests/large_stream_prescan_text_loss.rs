@@ -275,3 +275,29 @@ fn an_undrawn_form_is_not_collected_at_either_stream_size() {
 
     assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
 }
+
+/// The low-`Do`:`BT` case: a sheet with a single drawn form.
+///
+/// The 10:1 fallback only fires above 50 `Do` invocations, so a sheet with
+/// one form still goes through the pre-scan. A `Do` region ends at `tp + 2`,
+/// which covers only the operator — the `/Name` operand has to come from the
+/// region START. When no BDC/BMC precedes it the start is the `Do` itself, so
+/// the region replayed a bare `Do` against an empty operand stack, the form
+/// was never invoked, and every glyph it drew was lost.
+#[test]
+fn a_single_drawn_form_survives_a_large_stream() {
+    let small = text_of(sheet_with_an_undrawn_form(2_000, 1));
+    let big = text_of(sheet_with_an_undrawn_form(300_000, 1));
+
+    assert!(
+        small.contains("SHEET TITLE") && small.contains("NOTE 000"),
+        "control fixture is wrong: text missing below the threshold, got {small:?}"
+    );
+    assert!(
+        big.contains("NOTE 000"),
+        "single-form text lost above the pre-scan threshold — the Do region \
+         excluded its /Name operand: {big:?}"
+    );
+    assert!(!big.contains("UNDRAWN GHOST"), "undrawn form leaked: {big:?}");
+    assert_eq!(words(&small), words(&big), "linework padding alone changed the extracted text");
+}
