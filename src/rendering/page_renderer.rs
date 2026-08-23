@@ -29,6 +29,9 @@ use crate::rendering::sidecar::{
     self as sidecar_mod, page_declares_transparency_or_overprint, CmykSidecar,
 };
 use crate::rendering::text_rasterizer::TextRasterizer;
+use crate::rendering::{
+    device_bounds_rasterizable, guarded_fill_path, guarded_mask_fill_path, guarded_stroke_path,
+};
 
 use crate::fonts::FontInfo;
 use std::collections::{HashMap, HashSet};
@@ -2220,7 +2223,12 @@ impl PageRenderer {
                     // outline) is treated as degenerate and leaves the clip
                     // unchanged rather than collapsing it to empty.
                     if let Some(scratch) = text_clip_accum.take() {
-                        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+                        let has_coverage = scratch
+                            .data()
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|px| px[3] != 0);
                         if has_coverage {
                             let text_mask = tiny_skia::Mask::from_pixmap(
                                 scratch.as_ref(),
@@ -4176,23 +4184,34 @@ impl PageRenderer {
                                 let mh = mask_gray.height();
                                 let iw = rgba_image.width();
                                 let ih = rgba_image.height();
-                                for y in 0..ih {
-                                    for x in 0..iw {
-                                        let mx = (x * mw / iw).min(mw - 1);
-                                        let my = (y * mh / ih).min(mh - 1);
-                                        let mask_val = mask_gray.get_pixel(mx, my)[0];
-                                        let pixel = rgba_image.get_pixel_mut(x, y);
-                                        pixel[3] =
-                                            ((pixel[3] as u32 * mask_val as u32) / 255) as u8;
+                                if mw == 0 || mh == 0 {
+                                    // No mask sample to test: leave the base
+                                    // image fully opaque rather than guessing.
+                                    log::warn!(
+                                        "Ignoring image Mask: it is {mw}x{mh} and carries \
+                                         no sample to test"
+                                    );
+                                } else {
+                                    for y in 0..ih {
+                                        let my =
+                                            ((y as u64 * mh as u64 / ih as u64) as u32).min(mh - 1);
+                                        for x in 0..iw {
+                                            let mx = ((x as u64 * mw as u64 / iw as u64) as u32)
+                                                .min(mw - 1);
+                                            let mask_val = mask_gray.get_pixel(mx, my)[0];
+                                            let pixel = rgba_image.get_pixel_mut(x, y);
+                                            pixel[3] =
+                                                ((pixel[3] as u32 * mask_val as u32) / 255) as u8;
+                                        }
                                     }
+                                    log::debug!(
+                                        "Applied image Mask ({}x{}) to image ({}x{})",
+                                        mw,
+                                        mh,
+                                        iw,
+                                        ih
+                                    );
                                 }
-                                log::debug!(
-                                    "Applied image Mask ({}x{}) to image ({}x{})",
-                                    mw,
-                                    mh,
-                                    iw,
-                                    ih
-                                );
                             }
                         },
                         Err(_) => {
@@ -4204,16 +4223,19 @@ impl PageRenderer {
                                     .map(|o| matches!(o, Object::Boolean(true)))
                                     .unwrap_or(false);
                                 if is_image_mask {
+                                    // `as u32` turns a negative /Width into a
+                                    // near-u32::MAX stride that passes the
+                                    // check below.
                                     let mw = mask_dict
                                         .get("Width")
                                         .and_then(|o| o.as_integer())
-                                        .unwrap_or(0)
-                                        as u32;
+                                        .and_then(|v| u32::try_from(v).ok())
+                                        .unwrap_or(0);
                                     let mh = mask_dict
                                         .get("Height")
                                         .and_then(|o| o.as_integer())
-                                        .unwrap_or(0)
-                                        as u32;
+                                        .and_then(|v| u32::try_from(v).ok())
+                                        .unwrap_or(0);
                                     if mw > 0 && mh > 0 {
                                         if let Ok(raw_mask_data) =
                                             doc.decode_stream_with_encryption(&mask_stream, ref_obj)
@@ -4256,9 +4278,14 @@ impl PageRenderer {
                                             let ih = rgba_image.height();
                                             let row_bytes = (mw as usize + 7) / 8;
                                             for y in 0..ih {
+                                                let my = ((y as u64 * mh as u64 / ih as u64) as u32)
+                                                    .min(mh - 1)
+                                                    as usize;
                                                 for x in 0..iw {
-                                                    let mx = (x * mw / iw).min(mw - 1) as usize;
-                                                    let my = (y * mh / ih).min(mh - 1) as usize;
+                                                    let mx = ((x as u64 * mw as u64 / iw as u64)
+                                                        as u32)
+                                                        .min(mw - 1)
+                                                        as usize;
                                                     let byte_idx = my * row_bytes + mx / 8;
                                                     let bit_idx = 7 - (mx % 8);
                                                     // PDF spec 8.9.6.2: mask bit 1 = paint (opaque), 0 = don't paint (transparent)
@@ -4293,13 +4320,28 @@ impl PageRenderer {
                 // raw component samples all fall within their [min,max] range is
                 // made fully transparent.
                 let ncomp = pdf_image.color_space().components();
-                match parse_color_key_mask(mask_array, ncomp) {
-                    Some(ranges) => {
-                        apply_color_key_mask(&pdf_image, &ranges, &mut rgba_image);
-                    },
-                    None => {
-                        log::debug!("Ignoring malformed color-key /Mask array (ncomp={})", ncomp);
-                    },
+                if !pdf_image.samples_are_raw() {
+                    // The extractor mapped a non-default /Decode into the
+                    // stored samples, so they are no longer in the space the
+                    // /Mask ranges are expressed in. Masking them here would
+                    // hide the wrong pixels; skip and say so rather than
+                    // silently inverting the transparent region.
+                    log::warn!(
+                        "Skipping colour-key /Mask: the stored samples are no longer in the \
+                         raw sample space the mask ranges are expressed in"
+                    );
+                } else {
+                    match parse_color_key_mask(mask_array, ncomp) {
+                        Some(ranges) => {
+                            apply_color_key_mask(&pdf_image, &ranges, &mut rgba_image);
+                        },
+                        None => {
+                            log::debug!(
+                                "Ignoring malformed color-key /Mask array (ncomp={})",
+                                ncomp
+                            );
+                        },
+                    }
                 }
             }
         }
@@ -4537,7 +4579,10 @@ impl PageRenderer {
         name.eq_ignore_ascii_case("CCITTFaxDecode") || name.eq_ignore_ascii_case("CCF")
     }
 
-    fn image_mask_layout(
+    /// `(width, height, row_bytes, packed_len, rgba_len)` for a 1-bpc stencil,
+    /// rejecting geometry that does not fit or that no stream could back —
+    /// before anything is allocated from it.
+    pub(crate) fn image_mask_layout(
         dict: &HashMap<String, Object>,
     ) -> Result<(u32, u32, usize, usize, usize)> {
         let dimension = |key: &str| -> Result<u32> {
@@ -5091,7 +5136,7 @@ impl PageRenderer {
                 (fg.clamp(0.0, 1.0) * 255.0) as u32,
                 (fb.clamp(0.0, 1.0) * 255.0) as u32,
             );
-            for px in cell.data_mut().chunks_exact_mut(4) {
+            for px in cell.data_mut().as_chunks_mut::<4>().0 {
                 let a = px[3] as u32;
                 px[0] = (fr * a / 255) as u8;
                 px[1] = (fg * a / 255) as u8;
@@ -5102,7 +5147,7 @@ impl PageRenderer {
         // Average (premultiplied) cell colour, used both for the geometry
         // fallback and to skip fully-transparent cells.
         let (mut sr, mut sg, mut sb, mut sa) = (0u64, 0u64, 0u64, 0u64);
-        for px in cell.data().chunks_exact(4) {
+        for px in cell.data().as_chunks::<4>().0 {
             sr += px[0] as u64;
             sg += px[1] as u64;
             sb += px[2] as u64;
@@ -5164,7 +5209,7 @@ impl PageRenderer {
         let flood = |pixmap: &mut Pixmap| {
             let mut p = base_paint.clone();
             p.set_color(avg_color);
-            pixmap.fill_path(path, &p, fill_rule, path_transform, clip);
+            guarded_fill_path(pixmap, path, &p, fill_rule, path_transform, clip);
         };
         if !axis_aligned
             || x_step.abs() <= f32::EPSILON
@@ -5193,7 +5238,7 @@ impl PageRenderer {
                 return Ok(true);
             },
         };
-        mask.fill_path(path, fill_rule, true, path_transform);
+        guarded_mask_fill_path(&mut mask, path, fill_rule, true, path_transform);
         if let Some(c) = clip {
             for (mv, cv) in mask.data_mut().iter_mut().zip(c.data().iter()) {
                 *mv = (*mv).min(*cv);
@@ -5574,7 +5619,7 @@ impl PageRenderer {
         let sidecar = self.cmyk_sidecar.as_ref()?;
         let (w, h) = sidecar.dims();
         let mut mask = tiny_skia::Mask::new(w, h)?;
-        mask.fill_path(path, fill_rule, true, transform);
+        guarded_mask_fill_path(&mut mask, path, fill_rule, true, transform);
         let mut buf = mask.data().to_vec();
         // Intersect with the active clip mask. tiny_skia's clip mask
         // is per-pixel coverage; pixel-wise min gives the
@@ -5626,8 +5671,14 @@ impl PageRenderer {
         let mut paint = tiny_skia::Paint::default();
         paint.set_color(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         paint.anti_alias = true;
-        scratch.stroke_path(path, &paint, &stroke, transform, clip);
-        let buf: Vec<u8> = scratch.data().chunks_exact(4).map(|px| px[3]).collect();
+        guarded_stroke_path(&mut scratch, path, &paint, &stroke, transform, clip);
+        let buf: Vec<u8> = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect();
         Some(buf)
     }
 
@@ -5684,7 +5735,13 @@ impl PageRenderer {
     /// AA-edge partial coverage. The buffer is then handed to the
     /// spot-mirror's coverage-aware path verbatim.
     fn extract_alpha_as_coverage(pixmap: &Pixmap) -> Vec<u8> {
-        pixmap.data().chunks_exact(4).map(|px| px[3]).collect()
+        pixmap
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect()
     }
 
     /// WS1.5b — union a clip-mode (`Tr` 4–7) `Tj` / `'` / `"` show's glyph
@@ -7748,9 +7805,11 @@ impl PageRenderer {
             if let Some(ap_obj) = annot.raw_dict.as_ref().and_then(|d| d.get("AP")) {
                 let ap_stream_obj = doc.resolve_object(ap_obj)?;
 
-                // Normal appearance (N)
+                // ISO 32000-1 §12.5.5: /N is the normal appearance; /D and /R
+                // show only under pointer press or hover, so an /AP without /N
+                // draws nothing in a static render.
                 if let Object::Dictionary(ap_dict) = ap_stream_obj {
-                    if let Some(n_entry) = ap_dict.get("N").or_else(|| ap_dict.values().next()) {
+                    if let Some(n_entry) = ap_dict.get("N") {
                         let n_stream_obj = doc.resolve_object(n_entry)?;
                         if let Object::Stream { ref dict, .. } = n_stream_obj {
                             let ap_data = if let Some(r) = n_entry.as_reference() {
@@ -9336,7 +9395,7 @@ fn encode_png(pixmap: &Pixmap) -> Result<Vec<u8>> {
     // Demultiply: tiny_skia stores premultiplied RGBA; PNG expects straight alpha.
     let src = pixmap.data();
     let mut data = src.to_vec();
-    for chunk in data.chunks_exact_mut(4) {
+    for chunk in data.as_chunks_mut::<4>().0 {
         let a = chunk[3];
         if a != 0 && a != 255 {
             let a32 = a as u32;
@@ -9504,7 +9563,7 @@ fn parse_color_key_mask(arr: &[Object], ncomp: usize) -> Option<Vec<(u32, u32)>>
         return None;
     }
     let mut ranges = Vec::with_capacity(ncomp);
-    for pair in arr.chunks_exact(2) {
+    for pair in arr.as_chunks::<2>().0 {
         let lo = pair[0].as_integer()?;
         let hi = pair[1].as_integer()?;
         if lo < 0 || hi < 0 || lo > hi {
@@ -9844,6 +9903,14 @@ fn apply_pending_clip(
         let gs = gs_stack.current();
         let transform = combine_transforms(base_transform, &gs.ctm);
 
+        // A clip path beyond f32 device precision cannot be rasterized.
+        // Drop the clip rather than materialize an empty mask — an empty
+        // mask would erase every subsequent draw on the page.
+        if !device_bounds_rasterizable(&path, transform) {
+            log::debug!("skipping clip beyond f32 device precision: {:?}", path.bounds());
+            return;
+        }
+
         let Some(slot) = clip_stack.last_mut() else {
             return;
         };
@@ -9938,7 +10005,13 @@ fn build_axial_extend_clip(
     let path = pb.finish()?;
 
     let mut mask = tiny_skia::Mask::new(pixmap.width(), pixmap.height())?;
-    mask.fill_path(&path, tiny_skia::FillRule::Winding, true, Transform::identity());
+    guarded_mask_fill_path(
+        &mut mask,
+        &path,
+        tiny_skia::FillRule::Winding,
+        true,
+        Transform::identity(),
+    );
     Some(intersect_with_inherited(mask, inherited))
 }
 
@@ -9995,7 +10068,13 @@ fn build_radial_extend_clip(
         }
         pb.finish()?
     };
-    mask.fill_path(&outer_path, tiny_skia::FillRule::Winding, true, Transform::identity());
+    guarded_mask_fill_path(
+        &mut mask,
+        &outer_path,
+        tiny_skia::FillRule::Winding,
+        true,
+        Transform::identity(),
+    );
 
     if !extend_start && r0 > 1.0e-3 {
         // Subtract the inner disk by painting black into the mask.
@@ -10006,7 +10085,8 @@ fn build_radial_extend_clip(
         let mut pb = PathBuilder::new();
         pb.push_circle(c0.x, c0.y, r0);
         if let Some(inner_path) = pb.finish() {
-            inner_mask.fill_path(
+            guarded_mask_fill_path(
+                &mut inner_mask,
                 &inner_path,
                 tiny_skia::FillRule::Winding,
                 true,
@@ -10390,7 +10470,12 @@ mod tests {
         scratch.fill_rect(sil, &paint, Transform::identity(), None);
 
         // Degenerate guard: a silhouette WITH coverage reports true.
-        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        let has_coverage = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| px[3] != 0);
         assert!(has_coverage, "painted silhouette must report coverage");
 
         // Existing clip: top half of the page (y in 0..10) fully inside.
@@ -10421,7 +10506,12 @@ mod tests {
     fn text_clip_empty_accumulator_is_degenerate() {
         use tiny_skia::Pixmap;
         let scratch = Pixmap::new(16, 16).unwrap(); // fresh -> fully transparent
-        let has_coverage = scratch.data().chunks_exact(4).any(|px| px[3] != 0);
+        let has_coverage = scratch
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|px| px[3] != 0);
         assert!(!has_coverage, "empty accumulator must be treated as no clip change");
     }
 
@@ -10985,7 +11075,7 @@ mod tests {
         // yields zero; the d1 stencil taking the current fill colour yields a
         // solid red rectangle.
         let mut red = 0usize;
-        for px in img.data.chunks_exact(4) {
+        for px in img.data.as_chunks::<4>().0 {
             if px[0] > 200 && px[1] < 80 && px[2] < 80 {
                 red += 1;
             }

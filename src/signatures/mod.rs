@@ -65,6 +65,7 @@ mod signer;
 mod timestamp;
 #[cfg(all(feature = "signatures", feature = "tsa-client"))]
 mod tsa_client;
+pub(crate) mod tsp;
 mod types;
 mod verifier;
 

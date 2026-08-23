@@ -1,0 +1,99 @@
+# Auto-reject list — close new issues and pull requests from accounts whose
+# intake has been capped under CONTRIBUTING.md "Communication volume".
+#
+# The list lives in the repository variable AUTO_REJECT_ACCOUNTS (Settings →
+# Secrets and variables → Actions → Variables), as a comma- or newline-separated
+# list of logins. It is deliberately NOT a file in the repo: a checked-in
+# denylist is a public register of named people, which invites escalation and is
+# hard to walk back. The effect is the same; the shaming is not.
+#
+# Scope: new issues and PRs only. Comments still work, existing open work is
+# untouched. This caps intake without ending the conversation — see the ladder
+# in CONTRIBUTING.md, where it sits below interaction limits and blocking.
+name: Auto-reject list
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: auto-reject-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  reject:
+    name: Close if the author's intake is capped
+    runs-on: ubuntu-latest
+    if: ${{ vars.AUTO_REJECT_ACCOUNTS != '' }}
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        env:
+          ACCOUNTS: ${{ vars.AUTO_REJECT_ACCOUNTS }}
+        with:
+          script: |
+            const listed = (process.env.ACCOUNTS || '')
+              .split(/[\s,]+/)
+              .map(x => x.trim().toLowerCase())
+              .filter(Boolean);
+            if (!listed.length) return;
+
+            const isPR = !!context.payload.pull_request;
+            const item = context.payload.pull_request || context.payload.issue;
+            const author = (item.user && item.user.login) || '';
+            if (!listed.includes(author.toLowerCase())) return;
+
+            // Never auto-reject someone with write access — if a maintainer is on
+            // the list, that is a mistake in the variable, not an intent to lock
+            // the project's own team out.
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner, repo: context.repo.repo, username: author,
+              });
+              if (['admin', 'maintain', 'write'].includes(data.permission)) {
+                core.warning('Listed account ' + author + ' has write access — ignoring.');
+                return;
+              }
+            } catch (e) { /* not a collaborator: proceed */ }
+
+            const docs = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo +
+                         '/blob/main/CONTRIBUTING.md#communication-volume';
+            const kind = isPR ? 'pull request' : 'issue';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: item.number,
+              body: [
+                'Closing automatically: new issues and pull requests from this account are',
+                'not currently being accepted.',
+                '',
+                'This is a rate measure, not a judgement about this ' + kind + ' or about you.',
+                'Review here is one person; when submissions arrive faster than they can be',
+                'read, the queue stops working for everyone. Commenting still works and your',
+                'existing open work is unaffected.',
+                '',
+                'If you would like this lifted, say so in a comment. It is not permanent and it',
+                'is not a ban.',
+                '',
+                'See [Communication volume](' + docs + ').',
+              ].join('\n'),
+            });
+
+            if (isPR) {
+              await github.rest.pulls.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: item.number, state: 'closed',
+              });
+            } else {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: item.number, state: 'closed', state_reason: 'not_planned',
+              });
+            }

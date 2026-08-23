@@ -1,0 +1,151 @@
+# Submission rate limit — CONTRIBUTING.md "Communication volume".
+#
+# Review here is one person. Submissions that arrive faster than a person can
+# respond are rate-limited regardless of what produced them: the rule is about
+# rate, not tooling. Generate the work however you like; submit it at a rate a
+# human can answer.
+#
+# Thresholds are repository variables so they can be tuned without editing this
+# file (Settings -> Secrets and variables -> Actions -> Variables). Seconds:
+#   RATE_MIN_GAP_ISSUES    default 300   (5 min between issues from one account)
+#   RATE_MIN_GAP_PRS       default 300   (5 min between pull requests)
+#   RATE_MIN_GAP_COMMENTS  default 60    (see the note below on why this differs)
+# Set any of them to 0 to disable that surface.
+#
+# Comments default to a shorter window on purpose. Answering three review
+# threads in five minutes is ordinary participation; nineteen identical
+# comments in eighteen seconds is not. A 5-minute comment gap would punish the
+# first while barely being needed for the second, so the comment window targets
+# bursts rather than conversation.
+#
+# Nothing here is permanent. An issue or PR closed by this workflow can be
+# reopened once the gap has passed; a hidden comment stays readable.
+name: Submission rate limit
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: rate-${{ github.actor }}
+  cancel-in-progress: false
+
+jobs:
+  rate:
+    name: Rate limit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        env:
+          GAP_ISSUES: ${{ vars.RATE_MIN_GAP_ISSUES || '300' }}
+          GAP_PRS: ${{ vars.RATE_MIN_GAP_PRS || '300' }}
+          GAP_COMMENTS: ${{ vars.RATE_MIN_GAP_COMMENTS || '60' }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ev = context.eventName;
+            const isComment = ev === 'issue_comment';
+            const isPR = ev === 'pull_request_target';
+            const item = context.payload.pull_request || context.payload.issue;
+            const actor = (context.payload.comment?.user || item?.user || {}).login;
+            if (!actor) return;
+
+            // Bots that are part of the toolchain are not the target of this.
+            if (/\[bot\]$/i.test(actor) || actor === 'dependabot') return;
+
+            // Anyone with write access supplies review capacity rather than
+            // consuming it, so the limit does not apply to them.
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: actor,
+              });
+              if (['admin', 'maintain', 'write'].includes(data.permission)) return;
+            } catch (e) { /* not a collaborator: continue */ }
+
+            const gap = parseInt(
+              isComment ? process.env.GAP_COMMENTS
+                : isPR ? process.env.GAP_PRS
+                : process.env.GAP_ISSUES, 10);
+            if (!gap || gap <= 0) return;
+
+            const nowIso = isComment
+              ? context.payload.comment.created_at
+              : item.created_at;
+            const now = new Date(nowIso).getTime();
+            const sinceIso = new Date(now - gap * 1000).toISOString();
+            const docs = `https://github.com/${owner}/${repo}/blob/main/CONTRIBUTING.md#communication-volume`;
+
+            let priorAt = null;
+
+            if (isComment) {
+              // Comments the actor made anywhere in the repo inside the window.
+              const res = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} commenter:${actor} updated:>=${sinceIso}`,
+                per_page: 20,
+              });
+              for (const hit of res.data.items) {
+                const cs = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: hit.number, since: sinceIso, per_page: 100,
+                });
+                for (const c of cs) {
+                  if (c.user?.login !== actor) continue;
+                  if (c.id === context.payload.comment.id) continue;
+                  const t = new Date(c.created_at).getTime();
+                  if (t < now && (priorAt === null || t > priorAt)) priorAt = t;
+                }
+              }
+            } else {
+              const kind = isPR ? 'pr' : 'issue';
+              const res = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} author:${actor} is:${kind} created:>=${sinceIso}`,
+                sort: 'created', order: 'desc', per_page: 20,
+              });
+              for (const hit of res.data.items) {
+                if (hit.number === item.number) continue;
+                const t = new Date(hit.created_at).getTime();
+                if (t < now && (priorAt === null || t > priorAt)) priorAt = t;
+              }
+            }
+
+            if (priorAt === null) return;   // nothing inside the window
+
+            const elapsed = Math.round((now - priorAt) / 1000);
+            const what = isComment ? 'comment' : isPR ? 'pull request' : 'issue';
+            const body = [
+              `This ${what} arrived ${elapsed}s after your previous one. This project asks for at`,
+              `least ${gap}s between ${what}s from the same account.`,
+              '',
+              'Review here is one person, and submissions that arrive faster than a person can',
+              'read them stop being a conversation. The limit is about rate, not about tooling',
+              'or about the quality of this particular submission — use whatever tools you like,',
+              'just send the result at a rate someone can answer.',
+              '',
+              isComment
+                ? 'Nothing has been deleted; this note simply flags the pace. If you have several points, one message carrying all of them is worth more than several sent together.'
+                : `Please reopen this once the gap has passed — it is not a rejection and nothing is lost.`,
+              '',
+              `See [Communication volume](${docs}).`,
+            ].join('\n');
+
+            const issue_number = isComment ? context.payload.issue.number : item.number;
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+            if (!isComment) {
+              if (isPR) {
+                await github.rest.pulls.update({ owner, repo, pull_number: item.number, state: 'closed' });
+              } else {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: item.number,
+                  state: 'closed', state_reason: 'not_planned',
+                });
+              }
+            }

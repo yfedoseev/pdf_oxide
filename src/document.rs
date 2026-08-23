@@ -5438,17 +5438,30 @@ impl PdfDocument {
         if let Some(vertical) = Self::try_assemble_vertical_cjk(&base_spans) {
             return Ok(vertical);
         }
-        // Dominant text-matrix rotation (a landscape table typeset on a
-        // portrait page): the row-major assembler groups lines
-        // in the portrait frame and interleaves every rotated row. Assemble
-        // such pages in their rotated reading frame instead.
-        let base_spans = match self.map_dominant_rotation_into_reading_frame(page_index, base_spans)
-        {
-            Ok(mapped) => mapped,
-            Err(original) => original,
-        };
         let text = self.assemble_text_from_spans(page_index, base_spans, options)?;
         Ok(Self::apply_mixed_rtl_line_pass(text))
+    }
+
+    /// [`Self::map_dominant_rotation_into_reading_frame`] with the
+    /// mapped/unchanged distinction collapsed, for the call sites that only
+    /// want "spans as a reader sees them".
+    ///
+    /// Every library text surface goes through this — via
+    /// [`Self::assemble_text_from_spans`] or the converter pipelines. Applying
+    /// the frame at one call site made the same page read correctly through
+    /// `extract_text` and incorrectly through `to_markdown` / `to_html` /
+    /// `to_plain_text`. Callers must apply `ConversionOptions` region filters
+    /// BEFORE this: region rects are page-space coordinates, and the map
+    /// rewrites the geometry they select against.
+    fn spans_in_reading_frame(
+        &self,
+        page_index: usize,
+        spans: Vec<crate::layout::TextSpan>,
+    ) -> Vec<crate::layout::TextSpan> {
+        match self.map_dominant_rotation_into_reading_frame(page_index, spans) {
+            Ok(mapped) => mapped,
+            Err(original) => original,
+        }
     }
 
     /// Map a dominant-rotation page's spans into their rotated reading
@@ -5464,7 +5477,8 @@ impl PdfDocument {
     /// keeping output byte-identical there.
     ///
     /// Only used for plain-text assembly, where no coordinates leak to the
-    /// caller; coordinate-bearing APIs (`extract_words`) reorder in the
+    /// caller (region rects leak IN, so they are filtered out before this
+    /// runs); coordinate-bearing APIs (`extract_words`) reorder in the
     /// rotated frame but report true page-space bboxes instead (see
     /// `crate::pipeline::page_reading_order`).
     fn map_dominant_rotation_into_reading_frame(
@@ -5729,6 +5743,13 @@ impl PdfDocument {
         }
 
         let base_spans = Self::apply_region_filters(base_spans, options);
+        // Dominant text-matrix rotation (a landscape table typeset on a
+        // portrait page): the row-major assembler groups lines in the
+        // portrait frame and interleaves every rotated row. Assemble such
+        // pages in their rotated reading frame instead — after the region
+        // filters, whose rects select in page space, and before table
+        // detection, which consumes the geometry this maps.
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
         // Struct-tree-scope `/ActualText` is applied per branch below
         // — the structure-order assembler handles it natively via the
         // per-page action map, and the geometric branch applies the
@@ -9754,7 +9775,9 @@ impl PdfDocument {
             // UTF-16BE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -9763,7 +9786,9 @@ impl PdfDocument {
             // UTF-16LE with BOM
             let utf16_bytes = &bytes[2..];
             let utf16_pairs: Vec<u16> = utf16_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                 .collect();
             String::from_utf16(&utf16_pairs)
@@ -20301,9 +20326,10 @@ impl PdfDocument {
     /// [`extract_text_with_extra_spans`](Self::extract_text_with_extra_spans).
     /// The Auto extractor uses this to drop OCR'd image text into its figure's
     /// reading-order slot for Markdown, so auto markdown is a superset of native.
-    // Only the (ocr-gated) Auto extractor calls this, so compile it only with
-    // the `ocr` feature — a non-`ocr` build omits it (no dead code).
-    #[cfg(feature = "ocr")]
+    // Only the (ocr-gated) Auto extractor and the unit test that pins the
+    // extra-span reading frame call this, so it is compiled only in those
+    // configs — a plain non-`ocr` `--lib` build omits it (no dead code).
+    #[cfg(any(feature = "ocr", test))]
     pub(crate) fn to_markdown_with_extra_spans(
         &self,
         page_index: usize,
@@ -20323,11 +20349,18 @@ impl PdfDocument {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty markdown");
             return Ok(String::new());
         }
+        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor)
+        // merge before the region filter and the reading-frame map, exactly as
+        // `extract_text_with_extra_spans` merges them — mapping base spans
+        // around unmapped extras would file the extra text in the wrong
+        // reading-order slot on a rotated page.
+        let mut base_spans = self.extract_spans(page_index)?;
+        base_spans.extend_from_slice(extra_spans);
         // Apply caller-specified region filters up front so excluded content is
         // gone from EVERY downstream path — tables, headings, reading order
         // (#609: markdown previously ignored `exclude_regions`/`include_region`,
         // which were only honoured by the plain-text path).
-        let mut base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+        let mut base_spans = Self::apply_region_filters(base_spans, options);
 
         // WS2.6: strip repeated running headers/footers from untagged output
         // when requested. Opt-in (default off); the /Artifact-tag path already
@@ -20356,6 +20389,11 @@ impl PdfDocument {
             return Ok(vertical);
         }
 
+        // Same frame `extract_text` assembles in, applied at the same point:
+        // after the vertical-CJK check (which reads the rotation this clears)
+        // and before table detection (which consumes the geometry this maps).
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
         // fallback: a short-cell two-column body must read column-major as
@@ -20374,9 +20412,6 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
-        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
-        // each carrying the MCID/position that drops it into reading order.
-        spans.extend_from_slice(extra_spans);
 
         // B1: stitch a full-width line that the producer drew as adjacent
         // fragments straddling the gutter back into one span, so the column
@@ -20893,9 +20928,10 @@ impl PdfDocument {
     /// Convert a page to HTML with caller-supplied extra spans merged into the
     /// converter's reading-order pass — the HTML companion to
     /// [`to_markdown_with_extra_spans`](Self::to_markdown_with_extra_spans).
-    // Only the (ocr-gated) Auto extractor calls this, so compile it only with
-    // the `ocr` feature — a non-`ocr` build omits it (no dead code).
-    #[cfg(feature = "ocr")]
+    // Only the (ocr-gated) Auto extractor and the unit test that pins the
+    // extra-span reading frame call this, so it is compiled only in those
+    // configs — a plain non-`ocr` `--lib` build omits it (no dead code).
+    #[cfg(any(feature = "ocr", test))]
     pub(crate) fn to_html_with_extra_spans(
         &self,
         page_index: usize,
@@ -20916,9 +20952,13 @@ impl PdfDocument {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty HTML");
             return Ok(String::new());
         }
+        // Caller-supplied spans merge before the region filter and the
+        // reading-frame map — see `to_markdown_inner`.
+        let mut base_spans = self.extract_spans(page_index)?;
+        base_spans.extend_from_slice(extra_spans);
         // Region filters applied up front so excluded content is gone from every
         // downstream path (#609), matching the markdown and plain-text surfaces.
-        let base_spans = Self::apply_region_filters(self.extract_spans(page_index)?, options);
+        let base_spans = Self::apply_region_filters(base_spans, options);
 
         // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3): emit the column-major
         // text as a single paragraph, mirroring the plain-text and markdown
@@ -20931,6 +20971,9 @@ impl PdfDocument {
                 .replace('>', "&gt;");
             return Ok(format!("<p>{}</p>", escaped.trim()));
         }
+
+        // Same frame `extract_text` assembles in — see `to_markdown_inner`.
+        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -20950,9 +20993,6 @@ impl PdfDocument {
         if options.include_form_fields {
             spans.extend(self.extract_widget_spans(page_index));
         }
-        // Caller-supplied spans (e.g. OCR'd image text from the Auto extractor),
-        // each carrying the MCID/position that drops it into reading order.
-        spans.extend_from_slice(extra_spans);
 
         // B1: stitch a full-width line that the producer drew as adjacent
         // fragments straddling the gutter back into one span, so the column
@@ -21177,7 +21217,7 @@ impl PdfDocument {
         }
 
         // Step 1: Extract raw spans (unchanged - this is the foundation)
-        let mut spans = self.extract_spans(page_index)?;
+        let mut spans = self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
 
         // Step 1b: Merge widget annotation spans (form field values) if enabled
         if options.include_form_fields {
@@ -24162,6 +24202,93 @@ mod tests {
         assert!(
             a < b && b < ins && ins < c,
             "injected span not placed in MCID-1 slot (expected ALPHA<BRAVO<INSERTED<CHARLIE): {out:?}"
+        );
+    }
+
+    /// An extra span dropped onto a dominant-rotation page must land in the
+    /// same reading-order slot on every surface: the extras merge before the
+    /// reading-frame map. Mapping base spans around an unmapped extra files
+    /// the extra text after the page in md/html but mid-page in text.
+    #[test]
+    fn extra_span_shares_the_reading_frame_on_every_surface() {
+        // Three 90°-rotated lines; the mapped frame puts them at
+        // y' = 612 - x: ALPHA 412, BRAVO 384, CHARLIE 356. The unrotated
+        // extra at (242, 100) maps to y' = 370 — between BRAVO and CHARLIE.
+        let mut content: Vec<u8> = b"BT /F1 10 Tf\n".to_vec();
+        for (x, text) in [(200, "ALPHA"), (228, "BRAVO"), (256, "CHARLIE")] {
+            content.extend_from_slice(format!("0 1 -1 0 {x} 150 Tm ({text}) Tj\n").as_bytes());
+        }
+        content.extend_from_slice(b"ET");
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut off = vec![0usize; 6];
+        let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
+            off[id] = buf.len();
+            buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+        };
+        buf.extend_from_slice(b"%PDF-1.4\n");
+        obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+        obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        obj(
+            &mut buf,
+            &mut off,
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>",
+        );
+        off[4] = buf.len();
+        buf.extend_from_slice(
+            format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+        );
+        buf.extend_from_slice(&content);
+        buf.extend_from_slice(b"\nendstream\nendobj\n");
+        obj(
+            &mut buf,
+            &mut off,
+            5,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        );
+        let xref = buf.len();
+        buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for id in 1..=5 {
+            buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+        }
+        buf.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n");
+        buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
+
+        let doc = PdfDocument::from_bytes(buf).unwrap();
+        let extra = crate::layout::TextSpan {
+            text: "INSERTED".to_string(),
+            bbox: crate::geometry::Rect::new(242.0, 100.0, 50.0, 10.0),
+            font_size: 10.0,
+            ..Default::default()
+        };
+        let opts = crate::converters::ConversionOptions {
+            extract_tables: true,
+            ..Default::default()
+        };
+
+        let slot = |out: &str, surface: &str| {
+            let (a, b, ins, c) =
+                (out.find("ALPHA"), out.find("BRAVO"), out.find("INSERTED"), out.find("CHARLIE"));
+            assert!(
+                a.is_some() && a < b && b < ins && ins < c,
+                "{surface}: expected ALPHA<BRAVO<INSERTED<CHARLIE: {out:?}"
+            );
+        };
+        slot(
+            &doc.extract_text_with_extra_spans(0, vec![extra.clone()], &opts)
+                .unwrap(),
+            "extract_text_with_extra_spans",
+        );
+        slot(
+            &doc.to_markdown_with_extra_spans(0, std::slice::from_ref(&extra), &opts)
+                .unwrap(),
+            "to_markdown_with_extra_spans",
+        );
+        slot(
+            &doc.to_html_with_extra_spans(0, &[extra], &opts).unwrap(),
+            "to_html_with_extra_spans",
         );
     }
 
@@ -29179,15 +29306,13 @@ mod tests {
 
         push!("<< /Type /Catalog /Pages 2 0 R >>"); // 1
         push!("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
-        push!(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+        push!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
-        )); // 3
-        push!(format!(
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+            .to_string()); // 3
+        push!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
              /Encoding << /Type /Encoding /Differences [1 /fi] >> \
              /ToUnicode 6 0 R >>"
-        )); // 4
+            .to_string()); // 4
         push!(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content)); // 5
         push!(format!("<< /Length {} >>\nstream\n{}endstream", cmap.len(), cmap)); // 6
 

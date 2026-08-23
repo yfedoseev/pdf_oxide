@@ -1803,7 +1803,9 @@ pub extern "C" fn document_editor_erase_regions(
     let editor = handle_mut(handle);
     let flat = raw_slice(rects, rects_count * 4);
     let boxes: Vec<[f32; 4]> = flat
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
         .collect();
     match editor.erase_regions(page, &boxes) {

@@ -11,10 +11,10 @@
 //! turn, every binding's idiomatic `Timestamp` type.
 
 use crate::error::{Error, Result};
+use crate::signatures::tsp::TstInfo;
 use cms::cert::x509::ext::pkix::name::GeneralName;
 use cms::signed_data::SignedData;
 use der::{Decode, Encode};
-use x509_tsp::TstInfo;
 
 /// Hash algorithm used for a message imprint (matches the enum values
 /// the FFI uses for `pdf_timestamp_get_hash_algorithm`).
