@@ -56,11 +56,39 @@ Examples of representing our community include using an official e-mail address,
 posting via an official social media account, or acting as an appointed
 representative at an online or offline event.
 
+## Additional project rules
+
+_This section is specific to pdf_oxide. The Contributor Covenant text above is
+unmodified._
+
+This document governs **conduct**. Contribution volume and submission rate are
+governed separately, by
+[CONTRIBUTING.md → Communication volume](CONTRIBUTING.md#communication-volume).
+
+They are two ladders with different triggers, and they do not overlap. A rate
+limit, an auto-reject, or a block applied for **volume** is a resource-management
+measure: it reflects what one maintainer can review, and carries no implication
+about a contributor's conduct, good faith, or the quality of their work. It is
+not a finding under this Code of Conduct and should not be described or appealed
+as one. Conversely, nothing in the volume rules is a substitute for this
+document: being within the rate limits does not license behaviour the standards
+above prohibit.
+
+When a limit is applied, the notice will say which of the two it comes from.
+
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement.
+reported privately to the maintainer at **yfedoseev@gmail.com**. If you are
+reporting someone else's behavior, use that address rather than a public issue —
+reporting should not cost you your privacy, and it should not try the matter in
+public before it has been looked at.
 All complaints will be reviewed and investigated promptly and fairly.
+
+This does not restrict a maintainer from stating a moderation decision, or the
+reason for one, in the thread it concerns; nor does it stop anyone from saying
+plainly and civilly, in the moment, that something was not acceptable. What
+belongs in private is a report **about** a person.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.
