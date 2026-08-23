@@ -1,37 +1,91 @@
 # OSV-Scanner configuration for pdf_oxide.
 #
-# Documents the (small) set of known-upstream Rust advisories that have no
-# available — or no currently *adoptable* — fix, with explicit per-CVE
-# justifications and a 90-day review horizon. Re-evaluate every release.
+# The (small) set of known-upstream Rust advisories that have no available —
+# or no currently *adoptable* — fix, with explicit per-advisory justifications
+# and, for each, the concrete condition that would retire it.
+#
+# WHY THESE ENTRIES CARRY NO `ignoreUntil`
+#
+# `ignoreUntil` is a hard expiry, and it fails loudly in the worst possible
+# place: an expired entry emits no warning, it silently stops suppressing, and
+# the next pull request to touch Cargo.lock fails its security-audit job. On
+# 2026-08-23 two dates fell due on the same day and blocked the entire open PR
+# queue behind an advisory that nobody could have fixed.
+#
+# A date is the wrong instrument here because none of these advisories can be
+# closed by any action of ours (see each entry). Their real end conditions are
+# upstream events, not calendar dates, so a dated review only re-arms the trap.
+#
+# Review still happens — see `.github/workflows/advisory-review.yml`, which runs
+# weekly, reports the live status of every entry below, and flags any that has
+# gained a fixed version upstream. That job is scheduled-only: it can never
+# fail a pull request.
+#
+# ADDING AN ENTRY: state the advisory kind (informational vs CVE), why it is
+# not exploitable or not adoptable here, and the upstream event that retires it.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
-# `paste` crate: "no longer maintained" advisory (informational, not a CVE).
-# Used transitively by build-macro crates we don't directly depend on. No
-# remote-code-execution or memory-safety implication; advisory exists solely
-# to flag the unmaintained status. Re-evaluate when transitive consumers
-# move off paste (community is migrating to `pastey` / `quote`).
-ignoreUntil = 2026-08-23
+# `paste` — "no longer maintained". Informational, not a CVE: no
+# remote-code-execution and no memory-safety implication. No fixed version, and
+# none is coming; the advisory exists solely to flag maintenance status.
+#
+# Not a direct dependency, and absent from the default build graph entirely
+# (`cargo tree -i paste` with default features finds nothing). It enters only
+# through optional features, three ways, all by third-party feature unification:
+#   barcodes -> barcoders (declares `image` without default-features = false,
+#               so every image format switches on) -> {ravif -> rav1e,
+#               exr -> pulp} -> paste
+# Our own `image` dependency is already minimal (png/jpeg/tiff only).
+#
+# Two further entry points existed until this change and are now gone with the
+# dead `imageproc` and `tokenizers` dependencies: `ocr` -> imageproc (whose
+# `default` includes "image/default") and `ml` -> tokenizers -> paste. Only the
+# barcoders path remains, and it is upstream's to fix.
+#
+# Pruning cannot retire this. Verified 2026-08-23: with all three entry points
+# severed and Cargo.lock regenerated from scratch,
+# `cargo tree -i paste --all-features --target all` printed nothing while
+# `cargo audit` still reported the advisory — OSV-Scanner and cargo-audit both
+# read the lockfile, not the build graph.
+#
+# RETIRES WHEN: barcoders sets `default-features = false` on `image` (a small
+# upstream change worth sending), or pulp and rav1e move off paste (the
+# ecosystem is migrating to `pastey` / plain `quote`).
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
-# `rsa` crate: known potential Marvin-attack timing side-channel for RSA
-# decryption keys. NOT exploitable in our usage: pdf_oxide uses RSA only
-# for PAdES signature *verification* of detached signatures (never
-# decryption of attacker-controlled ciphertexts), where the timing channel
-# is not applicable. No fix version released upstream. Re-evaluate when
-# rustcrypto/RSA ships the constant-time rewrite.
-ignoreUntil = 2026-08-23
+# `rsa` — Marvin-attack timing side-channel (CVE-2023-49092, CVSS 5.9). The
+# only entry here with a real CVE, and the one to watch.
+#
+# The advisory records `patched = []` with no `unaffected` range: EVERY
+# published version is affected, so no upgrade closes it. We are on
+# 0.10.0-rc.18, the release-candidate line carrying the constant-time rewrite,
+# and the version `cms` 0.3 requires.
+#
+# Not exploitable in our usage. The advisory concerns timing observable against
+# an RSA *decryption* oracle. pdf_oxide verifies PAdES signatures (public-key
+# only) and signs with a locally-held key; it never decrypts attacker-supplied
+# ciphertext, so there is no remote oracle to time. The `fips` build routes RSA
+# through `aws-lc-rs` and is unaffected either way.
+#
+# Not removable: we depend on it directly (src/crypto/rust_provider.rs, both
+# verify and sign), and `cms` 0.3 depends on it too, reaching us via
+# p12-keystore -> pkcs12 — so dropping our direct use would not clear the lock
+# while PKCS#12 keystore support exists.
+#
+# NOTE: `cargo audit` does NOT report this. With no patched range, semver will
+# not match the `0.10.0-rc.18` pre-release against the advisory's open range.
+# OSV-Scanner catches it; cargo-audit alone would call this dependency clean.
+#
+# RETIRES WHEN: rsa 0.10.0 ships final and the advisory records a patched
+# range. This is the one the weekly review job exists to catch.
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0173"
-# `proc-macro-error2` crate: advisory marks it as unmaintained (no CVE, no
-# memory-safety implication). Pulled in transitively:
-#   env_logger → defmt → defmt-macros → proc-macro-error2
-# `env_logger` is a dev dependency only; this crate does not reach published
-# builds. No fix version available upstream. Re-evaluate when defmt or
-# env_logger migrates off proc-macro-error2.
-ignoreUntil = 2026-09-23
+# RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained) was ignored while the
+# crate reached the tree via env_logger -> defmt -> defmt-macros. It is no
+# longer present in Cargo.lock at all, and OSV-Scanner reported the entry as an
+# unused ignore, so the suppression is removed rather than carried forward. It
+# will be re-flagged normally if the crate ever returns.
 
 # RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (quick-xml < 0.41 DoS advisories)
 # were previously ignored because office_oxide 0.1.2 pulled the vulnerable
@@ -42,28 +96,27 @@ ignoreUntil = 2026-09-23
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
-# `ttf-parser` crate: "unmaintained" advisory (informational, not a CVE; no
-# memory-safety or RCE implication — the author has stated the crate will
-# receive no further fixes; its repo has since moved under the harfbuzz org).
-# There is no patched version.
+# `ttf-parser` — "unmaintained". Informational, not a CVE; no memory-safety or
+# RCE implication. The author has stated the crate will receive no further
+# fixes and its repo has moved under the harfbuzz org. There is no patched
+# version.
 #
-# Decision: keep waiting. Removing ttf-parser is NOT achievable by a version
-# bump — it reaches the tree three independent ways:
-#   1. directly — we parse embedded-font cmap tables, glyph outlines, metrics
-#      and name records through it (core font parsing + the render outline
-#      path), ~29 call sites;
-#   2. fontdb (system-fonts) -> ttf-parser — latest fontdb 0.23.0 still depends
-#      on it and ships no skrifa/fontations release;
-#   3. imageproc (ml) -> ab_glyph -> owned_ttf_parser -> ttf-parser — likewise
-#      no fontations-based release exists.
-# The actively-maintained successor is `skrifa`/`read-fonts` (fontations),
-# already in our tree via subsetter (and via harfrust once the shaping
-# migration off rustybuzz lands). Fully clearing this advisory requires porting
-# our direct usage to skrifa AND replacing both fontdb and ab_glyph with
-# fontations-based equivalents — a large, multi-crate migration touching the
-# core font-parsing and render paths, with real regression risk that is
-# disproportionate while the advisory remains informational-only.
-# Re-evaluate when fontdb or ab_glyph ship a fontations backend, or when the
-# standalone font-stack migration is scheduled.
-ignoreUntil = 2026-12-31
-
+# Not removable by a version bump. As of this change it reaches the tree by
+# exactly ONE path: directly, from our own font parsing — embedded-font cmap
+# tables, glyph outlines, metrics and name records, 29 references across
+# src/fonts/{truetype_cmap,truetype_parser,font_dict}.rs and
+# src/rendering/text_rasterizer.rs.
+#
+# Two transitive paths recorded here previously are both gone:
+#   - fontdb -> ttf-parser: fontdb 0.24 no longer depends on it;
+#   - imageproc -> ab_glyph -> owned_ttf_parser -> ttf-parser: removed with the
+#     dead `imageproc` dependency in this change.
+# `rustybuzz` is likewise gone — the harfrust migration has landed.
+#
+# The successor stack is already in the tree: skrifa 0.42 and read-fonts, via
+# subsetter and harfrust.
+#
+# RETIRES WHEN: the 0.4.0 font-stack migration ports those direct call sites to
+# skrifa. With ab_glyph gone that migration is now the only remaining work —
+# there is no third-party consumer left to wait on. Scheduled work, not a
+# patch-release change.
