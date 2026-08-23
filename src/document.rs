@@ -16808,6 +16808,14 @@ impl PdfDocument {
         }
 
         let mut extractor = TextExtractor::new();
+        // Stamp the page index the span path already stamps. The form /BBox
+        // clip below resolves the enclosing page through
+        // `mcid_scope_stack.first()`, which defaults to `Page(0)`; without this
+        // the clip would measure every page's forms against page 0's MediaBox,
+        // so the ">=60% of the page is a content wrapper, do not clip" escape
+        // would make the wrong call on any document whose pages differ in size.
+        // Harmless before this change only because the clip never ran here.
+        extractor.set_page_index(page_index as u32);
         if !excluded_layers.is_empty() {
             extractor.set_excluded_layers(excluded_layers);
         }

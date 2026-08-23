@@ -9,6 +9,7 @@ on:
       - 'include/pdf_oxide_c/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'osv-scanner.toml'
       - '.github/workflows/ruby.yml'
   pull_request:
     branches: [ main, develop ]
@@ -18,6 +19,7 @@ on:
       - 'include/pdf_oxide_c/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'osv-scanner.toml'
       - '.github/workflows/ruby.yml'
 
 # Cancel any in-progress run on the same branch when a new one starts.

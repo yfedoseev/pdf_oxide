@@ -6889,6 +6889,10 @@ impl<'doc> TextExtractor<'doc> {
 
                 // Track span count for result caching
                 let spans_before = self.spans.len();
+                // Same mark for the character layer, so the §8.10.1 /BBox clip
+                // below can be applied to whichever layer this extraction is
+                // populating. Only one of the two grows per run.
+                let chars_before = self.chars.len();
 
                 // Save graphics state (implicit q per ISO 32000-1 §8.10.1)
                 self.state_stack.save();
@@ -6939,7 +6943,9 @@ impl<'doc> TextExtractor<'doc> {
                 // on every form whose painted text lies inside its BBox (the
                 // conformant majority) — only out-of-BBox marks are dropped.
                 if let Some([bx0, by0, bx1, by1]) = form_bbox {
-                    if self.spans.len() > spans_before && bx1 > bx0 && by1 > by0 {
+                    let painted_anything =
+                        self.spans.len() > spans_before || self.chars.len() > chars_before;
+                    if painted_anything && bx1 > bx0 && by1 > by0 {
                         // Map the BBox corners through the form CTM into page space
                         // and take the axis-aligned bound (a superset for rotated
                         // forms — conservative, never over-clips).
@@ -6962,14 +6968,16 @@ impl<'doc> TextExtractor<'doc> {
                             // are kept (conformant clipping is exact; this only
                             // guards float rounding, far below any real margin).
                             const TOL: f32 = 1.0;
-                            let inside = |s: &TextSpan| {
-                                let cx = s.bbox.x + s.bbox.width * 0.5;
-                                let cy = s.bbox.y + s.bbox.height * 0.5;
+                            let inside_bbox = |b: &crate::geometry::Rect| {
+                                let cx = b.x + b.width * 0.5;
+                                let cy = b.y + b.height * 0.5;
                                 cx >= min_x - TOL
                                     && cx <= max_x + TOL
                                     && cy >= min_y - TOL
                                     && cy <= max_y + TOL
                             };
+                            let inside = |s: &TextSpan| inside_bbox(&s.bbox);
+                            let inside_char = |c: &TextChar| inside_bbox(&c.bbox);
                             // Fast path: when every span this form painted is
                             // already inside its /BBox (the conformant majority —
                             // and where this clip is a no-op anyway), skip the
@@ -6977,7 +6985,10 @@ impl<'doc> TextExtractor<'doc> {
                             // rare out-of-BBox case (the draft-galley underlay)
                             // pays for the rebuild. Cheap O(form-spans) scan, no
                             // allocation; keeps large form-heavy docs fast.
-                            if self.spans[spans_before..].iter().any(|s| !inside(s)) {
+                            let spans_stray = self.spans[spans_before..].iter().any(|s| !inside(s));
+                            let chars_stray =
+                                self.chars[chars_before..].iter().any(|c| !inside_char(c));
+                            if spans_stray || chars_stray {
                                 // Out-of-BBox spans exist. Distinguish a real
                                 // figure form (whose stray out-of-BBox text is a
                                 // draft-galley underlay safe to drop) from a
@@ -7006,10 +7017,18 @@ impl<'doc> TextExtractor<'doc> {
                                 let is_page_wrapper =
                                     page_area.is_some_and(|pa| clip_area >= 0.6 * pa);
                                 if !is_page_wrapper {
-                                    let added = self.spans.split_off(spans_before);
-                                    let kept: Vec<TextSpan> =
-                                        added.into_iter().filter(|s| inside(s)).collect();
-                                    self.spans.extend(kept);
+                                    if spans_stray {
+                                        let added = self.spans.split_off(spans_before);
+                                        let kept: Vec<TextSpan> =
+                                            added.into_iter().filter(|s| inside(s)).collect();
+                                        self.spans.extend(kept);
+                                    }
+                                    if chars_stray {
+                                        let added = self.chars.split_off(chars_before);
+                                        let kept: Vec<TextChar> =
+                                            added.into_iter().filter(inside_char).collect();
+                                        self.chars.extend(kept);
+                                    }
                                 }
                             }
                         }

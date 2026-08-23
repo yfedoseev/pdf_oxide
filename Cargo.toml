@@ -17,11 +17,9 @@ ignored = [
     "spki",
     "x509-parser",
     # ML / table detection / OCR (gated on `ml`, `table-ml`, `ocr` features)
-    "imageproc",
     "linfa",
     "linfa-clustering",
     "pdfium-render",
-    "tokenizers",
     "tract-onnx",
     # WASM-only runtime deps (gated on `wasm` feature)
     "getrandom_02",
@@ -64,7 +62,7 @@ version = "0.3.77"
 # MSRV — driven up from 1.82 for v0.3.38. Transitive deps pulled in
 # this release push the floor to 1.88:
 #   - hybrid-array 0.4.10 (via RustCrypto) → edition 2024 → 1.85
-#   - image 0.25.10 / imageproc 0.26.1 → 1.87 / 1.88
+#   - image 0.25.10 → 1.87
 #   - nalgebra 0.34.2 → 1.87
 #   - libloading 0.9.0, ort 2.0.0-rc.12, ort-sys 2.0.0-rc.12 → 1.88
 # 1.88 was released 2025-06-26, so this is still a reasonable floor.
@@ -239,14 +237,12 @@ linfa-clustering = { version = "0.8", optional = true }
 
 # ML (CPU-only)
 tract-onnx = { version = "0.22", optional = true }
-tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 
 # OCR - PaddleOCR via ONNX Runtime (optional)
 ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = [
     "ndarray",
     "load-dynamic",
 ] }
-imageproc = { version = "0.27.0", optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -406,14 +402,13 @@ python = [
 # The following features are planned for v1.0 and are not yet production-ready.
 # We define them here to avoid check-cfg warnings, but their dependencies are commented out.
 # Lean pure-Rust ONNX inference backend (tract): the *only* ML deps the
-# OCR path needs. Kept separate from `ml` so the wasm OCR build (#524)
-# does not drag in `tokenizers` (esaxx-rs / onig_sys / spm_precompiled —
-# C/C++ via `cc`, no clean wasm32 story) or `linfa`. `ml` is a strict
-# superset, so native `ml` / `table-ml` consumers are unchanged.
+# OCR path needs. Kept separate from `ml` so the wasm OCR build does not
+# drag in `linfa`. `ml` is a strict superset, so native `ml` / `table-ml`
+# consumers are unchanged.
 ocr-tract = ["dep:tract-onnx", "dep:ndarray"]
-ml = ["ocr-tract", "dep:linfa", "dep:linfa-clustering", "dep:tokenizers"]
+ml = ["ocr-tract", "dep:linfa", "dep:linfa-clustering"]
 table-ml = ["ml", "dep:pdfium-render"]
-ocr = ["dep:ort", "dep:imageproc", "dep:ndarray", "dep:ureq"]
+ocr = ["dep:ort", "dep:ndarray", "dep:ureq"]
 gpu = ["dep:ort", "ml"]
 wasm = [
     "dep:wasm-bindgen",
@@ -427,9 +422,9 @@ wasm = [
     "signatures",
     "barcodes",
 ]
-# OCR in the browser/Deno/edge build (#524): wasm + the *lean* tract
-# backend only (`ocr-tract`, NOT full `ml` — that pulls tokenizers'
-# C/C++ deps which need clang and have no clean wasm32 story).
+# OCR in the browser/Deno/edge build: wasm + the *lean* tract backend
+# only (`ocr-tract`, NOT full `ml` — `ml` adds the linfa clustering
+# stack, which the browser build has no use for).
 # `getrandom_03` activates the `wasm_js` backend for the getrandom 0.3
 # that tract drags in (a no-op off-wasm32: the dep only exists under
 # the wasm32 target table).

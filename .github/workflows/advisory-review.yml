@@ -1,0 +1,99 @@
+# Weekly review of the advisory suppressions in osv-scanner.toml.
+#
+# This replaces the `ignoreUntil` dates those entries used to carry. A date is
+# a hard expiry that fails silently and late: the entry stops suppressing with
+# no warning, and the next pull request to touch Cargo.lock fails its
+# security-audit job. On 2026-08-23 that blocked the whole open PR queue behind
+# advisories nobody could have fixed.
+#
+# So the suppressions are open-ended and the review moved here instead. This
+# workflow is SCHEDULED-ONLY — it has no `pull_request` trigger and therefore
+# can never block a PR. It reports; it does not gate.
+#
+# What it answers each week: has any suppressed advisory gained a fixed version
+# upstream, and is any entry now suppressing nothing?
+name: Advisory Review
+
+on:
+  schedule:
+    # Weekly on Tuesday at 05:40 UTC — off the hour, and off the days already
+    # used by codeql (Wed 02:00) and scorecard (Mon 01:30).
+    - cron: '40 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisory-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Review suppressed advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+
+      # Unsuppressed scan. The suppressed advisories are EXPECTED here — the
+      # point is to see them with their current upstream metadata, in
+      # particular whether a fixed version has appeared. `|| true` because a
+      # findings-present exit code is the normal outcome, not a failure.
+      - name: OSV-Scanner without suppressions
+        run: |
+          {
+            echo '## OSV-Scanner — suppressions disabled'
+            echo
+            echo 'Suppressed advisories are expected below. What matters is the'
+            echo '`FIXED VERSION` column: anything other than `--` means that entry'
+            echo 'can now be retired from `osv-scanner.toml`.'
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm -v "$PWD":/src -w /src \
+            ghcr.io/google/osv-scanner:v2.3.8 \
+            --lockfile=Cargo.lock --lockfile=ruby/Gemfile.lock \
+            2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Suppressed scan. Surfaces "unused ignores" — an entry that no longer
+      # matches anything in the lock is dead config and should be deleted, the
+      # way RUSTSEC-2026-0173 was once proc-macro-error2 left the tree.
+      - name: OSV-Scanner with suppressions (unused-ignore check)
+        run: |
+          {
+            echo
+            echo '## OSV-Scanner — suppressions applied'
+            echo
+            echo 'Any entry reported as an *unused ignore* is suppressing nothing and'
+            echo 'should be removed from `osv-scanner.toml`.'
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm -v "$PWD":/src -w /src \
+            ghcr.io/google/osv-scanner:v2.3.8 \
+            --config=osv-scanner.toml \
+            --lockfile=Cargo.lock --lockfile=ruby/Gemfile.lock \
+            2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # cargo-audit sees the RustSec database directly, which carries the
+      # `patched` metadata OSV summarises. Note it does NOT report
+      # RUSTSEC-2023-0071: with no patched range, semver will not match the
+      # `rsa` pre-release against the advisory's open range. Both scanners run
+      # here precisely because neither alone is sufficient.
+      - name: cargo-audit
+        run: |
+          cargo install cargo-audit --locked --version '^0.21' || true
+          {
+            echo
+            echo '## cargo-audit'
+            echo
+            echo 'Reads the RustSec database directly. Does not report'
+            echo '`RUSTSEC-2023-0071` — semver will not match the `rsa` pre-release'
+            echo 'against an advisory with no patched range. Cross-read with OSV above.'
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cargo audit --color never 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
