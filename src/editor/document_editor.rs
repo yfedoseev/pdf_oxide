@@ -2,6 +2,7 @@
 //!
 //! Provides the DocumentEditor type for modifying PDF documents.
 
+use crate::cache::MutexExt;
 use crate::document::PdfDocument;
 use crate::editor::form_fields::FormFieldWrapper;
 use crate::editor::resource_manager::ResourceManager;
@@ -480,8 +481,19 @@ pub struct DocumentEditor {
     modified_annotations: HashMap<usize, Vec<crate::editor::dom::AnnotationWrapper>>,
     /// Modified page properties (rotation, boxes)
     modified_page_props: HashMap<usize, ModifiedPageProps>,
-    /// Erase regions per page (whiteout overlays)
+    /// Erase regions per page (whiteout overlays). Populated by the public
+    /// `erase_region`/`erase_regions` API (cosmetic-only, by contract — see
+    /// their doc comments) AND, for any rect also present in
+    /// `inherited_erase_regions`, as the default/fallback rendering for a
+    /// region inherited via `from_document` until/unless save-time
+    /// destructive redaction removes it.
     erase_regions: HashMap<usize, Vec<[f32; 4]>>,
+    /// Regions inherited via `from_document` (see its doc comment) that
+    /// save-time destructive redaction should attempt to actually remove.
+    /// Kept separate from `erase_regions` so a direct caller of the public
+    /// `erase_region`/`erase_regions` API — which is documented as
+    /// cosmetic-only — is never silently upgraded to real content removal.
+    inherited_erase_regions: HashMap<usize, Vec<[f32; 4]>>,
     /// Pages where annotations should be flattened
     flatten_annotations_pages: std::collections::HashSet<usize>,
     /// Pages where redactions should be applied
@@ -509,6 +521,10 @@ pub struct DocumentEditor {
     remove_acroform: bool,
     /// Warnings collected during form flattening (e.g. widgets with no /AP stream)
     flatten_warnings: Vec<String>,
+    /// Structured warnings collected during editing/save (distinct from
+    /// `flatten_warnings`, which predates this and is a `&[String]`
+    /// form-flattening-only log — see [`Self::structured_warnings`]).
+    structured_warnings: Vec<crate::extractors::warnings::Warning>,
     /// Embedded files to add to the document
     embedded_files: Vec<crate::writer::EmbeddedFile>,
     /// Modified or new form fields (field name → wrapper)
@@ -628,6 +644,7 @@ impl DocumentEditor {
             modified_annotations: HashMap::new(),
             modified_page_props: HashMap::new(),
             erase_regions: HashMap::new(),
+            inherited_erase_regions: HashMap::new(),
             flatten_annotations_pages: std::collections::HashSet::new(),
             apply_redactions_pages: std::collections::HashSet::new(),
             redaction_regions: HashMap::new(),
@@ -637,6 +654,7 @@ impl DocumentEditor {
             flatten_forms_pages: std::collections::HashSet::new(),
             remove_acroform: false,
             flatten_warnings: Vec::new(),
+            structured_warnings: Vec::new(),
             embedded_files: Vec::new(),
             modified_form_fields: HashMap::new(),
             deleted_form_fields: HashSet::new(),
@@ -646,10 +664,38 @@ impl DocumentEditor {
     }
 
     /// Open a PDF document for editing from an existing PdfDocument object.
+    ///
+    /// Any regions already staged via `source.erase_region()` (e.g. by
+    /// `remove_headers`/`remove_footers`/`remove_artifacts`) are carried
+    /// over so they aren't silently lost — see [`Self::save_to_bytes`] for
+    /// how they're actually applied. This step is a plain data copy, so it
+    /// cannot fail: staging a region never makes `from_document` itself
+    /// fallible, even for a page whose redaction will later be refused.
     pub fn from_document(mut source: PdfDocument) -> Result<Self> {
         let page_count = source.page_count()?;
         let next_id = Self::find_max_object_id(&source) + 1;
         let page_order: Vec<i32> = (0..page_count as i32).collect();
+
+        // Capture staged erase regions before `source` moves into `Self`.
+        // Populate BOTH fields: `erase_regions` so the region renders as its
+        // existing cosmetic overlay by default (same as any other overlay
+        // entry) until/unless save-time redaction removes it, and
+        // `inherited_erase_regions` as the marker that this particular
+        // region — unlike one a caller adds directly via the public
+        // `erase_region`/`erase_regions` API — is eligible for that
+        // destructive upgrade at save time.
+        let inherited: HashMap<usize, Vec<[f32; 4]>> = source
+            .erase_regions
+            .lock_or_recover()
+            .iter()
+            .map(|(&page, rects)| {
+                let converted = rects
+                    .iter()
+                    .map(|r| [r.x, r.y, r.x + r.width, r.y + r.height])
+                    .collect();
+                (page, converted)
+            })
+            .collect();
 
         Ok(Self {
             source,
@@ -667,7 +713,8 @@ impl DocumentEditor {
             structure_modified: false,
             modified_annotations: HashMap::new(),
             modified_page_props: HashMap::new(),
-            erase_regions: HashMap::new(),
+            erase_regions: inherited.clone(),
+            inherited_erase_regions: inherited,
             flatten_annotations_pages: std::collections::HashSet::new(),
             apply_redactions_pages: std::collections::HashSet::new(),
             redaction_regions: HashMap::new(),
@@ -677,6 +724,7 @@ impl DocumentEditor {
             flatten_forms_pages: std::collections::HashSet::new(),
             remove_acroform: false,
             flatten_warnings: Vec::new(),
+            structured_warnings: Vec::new(),
             embedded_files: Vec::new(),
             modified_form_fields: HashMap::new(),
             deleted_form_fields: HashSet::new(),
@@ -712,6 +760,7 @@ impl DocumentEditor {
             modified_annotations: HashMap::new(),
             modified_page_props: HashMap::new(),
             erase_regions: HashMap::new(),
+            inherited_erase_regions: HashMap::new(),
             flatten_annotations_pages: std::collections::HashSet::new(),
             apply_redactions_pages: std::collections::HashSet::new(),
             redaction_regions: HashMap::new(),
@@ -721,6 +770,7 @@ impl DocumentEditor {
             flatten_forms_pages: std::collections::HashSet::new(),
             remove_acroform: false,
             flatten_warnings: Vec::new(),
+            structured_warnings: Vec::new(),
             embedded_files: Vec::new(),
             modified_form_fields: HashMap::new(),
             deleted_form_fields: HashSet::new(),
@@ -1888,6 +1938,74 @@ impl DocumentEditor {
         // silently produces a structurally valid but unreadable PDF.
         if self.source.is_encrypted() && !self.source.is_authenticated() {
             return Err(Error::EncryptedPdf);
+        }
+
+        // Apply any regions inherited via `from_document`, now as real,
+        // destructive redactions. If a page's redaction is refused, leave
+        // that page's cosmetic overlay in place as a fallback, other errors
+        // still fail the save.
+        if !self.inherited_erase_regions.is_empty() {
+            let staged: Vec<(usize, Vec<[f32; 4]>)> = self
+                .inherited_erase_regions
+                .iter()
+                .map(|(&page, rects)| (page, rects.clone()))
+                .collect();
+            let redact_opts = crate::redaction::RedactionOptions {
+                draw_overlay_when_no_ic: false,
+                ..crate::redaction::RedactionOptions::default()
+            };
+            for (source_page, rects) in staged {
+                let entry = self.redaction_regions.entry(source_page).or_default();
+                let before_len = entry.len();
+                for rect in &rects {
+                    entry.push(crate::redaction::RedactionRegion::from_rect(
+                        rect[0], rect[1], rect[2], rect[3], None,
+                    ));
+                }
+                let was_already_queued = self.apply_redactions_pages.contains(&source_page);
+                self.apply_redactions_pages.insert(source_page);
+
+                match self.apply_redactions_destructive_for_page(source_page, &redact_opts) {
+                    Ok(_) => {
+                        // Removal succeeded — drop exactly these rects from
+                        // the cosmetic-overlay field, leaving any rect a
+                        // caller added directly via the public
+                        // `erase_region`/`erase_regions` API untouched.
+                        if let Some(v) = self.erase_regions.get_mut(&source_page) {
+                            v.retain(|r| !rects.contains(r));
+                            if v.is_empty() {
+                                self.erase_regions.remove(&source_page);
+                            }
+                        }
+                    },
+                    Err(Error::Unsupported(reason)) => {
+                        // Refused. Undo exactly what this step added,
+                        // any caller-supplied redaction_regions/
+                        // apply_redactions_pages state is untouched, and
+                        // keep the cosmetic overlay as the fallback.
+                        if let Some(v) = self.redaction_regions.get_mut(&source_page) {
+                            v.truncate(before_len);
+                            if v.is_empty() {
+                                self.redaction_regions.remove(&source_page);
+                            }
+                        }
+                        if !was_already_queued {
+                            self.apply_redactions_pages.remove(&source_page);
+                        }
+                        self.structured_warnings.push(crate::extractors::warnings::Warning {
+                            category:
+                                crate::extractors::warnings::WarningCategory::RedactionOverlayFallback,
+                            page: Some(source_page),
+                            message: format!(
+                                "staged erasure could not be applied as a destructive \
+                                 redaction, falling back to a cosmetic overlay: {reason}"
+                            ),
+                            spec_section: None,
+                        });
+                    },
+                    Err(e) => return Err(e),
+                }
+            }
         }
 
         /// Compress a stream object with FlateDecode if it has no filter yet.
@@ -4943,6 +5061,13 @@ impl DocumentEditor {
     /// could not have one generated — flattening it produces a blank rectangle.
     pub fn flatten_warnings(&self) -> &[String] {
         &self.flatten_warnings
+    }
+
+    /// Structured warnings collected during editing/save
+    /// Distinct from [`Self::flatten_warnings`],
+    /// which predates this and only covers form flattening.
+    pub fn structured_warnings(&self) -> &[crate::extractors::warnings::Warning] {
+        &self.structured_warnings
     }
 
     /// Rebuild an AcroForm dict containing only root fields that still have at

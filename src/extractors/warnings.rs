@@ -60,6 +60,11 @@ pub enum WarningCategory {
     /// A glyph produced no rendered output while the cursor still advanced,
     /// so the page renders with an invisible gap.
     GlyphDropped,
+    /// A staged erasure region could not be applied as a real, destructive
+    /// redaction (e.g. an unsupported composite font) and fell back to a
+    /// cosmetic overlay instead — the underlying content is still present
+    /// and extractable in the saved file.
+    RedactionOverlayFallback,
 }
 
 impl WarningCategory {
@@ -76,6 +81,7 @@ impl WarningCategory {
             Self::Font => "font",
             Self::Layout => "layout",
             Self::GlyphDropped => "glyph_dropped",
+            Self::RedactionOverlayFallback => "redaction_overlay_fallback",
         }
     }
 }
