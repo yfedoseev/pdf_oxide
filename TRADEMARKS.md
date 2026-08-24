@@ -44,6 +44,15 @@ distribute a modified version, please give it a **different name** and make clea
 it is not the official PDFOxide. You may still say it is *"a fork of PDFOxide"* or
 *"derived from PDFOxide"*.
 
+A **different name** means one that does not contain "PDFOxide", "pdf_oxide" or
+"pdf-oxide" as a component — including as a prefix or a suffix. `acme-pdf-oxide`
+is not a different name; `acme-pdf` is. This is a clarification of the existing
+rule, and it applies going forward.
+
+[FORKS.md](FORKS.md) collects what a fork needs to know in one place — licence
+obligations, naming, and what to expect from this project afterwards. We do not
+keep a register of forks and do not rank or endorse them.
+
 ## Questions / permission
 For any use not clearly covered above, or to request permission, contact
 **yfedoseev@gmail.com**. We aim to be permissive for good-faith community use and

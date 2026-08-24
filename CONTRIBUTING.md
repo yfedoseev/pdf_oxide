@@ -83,8 +83,16 @@ issue" step (rule 1) — but never rule 2.
 ## Code of Conduct
 
 This project adheres to the [Contributor Covenant](CODE_OF_CONDUCT.md). By
-participating you agree to uphold it. Report unacceptable behavior by opening an
-issue or contacting the maintainer.
+participating you agree to uphold it. To report someone else's behavior, email
+the maintainer at **yfedoseev@gmail.com** rather than opening a public issue.
+That applies to reports about a person; it does not stop anyone — maintainer
+included — from addressing something directly and civilly in the thread where it
+happened.
+
+Conduct is governed there. **Contribution volume and submission rate are governed
+by [Communication volume](#communication-volume) below**, and the two are
+separate: a rate limit or an intake cap reflects what one maintainer can review,
+not a judgement about your conduct or your work.
 
 ## Before you open a pull request
 
@@ -192,6 +200,15 @@ in your own words, it isn't ready.
 **7. Run the full local gate before pushing** (see
 [CI gates](#continuous-integration-gates)) — a green subset is necessary, not
 sufficient.
+
+**8. Disclose a material downstream interest.** If you maintain a fork of this
+project, or a product that vendors it, say so in the PR description. Forking is
+permitted — see [TRADEMARKS.md](TRADEMARKS.md) and [FORKS.md](FORKS.md) — and
+downstream maintainers are often the best contributors here, because they run
+this code against real documents at volume. This is a disclosure, not a
+restriction, and it does not affect whether a change is accepted. It exists so
+review effort can be weighed with the full picture visible, and so nobody has to
+infer a relationship later.
 
 ## Communication volume
 
