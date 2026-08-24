@@ -537,7 +537,13 @@ jobs:
           while IFS= read -r name; do
             [ -z "$name" ] && continue
             echo "::group::$name"
-            OUT=$(cargo test --no-fail-fast "$name" -- --exact 2>&1) || true
+            # No `--exact`: libtest matches it against the FULL test path, so an
+            # `--exact` filter of a bare fn name silently matches NOTHING for any
+            # unit test inside `mod tests` (verified: "running 0 tests, 1 filtered
+            # out"). That would make this gate pass every such PR without ever
+            # running the test. Filter by substring, then confirm the exact test
+            # below by matching its printed line.
+            OUT=$(cargo test --no-fail-fast "$name" 2>&1) || true
             echo "$OUT"
             echo "::endgroup::"
 
@@ -545,7 +551,9 @@ jobs:
               echo "::notice::'$name' does not compile at the test commit — its test depends on the fix's API. Treated as a legitimate ordering exception."
               continue
             fi
-            if echo "$OUT" | grep -qE "test .*$name.* \.\.\. ok"; then
+            # Anchor on the whole printed line and allow an optional module path,
+            # so `foo` is not credited when only `foo_bar` ran.
+            if echo "$OUT" | grep -qE "^test ([A-Za-z0-9_]+::)*$name \.\.\. ok$"; then
               PASSED="$PASSED $name"
             fi
           done <<< "${{ steps.find.outputs.names }}"
