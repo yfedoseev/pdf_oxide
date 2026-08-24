@@ -18,7 +18,10 @@ We take the security of pdf_oxide seriously. If you believe you have found a sec
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please email security reports to the maintainers. You can find contact information in [CONTRIBUTING.md](CONTRIBUTING.md).
+Instead, please email security reports to **yfedoseev@gmail.com**, or open a
+private advisory through GitHub's
+[Security Advisories](https://github.com/yfedoseev/pdf_oxide/security/advisories/new)
+form.
 
 ### What to Include
 
