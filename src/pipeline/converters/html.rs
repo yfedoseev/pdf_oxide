@@ -22,6 +22,23 @@ pub struct HtmlOutputConverter {
     paragraph_gap_ratio: f32,
 }
 
+/// One alphanumeric character plus terminal punctuation — `"a."`, `"b."`,
+/// `"1."`, `"A)"`, or an abbreviated name like `"R."`.
+///
+/// Such a span is a figure panel label, a list marker or an abbreviation; it
+/// is never a section heading, even when typeset larger or bolder than body
+/// text. `is_ordered_list_marker` does not cover it: that requires a space
+/// after the punctuation, and a standalone label span has nothing following.
+fn is_lone_enumerator(trimmed: &str) -> bool {
+    let unpunctuated = trimmed.trim_end_matches(['.', ')', ':', ']']);
+    unpunctuated.len() < trimmed.len()
+        && unpunctuated.chars().count() == 1
+        && unpunctuated
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
+}
+
 impl HtmlOutputConverter {
     /// Create a new HTML converter with default settings.
     pub fn new() -> Self {
@@ -124,6 +141,11 @@ impl HtmlOutputConverter {
     /// to a heading tag regardless of font size.
     fn looks_like_non_heading(text: &str) -> bool {
         let trimmed = text.trim();
+
+        // A lone enumerator is a label or list marker, never a heading.
+        if is_lone_enumerator(trimmed) {
+            return true;
+        }
 
         // Currency amounts: $1,234.56 or 1,234.56$ or similar
         if trimmed.contains('$')
@@ -571,11 +593,30 @@ impl HtmlOutputConverter {
                     && !current_content.ends_with(' ')
                     && !current_content.ends_with('\n')
                     && !span.span.text.starts_with(' ');
+                // A declined enumerator now joins the running paragraph
+                // instead of becoming a heading. Its glyphs abut what follows,
+                // so `has_horizontal_gap` reports no gap and the tokens glue:
+                // an abbreviated genus name came out as `R.in` and `R.with`.
+                //
+                // Deliberately NARROWER than `is_lone_enumerator`: only a
+                // single LETTER followed by a period. The broad form also
+                // matches `0)`, which occurs inside dense mathematical
+                // subscripts (`k∆t,U(·,0),θ`) where the glyphs legitimately
+                // abut — forcing a space there wrote `U(·,0) ,θ`, breaking the
+                // expression across 49 documents to repair gluing in one.
+                // Abbreviations and panel labels are letters; math runs are
+                // digits and delimiters.
+                let prev_was_enumerator = {
+                    let t = prev.span.text.trim();
+                    let mut cs = t.chars();
+                    matches!((cs.next(), cs.next(), cs.next()),
+                             (Some(c), Some('.'), None) if c.is_alphabetic())
+                };
                 let need_space_same_line = same_line
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
                     && !span.span.text.starts_with(' ')
-                    && super::has_horizontal_gap(&prev.span, &span.span);
+                    && (prev_was_enumerator || super::has_horizontal_gap(&prev.span, &span.span));
                 if need_space_same_line || need_space_between_lines {
                     current_content.push(' ');
                 }

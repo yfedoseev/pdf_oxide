@@ -139,6 +139,15 @@ const FORWARD_GAP_K: f32 = 1.25;
 /// mixed-baseline repair.
 const SAME_LINE_REORDER_MAX_GAP_FACTOR: f32 = 3.0;
 
+/// Fraction of page height counted as the top/bottom margin band for
+/// running-header/footer/pagination artifact detection
+const RUNNING_ARTIFACT_BAND_FRACTION: f32 = 0.12;
+
+/// Position tolerance for treating recurring text as position-locked chrome
+/// rather than genuine content that happens to repeat.
+const ARTIFACT_POS_TOL_X: f32 = 40.0;
+const ARTIFACT_POS_TOL_Y: f32 = 24.0;
+
 // Re-export BoundedEntryCache from cache module for local use and backward compatibility
 pub(crate) use crate::cache::BoundedEntryCache;
 
@@ -283,6 +292,20 @@ impl BoundedObjectCache {
 thread_local! {
     static RESOLVING_STACK: RefCell<HashSet<ObjectRef>> = RefCell::new(HashSet::new());
     static RECURSION_DEPTH: RefCell<u32> = const { RefCell::new(0) };
+}
+
+/// One registered running-header/footer signature: the earliest page it was
+/// observed on (kept intact — often a cover-page title echoed by later
+/// pages), and every `(page, bbox)` it was recorded at. The latter backs
+/// `mark_running_artifact_spans`'s position check — text equality on a
+/// short/degenerate signature (e.g. "#a", any digit-collapsed shape)
+/// doesn't distinguish a genuine running page number from unrelated
+/// per-page content (a form line-item label like "1a"/"2a", a chapter
+/// numeral) that happens to normalize the same way but sits in a
+/// different place on every page.
+struct RunningArtifactSignature {
+    first_seen_page: usize,
+    occurrences: Vec<(usize, crate::geometry::Rect)>,
 }
 
 /// PDF document.
@@ -498,9 +521,13 @@ pub struct PdfDocument {
     /// pagination artifacts while keeping the first appearance intact — the
     /// first appearance is often the document's cover-page title that just
     /// happens to echo into the header band on every page (B3: pdfa_010
-    /// would otherwise drop "University of Oklahoma 2009").
+    /// would otherwise drop "University of Oklahoma 2009"). Keyed by
+    /// normalized signature — see [`RunningArtifactSignature`]. Each
+    /// signature's occurrences are narrowed to a single geometrically-
+    /// consistent cluster by `ensure_position_consistency` before this map
+    /// is populated — see `ensure_running_artifact_signatures`.
     running_artifact_signatures:
-        Mutex<Option<std::sync::Arc<std::collections::HashMap<String, usize>>>>,
+        Mutex<Option<std::sync::Arc<std::collections::HashMap<String, RunningArtifactSignature>>>>,
     /// Document-wide article threads (`/Threads`), parsed once. Reading-order
     /// resolution consults them per page, and parsing walks the whole page
     /// tree — so without this the cost per page scaled with the document.
@@ -6894,15 +6921,29 @@ impl PdfDocument {
                     PageArea::Header => span.bbox.y > zone,
                     PageArea::Footer => (span.bbox.y + span.bbox.height) < zone,
                 };
+                if !is_in_zone {
+                    continue;
+                }
 
-                if is_in_zone {
-                    let text = span.text.trim().to_string();
-                    if text.len() > 3 && !text.chars().all(|c| c.is_numeric()) {
-                        occurrences
-                            .entry(text)
-                            .or_default()
-                            .push((page_idx, span.bbox));
-                    }
+                // A span tagged Pagination(Other) — either a genuine
+                // Tagged-PDF /Artifact tag, or upstream heuristic detector's
+                // inferred tag — is erasure-eligible on its own
+                // (already verified cross-page position consistency)
+                if matches!(
+                    span.artifact_type,
+                    Some(ArtifactType::Pagination(PaginationSubtype::Other))
+                ) {
+                    self.erase_region(page_idx, span.bbox)?;
+                    removed_count += 1;
+                    continue;
+                }
+
+                let text = span.text.trim().to_string();
+                if text.len() > 3 && !text.chars().all(|c| c.is_numeric()) {
+                    occurrences
+                        .entry(text)
+                        .or_default()
+                        .push((page_idx, span.bbox));
                 }
             }
         }
@@ -15417,12 +15458,12 @@ impl PdfDocument {
         page_height: f32,
         vertical: bool,
     ) -> bool {
-        let vband = page_height * 0.12;
+        let vband = page_height * RUNNING_ARTIFACT_BAND_FRACTION;
         if bbox.y < vband || bbox.y + bbox.height > page_height - vband {
             return true;
         }
         if vertical {
-            let hband = page_width * 0.12;
+            let hband = page_width * RUNNING_ARTIFACT_BAND_FRACTION;
             if bbox.x < hband || bbox.x + bbox.width > page_width - hband {
                 return true;
             }
@@ -15449,9 +15490,109 @@ impl PdfDocument {
         threads
     }
 
+    /// Greedily cluster a signature's `(page, bbox)` occurrences by
+    /// position: a new occurrence joins an existing cluster if doing so
+    /// keeps that cluster's OWN bbox spread within `ARTIFACT_POS_TOL_X`/`Y`;
+    /// otherwise it starts a new cluster.
+    ///
+    /// Genuine chrome occupies the same area on every page, so it clusters
+    /// tightly; unrelated per-page content that happens to share a signature
+    /// sits somewhere else each time and lands in its own small/singleton
+    /// cluster instead. Order-sensitive in principle (single-linkage-style
+    /// greedy assignment, not globally optimal clustering), but the
+    /// occurrence patterns this distinguishes — tight repetition vs.
+    /// scattered one-offs — are far enough apart in practice not to need
+    /// an optimal clustering algorithm here.
+    fn cluster_by_position(positions: &[(usize, crate::geometry::Rect)]) -> Vec<Vec<usize>> {
+        let mut clusters: Vec<(f32, f32, f32, f32, Vec<usize>)> = Vec::new();
+        for (idx, &(_page, bbox)) in positions.iter().enumerate() {
+            let mut joined = false;
+            for (min_x, max_x, min_y, max_y, indices) in clusters.iter_mut() {
+                let new_min_x = min_x.min(bbox.x);
+                let new_max_x = max_x.max(bbox.x);
+                let new_min_y = min_y.min(bbox.y);
+                let new_max_y = max_y.max(bbox.y);
+                if (new_max_x - new_min_x) <= ARTIFACT_POS_TOL_X
+                    && (new_max_y - new_min_y) <= ARTIFACT_POS_TOL_Y
+                {
+                    *min_x = new_min_x;
+                    *max_x = new_max_x;
+                    *min_y = new_min_y;
+                    *max_y = new_max_y;
+                    indices.push(idx);
+                    joined = true;
+                    break;
+                }
+            }
+            if !joined {
+                clusters.push((bbox.x, bbox.x, bbox.y, bbox.y, vec![idx]));
+            }
+        }
+        clusters.into_iter().map(|(.., indices)| indices).collect()
+    }
+
+    /// For each signature, narrow its flat `occurrences`/`literal_variants`/
+    /// `signature_positions` entries down to just its single largest
+    /// geometrically-consistent cluster (`cluster_by_position`) — so the
+    /// (unmodified) admission filter in `ensure_running_artifact_signatures`
+    /// judges recurrence/variants using only spans that are actually
+    /// position-consistent with each other, not a flat aggregate that may
+    /// blend multiple unrelated same-shaped signatures together (e.g. form
+    /// line-item labels "1a"/"2a" that happen to normalize to the same
+    /// digit-collapsed signature and be positioned in same location on
+    /// different pages). A signature with no cluster
+    /// covering at least one body-content page is dropped entirely.
+    ///
+    /// Collapses to the SINGLE LARGEST cluster per signature — a signature
+    /// with two independently-qualifying clusters (e.g. recto/verso running
+    /// heads in two different page-corner slots) currently keeps only the
+    /// larger one. (Simplification for now)
+    fn ensure_position_consistency(
+        occurrences: &mut std::collections::HashMap<String, (usize, usize)>,
+        literal_variants: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
+        signature_positions: &mut std::collections::HashMap<
+            String,
+            Vec<(usize, crate::geometry::Rect, String)>,
+        >,
+        body_content_pages: &std::collections::HashSet<usize>,
+    ) {
+        occurrences.retain(|sig, (count, first_page)| {
+            let Some(occs) = signature_positions.get(sig).cloned() else {
+                return false;
+            };
+            let positions: Vec<(usize, crate::geometry::Rect)> =
+                occs.iter().map(|&(pi, bbox, _)| (pi, bbox)).collect();
+            let Some(winning) = Self::cluster_by_position(&positions)
+                .into_iter()
+                .max_by_key(|cluster| cluster.len())
+            else {
+                return false;
+            };
+            let cluster_pages: std::collections::HashSet<usize> =
+                winning.iter().map(|&i| occs[i].0).collect();
+            let counted = cluster_pages.intersection(body_content_pages).count();
+            if counted == 0 {
+                return false;
+            }
+            *count = counted;
+            *first_page = winning
+                .iter()
+                .map(|&i| occs[i].0)
+                .min()
+                .unwrap_or(*first_page);
+            let winning_literals: std::collections::HashSet<String> =
+                winning.iter().map(|&i| occs[i].2.clone()).collect();
+            let winning_positions: Vec<(usize, crate::geometry::Rect, String)> =
+                winning.into_iter().map(|i| occs[i].clone()).collect();
+            literal_variants.insert(sig.clone(), winning_literals);
+            signature_positions.insert(sig.clone(), winning_positions);
+            true
+        });
+    }
+
     fn ensure_running_artifact_signatures(
         &self,
-    ) -> Result<std::sync::Arc<std::collections::HashMap<String, usize>>> {
+    ) -> Result<std::sync::Arc<std::collections::HashMap<String, RunningArtifactSignature>>> {
         {
             let guard = self.running_artifact_signatures.lock_or_recover();
             if let Some(ref map) = *guard {
@@ -15468,14 +15609,9 @@ impl PdfDocument {
             return Ok(empty);
         }
 
-        // (count of distinct pages seeing the signature, first page it appeared on).
-        // `first_seen_any` tracks the earliest page a signature appeared on
-        // regardless of body-content — so if the cover page is all-chrome
-        // (no body text), it still registers as "first seen" and gets its
-        // title kept by the per-page mark_running_artifact_spans exemption.
+        // (count of distinct body-content pages seeing the signature, first
+        // page it appeared on).
         let mut occurrences: std::collections::HashMap<String, (usize, usize)> =
-            std::collections::HashMap::new();
-        let mut first_seen_any: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         // Track distinct literal texts per signature. A signature whose digits
         // are stable across every page (i.e. the literal text never changes) is
@@ -15485,6 +15621,20 @@ impl PdfDocument {
         let mut literal_variants: std::collections::HashMap<
             String,
             std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        let mut body_content_pages: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        // Every (page, bbox, literal) each signature was seen at. A
+        // candidate digit-collapsed signature (e.g. "#a") doesn't tell you
+        // WHICH digit it was, so distinct per-page content (form line-item
+        // labels "1a"/"2a", chapter numerals) can share a signature with an
+        // unrelated genuine running header. `ensure_position_consistency`
+        // below uses this to narrow `occurrences`/`literal_variants` down
+        // to a single geometrically-consistent cluster before the
+        // admission filter runs.
+        let mut signature_positions: std::collections::HashMap<
+            String,
+            Vec<(usize, crate::geometry::Rect, String)>,
         > = std::collections::HashMap::new();
         for pi in 0..page_count {
             let spans = match self.extract_spans_raw(pi) {
@@ -15505,9 +15655,9 @@ impl PdfDocument {
                 !s.text.trim().is_empty()
                     && !Self::in_chrome_band(&s.bbox, page_width, page_height, vertical)
             });
-            // Collect per-page unique signatures from the chrome bands.
-            // Runs even when there's no body content so `first_seen_any`
-            // registers the cover page even if it's all-chrome.
+            if has_body_content {
+                body_content_pages.insert(pi);
+            }
             let mut seen_this_page: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             for s in spans.iter() {
@@ -15522,16 +15672,15 @@ impl PdfDocument {
                 if sig.is_empty() || sig.chars().count() < 2 {
                     continue;
                 }
+                signature_positions.entry(sig.clone()).or_default().push((
+                    pi,
+                    s.bbox,
+                    trimmed.to_string(),
+                ));
                 seen_this_page
                     .entry(sig)
                     .or_insert_with(|| trimmed.to_string());
             }
-            // Track first-seen across ALL pages (even body-content-skipped)
-            for sig in seen_this_page.keys() {
-                first_seen_any.entry(sig.clone()).or_insert(pi);
-            }
-            // Track literal variants — if the literal text for a signature
-            // differs across pages, the digits are varying (page numbers).
             for (sig, literal) in &seen_this_page {
                 literal_variants
                     .entry(sig.clone())
@@ -15541,7 +15690,6 @@ impl PdfDocument {
             if !has_body_content {
                 continue;
             }
-            // Count only pages with body content for the recurrence threshold
             for sig in seen_this_page.into_keys() {
                 let entry = occurrences.entry(sig).or_insert((0, pi));
                 entry.0 += 1;
@@ -15550,8 +15698,16 @@ impl PdfDocument {
                 }
             }
         }
+
+        Self::ensure_position_consistency(
+            &mut occurrences,
+            &mut literal_variants,
+            &mut signature_positions,
+            &body_content_pages,
+        );
+
         let threshold = (page_count as f32 * 0.5).ceil() as usize;
-        let signatures: std::collections::HashMap<String, usize> = occurrences
+        let signatures: std::collections::HashMap<String, RunningArtifactSignature> = occurrences
             .into_iter()
             .filter(|(sig, (count, _))| {
                 let variants = literal_variants.get(sig).map(|s| s.len()).unwrap_or(0);
@@ -15577,12 +15733,20 @@ impl PdfDocument {
                 }
                 false
             })
-            .map(|(sig, _)| {
-                // Use the earliest page the signature appeared on — which
-                // may be a body-content-skipped cover page that `occurrences`
-                // didn't count toward the threshold but `first_seen_any` did.
-                let first = first_seen_any.get(&sig).copied().unwrap_or(0);
-                (sig, first)
+            .map(|(sig, (_, first_seen_page))| {
+                let occurrences = signature_positions
+                    .remove(&sig)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(pi, bbox, _)| (pi, bbox))
+                    .collect();
+                (
+                    sig,
+                    RunningArtifactSignature {
+                        first_seen_page,
+                        occurrences,
+                    },
+                )
             })
             .collect();
         let signatures = std::sync::Arc::new(signatures);
@@ -15674,11 +15838,32 @@ impl PdfDocument {
                 continue;
             }
             let sig = Self::normalize_artifact_signature(trimmed);
-            if let Some(&first_seen_on) = signatures.get(&sig) {
+            let Some(entry) = signatures.get(&sig) else {
+                continue;
+            };
+            // Text equality on a short/degenerate signature (e.g. "#a", any
+            // digit-collapsed shape) doesn't distinguish a genuine running
+            // page number from unrelated per-page content that happens to
+            // normalize the same way — a form line-item label ("1a" vs
+            // "2a"), a chapter numeral. `entry.occurrences` is already
+            // narrowed to a single geometrically-consistent cluster (see
+            // `ensure_position_consistency`), so requiring the candidate's
+            // own position to be near a RECORDED occurrence, ON A DIFFERENT
+            // PAGE, confirms it belongs to that same cluster — not just
+            // that it shares the signature's text shape. Excluding this
+            // page's own contribution matters: a span always registers its
+            // own position under its own signature, which would otherwise
+            // trivially match itself.
+            let position_consistent = entry.occurrences.iter().any(|(pi, p)| {
+                *pi != page_index
+                    && (p.x - s.bbox.x).abs() <= ARTIFACT_POS_TOL_X
+                    && (p.y - s.bbox.y).abs() <= ARTIFACT_POS_TOL_Y
+            });
+            if position_consistent {
                 // Keep the first appearance — it's usually the document
                 // cover-page title that got classified as chrome only
                 // because later pages repeat it as a running header (B3).
-                if page_index == first_seen_on {
+                if page_index == entry.first_seen_page {
                     continue;
                 }
                 s.artifact_type = Some(crate::extractors::text::ArtifactType::Pagination(
