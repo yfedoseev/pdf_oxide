@@ -426,7 +426,7 @@ If it's useful to you, a star on GitHub genuinely helps. If something's broken o
 
 The **code** is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Unlike AGPL-licensed alternatives, pdf_oxide can be used freely in any project — commercial or open-source — with no copyleft restrictions.
 
-The **name and brand** are not covered by the code license: **"PDFOxide"** (the product name) and **"pdf_oxide"** (the package name), together with any associated logo, are trademarks of Yury Fedoseev. You may say your product "uses PDFOxide"; please don't name a different or modified product "PDFOxide" or "pdf_oxide". See [TRADEMARKS.md](TRADEMARKS.md).
+The **name and brand** are not covered by the code license: **"PDFOxide"** (the product name) and **"pdf_oxide"** (the package name), together with any associated logo, are trademarks of Yury Fedoseev. You may say your product "uses PDFOxide"; please don't name a different or modified product "PDFOxide" or "pdf_oxide". See [TRADEMARKS.md](TRADEMARKS.md), and [FORKS.md](FORKS.md) if you are forking.
 
 © 2025–2026 Yury Fedoseev and the PDFOxide contributors. Contributions are accepted under the project's [DCO](CONTRIBUTING.md#commits-dco-and-review) and [CLA](CLA.md); contributors retain ownership of their work.
 
