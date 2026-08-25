@@ -2928,14 +2928,41 @@ impl<'doc> TextExtractor<'doc> {
         // or larger. Keep it unless a majority of the placed words also appear
         // outside (a duplicate overlay). Tokenising here (behind gates 1 and 2)
         // keeps the common single-column path allocation-free.
-        Self::text_duplication_fraction(&placed_txt, &other_txt) < MAX_DUP_FRACTION
+        match Self::text_duplication_fraction(&placed_txt, &other_txt) {
+            // No tokens could be read out of the placed operands, so there is
+            // no evidence either way — and "no evidence" must not read as "not
+            // a duplicate". The operands carry encoded character codes, not
+            // text: under Identity-H, the dominant modern encoding for exactly
+            // the producer this gate targets, the bytes are two-byte CIDs and
+            // no run of ASCII alphanumerics forms. The measured duplication was
+            // then 0.0, the gate kept, and `extract_text` emitted every word
+            // twice — precisely the case the suppression exists to prevent.
+            //
+            // Failing closed suppresses instead. Gate 2 above already keeps a
+            // placed body that dominates the page whatever its encoding, so
+            // what reaches here is placed text of comparable size to the rest
+            // of the page, where a duplicate overlay is the likely reading.
+            //
+            // The real discriminator is bounding-box overlap, which exists
+            // downstream and is not consulted here; decoding the operand
+            // through the font before tokenising would also settle it. Either
+            // is a larger change than this gate.
+            None => false,
+            Some(fraction) => fraction < MAX_DUP_FRACTION,
+        }
     }
 
     /// Fraction of alphanumeric word tokens in `a` (counting repeats) that also
     /// occur anywhere in `b`. Words are lowercased runs of >= 2 alphanumeric
-    /// bytes; punctuation and single characters are ignored. Returns 0.0 when `a`
-    /// has no such tokens (nothing to be a duplicate of).
-    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> f64 {
+    /// bytes; punctuation and single characters are ignored.
+    ///
+    /// Returns `None` when `a` yields no tokens at all. That is not "nothing to
+    /// be a duplicate of" — these are raw show operands, i.e. encoded character
+    /// codes rather than text, so an encoding whose codes are not ASCII
+    /// alphanumerics (Identity-H, and any non-Latin script) produces no tokens
+    /// from text that is certainly there. The caller must treat it as absence
+    /// of evidence, not as evidence of absence.
+    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> Option<f64> {
         fn tokens(bytes: &[u8]) -> Vec<Vec<u8>> {
             let mut out = Vec::new();
             let mut cur = Vec::new();
@@ -2957,11 +2984,11 @@ impl<'doc> TextExtractor<'doc> {
         }
         let a_tokens = tokens(a);
         if a_tokens.is_empty() {
-            return 0.0;
+            return None;
         }
         let b_set: std::collections::HashSet<Vec<u8>> = tokens(b).into_iter().collect();
         let shared = a_tokens.iter().filter(|t| b_set.contains(*t)).count();
-        shared as f64 / a_tokens.len() as f64
+        Some(shared as f64 / a_tokens.len() as f64)
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.

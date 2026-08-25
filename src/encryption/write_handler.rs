@@ -44,7 +44,6 @@ impl EncryptionWriteHandler {
         }
     }
 
-
     /// Create a new encryption write handler.
     ///
     /// # Arguments

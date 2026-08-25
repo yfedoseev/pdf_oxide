@@ -4317,13 +4317,22 @@ impl PageRenderer {
                                                             0u8
                                                         }
                                                     } else {
-                                                        // Past the end of the stream there is
-                                                        // no sample to test. Resolving toward
-                                                        // "paint" would show base-image pixels
-                                                        // the mask never described; the mask's
-                                                        // own masked-out value is the
-                                                        // conservative reading.
-                                                        0u8
+                                                        // Past the end of the stream there is no
+                                                        // sample to test, so the mask cannot be
+                                                        // honoured here. Leave the base image
+                                                        // visible — the same result an absent
+                                                        // /Mask gives. Resolving the other way
+                                                        // looks conservative and is not: alpha 0
+                                                        // *hides* the base image, so an
+                                                        // undecodable mask would erase the very
+                                                        // content it was only meant to refine.
+                                                        //
+                                                        // This is load-bearing for JBIG2 masks,
+                                                        // which reach here still compressed (the
+                                                        // decode happens on the other branch),
+                                                        // so almost every pixel is past the end:
+                                                        // a scanned book renders as blank pages.
+                                                        255u8
                                                     };
                                                     let pixel = rgba_image.get_pixel_mut(x, y);
                                                     pixel[3] = ((pixel[3] as u32 * mask_val as u32)

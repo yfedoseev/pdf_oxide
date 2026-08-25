@@ -325,6 +325,50 @@ pub(crate) fn span_in_table(span: &OrderedTextSpan, tables: &[Table]) -> Option<
         if !has_any_cell_bbox {
             return Some(i);
         }
+        // Ask the detector what it actually did, rather than re-deriving
+        // membership with a second rule.
+        //
+        // Two rules used to own the same span: the detector assigns by the
+        // span's bbox **centre** against an interval lattice (half-open, with
+        // a 3 pt snap just outside the grid), and this function suppressed
+        // from prose by the span's **origin** against any cell bbox ±2 pt.
+        // Where they disagreed the span was lost or duplicated:
+        //
+        //   - a span the detector left unassigned, whose origin still landed
+        //     in a cell, was absent from the table *and* suppressed from
+        //     prose. In `to_html` nothing recovers it, so it was gone; the
+        //     other converters recover it only when its text is not a
+        //     substring of the rendered table, so short tokens stayed lost.
+        //   - a span the detector snapped in from outside, whose origin was
+        //     more than 2 pt beyond the table bbox, was emitted twice.
+        //
+        // `TableCell::spans` holds the very spans the detector placed, so
+        // identity answers the question exactly and neither failure is
+        // representable. The spans are clones of the same values, so the
+        // coordinates compare bit-for-bit.
+        let cells_carry_spans = table
+            .rows
+            .iter()
+            .any(|row| row.cells.iter().any(|c| !c.spans.is_empty()));
+        if cells_carry_spans {
+            let owned = table.rows.iter().any(|row| {
+                row.cells.iter().any(|cell| {
+                    cell.spans.iter().any(|s| {
+                        s.bbox.x.to_bits() == span.span.bbox.x.to_bits()
+                            && s.bbox.y.to_bits() == span.span.bbox.y.to_bits()
+                            && s.text == span.span.text
+                    })
+                })
+            });
+            if owned {
+                return Some(i);
+            }
+            // The detector did not place this span, so prose must render it.
+            continue;
+        }
+
+        // No cell recorded its spans (MCID-derived tables, and some unit-test
+        // fixtures): fall back to the geometric test this function always used.
         let span_owned = table.rows.iter().any(|row| {
             row.cells.iter().any(|cell| {
                 let Some(cb) = cell.bbox else { return false };
