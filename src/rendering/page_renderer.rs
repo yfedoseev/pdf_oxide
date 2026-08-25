@@ -235,6 +235,12 @@ pub struct PageRenderer {
     /// numeric cap; 32 levels is well above any realistic nesting and
     /// keeps the stack usage bounded.
     smask_depth: u32,
+
+    /// Current Form XObject nesting depth; see [`MAX_FORM_DEPTH`].
+    form_depth: u32,
+
+    /// Current tiling-pattern nesting depth; see [`MAX_PATTERN_DEPTH`].
+    pattern_depth: u32,
     /// Per-page CMYK + spot-ink compositing sidecar. When present,
     /// every opaque CMYK paint mirrors its plate values into the
     /// CMYK lanes so the compose-first and overprint-correction
@@ -306,6 +312,21 @@ pub(crate) const MAX_SMASK_DEPTH: u32 = 32;
 /// or beyond it are skipped while their advance width is still applied.
 pub(crate) const MAX_TYPE3_DEPTH: u32 = 8;
 
+/// Maximum Form XObject nesting depth. A form's own `/Resources /XObject`
+/// may name the form itself (directly, or through a cycle of several), and
+/// nothing in the file format forbids it — §8.10 describes forms as
+/// re-entrant content streams and says nothing about acyclicity. Without a
+/// cap that recursion overflows the stack, which under the release profile's
+/// `panic = "abort"` is a host-process abort rather than a catchable panic.
+/// Type 3 glyph and soft-mask chains were already guarded this way; forms
+/// and tiling patterns were the two that were not.
+pub(crate) const MAX_FORM_DEPTH: u32 = 16;
+
+/// Maximum tiling-pattern nesting depth. Same hazard as
+/// [`MAX_FORM_DEPTH`]: a `/PatternType 1` content stream may set the very
+/// pattern it is painting.
+pub(crate) const MAX_PATTERN_DEPTH: u32 = 8;
+
 impl PageRenderer {
     /// Create a new page renderer with the specified options.
     pub fn new(options: RenderOptions) -> Self {
@@ -318,6 +339,8 @@ impl PageRenderer {
             excluded_layers_snapshot: None,
             icc_transform_cache: IccTransformCache::new(),
             smask_depth: 0,
+            form_depth: 0,
+            pattern_depth: 0,
             cmyk_sidecar: None,
             force_cmyk_sidecar: false,
             k_zero_warning_emitted: false,
@@ -462,17 +485,11 @@ impl PageRenderer {
         let page_info = doc.get_page_info(page_num)?;
         let media_box = page_info.media_box;
 
-        // Calculate output dimensions, accounting for page rotation
-        // `%` is a remainder and preserves sign, so a legal negative /Rotate (e.g. -90,
-        // equivalent to 270 per ISO 32000-1 s7.7.3.3 Table 30) matched neither 90 nor
-        // 270 below and the page rendered unrotated. rem_euclid normalizes to 0..359,
-        // matching get_page_rotation's own `((raw % 360) + 360) % 360` convention.
-        let rotation = page_info.rotation.rem_euclid(360);
-        let (page_w, page_h) = if rotation == 90 || rotation == 270 {
-            (media_box.height, media_box.width) // Swap for landscape
-        } else {
-            (media_box.width, media_box.height)
-        };
+        // Output dimensions, accounting for page rotation. `/Rotate` may be
+        // negative — -90 is legal and means 270 — and the normalisation lives
+        // in the shared helper rather than at each call site.
+        let rotation = page_info.rotation;
+        let (page_w, page_h) = super::rotated_page_extent(&media_box, rotation);
         let scale = self
             .options
             .scale_override
@@ -501,45 +518,11 @@ impl PageRenderer {
         // Create base transform: PDF coordinates to pixel coordinates
         // PDF origin is bottom-left; we flip Y and apply page rotation.
         // Per PDF spec §8.3.2.3, /Rotate specifies clockwise rotation.
-        // The approach: first map PDF coords to an unrotated pixel space,
-        // then rotate the entire result.
-        let transform = match rotation {
-            90 => {
-                // 90° CW rotation: portrait PDF → landscape display
-                // PDF y-up (x,y) → screen y-down: screen_x = y*s, screen_y = x*s
-                Transform::from_translate(-media_box.x, -media_box.y)
-                    .post_concat(Transform::from_row(0.0, scale, scale, 0.0, 0.0, 0.0))
-            },
-            180 => Transform::from_translate(-media_box.x, -media_box.y)
-                .post_scale(-scale, scale)
-                .post_translate(media_box.width * scale, 0.0),
-            270 => {
-                // 270° CW: PDF (x,y) → screen_x = (H - y)*s, screen_y = (W - x)*s.
-                //
-                // The `y` row used to be `screen_y = x*s`, which put the page's
-                // TOP-LEFT corner at the top-left of the raster; under a 270° turn
-                // it belongs at the BOTTOM-left. That is not merely a wrong angle -
-                // it is a MIRROR: the old matrix has a POSITIVE determinant, while
-                // 0°/90°/180° all have a negative one (they carry the PDF y-up →
-                // raster y-down flip). Text came out reversed.
-                Transform::from_translate(-media_box.x, -media_box.y).post_concat(
-                    Transform::from_row(
-                        0.0,
-                        -scale,
-                        -scale,
-                        0.0,
-                        media_box.height * scale,
-                        media_box.width * scale,
-                    ),
-                )
-            },
-            _ => {
-                // No rotation (0°)
-                Transform::from_translate(-media_box.x, -media_box.y)
-                    .post_scale(scale, -scale)
-                    .post_translate(0.0, page_h * scale)
-            },
-        };
+        // Shared with the separation renderer so the composite and the ink
+        // plates of one page cannot disagree about which way it faces — see
+        // `page_base_transform`, which also records the determinant invariant
+        // that catches a mirror.
+        let transform = super::page_base_transform(&media_box, rotation, scale);
 
         // Get page resources
         let resources = doc.get_page_resources(page_num)?;
@@ -4261,6 +4244,50 @@ impl PageRenderer {
                                             } else {
                                                 raw_mask_data
                                             };
+                                            // ISO 32000-1:2008 §8.9.6.2
+                                            // (`docs/spec/pdf.md:14903`), verbatim:
+                                            //
+                                            //   "…(the default for an image mask), a
+                                            //   sample value of 0 shall mark the page
+                                            //   with the current colour, and a 1 shall
+                                            //   leave the previous contents unchanged.
+                                            //   If the Decode array is [ 1 0 ], these
+                                            //   meanings shall be reversed."
+                                            //
+                                            // For an explicit /Mask "mark the page" means
+                                            // the base image shows through, so under the
+                                            // default /Decode [0 1] a sample of **0 is
+                                            // opaque** and 1 masks out.
+                                            //
+                                            // This painted the complement: it took bit 1
+                                            // as opaque, under a comment citing the very
+                                            // clause that refutes it — which is why a
+                                            // reader checking the citation against the
+                                            // code saw two things agree and both be
+                                            // wrong.
+                                            //
+                                            // /Decode is read here rather than fixed
+                                            // separately because the two compose: a
+                                            // /Decode [1 0] mask rendered correctly
+                                            // *by accident*, two errors cancelling, so
+                                            // correcting the polarity alone would have
+                                            // broken those files.
+                                            let decode_reverses = mask_dict
+                                                .get("Decode")
+                                                .and_then(|o| o.as_array())
+                                                .map(|a| {
+                                                    a.first()
+                                                        .map(|o| {
+                                                            o.as_real()
+                                                                .or_else(|| {
+                                                                    o.as_integer().map(|i| i as f64)
+                                                                })
+                                                                .unwrap_or(0.0)
+                                                                >= 0.5
+                                                        })
+                                                        .unwrap_or(false)
+                                                })
+                                                .unwrap_or(false);
                                             // 1-bit mask: each byte has 8 pixels, MSB first
                                             let iw = rgba_image.width();
                                             let ih = rgba_image.height();
@@ -4276,16 +4303,27 @@ impl PageRenderer {
                                                         as usize;
                                                     let byte_idx = my * row_bytes + mx / 8;
                                                     let bit_idx = 7 - (mx % 8);
-                                                    // PDF spec 8.9.6.2: mask bit 1 = paint (opaque), 0 = don't paint (transparent)
                                                     let mask_val = if byte_idx < mask_data.len() {
-                                                        if (mask_data[byte_idx] >> bit_idx) & 1 == 1
-                                                        {
+                                                        let bit =
+                                                            (mask_data[byte_idx] >> bit_idx) & 1;
+                                                        let opaque = if decode_reverses {
+                                                            bit == 1
+                                                        } else {
+                                                            bit == 0
+                                                        };
+                                                        if opaque {
                                                             255u8
                                                         } else {
                                                             0u8
                                                         }
                                                     } else {
-                                                        255u8
+                                                        // Past the end of the stream there is
+                                                        // no sample to test. Resolving toward
+                                                        // "paint" would show base-image pixels
+                                                        // the mask never described; the mask's
+                                                        // own masked-out value is the
+                                                        // conservative reading.
+                                                        0u8
                                                     };
                                                     let pixel = rgba_image.get_pixel_mut(x, y);
                                                     pixel[3] = ((pixel[3] as u32 * mask_val as u32)
@@ -4377,10 +4415,24 @@ impl PageRenderer {
             && image_transform.sy > 0.0
             && (image_transform.sx < 0.9 || image_transform.sy < 0.9);
 
+        // `tiny_skia::Pixmap` stores **premultiplied** RGBA and
+        // `Pixmap::from_vec` takes the bytes verbatim, while the `image` crate
+        // produces **straight** alpha. Handing straight bytes over means a
+        // fully transparent pixel keeps its full colour, and the compositor
+        // then *adds* that colour where nothing should paint: a masked-out
+        // region came out as the base colour blended over the backdrop instead
+        // of the backdrop alone.
+        //
+        // Premultiplying here also puts the conversion *before* the resample,
+        // which is the correct order — resampling straight alpha bleeds colour
+        // across an alpha edge from pixels that contribute none.
+        let mut rgba_raw = rgba_image.into_raw();
+        premultiply_rgba_in_place(&mut rgba_raw);
+
         let (blit_w, blit_h, blit_data, blit_transform) = if use_fast {
             let dst_w = ((image_transform.sx * src_w as f32).round() as u32).max(1);
             let dst_h = ((image_transform.sy * src_h as f32).round() as u32).max(1);
-            let resized = resize_rgba(rgba_image.as_raw(), src_w, src_h, dst_w, dst_h);
+            let resized = resize_rgba(&rgba_raw, src_w, src_h, dst_w, dst_h);
             if let Some(pixels) = resized {
                 // SIMD pre-resize produced the exact output dimensions —
                 // the subsequent blit is 1:1, so override to Nearest to
@@ -4391,12 +4443,12 @@ impl PageRenderer {
             } else {
                 // fast_image_resize failed; fall back to tiny_skia
                 // resampling with the helper's chosen quality.
-                (src_w, src_h, rgba_image.into_raw(), image_transform)
+                (src_w, src_h, rgba_raw, image_transform)
             }
         } else {
             // Rotated / sheared / upscaling path: let tiny_skia resample
             // with the helper's chosen quality.
-            (src_w, src_h, rgba_image.into_raw(), image_transform)
+            (src_w, src_h, rgba_raw, image_transform)
         };
 
         if let Some(img_pixmap) = tiny_skia::IntSize::from_wh(blit_w, blit_h)
@@ -4753,6 +4805,40 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
     ) -> Result<()> {
+        // A form's own /Resources /XObject may name the form itself, directly
+        // or through a cycle. Guarded the same way Type 3 glyphs and soft-mask
+        // chains already are — see MAX_FORM_DEPTH.
+        if self.form_depth >= MAX_FORM_DEPTH {
+            log::warn!(
+                "Form XObject nesting reached MAX_FORM_DEPTH={MAX_FORM_DEPTH};                  skipping this form (the file may be self-referential)"
+            );
+            return Ok(());
+        }
+        self.form_depth += 1;
+        let result = self.render_form_xobject_inner(
+            pixmap,
+            dict,
+            data,
+            parent_transform,
+            doc,
+            page_num,
+            parent_resources,
+        );
+        self.form_depth -= 1;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_form_xobject_inner(
+        &mut self,
+        pixmap: &mut Pixmap,
+        dict: &std::collections::HashMap<String, Object>,
+        data: &[u8],
+        parent_transform: Transform,
+        doc: &PdfDocument,
+        page_num: usize,
+        parent_resources: &Object,
+    ) -> Result<()> {
         // Parse /Matrix from form dict (default: identity)
         let form_matrix = if let Some(Object::Array(arr)) = dict.get("Matrix") {
             let get_f32 = |i: usize| -> f32 {
@@ -4942,6 +5028,18 @@ impl PageRenderer {
         page_num: usize,
         resources: &Object,
     ) -> Result<bool> {
+        // A tiling pattern's own content stream may set the very pattern it is
+        // painting, directly or through a cycle. The existing caps below bound
+        // *size*; this one bounds *depth*, which they cannot — see
+        // MAX_PATTERN_DEPTH. Declining returns Ok(false) so the caller paints
+        // its normal solid fill rather than nothing.
+        if self.pattern_depth >= MAX_PATTERN_DEPTH {
+            log::warn!(
+                "Tiling pattern nesting reached MAX_PATTERN_DEPTH={MAX_PATTERN_DEPTH};                  falling back to a solid fill (the file may be self-referential)"
+            );
+            return Ok(false);
+        }
+
         // Cap the offscreen cell raster and the tile count so a pathological
         // pattern cannot exhaust memory or spin. Beyond these limits we fall
         // back to a solid flood (average colour) or defer to the caller.
@@ -5088,6 +5186,7 @@ impl PageRenderer {
         let saved_fonts = self.fonts.clone();
         let saved_cs = self.color_spaces.clone();
         let _ = self.load_resources(doc, &pattern_resources);
+        self.pattern_depth += 1;
         let render_res = self.execute_operators(
             &mut cell,
             cell_transform,
@@ -5096,6 +5195,7 @@ impl PageRenderer {
             page_num,
             &pattern_resources,
         );
+        self.pattern_depth -= 1;
         self.fonts = saved_fonts;
         self.color_spaces = saved_cs;
         self.cmyk_sidecar = saved_sidecar;
@@ -7777,6 +7877,18 @@ impl PageRenderer {
                     }
                 }
             }
+            // ISO 32000-1 §12.5.3 Table 165: Hidden means "do not display the
+            // annotation"; NoView means do not display it on screen. Both were
+            // parsed and never read here, so hidden annotations were painted.
+            if annot
+                .flags
+                .contains(crate::annotation_types::AnnotationFlags::HIDDEN)
+                || annot
+                    .flags
+                    .contains(crate::annotation_types::AnnotationFlags::NO_VIEW)
+            {
+                continue;
+            }
             // Check if annotation has an appearance stream (/AP)
             if let Some(ap_obj) = annot.raw_dict.as_ref().and_then(|d| d.get("AP")) {
                 let ap_stream_obj = doc.resolve_object(ap_obj)?;
@@ -7787,6 +7899,37 @@ impl PageRenderer {
                 if let Object::Dictionary(ap_dict) = ap_stream_obj {
                     if let Some(n_entry) = ap_dict.get("N") {
                         let n_stream_obj = doc.resolve_object(n_entry)?;
+                        // §12.5.5: an appearance entry is either a stream or a
+                        // *subdictionary of appearance states*, and when it is
+                        // the latter /AS names the one to use — that is the
+                        // specification's own checkbox example. Requiring a
+                        // stream rejected the subdictionary outright, so every
+                        // checkbox and radio button in every AcroForm rendered
+                        // blank while `Annotation::appearance_state` was parsed
+                        // and never read anywhere in the renderer.
+                        let (n_entry, n_stream_obj) = match &n_stream_obj {
+                            Object::Dictionary(states) => {
+                                // With no /AS, or an /AS naming no member, the
+                                // clause blesses displaying nothing.
+                                let Some(state) = annot.appearance_state.as_deref() else {
+                                    log::debug!(
+                                        "Annotation /AP /N is a state subdictionary but the \
+                                         annotation has no /AS; drawing nothing"
+                                    );
+                                    continue;
+                                };
+                                let Some(selected) = states.get(state) else {
+                                    log::debug!(
+                                        "Annotation /AS /{state} names no member of the /AP /N \
+                                         state subdictionary; drawing nothing"
+                                    );
+                                    continue;
+                                };
+                                (selected.clone(), doc.resolve_object(selected)?)
+                            },
+                            _ => (n_entry.clone(), n_stream_obj.clone()),
+                        };
+                        let n_entry = &n_entry;
                         if let Object::Stream { ref dict, .. } = n_stream_obj {
                             let ap_data = if let Some(r) = n_entry.as_reference() {
                                 doc.decode_stream_with_encryption(&n_stream_obj, r)?
@@ -9476,6 +9619,35 @@ fn axis_tile_range(
 /// image where the PDF demands.
 ///
 /// Shared by `render_image` and `render_image_mask`.
+/// Convert straight (non-premultiplied) RGBA8 to premultiplied, in place.
+///
+/// `tiny_skia` stores premultiplied alpha throughout, and `Pixmap::from_vec`
+/// performs no conversion. Every buffer handed to it must therefore already
+/// satisfy `r,g,b <= a`; a straight-alpha buffer does not, and the compositor's
+/// arithmetic on an invalid premultiplied colour adds light rather than
+/// blending. The visible form is a masked-out region showing the base image's
+/// colour over the backdrop instead of the backdrop alone.
+fn premultiply_rgba_in_place(data: &mut [u8]) {
+    let (pixels, _remainder) = data.as_chunks_mut::<4>();
+    for px in pixels {
+        let a = px[3] as u32;
+        if a == 255 {
+            continue;
+        }
+        if a == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        // Rounded, so a round trip through premultiply/unpremultiply does not
+        // drift downward on every pass.
+        px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
+        px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
+        px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
+    }
+}
+
 fn image_unit_square_transform(parent: Transform, src_w: u32, src_h: u32) -> Transform {
     parent
         .pre_translate(0.0, 1.0)
