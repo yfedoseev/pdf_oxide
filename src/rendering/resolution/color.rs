@@ -376,10 +376,11 @@ impl ColorResolver {
         // backends still see the channel decomposition, and the
         // composite projection routes through ctx.output_intent_cmyk
         // (which is the spec default when no embedded ICC is available).
+        // Arity is the helpers' own precondition — see `three_as_rgb`.
         match n {
-            1 if !components.is_empty() => Ok(first_as_gray(components, alpha)),
-            3 if components.len() >= 3 => Ok(three_as_rgb(components, alpha)),
-            4 if components.len() >= 4 => Ok(four_as_cmyk_native(components, alpha)),
+            1 => Ok(first_as_gray(components, alpha)),
+            3 => Ok(three_as_rgb(components, alpha)),
+            4 => Ok(four_as_cmyk_native(components, alpha)),
             _ => Ok(first_as_gray(components, alpha)),
         }
     }
@@ -607,12 +608,11 @@ fn device_to_rgba(dev: DeviceColor, alpha: f32) -> ResolvedColor {
 }
 
 fn resolve_device_alias(name: &str, components: &[f32], alpha: f32) -> ResolvedColor {
+    // Arity is the helpers' own precondition — see `three_as_rgb`.
     match name {
-        "DeviceGray" | "G" | "CalGray" if !components.is_empty() => {
-            first_as_gray(components, alpha)
-        },
-        "DeviceRGB" | "RGB" | "CalRGB" if components.len() >= 3 => three_as_rgb(components, alpha),
-        "DeviceCMYK" | "CMYK" if components.len() >= 4 => four_as_cmyk_native(components, alpha),
+        "DeviceGray" | "G" | "CalGray" => first_as_gray(components, alpha),
+        "DeviceRGB" | "RGB" | "CalRGB" => three_as_rgb(components, alpha),
+        "DeviceCMYK" | "CMYK" => four_as_cmyk_native(components, alpha),
         _ => first_as_gray(components, alpha),
     }
 }
@@ -627,11 +627,25 @@ fn first_as_gray(components: &[f32], alpha: f32) -> ResolvedColor {
     }
 }
 
+/// Project the first three components as RGB, degrading to
+/// [`first_as_gray`] when the operand supplies fewer.
+///
+/// The arity check lives here rather than at the call sites because the
+/// declared family of a colour space and the operand count the content
+/// stream supplies are independent: a page may declare
+/// `/DefaultGray [/DeviceCMYK]` and then paint with a one-operand `g`, so
+/// the DeviceCMYK arm is reached with a single component. Two of the three
+/// dispatch sites guarded for that and one did not, which is a precondition
+/// three callers have to remember. Owning it here means none of them do.
 fn three_as_rgb(components: &[f32], alpha: f32) -> ResolvedColor {
+    let [r, g, b] = match components {
+        [r, g, b, ..] => [*r, *g, *b],
+        _ => return first_as_gray(components, alpha),
+    };
     ResolvedColor::Rgba {
-        r: components[0].clamp(0.0, 1.0),
-        g: components[1].clamp(0.0, 1.0),
-        b: components[2].clamp(0.0, 1.0),
+        r: r.clamp(0.0, 1.0),
+        g: g.clamp(0.0, 1.0),
+        b: b.clamp(0.0, 1.0),
         a: alpha,
     }
 }
@@ -654,12 +668,19 @@ fn four_as_cmyk(components: &[f32], alpha: f32, ctx: &ResolutionContext) -> Reso
 /// router consumes this directly (process-ink routing + OPM=1 zero-
 /// component rule); the composite path projects to RGBA via the
 /// process-ink `cmyk_to_rgb_via_intent` in `run_pipeline_for_logical`.
+/// Emit a native CMYK colour, degrading to [`first_as_gray`] when the
+/// operand supplies fewer than four components. See [`three_as_rgb`] for
+/// why the arity check belongs to the helper and not to its callers.
 fn four_as_cmyk_native(components: &[f32], alpha: f32) -> ResolvedColor {
+    let [c, m, y, k] = match components {
+        [c, m, y, k, ..] => [*c, *m, *y, *k],
+        _ => return first_as_gray(components, alpha),
+    };
     ResolvedColor::Cmyk {
-        c: components[0].clamp(0.0, 1.0),
-        m: components[1].clamp(0.0, 1.0),
-        y: components[2].clamp(0.0, 1.0),
-        k: components[3].clamp(0.0, 1.0),
+        c: c.clamp(0.0, 1.0),
+        m: m.clamp(0.0, 1.0),
+        y: y.clamp(0.0, 1.0),
+        k: k.clamp(0.0, 1.0),
         a: alpha,
     }
 }
@@ -1620,5 +1641,40 @@ mod tests {
         assert!((r - 0.75).abs() < 0.01, "got r={r}");
         assert!((g - 0.9196).abs() < 0.01, "got g={g}");
         assert!((b - 0.9843).abs() < 0.01, "got b={b}");
+    }
+
+    // ── operand arity is the helpers' own precondition ──────────────
+    //
+    // A colour space's declared family and the operand count a content
+    // stream supplies are independent, so every projection helper must
+    // be total over the slice it is handed.
+
+    #[test]
+    fn three_as_rgb_degrades_when_operands_are_short() {
+        // One operand against an RGB projection: gray, not a panic.
+        assert_rgba(three_as_rgb(&[0.5], 1.0), 0.5, 0.5, 0.5, 1.0);
+        assert_rgba(three_as_rgb(&[], 1.0), 0.0, 0.0, 0.0, 1.0);
+        assert_rgba(three_as_rgb(&[0.25, 0.5], 1.0), 0.25, 0.25, 0.25, 1.0);
+    }
+
+    #[test]
+    fn four_as_cmyk_native_degrades_when_operands_are_short() {
+        // The `0.5 g` painted under a /DefaultGray [/DeviceCMYK]
+        // override arrives here with a single operand.
+        assert_rgba(four_as_cmyk_native(&[0.5], 1.0), 0.5, 0.5, 0.5, 1.0);
+        assert_rgba(four_as_cmyk_native(&[], 1.0), 0.0, 0.0, 0.0, 1.0);
+        assert_rgba(four_as_cmyk_native(&[0.1, 0.2, 0.3], 1.0), 0.1, 0.1, 0.1, 1.0);
+    }
+
+    #[test]
+    fn projection_helpers_still_use_the_operands_they_have() {
+        // Degrading on short input must not weaken the full-arity path.
+        assert_rgba(three_as_rgb(&[1.0, 0.0, 0.0], 1.0), 1.0, 0.0, 0.0, 1.0);
+        // Extra operands are ignored, not an error.
+        assert_rgba(three_as_rgb(&[1.0, 0.0, 0.0, 0.9], 1.0), 1.0, 0.0, 0.0, 1.0);
+        // Full-arity CMYK still emits the native quadruple, which
+        // `assert_rgba` projects through the process-ink converter.
+        let (r, g, b) = super::cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+        assert_rgba(four_as_cmyk_native(&[0.0, 0.0, 0.0, 1.0], 1.0), r, g, b, 1.0);
     }
 }
