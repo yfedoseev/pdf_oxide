@@ -4350,12 +4350,29 @@ impl PdfDocument {
         // [4 0 R 5 0 R 6 0 R 7 0 R]`). Resolve each element before
         // coercing — otherwise an unresolved Reference reads as 0.0 and
         // the page collapses to a zero-area box that clips all content.
-        Ok((
+        let (x0, y0, x1, y1) = (
             to_f32(&self.resolve_obj_ref(&media_box[0])),
             to_f32(&self.resolve_obj_ref(&media_box[1])),
             to_f32(&self.resolve_obj_ref(&media_box[2])),
             to_f32(&self.resolve_obj_ref(&media_box[3])),
-        ))
+        );
+
+        // §7.9.5 (`docs/spec/pdf.md:6443`): "Although rectangles are
+        // conventionally specified by their lower-left and upper-right
+        // corners, it is acceptable to specify any two diagonally opposite
+        // corners. Applications that process PDF should be prepared to
+        // normalize such rectangles in situations where specific corners are
+        // required."
+        //
+        // Every caller of this function requires specific corners — each one
+        // computes `urx - llx` for a width — so a box written `[612 792 0 0]`
+        // yielded a negative extent that propagated into pixmap allocation
+        // (`Pixmap::new` fails and the page does not render at all), clip
+        // rectangles and coordinate mapping. Normalising here rather than at
+        // the ten-odd call sites means no caller has to know the file may
+        // have used the other diagonal; `Rect::new` already does the same for
+        // rectangles built from a width and a height.
+        Ok((x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
     }
 
     /// Page `/Rotate` normalised to one of `{0, 90, 180, 270}`
