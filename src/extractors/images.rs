@@ -946,15 +946,28 @@ pub fn extract_image_from_xobject(
         }
     };
 
-    let width = dict
-        .get("Width")
-        .and_then(resolve_int)
-        .ok_or_else(|| Error::Image("Image missing /Width".to_string()))? as u32;
+    // A dimension is validated, not cast. ISO 32000-1:2008 §8.9.5.1 mandates
+    // the image-to-user matrix `[1/w 0 0 -1/h 0 1]`, which is undefined at
+    // zero, and Table 89 requires both entries to be positive integers — so a
+    // negative or out-of-range value is invalid, not a number to truncate.
+    // `as u32` turned `-1` into 4294967295 and `2^32` into 0, both of which
+    // then flowed into allocation and sampling arithmetic; the stencil path's
+    // `image_mask_layout` already rejects the same shapes with `try_from`.
+    let dimension = |key: &str| -> Result<u32> {
+        let value = dict
+            .get(key)
+            .and_then(resolve_int)
+            .ok_or_else(|| Error::Image(format!("Image missing /{key}")))?;
+        let dimension = u32::try_from(value)
+            .map_err(|_| Error::Image(format!("Image /{key} must be a positive integer")))?;
+        if dimension == 0 {
+            return Err(Error::Image(format!("Image /{key} must be a positive integer")));
+        }
+        Ok(dimension)
+    };
 
-    let height = dict
-        .get("Height")
-        .and_then(resolve_int)
-        .ok_or_else(|| Error::Image("Image missing /Height".to_string()))? as u32;
+    let width = dimension("Width")?;
+    let height = dimension("Height")?;
 
     let bits_per_component = dict
         .get("BitsPerComponent")

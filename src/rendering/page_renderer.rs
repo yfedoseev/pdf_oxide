@@ -4184,32 +4184,20 @@ impl PageRenderer {
                                 let mh = mask_gray.height();
                                 let iw = rgba_image.width();
                                 let ih = rgba_image.height();
-                                if mw == 0 || mh == 0 {
-                                    // No mask sample to test: leave the base
-                                    // image fully opaque rather than guessing.
-                                    log::warn!(
-                                        "Ignoring image Mask: it is {mw}x{mh} and carries \
-                                         no sample to test"
-                                    );
-                                } else {
-                                    for y in 0..ih {
-                                        let my =
-                                            ((y as u64 * mh as u64 / ih as u64) as u32).min(mh - 1);
-                                        for x in 0..iw {
-                                            let mx = ((x as u64 * mw as u64 / iw as u64) as u32)
-                                                .min(mw - 1);
-                                            let mask_val = mask_gray.get_pixel(mx, my)[0];
-                                            let pixel = rgba_image.get_pixel_mut(x, y);
-                                            pixel[3] =
-                                                ((pixel[3] as u32 * mask_val as u32) / 255) as u8;
-                                        }
-                                    }
+                                if fold_mask_into_alpha(&mut rgba_image, &mask_gray) {
                                     log::debug!(
                                         "Applied image Mask ({}x{}) to image ({}x{})",
                                         mw,
                                         mh,
                                         iw,
                                         ih
+                                    );
+                                } else {
+                                    // No mask sample to test: leave the base
+                                    // image fully opaque rather than guessing.
+                                    log::warn!(
+                                        "Ignoring image Mask: it is {mw}x{mh} and carries \
+                                         no sample to test"
                                     );
                                 }
                             }
@@ -4358,25 +4346,13 @@ impl PageRenderer {
                 ) {
                     if let Ok(smask_dyn) = smask_image.to_dynamic_image() {
                         let smask_gray = smask_dyn.to_luma8();
-
-                        // Apply SMask to alpha channel
-                        // Rescale smask if dimensions don't match (simplification)
-                        let sw = smask_gray.width();
-                        let sh = smask_gray.height();
-                        let iw = rgba_image.width();
-                        let ih = rgba_image.height();
-
-                        for y in 0..ih {
-                            for x in 0..iw {
-                                // Map image coordinate to smask coordinate
-                                let sx = (x * sw / iw).min(sw - 1);
-                                let sy = (y * sh / ih).min(sh - 1);
-                                let alpha = smask_gray.get_pixel(sx, sy)[0];
-
-                                let pixel = rgba_image.get_pixel_mut(x, y);
-                                // Combine with existing alpha
-                                pixel[3] = ((pixel[3] as u32 * alpha as u32) / 255) as u8;
-                            }
+                        if !fold_mask_into_alpha(&mut rgba_image, &smask_gray) {
+                            log::warn!(
+                                "Ignoring image SMask: it is {}x{} and carries no sample \
+                                 to test",
+                                smask_gray.width(),
+                                smask_gray.height()
+                            );
                         }
                     }
                 }
@@ -9504,6 +9480,50 @@ fn image_unit_square_transform(parent: Transform, src_w: u32, src_h: u32) -> Tra
     parent
         .pre_translate(0.0, 1.0)
         .pre_scale(1.0 / src_w as f32, -1.0 / src_h as f32)
+}
+
+/// Fold a single-channel mask into a base image's alpha channel,
+/// resampling the mask onto the base grid nearest-neighbour.
+///
+/// ISO 32000-1:2008 §8.9.6.3 maps a base image and its mask to the same
+/// unit square, so the two need not share a resolution and the mask must be
+/// resampled onto the base's grid. `/Mask` stencils and `/SMask` soft masks
+/// both reduce to this one operation — multiply the existing alpha by the
+/// mask sample — and were written out twice, which is why only one copy
+/// carried the guards below.
+///
+/// Two properties this owns so no caller has to remember them:
+///
+/// - **A zero-dimension mask carries no sample to test.** §8.9.5.1 mandates
+///   the image-to-user matrix `[1/w 0 0 -1/h 0 1]`, undefined at `w = 0`, so
+///   zero is invalid rather than valid-but-empty. Refusing leaves the base
+///   image untouched; indexing would compute `mw - 1` on `0u32`, which
+///   underflows to `u32::MAX` in release and then indexes out of bounds.
+/// - **Coordinates are computed in `u64`.** `x * mw` overflows `u32` once
+///   the base and the mask are both wide.
+///
+/// Returns whether the mask was applied, so the caller can log either way.
+#[must_use]
+fn fold_mask_into_alpha(rgba_image: &mut image::RgbaImage, mask_gray: &image::GrayImage) -> bool {
+    let (mw, mh) = (mask_gray.width(), mask_gray.height());
+    let (iw, ih) = (rgba_image.width(), rgba_image.height());
+    if mw == 0 || mh == 0 {
+        return false;
+    }
+    if iw == 0 || ih == 0 {
+        // Nothing to paint onto; not a failure of the mask.
+        return true;
+    }
+    for y in 0..ih {
+        let my = ((y as u64 * mh as u64 / ih as u64) as u32).min(mh - 1);
+        for x in 0..iw {
+            let mx = ((x as u64 * mw as u64 / iw as u64) as u32).min(mw - 1);
+            let sample = mask_gray.get_pixel(mx, my)[0];
+            let pixel = rgba_image.get_pixel_mut(x, y);
+            pixel[3] = ((pixel[3] as u32 * sample as u32) / 255) as u8;
+        }
+    }
+    true
 }
 
 /// Build the `PixmapPaint` used to blit an already-flipped image into
