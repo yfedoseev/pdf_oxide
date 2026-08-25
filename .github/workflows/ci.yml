@@ -102,7 +102,7 @@ jobs:
           components: clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Run Clippy on full workspace
         run: cargo clippy --all-targets --workspace -- -D warnings
@@ -148,7 +148,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           # `cache-bin: false`: rust-cache caches ~/.cargo/bin by default.
           # On the macos-latest beta runner that cache captured a poisoned
@@ -217,7 +217,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: rendering-v1
           cache-bin: "false"
@@ -253,7 +253,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build with features
         run: cargo build --no-default-features --features "${{ matrix.features }}"
@@ -285,7 +285,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: fips
 
@@ -320,7 +320,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: rust-examples-${{ matrix.os }}
 
@@ -397,7 +397,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build CLI
         run: cargo build -p pdf_oxide_cli
@@ -424,7 +424,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build MCP server
         run: cargo build -p pdf_oxide_mcp
@@ -446,7 +446,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Provision OCR models (english + language packs)
         run: bash scripts/setup_ocr_models.sh "$GITHUB_WORKSPACE/.ocr-models" chinese arabic cyrillic
@@ -494,7 +494,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
@@ -572,7 +572,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: python-examples-${{ matrix.os }}
 
@@ -634,7 +634,7 @@ jobs:
           components: clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build WASM
         run: cargo build --lib --target wasm32-unknown-unknown --features wasm,rendering,barcodes
@@ -843,7 +843,7 @@ jobs:
         run: rustup target add ${{ matrix.extra-target }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: build-lib-${{ matrix.os }}-${{ matrix.variant }}
 
@@ -1624,7 +1624,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -1671,7 +1671,7 @@ jobs:
           rustflags: ''
 
       - name: Cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build benchmarks
         run: cargo bench --no-run
@@ -1709,7 +1709,7 @@ jobs:
         with:
           cache: false
           rustflags: ''
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: geiger
       - name: Install cargo-geiger
@@ -1729,7 +1729,7 @@ jobs:
         with:
           cache: false
           rustflags: ''
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: taplo
       - name: Install taplo
@@ -1749,7 +1749,7 @@ jobs:
         with:
           cache: false
           rustflags: ''
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: shear
       - name: Install cargo-shear
@@ -1776,7 +1776,7 @@ jobs:
         with:
           cache: false
           rustflags: ''
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: hack
       - name: Install cargo-hack
@@ -1835,7 +1835,7 @@ jobs:
           cache: false
           rustflags: ''
           toolchain: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: msrv
       - name: Build with MSRV toolchain
