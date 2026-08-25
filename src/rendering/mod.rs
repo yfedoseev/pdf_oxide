@@ -123,6 +123,63 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
 /// device units, which an earlier 1e8 bound discarded.
 const MAX_DEVICE_COORD: f64 = 5.0e8;
 
+/// The page extent in points after the `/Rotate` turn, as `(width, height)`.
+///
+/// ISO 32000-1:2008 §7.7.3.3 Table 30: `/Rotate` is clockwise and a multiple
+/// of 90, so a quarter turn swaps the axes.
+pub(crate) fn rotated_page_extent(media_box: &crate::geometry::Rect, rotation: i32) -> (f32, f32) {
+    if rotation.rem_euclid(360) == 90 || rotation.rem_euclid(360) == 270 {
+        (media_box.height, media_box.width)
+    } else {
+        (media_box.width, media_box.height)
+    }
+}
+
+/// The page's base transform: PDF user space to device pixels, including the
+/// `/Rotate` turn and the y-up to y-down flip.
+///
+/// **Every case here has a negative determinant.** The flip from PDF's y-up
+/// user space to the raster's y-down rows contributes one reflection, and a
+/// quarter turn contributes none — so a matrix with a *positive* determinant
+/// is a mirror image, not a rotation. That is a cheap invariant to check and
+/// it is the one that failed: the composite renderer's 270° case was
+/// corrected to `from_row(0, -s, -s, 0, …)` (determinant −s²) and the
+/// separation renderer's copy was left as `from_row(0, s, -s, 0, …)`
+/// (determinant +s²), so every ink plate of a `/Rotate 270` page came out
+/// mirrored while the composite of the same page did not. Two renderers of
+/// one page disagreed, which is why this lives in one place now.
+///
+/// `rotation` may be negative — `/Rotate -90` is legal and means 270 — so it
+/// is normalised here rather than at each call site.
+pub(crate) fn page_base_transform(
+    media_box: &crate::geometry::Rect,
+    rotation: i32,
+    scale: f32,
+) -> tiny_skia::Transform {
+    use tiny_skia::Transform;
+    let origin = Transform::from_translate(-media_box.x, -media_box.y);
+    let (_, page_h) = rotated_page_extent(media_box, rotation);
+    match rotation.rem_euclid(360) {
+        // 90° CW: PDF (x, y) -> device (y·s, x·s).
+        90 => origin.post_concat(Transform::from_row(0.0, scale, scale, 0.0, 0.0, 0.0)),
+        180 => origin
+            .post_scale(-scale, scale)
+            .post_translate(media_box.width * scale, 0.0),
+        // 270° CW: PDF (x, y) -> device ((H − y)·s, (W − x)·s).
+        270 => origin.post_concat(Transform::from_row(
+            0.0,
+            -scale,
+            -scale,
+            0.0,
+            media_box.height * scale,
+            media_box.width * scale,
+        )),
+        _ => origin
+            .post_scale(scale, -scale)
+            .post_translate(0.0, page_h * scale),
+    }
+}
+
 /// How far a stroke's outline may reach from its centerline, in device
 /// units, before the width is narrowed. Measured separately from
 /// [`MAX_DEVICE_COORD`] because it is a separate failure: a 10x10 rect

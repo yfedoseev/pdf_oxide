@@ -669,33 +669,14 @@ fn compute_page_extent(
     let page_info = doc.get_page_info(page_num)?;
     let media_box = page_info.media_box;
 
-    // `%` is a remainder and preserves sign, so a legal negative /Rotate (e.g. -90,
-    // equivalent to 270 per ISO 32000-1 s7.7.3.3 Table 30) matched neither 90 nor
-    // 270 below and the page rendered unrotated. rem_euclid normalizes to 0..359,
-    // matching get_page_rotation's own `((raw % 360) + 360) % 360` convention.
-    let rotation = page_info.rotation.rem_euclid(360);
-    let (page_w, page_h) = if rotation == 90 || rotation == 270 {
-        (media_box.height, media_box.width)
-    } else {
-        (media_box.width, media_box.height)
-    };
+    // Shared with the composite renderer, so the two cannot disagree about
+    // which way a rotated page faces — see `page_base_transform`.
+    let rotation = page_info.rotation;
+    let (page_w, page_h) = super::rotated_page_extent(&media_box, rotation);
     let scale = dpi as f32 / 72.0;
     let width = (page_w * scale).ceil() as u32;
     let height = (page_h * scale).ceil() as u32;
-
-    let base_transform = match rotation {
-        90 => Transform::from_translate(-media_box.x, -media_box.y)
-            .post_concat(Transform::from_row(0.0, scale, scale, 0.0, 0.0, 0.0)),
-        180 => Transform::from_translate(-media_box.x, -media_box.y)
-            .post_scale(-scale, scale)
-            .post_translate(media_box.width * scale, 0.0),
-        270 => Transform::from_translate(-media_box.x, -media_box.y).post_concat(
-            Transform::from_row(0.0, scale, -scale, 0.0, media_box.height * scale, 0.0),
-        ),
-        _ => Transform::from_translate(-media_box.x, -media_box.y)
-            .post_scale(scale, -scale)
-            .post_translate(0.0, page_h * scale),
-    };
+    let base_transform = super::page_base_transform(&media_box, rotation, scale);
 
     Ok((width, height, base_transform))
 }
