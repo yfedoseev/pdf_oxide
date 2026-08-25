@@ -3523,18 +3523,42 @@ impl<'doc> TextExtractor<'doc> {
     /// extractor a different CTM. On govdocs_003_003181.pdf page 4 that cost
     /// a 90°-rotated chart axis: char mode returned 2322 glyphs, all at
     /// rotation 0, where span mode saw 2590 glyphs, 122 at 90°.
+    /// Whether this extraction carries an **emission filter** — a caller
+    /// decision about what to leave out of the result.
+    ///
+    /// Every such filter is evaluated against interpreted state that the
+    /// text-only parser's >256 KB prescan route does not deliver: it keeps
+    /// only `BT..ET`/`Do` regions and discards everything between them.
+    /// Ink filtering needs the colour operators (`cs`, `rg`, `g`, `k`); layer
+    /// exclusion needs the `BDC`/`EMC` pairs that carry optional-content
+    /// membership. Both must therefore take the full parser.
+    ///
+    /// This is one predicate rather than a condition per filter because the
+    /// list had already been forgotten once: the gate tested inks alone, so
+    /// `set_excluded_layers()` was silently ignored above the threshold — the
+    /// caller asked for exclusion, got no error, and got the content. A new
+    /// filter is added here, with its reason, or it inherits the same defect.
+    ///
+    /// This localises the class; it does not close it. ISO 32000-1:2008
+    /// §8.11.3 requires that when optional content is hidden "the content
+    /// shall not be drawn" while "graphics state operations … shall still be
+    /// applied", so visibility is a decision about marking the page, taken
+    /// after interpretation — never a licence to stop parsing. The structural
+    /// answer is one sequential interpreter with suppression at emission,
+    /// which retires this predicate along with the prescan branch.
+    fn has_emission_filter(&self) -> bool {
+        !self.excluded_inks.is_empty() || !self.excluded_layers.is_empty()
+    }
+
     fn run_content_stream(&mut self, content_stream: &[u8]) -> Result<()> {
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
-        } else {
-            // Ink filtering needs the color operators (cs, rg, g, k). The
-            // text-only parser does not guarantee their delivery — its >256KB
-            // prescan route parses only text regions — so use the full parser.
+        if self.has_emission_filter() {
             let operators = parse_content_stream(content_stream)?;
             for op in operators {
                 self.execute_operator(op)?;
             }
             Ok(())
+        } else {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
         }
     }
 
