@@ -486,9 +486,34 @@ impl EncryptDictBuilder {
     ///
     /// This computes all required hashes and returns the complete dictionary.
     ///
+    /// For AES-256 (R6) the *file encryption key* is generated here and wrapped
+    /// into `/UE` and `/OE`; callers that will go on to encrypt streams must use
+    /// [`Self::build_with_key`] and encrypt with the key it returns. Using this
+    /// method and then deriving a key separately produces a file whose `/UE`
+    /// wraps one key while its streams are encrypted under another — see
+    /// `build_with_key`.
+    ///
     /// # Arguments
     /// * `file_id` - The first element of the PDF file identifier array
     pub fn build(self, file_id: &[u8]) -> Result<EncryptDict> {
+        self.build_with_key(file_id).map(|(dict, _)| dict)
+    }
+
+    /// Build the encryption dictionary **and return the file encryption key**
+    /// that its `/UE` and `/OE` entries wrap, when the revision has one.
+    ///
+    /// ISO 32000-2 Algorithm 8 generates a single random file encryption key,
+    /// wraps it into `/UE` under a key derived from the user password, and
+    /// requires every string and stream to be encrypted with that same key. The
+    /// key therefore has to leave this function: `build` computed it, used it
+    /// for `/UE` and `/OE`, and dropped it, so the writer derived a *second*
+    /// random key for the streams. The result authenticated — the `/U` hash is
+    /// computed from the password correctly — and then decrypted every stream
+    /// to noise, in this library and in any other.
+    ///
+    /// Returns `None` for R≤4, where the key is derived from the password and
+    /// the file id rather than generated, so the writer can recompute it.
+    pub fn build_with_key(self, file_id: &[u8]) -> Result<(EncryptDict, Option<Vec<u8>>)> {
         let (version, revision) = match self.algorithm {
             Algorithm::None => (0, 0),
             Algorithm::RC4_40 => (1, 2),
@@ -555,21 +580,25 @@ impl EncryptDictBuilder {
                 &user_hash,
                 revision,
             )?;
-            return Ok(EncryptDict {
-                filter: "Standard".to_string(),
-                sub_filter: None,
-                version,
-                length: Some((key_length * 8) as u32),
-                revision,
-                owner_password: owner_hash,
-                user_password: user_hash,
-                permissions: self.permissions,
-                encrypt_metadata: self.encrypt_metadata,
-                owner_encryption: Some(owner_encryption),
-                user_encryption: Some(user_encryption),
-                perms: None,
-                stream_crypt_method: None,
-            });
+            return Ok((
+                EncryptDict {
+                    filter: "Standard".to_string(),
+                    sub_filter: None,
+                    version,
+                    length: Some((key_length * 8) as u32),
+                    revision,
+                    owner_password: owner_hash,
+                    user_password: user_hash,
+                    permissions: self.permissions,
+                    encrypt_metadata: self.encrypt_metadata,
+                    owner_encryption: Some(owner_encryption),
+                    user_encryption: Some(user_encryption),
+                    perms: None,
+                    stream_crypt_method: None,
+                },
+                // The key /UE and /OE wrap. Streams must use this one.
+                Some(file_key),
+            ));
         }
 
         // Compute owner password hash (O value)
@@ -594,21 +623,27 @@ impl EncryptDictBuilder {
         // Compute user password hash (U value)
         let user_hash = algorithms::compute_user_password_hash(&encryption_key, file_id, revision)?;
 
-        Ok(EncryptDict {
-            filter: "Standard".to_string(),
-            sub_filter: None,
-            version,
-            length: Some((key_length * 8) as u32),
-            revision,
-            owner_password: owner_hash,
-            user_password: user_hash,
-            permissions: self.permissions,
-            encrypt_metadata: self.encrypt_metadata,
-            owner_encryption: None,
-            user_encryption: None,
-            perms: None,
-            stream_crypt_method: None,
-        })
+        Ok((
+            EncryptDict {
+                filter: "Standard".to_string(),
+                sub_filter: None,
+                version,
+                length: Some((key_length * 8) as u32),
+                revision,
+                owner_password: owner_hash,
+                user_password: user_hash,
+                permissions: self.permissions,
+                encrypt_metadata: self.encrypt_metadata,
+                owner_encryption: None,
+                user_encryption: None,
+                perms: None,
+                stream_crypt_method: None,
+            },
+            // R<=4 derives the key from the password, the owner hash, the
+            // permissions and the file id, so the writer recomputes the same
+            // value rather than being handed one.
+            None,
+        ))
     }
 }
 

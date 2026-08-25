@@ -1944,23 +1944,35 @@ impl DocumentEditor {
                     EncryptionAlgorithm::Aes256 => Algorithm::Aes256,
                 };
 
-                // Build encryption dictionary
-                let encrypt_dict = EncryptDictBuilder::new(algorithm)
+                // Build the encryption dictionary, keeping the file
+                // encryption key it wrapped into /UE and /OE.
+                let (encrypt_dict, file_key) = EncryptDictBuilder::new(algorithm)
                     .user_password(config.user_password.as_bytes())
                     .owner_password(config.owner_password.as_bytes())
                     .permissions(config.permissions.to_bits())
                     .encrypt_metadata(true)
-                    .build(&id1)?;
+                    .build_with_key(&id1)?;
 
-                // Create encryption handler
-                let handler = EncryptionWriteHandler::new(
-                    config.user_password.as_bytes(),
-                    &encrypt_dict.owner_password,
-                    encrypt_dict.permissions,
-                    &id1,
-                    algorithm,
-                    true,
-                )?;
+                // Create encryption handler.
+                //
+                // For AES-256 (R6) the key is the one just wrapped into /UE —
+                // ISO 32000-2 Algorithm 8 generates exactly one, and there is
+                // nothing to re-derive. Deriving separately here produced a
+                // second random key, so the file authenticated and then
+                // decrypted every stream to noise. For R<=4 the key *is* a
+                // derivation from the password, owner hash, permissions and
+                // file id, and the handler recomputes it.
+                let handler = match file_key {
+                    Some(key) => EncryptionWriteHandler::with_file_key(key, algorithm, true),
+                    None => EncryptionWriteHandler::new(
+                        config.user_password.as_bytes(),
+                        &encrypt_dict.owner_password,
+                        encrypt_dict.permissions,
+                        &id1,
+                        algorithm,
+                        true,
+                    )?,
+                };
 
                 (Some((id1, id2)), Some(encrypt_dict), Some(handler))
             } else {
