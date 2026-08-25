@@ -5137,12 +5137,27 @@ impl PdfDocument {
                 // Collect inheritable attributes from this node to pass to children
                 let inheritable_attrs = ["Resources", "MediaBox", "CropBox", "Rotate"];
 
+                // ISO 32000-1:2008 §7.7.3.4 Table 30: an inheritable attribute
+                // is taken from the NEAREST ancestor that specifies it.
+                //
+                // This walked root-first with `entry().or_insert_with()`, which
+                // keeps the value already in the map — the FIRST one seen, i.e.
+                // the most distant ancestor. The root won and every intermediate
+                // node was ignored. (The comment claimed the opposite, which is
+                // why it read as correct.)
+                //
+                // `insert` is right once the map is snapshotted and restored
+                // around the recursion, so a node's values apply to its own
+                // subtree and not to its siblings' — which is exactly what the
+                // eager walker `collect_all_pages` already does. The two now
+                // agree, so a page no longer resolves differently depending on
+                // which walker ran, and that in turn removes the observable
+                // dependence on how many pages had been touched first.
+                let saved = inherited.clone();
+
                 for attr_name in &inheritable_attrs {
                     if let Some(attr_value) = node_dict.get(*attr_name) {
-                        // Only add if not already in inherited map (child values override parent)
-                        inherited
-                            .entry(attr_name.to_string())
-                            .or_insert_with(|| attr_value.clone());
+                        inherited.insert(attr_name.to_string(), attr_value.clone());
                     }
                 }
 
@@ -5188,6 +5203,9 @@ impl PdfDocument {
                     }
                 }
 
+                // No kid under this node held the target page, so this node's
+                // contribution must not leak to its siblings.
+                *inherited = saved;
                 Err(Error::InvalidPdf(format!("Page index {} not found", target_index)))
             },
             _ => Err(Error::InvalidPdf(format!("Unknown page tree node type: {}", node_type))),
@@ -10198,13 +10216,20 @@ impl PdfDocument {
             return Ok(text);
         }
 
-        // Step 2: Build MCID → Vec<TextSpan> map
-        let mut mcid_map: HashMap<u32, Vec<TextSpan>> = HashMap::new();
+        // Step 2: Build (scope, MCID) → Vec<TextSpan> map.
+        //
+        // ISO 32000-1:2008 §14.7.4.2 makes an /MCID unique only "within its
+        // content stream", so the bare id is not an identity: a page and a
+        // Form XObject may each number theirs from 0.
+        let default_scope = crate::structure::McidScope::Page(page_index as u32);
+        let mut mcid_map: HashMap<(crate::structure::McidScope, u32), Vec<TextSpan>> =
+            HashMap::new();
         let mut spans_without_mcid: Vec<TextSpan> = Vec::new();
 
         for span in all_spans {
             if let Some(mcid) = span.mcid {
-                mcid_map.entry(mcid).or_default().push(span);
+                let key = (span.mcid_scope.clone().unwrap_or(default_scope.clone()), mcid);
+                mcid_map.entry(key).or_default().push(span);
             } else {
                 // Collect spans without MCID (shouldn't happen in well-formed Tagged PDFs)
                 spans_without_mcid.push(span);
@@ -10237,7 +10262,6 @@ impl PdfDocument {
             .get(&page_index)
             .cloned()
             .unwrap_or_default();
-        let default_scope = crate::structure::McidScope::Page(page_index as u32);
         let mcid_order: Vec<(crate::structure::McidScope, u32)> = ordered_content
             .iter()
             .filter_map(|c| {
@@ -10248,7 +10272,7 @@ impl PdfDocument {
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(m) {
+            if let Some(sp) = mcid_map.get(&(scope.clone(), *m)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -10259,7 +10283,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |_scope, m| mcid_map.contains_key(&m),
+            |scope, m| mcid_map.contains_key(&(scope.clone(), m)),
             &mc_wins,
             &glyph_text,
         );
@@ -10270,7 +10294,8 @@ impl PdfDocument {
         // Whether the content element that emitted `prev_span` sat inside a
         // table — used to collapse a table row boundary to a single newline.
         let mut prev_in_table = false;
-        let mut consumed_mcids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut consumed_mcids: std::collections::HashSet<(crate::structure::McidScope, u32)> =
+            std::collections::HashSet::new();
 
         for content in &ordered_content {
             // Handle word break markers by inserting a space
@@ -10293,10 +10318,11 @@ impl PdfDocument {
             // /ActualText replacement — now declined by the §14.9.4 conformance
             // gate — can mask this by collapsing each consecutive run to a
             // single emit.)
-            if !consumed_mcids.insert(mcid) {
+            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            let content_key = (mcid_scope_key.clone(), mcid);
+            if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
-            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
 
             // ActualText action dispatch. `EmitAndSuppress` is set only
             // on the first visible covered MCID of a consecutive-same-
@@ -10306,7 +10332,7 @@ impl PdfDocument {
             // the extractor's in-stream replacement reaches output.
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(mcid);
+                    consumed_mcids.insert(content_key.clone());
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -10314,14 +10340,14 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(mcid);
+                    consumed_mcids.insert(content_key.clone());
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&mcid) {
-                consumed_mcids.insert(mcid);
+            if let Some(spans) = mcid_map.get(&content_key) {
+                consumed_mcids.insert(content_key.clone());
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
@@ -10365,11 +10391,17 @@ impl PdfDocument {
         // This happens with Form XObjects that lack /StructParents, where
         // their BDC/MCID markers exist in the content stream but are not
         // registered in the page's ParentTree.
-        let mut unconsumed: Vec<(&u32, &Vec<TextSpan>)> = mcid_map
+        let mut unconsumed: Vec<(&(crate::structure::McidScope, u32), &Vec<TextSpan>)> = mcid_map
             .iter()
-            .filter(|(mcid, _)| !consumed_mcids.contains(mcid))
+            .filter(|(key, _)| !consumed_mcids.contains(*key))
             .collect();
-        unconsumed.sort_by_key(|(mcid, _)| **mcid);
+        // Deterministic order: by id, then by scope, so two streams that both
+        // number from 0 still append in a stable sequence.
+        unconsumed.sort_by(|a, b| {
+            a.0 .1
+                .cmp(&b.0 .1)
+                .then_with(|| format!("{:?}", a.0 .0).cmp(&format!("{:?}", b.0 .0)))
+        });
         if !unconsumed.is_empty() {
             log::debug!(
                 "Appending {} unreferenced MCIDs (e.g., from Form XObjects without StructParents)",
@@ -11344,13 +11376,24 @@ impl PdfDocument {
                 .collect()
         };
 
-        // Step 2: Build MCID → Vec<TextSpan> map
-        let mut mcid_map: HashMap<u32, Vec<TextSpan>> = HashMap::new();
+        // Step 2: Build (scope, MCID) → Vec<TextSpan> map.
+        //
+        // ISO 32000-1:2008 §14.7.4.2 makes an /MCID unique only "within its
+        // content stream", so the bare id is not an identity: a page and a
+        // Form XObject may each number theirs from 0. Bucketed by bare id, a
+        // form's MCID 0 joined the page's MCID 0 and both were emitted at the
+        // page element's slot — putting the form's text inside a table cell —
+        // while the form's own structure element then found the id already
+        // consumed and emitted nothing.
+        let default_scope = crate::structure::McidScope::Page(page_index as u32);
+        let mut mcid_map: HashMap<(crate::structure::McidScope, u32), Vec<TextSpan>> =
+            HashMap::new();
         let mut spans_without_mcid: Vec<TextSpan> = Vec::new();
 
         for span in all_spans {
             if let Some(mcid) = span.mcid {
-                mcid_map.entry(mcid).or_default().push(span);
+                let key = (span.mcid_scope.clone().unwrap_or(default_scope.clone()), mcid);
+                mcid_map.entry(key).or_default().push(span);
             } else {
                 spans_without_mcid.push(span);
             }
@@ -11394,7 +11437,7 @@ impl PdfDocument {
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(m) {
+            if let Some(sp) = mcid_map.get(&(scope.clone(), *m)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -11405,7 +11448,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |_scope, m| mcid_map.contains_key(&m),
+            |scope, m| mcid_map.contains_key(&(scope.clone(), m)),
             &mc_wins,
             &glyph_text,
         );
@@ -11422,7 +11465,7 @@ impl PdfDocument {
         let mut text = String::with_capacity(mcid_map.len() * 50);
         let mut prev_span: Option<TextSpan> = None;
         let mut prev_in_table = false;
-        let mut consumed_mcids: HashSet<u32> = HashSet::new();
+        let mut consumed_mcids: HashSet<(crate::structure::McidScope, u32)> = HashSet::new();
 
         for content in ordered_content {
             if content.is_word_break {
@@ -11443,14 +11486,15 @@ impl PdfDocument {
             // /ActualText replacement — now declined by the §14.9.4 conformance
             // gate — can mask this by collapsing each consecutive run to a
             // single emit.)
-            if !consumed_mcids.insert(mcid) {
+            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            let content_key = (mcid_scope_key.clone(), mcid);
+            if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
-            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
 
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(mcid);
+                    consumed_mcids.insert(content_key.clone());
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -11458,14 +11502,14 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(mcid);
+                    consumed_mcids.insert(content_key.clone());
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&mcid) {
-                consumed_mcids.insert(mcid);
+            if let Some(spans) = mcid_map.get(&content_key) {
+                consumed_mcids.insert(content_key.clone());
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
@@ -11502,11 +11546,17 @@ impl PdfDocument {
         }
 
         // Append spans with MCIDs not referenced by the structure tree
-        let mut unconsumed: Vec<(&u32, &Vec<TextSpan>)> = mcid_map
+        let mut unconsumed: Vec<(&(crate::structure::McidScope, u32), &Vec<TextSpan>)> = mcid_map
             .iter()
-            .filter(|(mcid, _)| !consumed_mcids.contains(mcid))
+            .filter(|(key, _)| !consumed_mcids.contains(*key))
             .collect();
-        unconsumed.sort_by_key(|(mcid, _)| **mcid);
+        // Deterministic order: by id, then by scope, so two streams that both
+        // number from 0 still append in a stable sequence.
+        unconsumed.sort_by(|a, b| {
+            a.0 .1
+                .cmp(&b.0 .1)
+                .then_with(|| format!("{:?}", a.0 .0).cmp(&format!("{:?}", b.0 .0)))
+        });
         if !unconsumed.is_empty() {
             log::debug!(
                 "Appending {} unreferenced MCIDs (e.g., from Form XObjects without StructParents)",
@@ -16251,14 +16301,21 @@ impl PdfDocument {
                     }
 
                     if !table_rank.is_empty() {
+                        // A marked-content id is scoped to the content stream that
+                        // defines it (ISO 32000-1:2008 14.7.4.2: an /MCID is unique
+                        // "within its content stream"), so a page and a Form XObject
+                        // may each number theirs from 0. A span with no scope of its
+                        // own already defaults to the page's above, so a miss here
+                        // means the span carries an explicit non-page scope and that
+                        // scope genuinely has no table rank — retrying the page
+                        // namespace then matched a *different* stream's id and swapped
+                        // form text into table cells. Every other scoped lookup in
+                        // this file has no such retry.
                         let key_of = |s: &crate::layout::TextSpan| {
                             s.mcid.and_then(|m| {
                                 let scope =
                                     s.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
-                                table_rank
-                                    .get(&(scope, m))
-                                    .or_else(|| table_rank.get(&(page_scope.clone(), m)))
-                                    .copied()
+                                table_rank.get(&(scope, m)).copied()
                             })
                         };
                         // The slots the table spans occupy in geometric order, and the
@@ -20680,8 +20737,22 @@ impl PdfDocument {
                     .cloned();
                 let cached_page = cached_page_owned.as_deref();
 
-                let order: Vec<u32> = cached_page
-                    .map(|content| content.iter().filter_map(|c| c.mcid).collect())
+                // The scope travels with the id — §14.7.4.2 scopes an /MCID
+                // to its content stream, so a form's 0 and the page's 0 are
+                // different marked content.
+                let page_scope = crate::structure::McidScope::Page(page_index as u32);
+                let order: Vec<(crate::structure::McidScope, u32)> = cached_page
+                    .map(|content| {
+                        content
+                            .iter()
+                            .filter_map(|c| {
+                                let m = c.mcid?;
+                                let scope =
+                                    c.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                                Some((scope, m))
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 let mut role_map: std::collections::HashMap<u32, crate::pipeline::StructRole> =
