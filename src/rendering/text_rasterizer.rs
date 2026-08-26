@@ -350,6 +350,29 @@ struct GlyphDropTally {
     first: Option<(&'static str, u32, u16)>,
 }
 
+/// Whether a run is one for which "painted nothing" is the *expected* outcome,
+/// so a drop tally would be a false positive.
+///
+/// `outline_glyph` returns `None` for an **empty** glyph as well as a missing
+/// one, so the tally cannot by itself tell "the font gave us nothing" from
+/// "the font says paint nothing". Two populations are legitimately the latter:
+///
+/// - Invisible text, ISO 32000-1:2008 §9.3.6 render modes 3 and 7 — an OCR
+///   text layer sitting under a scanned page image, which is meant to be
+///   searchable and not drawn.
+/// - The glyphless fonts those OCR tools emit. Tesseract and ocrmypdf ship a
+///   synthetic font — conventionally named with GLYPHLESS — mapping every CID
+///   to a non-zero glyph id with an empty outline and a correct /ToUnicode.
+///   Every such page rendered and extracted perfectly and still reported one
+///   warning per page claiming invisible data loss.
+///
+/// These are exactly the signals `src/extractors/text.rs` already gates on for
+/// the same population; the diagnostic gated on neither. A diagnostic that
+/// fires on the healthy common case trains callers to ignore the channel.
+fn drop_tally_is_expected(gs: &GraphicsState, base_font: &str) -> bool {
+    gs.render_mode == 3 || gs.render_mode == 7 || base_font.to_uppercase().contains("GLYPHLESS")
+}
+
 impl GlyphDropTally {
     fn record(&mut self, reason: &'static str, char_code: u32, gid: u16) {
         self.count += 1;
@@ -1475,12 +1498,14 @@ impl TextRasterizer {
             }
         }
 
-        unicode_dropped.report(
-            font_info
-                .map(|f| f.base_font.as_str())
-                .unwrap_or("<system fallback>"),
-            self,
-        );
+        // Suppress the tally for runs where painting nothing is the expected
+        // outcome — see `drop_tally_is_expected`.
+        let base_font = font_info
+            .map(|f| f.base_font.as_str())
+            .unwrap_or("<system fallback>");
+        if !drop_tally_is_expected(gs, base_font) {
+            unicode_dropped.report(base_font, self);
+        }
 
         // Return the magnitude of the accumulated advance along the active
         // writing axis. Callers that drive the text matrix forward consume
@@ -1652,7 +1677,9 @@ impl TextRasterizer {
                 }
             }
         }
-        dropped.report(&font_info.base_font, self);
+        if !drop_tally_is_expected(gs, &font_info.base_font) {
+            dropped.report(&font_info.base_font, self);
+        }
 
         Ok(if wmode == 0 { x_cursor } else { y_cursor })
     }
