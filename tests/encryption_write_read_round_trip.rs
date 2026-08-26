@@ -85,12 +85,20 @@ fn aes_256_round_trips_under_the_owner_password() {
 }
 
 /// The neighbouring revisions, so a fix cannot move the defect sideways.
+///
+/// Both are unavailable under `fips`: RC4 is not an approved cipher and the
+/// R4 key derivation is built on MD5, which FIPS 140-3 forbids. The crate
+/// makes that a build-time exclusion, so the two revisions simply do not
+/// exist in a FIPS build and there is nothing here to round-trip. AES-256
+/// above is approved and runs in every configuration.
+#[cfg(not(feature = "fips"))]
 #[test]
 fn aes_128_survives_a_write_read_round_trip() {
     let text = round_trip(EncryptionAlgorithm::Aes128, USER_PASSWORD);
     assert!(text.contains(SECRET_TEXT), "AES-128 round trip failed — got {text:?}");
 }
 
+#[cfg(not(feature = "fips"))]
 #[test]
 fn rc4_128_survives_a_write_read_round_trip() {
     let text = round_trip(EncryptionAlgorithm::Rc4_128, USER_PASSWORD);
@@ -102,11 +110,17 @@ fn rc4_128_survives_a_write_read_round_trip() {
 /// that was never encrypted at all.
 #[test]
 fn the_written_file_is_actually_encrypted() {
-    for algorithm in [
+    // A FIPS build offers only the approved revision; see above.
+    #[cfg(not(feature = "fips"))]
+    let algorithms = [
         EncryptionAlgorithm::Aes256,
         EncryptionAlgorithm::Aes128,
         EncryptionAlgorithm::Rc4_128,
-    ] {
+    ];
+    #[cfg(feature = "fips")]
+    let algorithms = [EncryptionAlgorithm::Aes256];
+
+    for algorithm in algorithms {
         let bytes = write_encrypted(algorithm);
         let needle = SECRET_TEXT.as_bytes();
         let found = bytes.windows(needle.len()).any(|w| w == needle);

@@ -28,7 +28,8 @@ impl EncryptionWriteHandler {
     /// encryption key, wraps it into `/UE` and `/OE`, and requires every string
     /// and stream to use that same key. There is nothing to re-derive from the
     /// password, so the key must be carried from
-    /// [`EncryptDictBuilder::build_with_key`] to here — deriving one
+    /// [`crate::encryption::EncryptDictBuilder::build_with_key`] to here —
+    /// deriving one
     /// independently produces a file whose `/UE` wraps one key while its
     /// streams are encrypted under another, which authenticates and then
     /// decrypts to noise.

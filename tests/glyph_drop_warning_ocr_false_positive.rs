@@ -251,8 +251,17 @@ fn pdf_with_broken_font(page_count: usize, base_font: &str, render_mode: u8) -> 
     buf
 }
 
+/// The warning collector is process-global and `drain` empties it, so two of
+/// these running at once let one test drain the other's warnings. Cargo runs
+/// the tests in a file concurrently, so they take turns here instead. Held for
+/// the whole clear/render/drain sequence, which is the indivisible part.
+static WARNING_COLLECTOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Render every page and return the glyph-drop warnings naming `base_font`.
 fn drop_warnings(base_font: &str, render_mode: u8) -> Vec<String> {
+    // A poisoned lock only means some other test panicked; the buffer is still
+    // usable and failing here would hide that test's own failure.
+    let _guard = WARNING_COLLECTOR.lock().unwrap_or_else(|e| e.into_inner());
     let _ = drain_global_warnings(); // clear anything a prior test left
     let pdf = pdf_with_broken_font(2, base_font, render_mode);
     let doc = PdfDocument::from_bytes(pdf).expect("parse");
