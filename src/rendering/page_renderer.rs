@@ -10126,10 +10126,37 @@ fn apply_pending_clip(
         let gs = gs_stack.current();
         let transform = combine_transforms(base_transform, &gs.ctm);
 
-        // A clip path beyond f32 device precision cannot be rasterized.
-        // Drop the clip rather than materialize an empty mask — an empty
-        // mask would erase every subsequent draw on the page.
+        // A clip path beyond f32 device precision cannot be rasterized, and
+        // the two ways that happens need opposite answers.
+        //
+        // If the clip's device bounds miss the pixmap entirely, the file has
+        // asked for a region containing none of the page. ISO 32000-1:2008
+        // §8.5.4 says content outside the clipping path shall not be painted,
+        // so the correct output is a blank page — and dropping the clip
+        // produced the opposite, painting everything it was hiding. Annex C.1
+        // does license having an arithmetic limit, but "an error occurs" is
+        // not "discard the clip and paint what it was hiding"; resolving past
+        // a limit must never be resolved in the direction that paints more.
+        //
+        // If the bounds are merely enormous but still reach the page, the clip
+        // restricts nothing visible and discarding it is harmless — which is
+        // the case the existing behaviour was written for, and an empty mask
+        // there would wrongly erase every subsequent draw.
         if !device_bounds_rasterizable(&path, transform) {
+            if super::device_bounds_miss_pixmap(&path, transform, pixmap.width(), pixmap.height()) {
+                log::debug!(
+                    "clip lies wholly off-pixmap and cannot be rasterized; clipping everything                      away: {:?}",
+                    path.bounds()
+                );
+                // An all-zero mask: nothing subsequent paints, which is what a
+                // clip excluding the whole page means.
+                if let Some(empty) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) {
+                    if let Some(slot) = clip_stack.last_mut() {
+                        *slot = Some(empty);
+                    }
+                }
+                return;
+            }
             log::debug!("skipping clip beyond f32 device precision: {:?}", path.bounds());
             return;
         }

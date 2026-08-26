@@ -233,6 +233,31 @@ pub(crate) fn device_bounds_rasterizable(
     device_bounds(path, transform).is_some_and(|b| b.iter().all(|c| c.abs() <= MAX_DEVICE_COORD))
 }
 
+/// Whether a path's device bounds lie wholly outside a `width` x `height`
+/// pixmap — i.e. the region it describes contains none of the page.
+///
+/// Used to tell two very different unrasterizable clips apart. A clip with
+/// enormous coordinates that still *encloses* the page restricts nothing that
+/// is visible, so discarding it is harmless. A clip placed far off-page
+/// excludes everything, and discarding it paints the entire page that the file
+/// asked to be hidden — ISO 32000-1:2008 §8.5.4 says content outside the
+/// clipping path shall not be painted, and a blank page is the correct output
+/// there. Annex C.1 licenses *having* an arithmetic limit; it does not license
+/// resolving past one in the direction that paints more.
+///
+/// `None` bounds (a non-finite corner) are not "outside" — nothing can be
+/// concluded about them, so they are left to the caller's fallback.
+pub(crate) fn device_bounds_miss_pixmap(
+    path: &tiny_skia::Path,
+    transform: tiny_skia::Transform,
+    width: u32,
+    height: u32,
+) -> bool {
+    device_bounds(path, transform).is_some_and(|[min_x, min_y, max_x, max_y]| {
+        max_x < 0.0 || max_y < 0.0 || min_x > f64::from(width) || min_y > f64::from(height)
+    })
+}
+
 /// Whether a draw is worth handing to tiny_skia for a `width` x `height`
 /// pixmap. Two independent questions that must not be conflated:
 ///
