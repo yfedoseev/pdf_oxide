@@ -165,6 +165,16 @@ struct BoundedObjectCache {
     insertion_order: std::collections::VecDeque<ObjectRef>,
     current_bytes: usize,
     max_bytes: usize,
+    /// Objects that exist only in this cache and cannot be re-read.
+    ///
+    /// A synthetic Catalog or page tree rebuilt for a truncated file has no
+    /// byte offset, and reconstruction pre-populates the scanned-offset map, so
+    /// a later lookup reports "not found" immediately rather than rescanning.
+    /// Evicting one therefore does not cost a re-parse — it makes the object
+    /// permanently unreachable, and a large truncated document would open,
+    /// extract its first pages, then fail silently on every later call once the
+    /// cache turned over.
+    pinned: HashSet<ObjectRef>,
 }
 
 impl BoundedObjectCache {
@@ -174,7 +184,14 @@ impl BoundedObjectCache {
             insertion_order: std::collections::VecDeque::new(),
             current_bytes: 0,
             max_bytes,
+            pinned: HashSet::new(),
         }
+    }
+
+    /// Insert an object that has no backing bytes and so must never be evicted.
+    fn insert_pinned(&mut self, key: ObjectRef, value: Object) {
+        self.pinned.insert(key);
+        self.insert(key, value);
     }
 
     fn get(&self, key: &ObjectRef) -> Option<&Object> {
@@ -201,9 +218,22 @@ impl BoundedObjectCache {
         // larger replacement doesn't leave the cache over budget — keep
         // evicting other entries instead.
         let mut skipped_self = false;
+        // Bounds the rotation below: once every remaining entry has been
+        // examined without evicting anything, the queue is all pinned (or all
+        // this key) and there is nothing left to reclaim.
+        let mut examined = 0usize;
         while self.current_bytes + entry_size > self.max_bytes {
+            if examined > self.insertion_order.len() {
+                break;
+            }
             match self.insertion_order.pop_front() {
                 Some(old_key) => {
+                    examined += 1;
+                    if self.pinned.contains(&old_key) {
+                        // Unevictable: rotate it to the back and keep looking.
+                        self.insertion_order.push_back(old_key);
+                        continue;
+                    }
                     if old_key == key {
                         if skipped_self {
                             self.insertion_order.push_front(old_key);
@@ -239,10 +269,17 @@ impl BoundedObjectCache {
         self.map.keys()
     }
 
+    /// Drop every evictable entry, keeping the pinned ones.
+    ///
+    /// Callers clear this cache to force a re-parse (after authentication, for
+    /// instance). A pinned object has nothing to re-parse from, so clearing it
+    /// would destroy it rather than refresh it.
     fn clear(&mut self) {
-        self.map.clear();
-        self.insertion_order.clear();
-        self.current_bytes = 0;
+        let pinned = std::mem::take(&mut self.pinned);
+        self.map.retain(|k, _| pinned.contains(k));
+        self.insertion_order.retain(|k| pinned.contains(k));
+        self.current_bytes = self.map.values().map(Self::estimate_size).sum();
+        self.pinned = pinned;
     }
 
     fn estimate_size(obj: &Object) -> usize {
@@ -1158,7 +1195,9 @@ impl PdfDocument {
         if !synthetic_objects.is_empty() {
             let mut cache = document.object_cache.lock_or_recover();
             for (obj_ref, obj) in synthetic_objects {
-                cache.insert(obj_ref, obj);
+                // Pinned: there is no byte offset to re-read these from, so an
+                // eviction would not cost a re-parse — it would lose the object.
+                cache.insert_pinned(obj_ref, obj);
             }
         }
 
@@ -25095,6 +25134,88 @@ mod tests {
     // from the reconstructed table — so the first object miss is O(1) instead
     // of triggering a SECOND full-file scan (the heavy "first extract_text"
     // cost on corrupt-xref polyglot PDFs).
+    #[test]
+    fn pinned_cache_entries_survive_eviction_pressure() {
+        // A synthetic Catalog / page tree rebuilt for a truncated file has no
+        // byte offset, and reconstruction pre-populates the scanned-offset map
+        // so a later lookup reports "not found" rather than rescanning.
+        // Evicting one therefore does not cost a re-parse — it loses the
+        // object, and a large truncated document opens, extracts its first
+        // pages, then fails silently once the cache turns over.
+        //
+        // Exercised on the cache directly: reproducing it end to end needs a
+        // document large enough to churn 64 MB, which is not a reasonable
+        // fixture. The property under test is the eviction rule itself.
+        let mut cache = BoundedObjectCache::new(4096);
+        let synthetic = ObjectRef::new(9999, 0);
+        cache.insert_pinned(synthetic, Object::Integer(42));
+
+        // Flood well past the budget with ordinary entries.
+        for i in 0..500u32 {
+            cache.insert(ObjectRef::new(i, 0), Object::String(vec![b'x'; 256]));
+        }
+
+        assert!(
+            cache.get(&synthetic).is_some(),
+            "the pinned synthetic object was evicted and is now unreachable"
+        );
+        assert!(cache.len() < 500, "eviction should still be reclaiming ordinary entries");
+    }
+
+    #[test]
+    fn an_unpinned_entry_is_evicted_under_the_same_pressure() {
+        // The control for the test above: it would pass vacuously if the flood
+        // did not actually evict anything. Same budget, same flood, ordinary
+        // insert — and the entry must be gone, which is exactly what happened
+        // to the synthetic recovery objects before they were pinned.
+        let mut cache = BoundedObjectCache::new(4096);
+        let ordinary = ObjectRef::new(9999, 0);
+        cache.insert(ordinary, Object::Integer(42));
+
+        for i in 0..500u32 {
+            cache.insert(ObjectRef::new(i, 0), Object::String(vec![b'x'; 256]));
+        }
+
+        assert!(
+            cache.get(&ordinary).is_none(),
+            "the flood did not evict an ordinary entry, so the pinned test proves nothing"
+        );
+    }
+
+    #[test]
+    fn clearing_the_cache_keeps_pinned_entries() {
+        // `authenticate()` clears this cache to force re-decryption. A pinned
+        // object has nothing to re-parse from, so clearing must refresh the
+        // evictable entries and leave the pinned ones alone.
+        let mut cache = BoundedObjectCache::new(1 << 20);
+        let synthetic = ObjectRef::new(9999, 0);
+        cache.insert_pinned(synthetic, Object::Integer(7));
+        cache.insert(ObjectRef::new(1, 0), Object::Integer(1));
+
+        cache.clear();
+
+        assert!(
+            cache.get(&synthetic).is_some(),
+            "clear() destroyed a pinned object that cannot be re-read"
+        );
+        assert!(
+            cache.get(&ObjectRef::new(1, 0)).is_none(),
+            "clear() should still drop ordinary entries so they are re-parsed"
+        );
+    }
+
+    #[test]
+    fn an_all_pinned_cache_does_not_spin() {
+        // Eviction rotates past pinned entries; with nothing evictable it must
+        // terminate rather than cycle the queue forever.
+        let mut cache = BoundedObjectCache::new(512);
+        for i in 0..8u32 {
+            cache.insert_pinned(ObjectRef::new(i, 0), Object::String(vec![b'y'; 256]));
+        }
+        // Reaching here at all is the assertion.
+        assert_eq!(cache.len(), 8);
+    }
+
     #[test]
     fn test_reconstructed_xref_preseeds_scan_cache() {
         let pdf = b"%PDF-1.4\n\
