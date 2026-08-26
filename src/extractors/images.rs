@@ -1959,15 +1959,38 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
 
     let mut raw = cmyk;
     raw.truncate(expected);
-    // An Adobe APP14 marker (transform 0 = CMYK, 2 = YCCK) means jpeg-decoder
-    // has already applied a `255 - x` inversion; undo it to recover the raw
-    // DCT samples poppler uses as straight CMYK ink.
-    if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
+    // jpeg-decoder has already applied a `255 - x` inversion; undo it to
+    // recover the raw DCT samples poppler uses as straight CMYK ink.
+    //
+    // The undo used to run only when an Adobe APP14 marker was present, which
+    // is wrong twice over. ISO 32000-1:2008 Table 13 (`docs/spec/pdf.md:2979`)
+    // says that when the marker is absent "the default value of ColorTransform
+    // shall be 1 if the image has three components and **0 otherwise**" — so
+    // for four components, no marker *is* transform 0, the very case the undo
+    // handles. And measurement settles it independently: `jpeg-decoder`
+    // returns byte-identical samples for the same image with and without the
+    // marker, pinned by `tests/cmyk_jpeg_without_app14_marker.rs`. A
+    // marker-less 4-component JPEG therefore kept the decoder's inversion and
+    // rendered as the complement of its ink.
+    //
+    // Only an explicit marker declaring some other transform opts out.
+    if cmyk_jpeg_samples_are_inverted(jpeg_data) {
         for b in raw.iter_mut() {
             *b = 255 - *b;
         }
     }
     Ok(raw)
+}
+
+/// Whether `jpeg-decoder`'s output for this 4-component JPEG carries its
+/// `255 - x` inversion, so the extractor must undo it.
+///
+/// True when there is no Adobe APP14 marker (Table 13 makes that
+/// `ColorTransform 0` for four components) or when the marker declares
+/// transform 0 (plain CMYK) or 2 (YCCK). An explicit marker declaring anything
+/// else is taken at its word.
+fn cmyk_jpeg_samples_are_inverted(jpeg_data: &[u8]) -> bool {
+    matches!(scan_app14_color_transform(jpeg_data), None | Some(0) | Some(2))
 }
 
 /// Like [`decode_cmyk_jpeg_to_rgb`] but applies the given ICC transform
@@ -2006,12 +2029,11 @@ pub fn decode_cmyk_jpeg_to_rgb_with_profile(
     // CMYK transform 0 or YCCK transform 2) to recover the raw DCT samples,
     // which poppler / Ghostscript render as straight CMYK ink. No marker ->
     // pass through unchanged.
-    let straight_cmyk: Vec<u8> =
-        if matches!(scan_app14_color_transform(jpeg_data), Some(0) | Some(2)) {
-            cmyk[..expected].iter().map(|b| 255 - *b).collect()
-        } else {
-            cmyk[..expected].to_vec()
-        };
+    let straight_cmyk: Vec<u8> = if cmyk_jpeg_samples_are_inverted(jpeg_data) {
+        cmyk[..expected].iter().map(|b| 255 - *b).collect()
+    } else {
+        cmyk[..expected].to_vec()
+    };
 
     if let Some(t) = transform {
         return Ok(t.convert_cmyk_buffer(&straight_cmyk));
