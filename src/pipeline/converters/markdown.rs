@@ -22,6 +22,15 @@ static RE_EMAIL: LazyLock<Regex> =
 /// a sequence of `-` (with optional surrounding `:` for alignment) and
 /// optional spaces. At least two cells required so single-pipe lines
 /// (which are the very pattern we're trying to escape) do not match.
+
+/// The text with every whitespace character removed.
+///
+/// Used to compare what a table rendered against what a span carries when the
+/// two sides disagree only about spacing.
+fn squash_whitespace(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 fn is_table_separator_line(line: &str) -> bool {
     let trimmed = line.trim();
     if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
@@ -2020,11 +2029,25 @@ impl MarkdownOutputConverter {
                 continue;
             }
             let rendered = &table_mds[table_idx];
+            // Compare on the glyph sequence, not on the spacing. The cell
+            // builder joins its member spans with a space while the flow
+            // assembler joins the same glyphs with none, so a span the table
+            // already renders can fail a literal substring test purely on
+            // whitespace and be re-emitted beside the table. Whitespace is a
+            // rendering choice of each side; the glyphs are the content. The
+            // row's `|` delimiters are not whitespace and so survive the
+            // squash, which keeps a span that straddles two cells from
+            // matching the concatenation of their texts.
+            let rendered_glyphs = squash_whitespace(rendered);
             let mut orphans: Vec<&&OrderedTextSpan> = skipped
                 .iter()
                 .filter(|s| {
                     let trimmed = s.span.text.trim();
-                    !trimmed.is_empty() && !rendered.contains(trimmed)
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    let glyphs = squash_whitespace(trimmed);
+                    !glyphs.is_empty() && !rendered_glyphs.contains(&glyphs)
                 })
                 .collect();
             if !orphans.is_empty() {

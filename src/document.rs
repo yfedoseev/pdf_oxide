@@ -6124,6 +6124,59 @@ impl PdfDocument {
                     }
                     true
                 }
+
+                /// The mirror of `take_one`'s containment case: one span token
+                /// may be the **concatenation of several** budget tokens.
+                ///
+                /// The two sides split words at different distances — word
+                /// clustering breaks at roughly 1.8 pt while the flow assembler
+                /// only inserts a space at about 7.2 pt for 10 pt Courier — so a
+                /// cell yielding `{"abc", "def"}` faces a flow span of
+                /// `"abcdef"`. Containment alone cannot absorb that: no budget
+                /// token contains the longer span token, so the span was kept
+                /// and its glyphs were emitted a second time alongside the
+                /// table's own rendering.
+                ///
+                /// Consumes the covering sequence only if the whole token is
+                /// covered exactly, so nothing is spent on a partial match.
+                fn take_concatenation(
+                    work: &mut std::collections::HashMap<&str, usize>,
+                    tok: &str,
+                ) -> bool {
+                    // Deterministic: longest available prefix first, ties by
+                    // text. HashMap iteration order is not stable and this
+                    // decides what the page emits.
+                    fn cover<'a>(
+                        work: &mut std::collections::HashMap<&'a str, usize>,
+                        rest: &str,
+                        taken: &mut Vec<&'a str>,
+                    ) -> bool {
+                        if rest.is_empty() {
+                            return true;
+                        }
+                        let mut candidates: Vec<&'a str> = work
+                            .iter()
+                            .filter(|(k, n)| **n > 0 && !k.is_empty() && rest.starts_with(**k))
+                            .map(|(k, _)| *k)
+                            .collect();
+                        candidates.sort_by_key(|k| (std::cmp::Reverse(k.len()), *k));
+                        for cand in candidates {
+                            if let Some(slot) = work.get_mut(cand) {
+                                *slot -= 1;
+                            }
+                            taken.push(cand);
+                            if cover(work, &rest[cand.len()..], taken) {
+                                return true;
+                            }
+                            taken.pop();
+                            *work.entry(cand).or_insert(0) += 1;
+                        }
+                        false
+                    }
+
+                    let mut taken: Vec<&str> = Vec::new();
+                    cover(work, tok, &mut taken)
+                }
                 // Test plus decrement, in one place so the containment and
                 // text-fallback paths cannot drift apart — they must draw on
                 // the SAME accounting. All-or-nothing: a span either fits
@@ -6136,7 +6189,9 @@ impl PdfDocument {
                     let mut work = remaining.clone();
                     for (tok, n) in span_tokens {
                         for _ in 0..*n {
-                            if !take_one(&mut work, tok, allow_fragment) {
+                            if !take_one(&mut work, tok, allow_fragment)
+                                && !(allow_fragment && take_concatenation(&mut work, tok))
+                            {
                                 return false;
                             }
                         }
