@@ -1084,7 +1084,22 @@ fn detect_columns(
     // columns and should merge regardless of the fixed threshold, while a
     // sparse table with few, widely-spaced columns keeps the full
     // `merge_threshold` (no median signal to scale from).
-    let effective_merge_threshold = if columns.len() >= 3 {
+    //
+    // The premise is that the median gap is this table's pitch, so it has to
+    // hold before it is used. On a layout with no pitch -- most often prose the
+    // detector has mistaken for a table -- the median is the middle of a spread
+    // of unrelated gaps, and capping at 0.6 of it forbids merging fragments
+    // that are one column: a word is split from the number beside it
+    // (`Line 1` -> `Line` | `1`), and because neither half then matches the flow
+    // span it came from, the row is emitted a second time as prose.
+    //
+    // `is_regular_lattice` is the gate rather than the pitch test alone: that
+    // test tolerates two off-pitch gaps, which on a handful of columns is every
+    // gap it has, so it answers "yes" for any small irregular group. The
+    // lattice predicate carries the column-count floor that makes the tolerance
+    // mean something, and it is the same predicate this ratio was borrowed
+    // from, so the two stay in step.
+    let effective_merge_threshold = if is_regular_lattice(&columns) {
         let mut gaps: Vec<f32> = columns
             .windows(2)
             .map(|w| w[1].x_center - w[0].x_center)
@@ -1163,14 +1178,18 @@ fn is_numeric_cell(t: &str) -> bool {
 /// a numeric data lattice rather than prose that happened to align. Requires
 /// ≥5 columns and tolerates up to two off-pitch gaps (e.g. a wider row-label
 /// column at the left edge).
-fn is_regular_lattice(cols: &[ColumnCluster]) -> bool {
-    if cols.len() < 5 {
+/// Whether `gaps` describe a regular pitch: most of them sit in the
+/// `[0.6, 1.6] * median` band around their own median.
+///
+/// Both callers below reason from "this table has a pitch". That premise has
+/// to be checked before it is used: on an irregular layout the median is just
+/// the middle of a spread of unrelated gaps, and a band around it means
+/// nothing.
+fn gaps_are_on_pitch(gaps: &[f32]) -> bool {
+    if gaps.is_empty() {
         return false;
     }
-    let mut centers: Vec<f32> = cols.iter().map(|c| c.x_center).collect();
-    centers.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
-    let gaps: Vec<f32> = centers.windows(2).map(|w| w[1] - w[0]).collect();
-    let mut sorted = gaps.clone();
+    let mut sorted = gaps.to_vec();
     sorted.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
     let median = sorted[sorted.len() / 2];
     if median <= 0.0 {
@@ -1181,6 +1200,16 @@ fn is_regular_lattice(cols: &[ColumnCluster]) -> bool {
         .filter(|&&g| g >= median * 0.6 && g <= median * 1.6)
         .count();
     on_pitch + 2 >= gaps.len()
+}
+
+fn is_regular_lattice(cols: &[ColumnCluster]) -> bool {
+    if cols.len() < 5 {
+        return false;
+    }
+    let mut centers: Vec<f32> = cols.iter().map(|c| c.x_center).collect();
+    centers.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+    let gaps: Vec<f32> = centers.windows(2).map(|w| w[1] - w[0]).collect();
+    gaps_are_on_pitch(&gaps)
 }
 
 fn detect_text_edge_columns(
@@ -5030,6 +5059,47 @@ mod tests {
             columns.len(),
             2,
             "Spans at x=130/135/140 should merge into 1 column, plus x=50 = 2 total, got {}",
+            columns.len()
+        );
+    }
+
+    /// The pitch-scaled cap must not fire on a layout that has no pitch.
+    ///
+    /// Six lines of `Word 1`-style prose: a label at a fixed left edge and a
+    /// short number just past it. The label widths differ, so the column
+    /// centres are spread irregularly and there is no pitch to scale to. The
+    /// cap applied anyway forbade merging the number into its label's column,
+    /// splitting `Line 1` into `Line` | `1`; the row then no longer matched the
+    /// flow span it came from and was emitted a second time as prose.
+    ///
+    /// Geometry is taken from a real page: labels at x=90 of widths 19, 43 and
+    /// 52, each followed by a ~6pt number about 3pt later.
+    #[test]
+    fn test_detect_columns_no_pitch_keeps_the_fixed_threshold() {
+        let mut spans = Vec::new();
+        for (row, (label, w)) in [
+            ("Line", 19.0f32),
+            ("Line", 19.0),
+            ("Line", 19.0),
+            ("Underline", 43.0),
+            ("BoldLine", 43.0),
+            ("ItalicLine", 52.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 100.0 - row as f32 * 12.0;
+            spans.push(create_test_span(label, 90.0, y, *w, 10.0));
+            spans.push(create_test_span("1", 90.0 + w + 3.0, y, 6.0, 10.0));
+        }
+        let config = TableDetectionConfig::default();
+        let columns =
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+        assert!(
+            columns.len() <= 2,
+            "an irregular label/number layout has no pitch to scale to, so the \
+             fixed merge threshold must still join each number to its label; \
+             got {} columns",
             columns.len()
         );
     }
