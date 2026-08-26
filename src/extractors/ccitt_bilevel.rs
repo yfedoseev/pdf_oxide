@@ -26,6 +26,22 @@ use crate::error::{Error, Result};
 /// Each byte contains 8 pixels (MSB = leftmost pixel, LSB = rightmost pixel).
 /// Pixels are encoded as: 0 = white, 1 = black (unless /BlackIs1=true, then inverted).
 pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
+    decompress_ccitt_reporting(data, params).map(|(out, _)| out)
+}
+
+/// As [`decompress_ccitt`], but reports whether the data actually decoded.
+///
+/// The blank fallback below is a *substitute*, not a decode result, and a
+/// caller that treats it as one can be badly wrong: for an `/ImageMask` the
+/// all-zero buffer is a sample value like any other, so under `/Decode [1 0]`
+/// it reads as "paint every pixel" and an undecodable stencil covers its whole
+/// footprint in the fill colour. The caller needs to know the difference to
+/// choose a value that draws nothing under the mask's own `/Decode`.
+///
+/// Returns `(data, rows_valid)` — the number of leading rows that came from
+/// the stream. Rows beyond that are padding or a blank substitute, and a
+/// caller that must not paint what it could not read should overwrite them.
+pub fn decompress_ccitt_reporting(data: &[u8], params: &CcittParams) -> Result<(Vec<u8>, usize)> {
     // Validate required parameters
     if params.columns == 0 {
         return Err(Error::Decode("CCITT decompression requires /Columns parameter".to_string()));
@@ -56,9 +72,11 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
     // It honors /EncodedByteAlign (which the fax crate cannot — its bit reader
     // is private) and recovers partial content from truncated/damaged streams
     // instead of blanking the page.
+    let mut rows_valid: Option<usize> = None;
     let in_house = crate::decoders::ccitt::decode(data, params);
     let fax_result = match in_house {
         Ok(decoded) => {
+            rows_valid = Some(decoded.rows_decoded);
             if decoded.recovered_partial {
                 log::warn!(
                     "CCITT: recovered {} rows then padded white (truncated/damaged stream, {}x{}, {} bytes)",
@@ -83,7 +101,10 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
             if params.black_is_1 {
                 invert_bilevel_pixels(&mut output);
             }
-            Ok(output)
+            // The fax-crate fallback reports no row count; it either decodes
+            // the whole image or errors, so treat success as complete.
+            let rows = rows_valid.unwrap_or(usize::MAX);
+            Ok((output, rows))
         },
         Err(e) => {
             // Both decoders failed. Do NOT silently return an all-white page
@@ -112,7 +133,8 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 Error::Decode(format!("Unable to allocate {fallback_len} bytes for CCITT fallback"))
             })?;
             fallback.resize(fallback_len, 0);
-            Ok(fallback)
+            // Nothing in this buffer came from the stream.
+            Ok((fallback, 0))
         },
     }
 }

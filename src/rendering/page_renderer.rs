@@ -4719,7 +4719,9 @@ impl PageRenderer {
             xobject.decode_stream_data()?
         };
         if let Some(params) = Self::image_mask_ccitt_params(dict, width, height, doc)? {
-            raw = crate::extractors::ccitt_bilevel::decompress_ccitt(&raw, &params)?;
+            let (decoded, rows_valid) =
+                crate::extractors::ccitt_bilevel::decompress_ccitt_reporting(&raw, &params)?;
+            raw = decoded;
 
             // The shared CCITT image decoder normalises packed rows to
             // 0=white, 1=black. An ImageMask needs the actual PDF sample
@@ -4730,6 +4732,26 @@ impl PageRenderer {
             // values consumed by the independent `/Decode` mapping below.
             for byte in &mut raw {
                 *byte = !*byte;
+            }
+
+            // Rows the decoder could not read are padding, not content — a
+            // truncated stream is padded white and a wholly undecodable one is
+            // replaced by a blank buffer. Neither is neutral: an ImageMask
+            // paints where the sample is 0 under the default /Decode and where
+            // it is 1 under [1 0], so one of the two reads the padding as
+            // "paint every pixel" and an unreadable stencil covers its whole
+            // footprint in the fill colour.
+            //
+            // Overwrite only the padded tail — the rows that *did* decode are
+            // real content and this crate deliberately keeps them rather than
+            // blanking the page — with the value that draws nothing under this
+            // mask's own /Decode. The result is the page as it would look with
+            // the stencil absent, which is the honest degradation.
+            let row_bytes = (width as usize).div_ceil(8);
+            if rows_valid < height as usize && row_bytes > 0 {
+                let blank = if invert { 0x00 } else { 0xFF };
+                let from = rows_valid.saturating_mul(row_bytes).min(raw.len());
+                raw[from..].fill(blank);
             }
         }
 
