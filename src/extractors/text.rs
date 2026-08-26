@@ -5321,15 +5321,17 @@ impl<'doc> TextExtractor<'doc> {
                 // other: continuity is a property of the resulting pen
                 // position, not of the operator that moved the pen.
                 //
-                // The bound is an em rather than a word space deliberately. A
-                // producer can leave an intra-word repositioning seam WIDER
-                // than the same font's declared space advance, so no
-                // word-space constant separates a seam from a space; only the
-                // source-order evidence the span merger reads (a space glyph
-                // occupies a character position, a seam is pure
-                // repositioning) tells them apart. Everything below an em is
-                // therefore left to the merger, and this rule speaks only to
-                // gaps too large to be typographic slack at any size.
+                // The bound is a column gap, not a word space. A producer can
+                // leave an intra-word repositioning seam WIDER than the same
+                // font's declared space advance, so no word-space constant
+                // separates a seam from a space; only the source-order
+                // evidence the span merger reads (a space glyph occupies a
+                // character position, a seam is pure repositioning) tells them
+                // apart. Everything narrower is therefore left to the merger,
+                // and this rule speaks only to gaps wide enough that the line
+                // grouping would already call them a column boundary — the
+                // same `max(3 x font size, 30 pt)` it uses, so the two levels
+                // cannot disagree about what separates text.
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
                         Some(ref mut buffer)
@@ -5337,7 +5339,27 @@ impl<'doc> TextExtractor<'doc> {
                                 && a == buffer.start_matrix.a
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c
-                                && d == buffer.start_matrix.d =>
+                                && d == buffer.start_matrix.d
+                                // The raw-matrix band and forward test are kept
+                                // ANDed with the frame-correct rule rather than
+                                // replaced by it. Substituting reads better and
+                                // is what the writing-axis helper was built for,
+                                // but it changes what a quarter-turn run does:
+                                // the raw band collapses to its 0.5 pt floor
+                                // there, so rotated runs never merge today, and
+                                // letting them merge concatenates them in
+                                // content-stream order. That defeats the
+                                // writing-axis ordering the rotated line
+                                // grouping performs — a chart label drawing its
+                                // subscript last reads "H02" instead of "H2O".
+                                // Merging rotated runs is worth doing (a run set
+                                // glyph by glyph yields one span per glyph), but
+                                // only together with an ordering rule that
+                                // survives it, which is not this change.
+                                && (f - buffer.start_matrix.f).abs()
+                                    <= ((cur_font_size * buffer.start_matrix.d).abs() * 0.5)
+                                        .max(0.5)
+                                && e >= buffer.start_matrix.e =>
                         {
                             match Self::run_continuation_along(
                                 buffer.start_matrix,
@@ -8701,11 +8723,14 @@ impl<'doc> TextExtractor<'doc> {
         if perp.abs() > tolerance || along < 0.0 {
             return None;
         }
-        // The run is contiguous glyphs, so the new origin must not skip an em
-        // of empty space past the run's own advance. See the `Tm` handler for
-        // why the bound is an em and not a word space.
-        let em = (font_size * axis.max(1e-6)).abs();
-        (along - accumulated <= em).then_some(along)
+        // The run is contiguous glyphs, so the new origin must not skip a
+        // separating gap past the run's own advance. `max(3 x font size,
+        // 30 pt)` is the column-gap threshold the line grouping already uses
+        // to decide that two pieces of text belong to different columns; a
+        // displacement that wide is the same judgement made one level earlier,
+        // so the two agree by construction rather than by coincidence.
+        let limit = ((font_size * 3.0).max(30.0) * axis.max(1e-6)).abs();
+        (along - accumulated <= limit).then_some(along)
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
@@ -9243,8 +9268,12 @@ mod tests {
     }
 
     /// The gap bound, in every quadrant. A jump past the run's end by more
-    /// than an em is a new run wherever the run happens to point — the rule
-    /// that keeps two columns of rotated text from gluing into one span.
+    /// than a column gap is a new run wherever the run happens to point — the
+    /// rule that keeps two columns of rotated text from gluing into one span.
+    ///
+    /// The threshold is `max(3 x font size, 30 pt)`, the same one the line
+    /// grouping uses to separate columns, so the two levels agree about what
+    /// counts as a separating gap.
     #[test]
     fn test_run_continuation_bounds_the_gap_in_every_quadrant() {
         let m = |a, b, c, d| Matrix {
@@ -9256,8 +9285,9 @@ mod tests {
             f: 500.0,
         };
         let fs = 10.0;
-        // The run has advanced 14 pt. An em is 10 pt, so a displacement of 24
-        // lands exactly at the bound and 30 is beyond it.
+        // The run has advanced 14 pt and the threshold at 10 pt type is
+        // max(30, 30) = 30 pt, so a displacement of 44 lands exactly at the
+        // bound and 60 is well beyond it.
         let at = |mat: Matrix, de: f32, df: f32| {
             TextExtractor::run_continuation_along(mat, 0, mat.e + de, mat.f + df, fs, 14.0)
                 .is_some()
@@ -9269,10 +9299,10 @@ mod tests {
             ("180°", m(-1.0, 0.0, 0.0, -1.0), (-1.0, 0.0)),
         ] {
             let step = |d: f32| (unit.0 * d, unit.1 * d);
-            let (e24, f24) = step(24.0);
-            assert!(at(mat, e24, f24), "{name}: a gap of exactly an em must continue");
-            let (e30, f30) = step(30.0);
-            assert!(!at(mat, e30, f30), "{name}: a gap beyond an em must end the run");
+            let (e44, f44) = step(44.0);
+            assert!(at(mat, e44, f44), "{name}: a gap of exactly the threshold must continue");
+            let (e60, f60) = step(60.0);
+            assert!(!at(mat, e60, f60), "{name}: a gap beyond the threshold must end the run");
         }
     }
 
