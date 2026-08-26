@@ -5334,28 +5334,27 @@ impl<'doc> TextExtractor<'doc> {
                     && match self.tj_span_buffer {
                         Some(ref mut buffer)
                             if !buffer.is_empty()
-                                && (f - buffer.start_matrix.f).abs()
-                                    <= ((cur_font_size * buffer.start_matrix.d).abs() * 0.5)
-                                        .max(0.5)
                                 && a == buffer.start_matrix.a
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c
-                                && d == buffer.start_matrix.d
-                                && e >= buffer.start_matrix.e
-                                && Self::advances_along_writing_axis(
-                                    buffer.start_matrix,
-                                    buffer.wmode,
-                                    e,
-                                    f,
-                                    cur_font_size,
-                                )
-                                && e - (buffer.start_matrix.e + buffer.accumulated_width)
-                                    <= (cur_font_size * buffer.start_matrix.a).abs() =>
+                                && d == buffer.start_matrix.d =>
                         {
-                            // Same line, same transform, LTR progression →
-                            // update width to reflect actual visual extent
-                            buffer.accumulated_width = e - buffer.start_matrix.e;
-                            true
+                            match Self::run_continuation_along(
+                                buffer.start_matrix,
+                                buffer.wmode,
+                                e,
+                                f,
+                                cur_font_size,
+                                buffer.accumulated_width,
+                            ) {
+                                // Same line, same transform, forward along the
+                                // run → carry the visual extent forward.
+                                Some(along) => {
+                                    buffer.accumulated_width = along;
+                                    true
+                                },
+                                None => false,
+                            }
                         },
                         _ => false,
                     };
@@ -8647,15 +8646,41 @@ impl<'doc> TextExtractor<'doc> {
     /// WMode 1 is exempt: vertical text advances along `(c, d)` instead, the
     /// branch [`GraphicsState::advance_text_matrix`] already makes, and reading
     /// its advance as a perpendicular offset splits a column glyph by glyph.
-    fn advances_along_writing_axis(
+    /// The run's new accumulated width when `(e, f)` continues the run that
+    /// started at `start`, or `None` when it ends the run.
+    ///
+    /// One frame-correct test in place of three raw-matrix ones. `e` and `f`
+    /// are the text matrix's translation components, so comparing them
+    /// directly assumes the run advances along `+x` and separates along `y` —
+    /// true only for an upright matrix. Under a quarter turn the two axes are
+    /// exchanged, and per ISO 32000-1:2008 §9.4.4 the glyph displacement lies
+    /// along the text matrix's `(a, b)` row whichever way it points. Projecting
+    /// the displacement onto that row and its perpendicular asks the same three
+    /// questions in the run's own frame:
+    ///
+    /// * is the new origin on the run's line (perpendicular within tolerance),
+    /// * does it lie forward along the run rather than behind it,
+    /// * and is it close enough to the run's end to be the next glyph?
+    ///
+    /// The raw-matrix form got the right answer for upright text and, for a
+    /// quarter turn, an accidental one: the perpendicular tolerance collapsed
+    /// to its 0.5 pt floor, so consecutive glyphs of a rotated run each became
+    /// their own span. Ten glyphs that batch into one span upright produced ten
+    /// spans rotated.
+    ///
+    /// Vertical writing mode keeps the raw comparison. §9.7.4.3 gives it a
+    /// different axis convention, which the `(a, b)` row does not describe.
+    fn run_continuation_along(
         start: Matrix,
         wmode: u8,
         e: f32,
         f: f32,
         font_size: f32,
-    ) -> bool {
+        accumulated: f32,
+    ) -> Option<f32> {
         if wmode != 0 {
-            return true;
+            let on_line = (f - start.f).abs() <= ((font_size * start.d).abs() * 0.5).max(0.5);
+            return (on_line && e >= start.e).then_some(e - start.e);
         }
         // Unit vector along the writing direction. A degenerate (zero-scale)
         // matrix has no direction to speak of; fall back to +x so such runs
@@ -8673,7 +8698,14 @@ impl<'doc> TextExtractor<'doc> {
         // run keeps at least the raw `f` band.
         let line_scale = (start.c * start.c + start.d * start.d).sqrt();
         let tolerance = ((font_size * line_scale).abs() * 0.5).max(0.5);
-        perp.abs() <= tolerance && along >= 0.0
+        if perp.abs() > tolerance || along < 0.0 {
+            return None;
+        }
+        // The run is contiguous glyphs, so the new origin must not skip an em
+        // of empty space past the run's own advance. See the `Tm` handler for
+        // why the bound is an em and not a word space.
+        let em = (font_size * axis.max(1e-6)).abs();
+        (along - accumulated <= em).then_some(along)
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
@@ -9154,13 +9186,12 @@ mod tests {
 
     /// The writing-axis continuation test, quadrant by quadrant.
     ///
-    /// Upright cases must be no stricter than the raw `e`/`f` tests they are
-    /// ANDed with — that implication is why unrotated output cannot move.
-    /// Rotated along-axis cases pin the helper alone: in the composed
-    /// predicate the raw `f` band still gates them, so there the helper is
-    /// veto-only.
+    /// This is now the whole continuation rule rather than one veto ANDed onto
+    /// a raw-matrix pair, so each quadrant pins all three of its questions: on
+    /// the line, forward along it, and near enough to the run's end to be the
+    /// next glyph.
     #[test]
-    fn test_advances_along_writing_axis_by_quadrant() {
+    fn test_run_continuation_by_quadrant() {
         let m = |a, b, c, d| Matrix {
             a,
             b,
@@ -9170,11 +9201,14 @@ mod tests {
             f: 500.0,
         };
         let fs = 10.0;
+        // A run that has already advanced 14 pt, so a 14 pt displacement puts
+        // the new origin exactly at its end — the contiguous case.
         let at = |mat: Matrix, de: f32, df: f32| {
-            TextExtractor::advances_along_writing_axis(mat, 0, mat.e + de, mat.f + df, fs)
+            TextExtractor::run_continuation_along(mat, 0, mat.e + de, mat.f + df, fs, 14.0)
+                .is_some()
         };
 
-        // Must match the raw e/f test exactly.
+        // Upright: the frame the raw `e`/`f` comparison was already right for.
         let upright = m(1.0, 0.0, 0.0, 1.0);
         assert!(at(upright, 14.0, 0.0), "upright advance must continue");
         assert!(!at(upright, 0.0, -14.0), "upright line break must not");
@@ -9186,34 +9220,90 @@ mod tests {
 
         // Advances along +y; lines separate along +x.
         let cw = m(0.0, 1.0, -1.0, 0.0);
-        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must not be vetoed");
-        assert!(!at(cw, 14.0, 0.0), "90° line break must not continue");
+        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must continue");
+        assert!(!at(cw, 14.0, 0.0), "90° line break must not");
         assert!(at(cw, -4.0, 14.0), "90° sub-glyph offset must not be vetoed");
         assert!(!at(cw, -8.0, 14.0), "90° line step must be vetoed");
 
         // Advances along -y; the sign a single-rotation fixture cannot catch.
         let ccw = m(0.0, -1.0, 1.0, 0.0);
-        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must not be vetoed");
-        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not continue");
-        assert!(!at(ccw, 14.0, 0.0), "270° line break must not continue");
+        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must continue");
+        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not");
+        assert!(!at(ccw, 14.0, 0.0), "270° line break must not");
 
         // 180°: advances along -x.
         let flip = m(-1.0, 0.0, 0.0, -1.0);
-        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must not be vetoed");
-        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not continue");
+        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must continue");
+        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not");
 
         // No writing direction: falls back to +x, as before.
         let degenerate = m(0.0, 0.0, 0.0, 0.0);
         assert!(at(degenerate, 14.0, 0.0));
         assert!(!at(degenerate, -14.0, 0.0));
+    }
 
-        // WMode 1 advances along (c, d), so this test never vetoes it.
-        for (de, df) in [(14.0, 0.0), (0.0, 14.0), (-14.0, 0.0), (0.0, -14.0)] {
-            assert!(
-                TextExtractor::advances_along_writing_axis(cw, 1, cw.e + de, cw.f + df, fs),
-                "vertical run vetoed at ({de}, {df})"
-            );
+    /// The gap bound, in every quadrant. A jump past the run's end by more
+    /// than an em is a new run wherever the run happens to point — the rule
+    /// that keeps two columns of rotated text from gluing into one span.
+    #[test]
+    fn test_run_continuation_bounds_the_gap_in_every_quadrant() {
+        let m = |a, b, c, d| Matrix {
+            a,
+            b,
+            c,
+            d,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        // The run has advanced 14 pt. An em is 10 pt, so a displacement of 24
+        // lands exactly at the bound and 30 is beyond it.
+        let at = |mat: Matrix, de: f32, df: f32| {
+            TextExtractor::run_continuation_along(mat, 0, mat.e + de, mat.f + df, fs, 14.0)
+                .is_some()
+        };
+        for (name, mat, unit) in [
+            ("upright", m(1.0, 0.0, 0.0, 1.0), (1.0f32, 0.0f32)),
+            ("90°", m(0.0, 1.0, -1.0, 0.0), (0.0, 1.0)),
+            ("270°", m(0.0, -1.0, 1.0, 0.0), (0.0, -1.0)),
+            ("180°", m(-1.0, 0.0, 0.0, -1.0), (-1.0, 0.0)),
+        ] {
+            let step = |d: f32| (unit.0 * d, unit.1 * d);
+            let (e24, f24) = step(24.0);
+            assert!(at(mat, e24, f24), "{name}: a gap of exactly an em must continue");
+            let (e30, f30) = step(30.0);
+            assert!(!at(mat, e30, f30), "{name}: a gap beyond an em must end the run");
         }
+    }
+
+    /// Vertical writing mode keeps the raw comparison: §9.7.4.3 gives it an
+    /// axis convention the `(a, b)` row does not describe, so it is out of
+    /// this rule's scope and must behave exactly as before.
+    #[test]
+    fn test_run_continuation_leaves_vertical_writing_mode_alone() {
+        let upright = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        // The raw test: same `f`, forward `e`.
+        assert_eq!(
+            TextExtractor::run_continuation_along(upright, 1, 140.0, 500.0, fs, 0.0),
+            Some(40.0),
+            "a forward step on the same baseline continues, and reports its offset"
+        );
+        assert!(
+            TextExtractor::run_continuation_along(upright, 1, 60.0, 500.0, fs, 0.0).is_none(),
+            "a backwards step ends the run"
+        );
+        assert!(
+            TextExtractor::run_continuation_along(upright, 1, 140.0, 460.0, fs, 0.0).is_none(),
+            "a line step ends the run"
+        );
     }
 
     #[test]
