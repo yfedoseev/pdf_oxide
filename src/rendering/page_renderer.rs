@@ -4837,6 +4837,39 @@ impl PageRenderer {
         result
     }
 
+    /// A form's `/BBox` as `(x, y, width, height)` in form space, normalised.
+    ///
+    /// §7.9.5 allows the two corners in either order, so the box is normalised
+    /// here rather than assumed lower-left-first. Returns `None` when the entry
+    /// is absent or malformed, or when it is degenerate — a zero-area box would
+    /// clip the form away entirely, and refusing to clip is the safer reading
+    /// of a box that cannot be honoured.
+    fn form_bbox_rect(
+        dict: &std::collections::HashMap<String, Object>,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let arr = dict.get("BBox")?.as_array()?;
+        if arr.len() < 4 {
+            return None;
+        }
+        let num = |i: usize| -> Option<f32> {
+            let o = arr.get(i)?;
+            o.as_real()
+                .map(|r| r as f32)
+                .or_else(|| o.as_integer().map(|v| v as f32))
+        };
+        let (x0, y0, x1, y1) = (num(0)?, num(1)?, num(2)?, num(3)?);
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return None;
+        }
+        let (lx, ux) = (x0.min(x1), x0.max(x1));
+        let (ly, uy) = (y0.min(y1), y0.max(y1));
+        let (w, h) = (ux - lx, uy - ly);
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        Some((lx, ly, w, h))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_form_xobject_inner(
         &mut self,
@@ -4898,6 +4931,39 @@ impl PageRenderer {
             Err(e) => {
                 return Err(e);
             },
+        };
+
+        // ISO 32000-1:2008 §8.10.2 step (c) (`docs/spec/pdf.md:15219`): the
+        // form's /BBox, expressed in form space and transformed by /Matrix, is
+        // intersected with the current clipping path, and anything the content
+        // stream paints outside it is clipped away. Table 78 makes /BBox
+        // required for exactly this reason.
+        //
+        // This was not applied at all, so a form painting outside its own
+        // bounding box bled onto the page.
+        //
+        // Expressed as the operators the clause describes — `q`, the box, `W n`,
+        // the content, `Q` — rather than as a second clipping mechanism beside
+        // the interpreter's own. `combined_transform` already carries /Matrix,
+        // so the rectangle lands in the right place, and the existing clip
+        // stack does the intersection with whatever clip is already in force.
+        let operators = match Self::form_bbox_rect(dict) {
+            Some((x, y, width, height)) => {
+                let mut wrapped = Vec::with_capacity(operators.len() + 5);
+                wrapped.push(Operator::SaveState);
+                wrapped.push(Operator::Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+                wrapped.push(Operator::ClipNonZero);
+                wrapped.push(Operator::EndPath);
+                wrapped.extend(operators);
+                wrapped.push(Operator::RestoreState);
+                wrapped
+            },
+            None => operators,
         };
 
         if is_transparency_group {
