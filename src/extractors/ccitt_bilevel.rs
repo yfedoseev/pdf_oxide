@@ -380,6 +380,15 @@ pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<V
     let params = CcittParams {
         columns: width,
         rows: Some(height),
+        // ISO 32000-1:2008 Table 11: K < 0 selects pure two-dimensional
+        // (Group 4) encoding. `CcittParams::default()` carries the *filter's*
+        // default of K = 0, which is Group 3 one-dimensional — so taking the
+        // default here handed Group 4 data to the Group 3 decoder, and this
+        // function never decoded anything its name promises. The failure is
+        // silent: callers fall back to the still-compressed bytes, and a mask
+        // built from them samples past the end of its own data at almost every
+        // pixel.
+        k: -1,
         ..Default::default()
     };
     decompress_ccitt(data, &params)
@@ -500,5 +509,46 @@ mod tests {
         assert_eq!(row.len(), width.div_ceil(8));
         assert_eq!(row[65_536 / 8], 0xFF, "the 8 pixels at 65536.. must be black");
         assert!(row[..65_536 / 8].iter().all(|&b| b == 0), "everything before must stay white");
+    }
+}
+
+#[cfg(test)]
+mod group4_entry_point_tests {
+    use super::*;
+
+    /// `decompress_ccitt_group4` must select Group 4.
+    ///
+    /// ISO 32000-1:2008 Table 11: `K < 0` selects pure two-dimensional (Group
+    /// 4) encoding, `K = 0` Group 3 one-dimensional. `CcittParams::default()`
+    /// carries the filter's default of `K = 0`, so building params with
+    /// `..Default::default()` and nothing else handed Group 4 data to the
+    /// Group 3 decoder — this entry point never decoded what its name
+    /// promises, and the failure is silent because callers fall back to the
+    /// still-compressed bytes.
+    #[test]
+    fn the_group4_entry_point_requests_group4() {
+        // A minimal G4 stream: EOFB alone decodes to zero rows without error
+        // in the G4 decoder, whereas the G3 decoder rejects it outright. The
+        // assertion is on which decoder was asked, so the payload only has to
+        // discriminate.
+        let params = CcittParams {
+            columns: 8,
+            rows: Some(1),
+            k: -1,
+            ..Default::default()
+        };
+        assert!(params.is_group_4(), "K = -1 must be Group 4");
+        assert!(!params.is_group_3(), "K = -1 must not be Group 3");
+
+        // The default alone is Group 3 — which is what made the bug silent.
+        let defaulted = CcittParams {
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            defaulted.is_group_3(),
+            "the filter default is Group 3, so a Group 4 helper must override it"
+        );
     }
 }

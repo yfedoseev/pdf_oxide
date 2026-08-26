@@ -4264,8 +4264,23 @@ impl PageRenderer {
                                                     #[allow(deprecated)]
                                                     let ccitt_result = crate::extractors::ccitt_bilevel::decompress_ccitt_group4(&raw_mask_data, mw, mh);
                                                     match ccitt_result {
-                                                        Ok(decompressed) => {
+                                                        Ok(mut decompressed) => {
                                                             log::debug!("CCITT Group4 decompressed mask: {} → {} bytes", raw_mask_data.len(), decompressed.len());
+                                                            // The CCITT decoder emits 1 for an
+                                                            // inked pixel. That is the complement
+                                                            // of the sample value the stencil rule
+                                                            // below is written against: Table 11
+                                                            // makes `BlackIs1` false the normal
+                                                            // PDF convention, in which 0 is black,
+                                                            // and §8.9.6.2 gives sample 0 the
+                                                            // meaning "mark the page". Normalise
+                                                            // here so one polarity rule serves
+                                                            // both this branch and a mask whose
+                                                            // filter the stream decoder already
+                                                            // applied.
+                                                            for b in &mut decompressed {
+                                                                *b = !*b;
+                                                            }
                                                             decompressed
                                                         },
                                                         Err(e) => {
