@@ -17,12 +17,6 @@ static RE_URL: LazyLock<Regex> =
 static RE_EMAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})").unwrap());
 
-/// Detect markdown table separator rows like `|---|---|` or
-/// `| :--- | ---: |`. A line qualifies if every `|`-delimited cell is
-/// a sequence of `-` (with optional surrounding `:` for alignment) and
-/// optional spaces. At least two cells required so single-pipe lines
-/// (which are the very pattern we're trying to escape) do not match.
-
 /// The text with every whitespace character removed.
 ///
 /// Used to compare what a table rendered against what a span carries when the
@@ -31,6 +25,11 @@ fn squash_whitespace(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// Detect markdown table separator rows like `|---|---|` or
+/// `| :--- | ---: |`. A line qualifies if every `|`-delimited cell is
+/// a sequence of `-` (with optional surrounding `:` for alignment) and
+/// optional spaces. At least two cells required so single-pipe lines
+/// (which are the very pattern we're trying to escape) do not match.
 fn is_table_separator_line(line: &str) -> bool {
     let trimmed = line.trim();
     if !trimmed.starts_with('|') || !trimmed.ends_with('|') {

@@ -590,6 +590,24 @@ const CMYK_CORNERS: [[f32; 3]; 16] = [
 /// // No ink at all is the paper.
 /// let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 0.0);
 /// assert_eq!((r, g, b), (1.0, 1.0, 1.0));
+/// ```
+pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
+    let (c, m, y, k) = (c.clamp(0.0, 1.0), m.clamp(0.0, 1.0), y.clamp(0.0, 1.0), k.clamp(0.0, 1.0));
+    let mut acc = [0.0f32; 3];
+    for (i, corner) in CMYK_CORNERS.iter().enumerate() {
+        let w = if i & 8 != 0 { c } else { 1.0 - c }
+            * if i & 4 != 0 { m } else { 1.0 - m }
+            * if i & 2 != 0 { y } else { 1.0 - y }
+            * if i & 1 != 0 { k } else { 1.0 - k };
+        if w == 0.0 {
+            continue;
+        }
+        for j in 0..3 {
+            acc[j] += w * corner[j];
+        }
+    }
+    (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
+}
 
 /// Whether a text colour is the document's "black" — the case a converter
 /// treats as *no explicit colour*, so the destination document's theme applies.
@@ -613,25 +631,6 @@ pub fn is_document_black(r: f32, g: f32, b: f32) -> bool {
     let (kr, kg, kb) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
     let process_black = (r - kr).abs() < EPS && (g - kg).abs() < EPS && (b - kb).abs() < EPS;
     exact_rgb_black || process_black
-}
-
-/// ```
-pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
-    let (c, m, y, k) = (c.clamp(0.0, 1.0), m.clamp(0.0, 1.0), y.clamp(0.0, 1.0), k.clamp(0.0, 1.0));
-    let mut acc = [0.0f32; 3];
-    for (i, corner) in CMYK_CORNERS.iter().enumerate() {
-        let w = if i & 8 != 0 { c } else { 1.0 - c }
-            * if i & 4 != 0 { m } else { 1.0 - m }
-            * if i & 2 != 0 { y } else { 1.0 - y }
-            * if i & 1 != 0 { k } else { 1.0 - k };
-        if w == 0.0 {
-            continue;
-        }
-        for j in 0..3 {
-            acc[j] += w * corner[j];
-        }
-    }
-    (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
 }
 
 /// Solve the 3x3 linear system `a * x = b` by Cramer's rule. `None` when the

@@ -89,9 +89,9 @@ fn media_box_comes_from_the_nearest_ancestor() {
 #[test]
 fn rotate_comes_from_the_nearest_ancestor() {
     let doc = PdfDocument::from_bytes(nested_tree_pdf(ROOT, MID, 1)).expect("parse");
-    let info = doc.get_page_info(0).expect("page info");
+    let rotation = doc.get_page_rotation(0).expect("page rotation");
     assert_eq!(
-        info.rotation.rem_euclid(360),
+        rotation.rem_euclid(360),
         90,
         "the intermediate /Pages node's rotation must override the root's"
     );
