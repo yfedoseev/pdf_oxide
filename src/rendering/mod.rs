@@ -123,6 +123,38 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
 /// device units, which an earlier 1e8 bound discarded.
 const MAX_DEVICE_COORD: f64 = 5.0e8;
 
+/// The rectangle a page is rendered to: its `/CropBox` clipped to the
+/// `/MediaBox`, or the media box when no crop box is given.
+///
+/// ISO 32000-1:2008 Table 30 on `/CropBox`: "A rectangle ... that shall define
+/// the visible region of default user space. When the page is displayed or
+/// printed, its contents **shall be clipped (cropped) to this rectangle** ...
+/// Default value: the value of MediaBox."
+///
+/// The crop box was parsed onto `PageInfo` and then never consulted by either
+/// renderer, so a cropped scan rendered at full media size showing the margins
+/// the file asked to have cropped away. §14.11.2 also has the crop box taken as
+/// its intersection with the media box, so a crop box larger than the medium
+/// does not enlarge the page.
+pub(crate) fn page_render_box(
+    media_box: &crate::geometry::Rect,
+    crop_box: Option<&crate::geometry::Rect>,
+) -> crate::geometry::Rect {
+    let Some(crop) = crop_box else {
+        return *media_box;
+    };
+    let x0 = crop.x.max(media_box.x);
+    let y0 = crop.y.max(media_box.y);
+    let x1 = (crop.x + crop.width).min(media_box.x + media_box.width);
+    let y1 = (crop.y + crop.height).min(media_box.y + media_box.height);
+    // A crop box that does not overlap the medium describes nothing to show;
+    // fall back to the media box rather than rendering an empty page.
+    if x1 <= x0 || y1 <= y0 {
+        return *media_box;
+    }
+    crate::geometry::Rect::from_points(x0, y0, x1, y1)
+}
+
 /// The page extent in points after the `/Rotate` turn, as `(width, height)`.
 ///
 /// ISO 32000-1:2008 §7.7.3.3 Table 30: `/Rotate` is clockwise and a multiple

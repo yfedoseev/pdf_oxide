@@ -675,7 +675,10 @@ fn compute_page_extent(
     dpi: u32,
 ) -> Result<(u32, u32, Transform)> {
     let page_info = doc.get_page_info(page_num)?;
-    let media_box = page_info.media_box;
+    // Same page rectangle the composite renderer uses — §14.11.2 crop box
+    // intersected with the media box — so plates and composite stay the same
+    // size and origin.
+    let media_box = super::page_render_box(&page_info.media_box, page_info.crop_box.as_ref());
 
     // Shared with the composite renderer, so the two cannot disagree about
     // which way a rotated page faces — see `page_base_transform`.

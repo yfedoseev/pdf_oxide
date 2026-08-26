@@ -483,7 +483,11 @@ impl PageRenderer {
 
         // Get page info
         let page_info = doc.get_page_info(page_num)?;
-        let media_box = page_info.media_box;
+        // §14.11.2 / Table 30: the page is clipped to its /CropBox, taken as
+        // the intersection with the /MediaBox. The crop box was parsed and
+        // never used, so a cropped scan rendered at full media size showing
+        // the margins the file asked to crop away.
+        let media_box = super::page_render_box(&page_info.media_box, page_info.crop_box.as_ref());
 
         // Output dimensions, accounting for page rotation. `/Rotate` may be
         // negative — -90 is legal and means 270 — and the normalisation lives
