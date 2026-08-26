@@ -105,3 +105,92 @@ fn the_markdown_surface_shows_the_cell_once() {
     let md = doc.to_markdown(0, &opts).expect("markdown");
     assert_eq!(glyph_runs(&md), 1, "the cell's glyphs appear more than once in markdown:\n{md}");
 }
+
+/// The same defect reached through the other seam: a flow span that glues two
+/// cells together.
+///
+/// Here the cell builder splits nothing — each cell holds one show operation —
+/// but the flow assembler joined "North" and "120" across the column rule into
+/// one span, which no single cell's bbox contains and so no cell's budget could
+/// absorb. Every cell was emitted a second time as prose beneath the grid.
+fn ruled_grid_pdf() -> Vec<u8> {
+    let mut content = String::new();
+    for x in [50, 200, 350] {
+        content.push_str(&format!("0.7 w {x} 600 m {x} 720 l S\n"));
+    }
+    for y in [600, 660, 720] {
+        content.push_str(&format!("0.7 w 50 {y} m 350 {y} l S\n"));
+    }
+    content.push_str("BT /F1 12 Tf\n");
+    for (x, y, t) in [
+        (60, 690, "North"),
+        (210, 690, "120"),
+        (60, 630, "South"),
+        (210, 630, "90"),
+    ] {
+        content.push_str(&format!("1 0 0 1 {x} {y} Tm ({t}) Tj\n"));
+    }
+    content.push_str("ET\n");
+    let content = content.into_bytes();
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut off = vec![0usize; 6];
+    let obj = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, body: &str| {
+        off[id] = buf.len();
+        buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+    };
+
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    obj(&mut buf, &mut off, 1, "<< /Type /Catalog /Pages 2 0 R >>");
+    obj(&mut buf, &mut off, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    obj(
+        &mut buf,
+        &mut off,
+        3,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    );
+    off[4] = buf.len();
+    buf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
+    buf.extend_from_slice(&content);
+    buf.extend_from_slice(b"\nendstream\nendobj\n");
+    obj(
+        &mut buf,
+        &mut off,
+        5,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
+
+    let xref = buf.len();
+    buf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for id in 1..=5 {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
+    }
+    buf.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n");
+    buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
+    buf
+}
+
+/// Every cell of a plain ruled grid appears once, on all three surfaces.
+#[test]
+fn a_ruled_grid_emits_each_cell_once() {
+    let doc = PdfDocument::from_bytes(ruled_grid_pdf()).expect("parse");
+    let opts = pdf_oxide::converters::ConversionOptions {
+        extract_tables: true,
+        ..Default::default()
+    };
+    let surfaces = [
+        ("text", doc.extract_text(0).expect("text")),
+        ("markdown", doc.to_markdown(0, &opts).expect("markdown")),
+        ("html", doc.to_html(0, &opts).expect("html")),
+    ];
+    for (name, out) in surfaces {
+        for cell in ["North", "120", "South", "90"] {
+            assert_eq!(
+                out.matches(cell).count(),
+                1,
+                "{name}: {cell} was emitted by the table and again as prose:\n{out}"
+            );
+        }
+    }
+}
