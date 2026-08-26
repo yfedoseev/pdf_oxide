@@ -128,7 +128,7 @@
     clippy::only_used_in_recursion
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
@@ -304,10 +304,18 @@ fn render_plates_for_inks(
         let content_data = doc.get_page_content_data(page_num)?;
         let operators = parse_content_stream(&content_data)?;
 
+        // Same baseline the composite renderer uses (§8.11.4): the document's
+        // own /OCProperties /D BaseState//ON//OFF configuration. Computed here
+        // rather than passed in, because the separation entry points take no
+        // render options — and the defect this closes is a layer the *document*
+        // hides being counted as ink.
+        let excluded_layers = crate::optional_content::compute_default_off_ocgs(doc);
+
         let mut ctx = SeparationContext {
             doc,
             text_rasterizer: &text_rasterizer,
             fonts: &fonts,
+            excluded_layers: &excluded_layers,
         };
 
         execute_separation_operators(
@@ -1250,6 +1258,11 @@ struct SeparationContext<'a> {
     doc: &'a PdfDocument,
     text_rasterizer: &'a TextRasterizer,
     fonts: &'a HashMap<String, Arc<FontInfo>>,
+    /// OCGs hidden by the document's own `/OCProperties /D` configuration
+    /// (ISO 32000-1:2008 §8.11.4), computed exactly as the composite renderer
+    /// computes its baseline. Without this the plates counted ink for layers
+    /// the page render omits, so the two disagreed about the same page.
+    excluded_layers: &'a HashSet<String>,
 }
 
 /// Color state tracked alongside the graphics state for separation rendering.
@@ -1403,8 +1416,86 @@ fn execute_separation_operators(
     let mut backend = SeparationBackend::new();
     let target_inks_owned: Vec<InkName> = target_inks.iter().map(|s| InkName::new(*s)).collect();
 
+    // Optional-content exclusion, mirroring the composite renderer.
+    //
+    // The separation renderer had no marked-content arms at all, so the /OC
+    // hidden-layer exclusion the composite render applies never reached the ink
+    // plates: a layer excluded from the page was still counted in the
+    // separations, and two renderers of one page gave contradictory answers.
+    //
+    // `excluded_layer_depth` counts nested BDC/OC scopes that resolve to an
+    // excluded layer; `marked_content_is_excluded` lets EMC decrement only the
+    // entries that incremented.
+    let mut excluded_layer_depth: u32 = 0;
+    let mut marked_content_is_excluded: Vec<bool> = Vec::new();
+    let excluded_layers: &HashSet<String> = ctx.excluded_layers;
+
     for op in operators {
+        // ISO 32000-1:2008 §8.11.3: when optional content is hidden "the
+        // content shall not be drawn" while "graphics state operations ...
+        // shall still be applied". So suppression replaces each painting
+        // operator with the path-clearing `n` rather than skipping the
+        // operator loop — the path bookkeeping and every state change still
+        // happen, exactly as they would if the content were visible.
+        let op = if excluded_layer_depth > 0 {
+            match op {
+                Operator::Fill
+                | Operator::FillEvenOdd
+                | Operator::Stroke
+                | Operator::FillStroke
+                | Operator::CloseFillStroke
+                | Operator::FillStrokeEvenOdd
+                | Operator::CloseFillStrokeEvenOdd => &Operator::EndPath,
+                other => other,
+            }
+        } else {
+            op
+        };
+
+        // Drawing an XObject or showing text inside a hidden scope marks the
+        // page just as a fill would, and neither has a path-clearing
+        // equivalent, so those are skipped outright.
+        if excluded_layer_depth > 0
+            && matches!(
+                op,
+                Operator::Do { .. }
+                    | Operator::Tj { .. }
+                    | Operator::TJ { .. }
+                    | Operator::Quote { .. }
+                    | Operator::DoubleQuote { .. }
+                    | Operator::PaintShading { .. }
+                    | Operator::InlineImage { .. }
+            )
+        {
+            continue;
+        }
+
         match op {
+            Operator::BeginMarkedContent { .. } => {
+                marked_content_is_excluded.push(false);
+            },
+            Operator::BeginMarkedContentDict { tag, properties } => {
+                let mut is_excluded = false;
+                if tag == "OC" {
+                    is_excluded = crate::optional_content::resolve_and_check_ocg_excluded(
+                        properties,
+                        Some(resources),
+                        Some(ctx.doc),
+                        excluded_layers,
+                    );
+                }
+                if is_excluded {
+                    excluded_layer_depth += 1;
+                }
+                marked_content_is_excluded.push(is_excluded);
+            },
+            Operator::EndMarkedContent => {
+                if let Some(was_excluded) = marked_content_is_excluded.pop() {
+                    if was_excluded && excluded_layer_depth > 0 {
+                        excluded_layer_depth -= 1;
+                    }
+                }
+            },
             Operator::SaveState => {
                 gs_stack.save();
                 let cs = color_state_stack
