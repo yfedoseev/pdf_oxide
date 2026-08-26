@@ -948,6 +948,84 @@ pub(crate) enum ActualTextAction {
     Suppress,
 }
 
+/// The rotated reading frame a page's spans were mapped into.
+///
+/// A landscape table typeset on a portrait page carries a dominant text-matrix
+/// rotation, and the row-major assembler only reads it correctly after the
+/// spans are rotated upright. That map used to be an unwritten convention of
+/// whichever local variable held the mapped spans, so every other page-space
+/// value a converter compared them against — a `/Link` rectangle, a widget
+/// `/Rect`, a table's bounding box — was silently in the wrong frame. Making
+/// the frame a value means a consumer can map its own geometry into the same
+/// one instead of having to know the convention.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReadingFrame {
+    /// Quadrant rotation applied, one of 90, 180 or 270.
+    rot: u16,
+    /// The media box the map was built against.
+    llx: f32,
+    lly: f32,
+    w: f32,
+    h: f32,
+}
+
+impl ReadingFrame {
+    /// Map a page-space point into the frame.
+    fn map_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let (rx, ry) = (x - self.llx, y - self.lly);
+        let (mx, my) = match self.rot {
+            90 => (ry, self.w - rx),
+            180 => (self.w - rx, self.h - ry),
+            270 => (self.h - ry, rx),
+            _ => (rx, ry),
+        };
+        (self.llx + mx, self.lly + my)
+    }
+
+    /// Map a page-space rectangle into the frame.
+    ///
+    /// A quadrant rotation takes an axis-aligned rectangle to an axis-aligned
+    /// rectangle, so mapping two opposite corners and normalising is exact
+    /// rather than a bounding approximation.
+    fn map_rect(&self, r: &crate::geometry::Rect) -> crate::geometry::Rect {
+        let (x0, y0) = self.map_point(r.x, r.y);
+        let (x1, y1) = self.map_point(r.x + r.width, r.y + r.height);
+        crate::geometry::Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+    }
+
+    /// Map a detected table's geometry into the frame.
+    ///
+    /// `extract_page_tables` works from page-space words and paths and returns
+    /// page-space rectangles, so on a rotated-frame page the table's own boxes
+    /// and the spans a converter tests against them are in different frames.
+    /// Every ownership test then fails: the table renders, and the spans it
+    /// should have claimed are emitted a second time as flow text beside it.
+    fn map_table(&self, table: &mut crate::structure::Table) {
+        if let Some(ref b) = table.bbox {
+            table.bbox = Some(self.map_rect(b));
+        }
+        for row in &mut table.rows {
+            for cell in &mut row.cells {
+                if let Some(ref b) = cell.bbox {
+                    cell.bbox = Some(self.map_rect(b));
+                }
+            }
+        }
+    }
+
+    /// Map a span's origin into the frame, keeping its text-local extents.
+    ///
+    /// Rotated spans store text-local extents (origin, advance-along-the-run as
+    /// `width`, font size as `height`), which already describe the run in its
+    /// own upright frame, so only the origin moves.
+    fn map_span_origin(&self, span: &mut crate::layout::TextSpan) {
+        let (x, y) = self.map_point(span.bbox.x, span.bbox.y);
+        span.bbox.x = x;
+        span.bbox.y = y;
+        span.rotation_degrees = 0.0;
+    }
+}
+
 impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
@@ -5554,14 +5632,33 @@ impl PdfDocument {
     /// `to_plain_text`. Callers must apply `ConversionOptions` region filters
     /// BEFORE this: region rects are page-space coordinates, and the map
     /// rewrites the geometry they select against.
+    /// The page's spans in the frame the text reads in, together with the
+    /// frame itself when one was applied.
+    ///
+    /// Callers that go on to compare these spans against any other page-space
+    /// geometry must map that geometry with the returned frame; the two are
+    /// only comparable in the same frame.
+    /// Detected tables in the same frame as the caller's page spans.
+    fn tables_in_frame(
+        mut tables: Vec<crate::structure::Table>,
+        frame: Option<ReadingFrame>,
+    ) -> Vec<crate::structure::Table> {
+        if let Some(f) = frame {
+            for t in &mut tables {
+                f.map_table(t);
+            }
+        }
+        tables
+    }
+
     fn spans_in_reading_frame(
         &self,
         page_index: usize,
         spans: Vec<crate::layout::TextSpan>,
-    ) -> Vec<crate::layout::TextSpan> {
+    ) -> (Vec<crate::layout::TextSpan>, Option<ReadingFrame>) {
         match self.map_dominant_rotation_into_reading_frame(page_index, spans) {
-            Ok(mapped) => mapped,
-            Err(original) => original,
+            Ok((mapped, frame)) => (mapped, Some(frame)),
+            Err(original) => (original, None),
         }
     }
 
@@ -5586,7 +5683,10 @@ impl PdfDocument {
         &self,
         page_index: usize,
         spans: Vec<crate::layout::TextSpan>,
-    ) -> std::result::Result<Vec<crate::layout::TextSpan>, Vec<crate::layout::TextSpan>> {
+    ) -> std::result::Result<
+        (Vec<crate::layout::TextSpan>, ReadingFrame),
+        Vec<crate::layout::TextSpan>,
+    > {
         if self.get_page_rotation(page_index).unwrap_or(0) != 0 {
             return Err(spans);
         }
@@ -5612,25 +5712,18 @@ impl PdfDocument {
             .get_page_media_box(page_index)
             .unwrap_or((0.0, 0.0, 612.0, 792.0));
         let (w, h) = (urx - llx, ury - lly);
+        let frame = ReadingFrame {
+            rot,
+            llx,
+            lly,
+            w,
+            h,
+        };
         let mut spans = spans;
-        // Rotated spans store TEXT-LOCAL extents (origin + advance-along-
-        // the-run as `width` + font size as `height`): rotate the ORIGIN
-        // as a point and keep the extents, which already describe the run
-        // in its own upright frame (same convention as
-        // `order_rotated_blocks`).
         for s in &mut spans {
-            let (rx, ry) = (s.bbox.x - llx, s.bbox.y - lly);
-            let (mx, my) = match rot {
-                90 => (ry, w - rx),
-                180 => (w - rx, h - ry),
-                270 => (h - ry, rx),
-                _ => (rx, ry),
-            };
-            s.bbox.x = llx + mx;
-            s.bbox.y = lly + my;
-            s.rotation_degrees = 0.0;
+            frame.map_span_origin(s);
         }
-        Ok(spans)
+        Ok((spans, frame))
     }
 
     /// Assemble page text from the page's native spans **plus** caller-supplied
@@ -5850,7 +5943,7 @@ impl PdfDocument {
         // pages in their rotated reading frame instead — after the region
         // filters, whose rects select in page space, and before table
         // detection, which consumes the geometry this maps.
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        let (base_spans, reading_frame) = self.spans_in_reading_frame(page_index, base_spans);
         // Struct-tree-scope `/ActualText` is applied per branch below
         // — the structure-order assembler handles it natively via the
         // per-page action map, and the geometric branch applies the
@@ -5866,14 +5959,17 @@ impl PdfDocument {
         // AND /MarkInfo /Suspects is not true. Suspect documents fall through to
         // the geometric `else` arm below, the spec-correct behaviour.
         let cached_tree = self.struct_tree_trustworthy();
-        let widget_spans = self.extract_widget_spans(page_index);
+        let widget_spans = self.widget_spans_in_frame(page_index, reading_frame);
 
         // Table detection uses base spans only (no widget spans).
         let tables = if options.extract_tables {
             // text_fallback=false: extract_text preserves the pre-v0.3.47 behaviour
             // where line-less pages return no tables. Only the structured-output
             // converters (to_markdown, to_html) opt in to text-only spatial fallback.
-            self.extract_page_tables(page_index, &base_spans, options, false)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, false),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
@@ -8968,6 +9064,27 @@ impl PdfDocument {
     /// Converts each widget annotation's field value into a `TextSpan` with the annotation's
     /// bounding box. These spans merge naturally with content stream spans and get positioned
     /// correctly by existing layout algorithms.
+    /// Widget annotation spans in the same frame as the caller's page spans.
+    ///
+    /// A widget's `/Rect` is page-space (ISO 32000-1:2008 §12.5.2), so on a page
+    /// whose spans were mapped into a rotated reading frame the two are not
+    /// comparable: appending unmapped widget spans to mapped page spans puts
+    /// two coordinate frames in one vector, and the field value sorts into a
+    /// position belonging to some other field.
+    fn widget_spans_in_frame(
+        &self,
+        page_index: usize,
+        frame: Option<ReadingFrame>,
+    ) -> Vec<TextSpan> {
+        let mut spans = self.extract_widget_spans(page_index);
+        if let Some(f) = frame {
+            for s in &mut spans {
+                f.map_span_origin(s);
+            }
+        }
+        spans
+    }
+
     fn extract_widget_spans(&self, page_index: usize) -> Vec<TextSpan> {
         use crate::extractors::forms::field_flags;
         use crate::geometry::Rect;
@@ -11119,12 +11236,19 @@ impl PdfDocument {
     /// Tag ordered spans that fall within a `/Link` annotation's rectangle
     /// with its resolved URI, so the markdown/HTML converters can emit
     /// hyperlinks (ISO 32000-1 §12.5.6.5 Link annotations + §12.6.4.7 URI
-    /// actions). Spans and link rectangles share PDF user-space coordinates,
-    /// so a span is linked when its bbox centre lies inside the rectangle.
+    /// actions).
+    ///
+    /// A link rectangle is page-space. The spans may not be: a page whose text
+    /// carries a dominant rotation is assembled in a rotated reading frame, and
+    /// intersecting a page-space rectangle against a mapped span matches
+    /// nothing, so every link on such a page was silently dropped. `frame`
+    /// carries the map the spans went through, and the rectangles follow them
+    /// into it.
     pub(crate) fn apply_link_annotations_to_ordered_spans(
         &self,
         page_index: usize,
         ordered: &mut [crate::pipeline::OrderedTextSpan],
+        frame: Option<ReadingFrame>,
     ) {
         use crate::annotation_types::AnnotationSubtype;
         use crate::annotations::LinkAction;
@@ -11145,15 +11269,22 @@ impl PdfDocument {
                 _ => continue,
             };
             if let Some(r) = a.rect {
-                links.push((
-                    [
-                        r[0].min(r[2]) as f32,
-                        r[1].min(r[3]) as f32,
-                        r[0].max(r[2]) as f32,
-                        r[1].max(r[3]) as f32,
-                    ],
-                    uri,
-                ));
+                let (x0, y0) = (r[0].min(r[2]) as f32, r[1].min(r[3]) as f32);
+                let (x1, y1) = (r[0].max(r[2]) as f32, r[1].max(r[3]) as f32);
+                let rect = match frame {
+                    Some(f) => {
+                        let mapped =
+                            f.map_rect(&crate::geometry::Rect::new(x0, y0, x1 - x0, y1 - y0));
+                        [
+                            mapped.x,
+                            mapped.y,
+                            mapped.x + mapped.width,
+                            mapped.y + mapped.height,
+                        ]
+                    },
+                    None => [x0, y0, x1, y1],
+                };
+                links.push((rect, uri));
             }
         }
         if links.is_empty() {
@@ -20753,7 +20884,7 @@ impl PdfDocument {
         // Same frame `extract_text` assembles in, applied at the same point:
         // after the vertical-CJK check (which reads the rotation this clears)
         // and before table detection (which consumes the geometry this maps).
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        let (base_spans, reading_frame) = self.spans_in_reading_frame(page_index, base_spans);
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -20764,14 +20895,17 @@ impl PdfDocument {
             // text_fallback=true: to_markdown explicitly targets structured output,
             // so we enable the text-only spatial fallback for line-less tables
             // (e.g. sailing-score grids with no ruling lines — issue #486).
-            self.extract_page_tables(page_index, &base_spans, options, true)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, true),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
 
         let mut spans = base_spans;
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // B1: stitch a full-width line that the producer drew as adjacent
@@ -21015,7 +21149,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
@@ -21348,7 +21482,17 @@ impl PdfDocument {
         }
 
         // Same frame `extract_text` assembles in — see `to_markdown_inner`.
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        // `preserve_layout` writes each span's bbox straight out as absolute
+        // CSS, so it needs the frame the page DISPLAYS in. The reading-frame
+        // map exists to give the row-major assembler an upright reading order
+        // and deliberately moves spans out of display space, which placed every
+        // span wrong in layout mode. Layout mode does not consume a reading
+        // order at all, so it simply does not take the map.
+        let (base_spans, reading_frame) = if options.preserve_layout {
+            (base_spans, None)
+        } else {
+            self.spans_in_reading_frame(page_index, base_spans)
+        };
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -21359,14 +21503,17 @@ impl PdfDocument {
             // text_fallback=true: to_html explicitly targets structured output,
             // so we enable the text-only spatial fallback for line-less tables
             // (e.g. sailing-score grids with no ruling lines — issue #486).
-            self.extract_page_tables(page_index, &base_spans, options, true)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, true),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
 
         let mut spans = base_spans;
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // B1: stitch a full-width line that the producer drew as adjacent
@@ -21440,7 +21587,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
@@ -21592,18 +21739,22 @@ impl PdfDocument {
         }
 
         // Step 1: Extract raw spans (unchanged - this is the foundation)
-        let mut spans = self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
+        let (mut spans, reading_frame) =
+            self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
 
         // Step 1b: Merge widget annotation spans (form field values) if enabled
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // Step 2: Extract tables if enabled
         let tables = if options.extract_tables {
             // text_fallback=false: to_plain_text uses the conservative pre-v0.3.47
             // behaviour to avoid false-positive table detection in key-value layouts.
-            self.extract_page_tables(page_index, &spans, options, false)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &spans, options, false),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
@@ -21648,7 +21799,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
