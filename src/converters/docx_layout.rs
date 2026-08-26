@@ -488,17 +488,17 @@ fn build_document_body(pages: &[PageSpans], page_w_pt: f32, page_h_pt: f32) -> S
                 }
 
                 let sz_half_pt = (span.font_size * 2.0).round() as i32;
-                let color_hex = if span.color.r == 0.0 && span.color.g == 0.0 && span.color.b == 0.0
-                {
-                    String::new()
-                } else {
-                    format!(
-                        "<w:color w:val=\"{:02X}{:02X}{:02X}\"/>",
-                        (span.color.r * 255.0).round().clamp(0.0, 255.0) as u8,
-                        (span.color.g * 255.0).round().clamp(0.0, 255.0) as u8,
-                        (span.color.b * 255.0).round().clamp(0.0, 255.0) as u8,
-                    )
-                };
+                let color_hex =
+                    if crate::color::is_document_black(span.color.r, span.color.g, span.color.b) {
+                        String::new()
+                    } else {
+                        format!(
+                            "<w:color w:val=\"{:02X}{:02X}{:02X}\"/>",
+                            (span.color.r * 255.0).round().clamp(0.0, 255.0) as u8,
+                            (span.color.g * 255.0).round().clamp(0.0, 255.0) as u8,
+                            (span.color.b * 255.0).round().clamp(0.0, 255.0) as u8,
+                        )
+                    };
                 let bold = if span.font_weight.is_bold() {
                     "<w:b/><w:bCs/>"
                 } else {
