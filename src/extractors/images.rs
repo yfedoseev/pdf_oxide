@@ -1219,7 +1219,13 @@ pub fn extract_image_from_xobject(
             // 1/2/4/8 bpc on this raw-sample path (ISO 32000-1 §8.9.5.2).
             // DCT- and JPX-coded images keep their encoded stream and do
             // not pass through here, so /Decode is not applied to them.
-            let unpacked = if keep_raw || (bpc_after_reduce == 8 && ranges.is_none()) {
+            // Distinguish "did not attempt the unpack" from "attempted it and
+            // it was refused" — the None arm below must only act on the
+            // second. A CCITT buffer deliberately stays raw with its /Decode
+            // polarity carried in `ccitt_params`, so touching it here would
+            // apply that mapping twice.
+            let attempted_unpack = !(keep_raw || (bpc_after_reduce == 8 && ranges.is_none()));
+            let unpacked = if !attempted_unpack {
                 None
             } else {
                 samples_to_decoded_bytes(
@@ -1267,7 +1273,7 @@ pub fn extract_image_from_xobject(
                     let inverts = ranges
                         .as_deref()
                         .is_some_and(|r| r.iter().all(|&(lo, hi)| lo == 1.0 && hi == 0.0));
-                    if bpc_after_reduce == 1 && inverts {
+                    if attempted_unpack && bpc_after_reduce == 1 && inverts {
                         for byte in &mut reduced {
                             *byte = !*byte;
                         }
