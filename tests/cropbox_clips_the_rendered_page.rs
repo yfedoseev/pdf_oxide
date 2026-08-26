@@ -63,7 +63,9 @@ fn render_stats(pdf: Vec<u8>) -> (u32, u32, usize) {
     let img = render_page(&doc, 0, &opts).expect("render");
     let dark = img
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 128 && px[1] < 128 && px[2] < 128)
         .count();
     (img.width, img.height, dark)

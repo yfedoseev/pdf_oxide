@@ -713,6 +713,36 @@ impl PageRenderer {
         page_num: usize,
         resources: &Object,
     ) -> Result<()> {
+        self.execute_operators_clipped(
+            pixmap,
+            base_transform,
+            operators,
+            doc,
+            page_num,
+            resources,
+            None,
+        )
+    }
+
+    /// `execute_operators` with a clip already in force at depth 0.
+    ///
+    /// A nested content stream gets a fresh clip stack, and `Q` never pops
+    /// below depth 0 (`clip_stack.len() > 1` guards the pop), so a clip
+    /// installed here survives however unbalanced the stream's own `q`/`Q`
+    /// pairs are. That is what makes it safe to express a form's `/BBox` this
+    /// way rather than by wrapping the stream's operators in an injected
+    /// save/restore, where a stray `Q` would drop the clip partway through.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_operators_clipped(
+        &mut self,
+        pixmap: &mut Pixmap,
+        base_transform: Transform,
+        operators: &[Operator],
+        doc: &PdfDocument,
+        page_num: usize,
+        resources: &Object,
+        initial_clip: Option<tiny_skia::Mask>,
+    ) -> Result<()> {
         // Per-render snapshot lives on `self.excluded_layers_snapshot` (filled
         // by `render_page_with_options`). Recursive calls into this function
         // reuse the same `Arc` without any allocation. We snapshot it as a
@@ -750,7 +780,8 @@ impl PageRenderer {
         let mut in_text_object = false;
         let mut current_path = PathBuilder::new();
         let mut pending_clip: Option<(tiny_skia::Path, tiny_skia::FillRule)> = None;
-        let mut clip_stack: Vec<Option<tiny_skia::Mask>> = vec![None]; // Start with no clip at depth 0
+        // Depth 0 carries the clip the caller installed, if any; `Q` cannot pop it.
+        let mut clip_stack: Vec<Option<tiny_skia::Mask>> = vec![initial_clip];
 
         // WS1.5b — text-clip accumulator (ISO 32000-1 §9.3.6 / Table 106,
         // `Tr` modes 4–7). Text render modes ≥4 add the union of their glyph
@@ -4840,6 +4871,42 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
     ) -> Result<()> {
+        self.render_form_xobject_scoped(
+            pixmap,
+            dict,
+            data,
+            parent_transform,
+            doc,
+            page_num,
+            parent_resources,
+            true,
+        )
+    }
+
+    /// `render_form_xobject` with control over whether the form's `/BBox`
+    /// clips its content.
+    ///
+    /// The clip is only meaningful when `parent_transform` places the form's
+    /// own space exactly, which is true wherever a content stream invokes the
+    /// form with `Do`. An annotation appearance stream is not such a case: it
+    /// is positioned here by translating to the annotation's lower-left
+    /// corner, where ISO 32000-1:2008 §12.5.5 calls for the `/Matrix`-mapped
+    /// bounding box to be *fitted* to `/Rect`. Clipping to a box computed
+    /// under a transform that does not yet implement that fit trims real
+    /// content rather than the content the file meant to hide, so the
+    /// appearance path keeps its existing behaviour until the fit lands.
+    #[allow(clippy::too_many_arguments)]
+    fn render_form_xobject_scoped(
+        &mut self,
+        pixmap: &mut Pixmap,
+        dict: &std::collections::HashMap<String, Object>,
+        data: &[u8],
+        parent_transform: Transform,
+        doc: &PdfDocument,
+        page_num: usize,
+        parent_resources: &Object,
+        clip_to_bbox: bool,
+    ) -> Result<()> {
         // A form's own /Resources /XObject may name the form itself, directly
         // or through a cycle. Guarded the same way Type 3 glyphs and soft-mask
         // chains already are — see MAX_FORM_DEPTH.
@@ -4858,6 +4925,7 @@ impl PageRenderer {
             doc,
             page_num,
             parent_resources,
+            clip_to_bbox,
         );
         self.form_depth -= 1;
         result
@@ -4873,6 +4941,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         parent_resources: &Object,
+        clip_to_bbox: bool,
     ) -> Result<()> {
         // Parse /Matrix from form dict (default: identity)
         let form_matrix = if let Some(Object::Array(arr)) = dict.get("Matrix") {
@@ -4988,14 +5057,22 @@ impl PageRenderer {
                     &form_resources,
                 )?;
             } else {
-                // Execute operators into the group pixmap
-                self.execute_operators(
+                // Execute operators into the group pixmap, clipped to the
+                // form's /BBox. A transparency group is a form XObject like
+                // any other, so §8.10.2 step (c) applies to it too; without
+                // the clip the group's content bleeds past its own box before
+                // the group is composited onto the parent.
+                let bbox_clip = clip_to_bbox
+                    .then(|| form_bbox_clip(dict, &group_pixmap, combined_transform))
+                    .flatten();
+                self.execute_operators_clipped(
                     &mut group_pixmap,
                     combined_transform,
                     &operators,
                     doc,
                     page_num,
                     &form_resources,
+                    bbox_clip,
                 )?;
             }
 
@@ -5014,14 +5091,18 @@ impl PageRenderer {
                 pixmap.data_mut().copy_from_slice(group_pixmap.data());
             }
         } else {
-            // Non-group form XObject: render directly
-            self.execute_operators(
+            // Non-group form XObject: render directly, clipped to its /BBox.
+            let bbox_clip = clip_to_bbox
+                .then(|| form_bbox_clip(dict, pixmap, combined_transform))
+                .flatten();
+            self.execute_operators_clipped(
                 pixmap,
                 combined_transform,
                 &operators,
                 doc,
                 page_num,
                 &form_resources,
+                bbox_clip,
             )?;
         }
 
@@ -7985,7 +8066,12 @@ impl PageRenderer {
                                     }
                                 }
 
-                                self.render_form_xobject(
+                                // No /BBox clip here: `annot_transform` only
+                                // translates to the annotation's lower-left
+                                // corner, where §12.5.5 calls for the mapped
+                                // bounding box to be fitted to /Rect. See
+                                // `render_form_xobject_scoped`.
+                                self.render_form_xobject_scoped(
                                     pixmap,
                                     &dict,
                                     &ap_data,
@@ -7993,6 +8079,7 @@ impl PageRenderer {
                                     doc,
                                     page_num,
                                     &Object::Dictionary(std::collections::HashMap::new()),
+                                    false,
                                 )?;
 
                                 self.fonts = old_fonts;
@@ -10115,6 +10202,62 @@ fn compose_overprint_channel(
     };
     let alpha = alpha.clamp(0.0, 1.0);
     alpha * b + (1.0 - alpha) * c_b
+}
+
+/// The clip a form XObject's `/BBox` imposes on its own content, in device
+/// space.
+///
+/// ISO 32000-1:2008 §8.10.2 step (c): the form's bounding box, "mapped
+/// through Matrix", is intersected with the current clipping path before the
+/// content stream runs, and content outside it "shall not be painted". The
+/// box is given in form space, so `transform` must already carry the parent
+/// transform concatenated with `/Matrix`.
+///
+/// `None` when the form declares no box, when the box is degenerate (a zero
+/// extent describes nothing, and clipping everything away would erase content
+/// the file plainly meant to draw), or when the mask cannot be allocated.
+/// §7.9.5 lets a rectangle be written on either diagonal, so the corners are
+/// normalised rather than trusted.
+fn form_bbox_clip(
+    dict: &std::collections::HashMap<String, Object>,
+    pixmap: &Pixmap,
+    transform: Transform,
+) -> Option<tiny_skia::Mask> {
+    let Some(Object::Array(arr)) = dict.get("BBox") else {
+        return None;
+    };
+    if arr.len() < 4 {
+        return None;
+    }
+    let n = |i: usize| -> Option<f32> {
+        match arr.get(i) {
+            Some(Object::Real(v)) => Some(*v as f32),
+            Some(Object::Integer(v)) => Some(*v as f32),
+            _ => None,
+        }
+    };
+    let (x0, y0, x1, y1) = (n(0)?, n(1)?, n(2)?, n(3)?);
+    // A zero extent on either axis describes no region at all. Honouring it
+    // would erase the form; the file plainly meant to draw something, so the
+    // unusable box is dropped instead.
+    if (x1 - x0).abs() <= f32::EPSILON || (y1 - y0).abs() <= f32::EPSILON {
+        return None;
+    }
+    let rect = tiny_skia::Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))?;
+
+    let mut pb = PathBuilder::new();
+    pb.push_rect(rect);
+    let path = pb.finish()?;
+    // A box whose device bounds cannot be rasterised is not a reason to erase
+    // the form: the same asymmetry `apply_pending_clip` documents applies, and
+    // resolving past an arithmetic limit must never paint less than the file
+    // asked for when the limit, not the file, is what failed.
+    if !device_bounds_rasterizable(&path, transform) {
+        return None;
+    }
+    let mut mask = tiny_skia::Mask::new(pixmap.width(), pixmap.height())?;
+    mask.fill_path(&path, tiny_skia::FillRule::Winding, true, transform);
+    Some(mask)
 }
 
 fn apply_pending_clip(
