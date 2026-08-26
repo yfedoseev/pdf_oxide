@@ -1249,7 +1249,35 @@ pub fn extract_image_from_xobject(
                     decode_folded_in = ranges.is_some();
                     samples
                 },
-                None => reduced,
+                None => {
+                    // The unpack was refused — over the size cap, or a
+                    // /BitsPerComponent the spec does not define — so the
+                    // buffer stays packed and /Decode goes unapplied. For the
+                    // one mapping where that is catastrophic rather than
+                    // merely approximate, apply it here instead.
+                    //
+                    // A per-component `[1 0]` at 1 bpc is a pure inversion: on
+                    // packed samples it is a byte-wise NOT, needing neither
+                    // unpacking nor allocation. Leaving it unapplied renders
+                    // the exact negative of the picture, which is what a large
+                    // 1-bpc scan with /Decode [1 0] became once it crossed the
+                    // cap — the byte-wise NOT handled it at any size before the
+                    // unpacking path existed.
+                    let mut reduced = reduced;
+                    let inverts = ranges
+                        .as_deref()
+                        .is_some_and(|r| r.iter().all(|&(lo, hi)| lo == 1.0 && hi == 0.0));
+                    if bpc_after_reduce == 1 && inverts {
+                        for byte in &mut reduced {
+                            *byte = !*byte;
+                        }
+                        // Values have left the raw sample space, and /Decode is
+                        // now folded in — both facts consumers gate on.
+                        samples_are_raw = false;
+                        decode_folded_in = true;
+                    }
+                    reduced
+                },
             };
             ImageData::Raw {
                 pixels,
