@@ -1647,6 +1647,39 @@ impl DocumentEditor {
             write!(writer, "  /Info {} 0 R\n", self.next_object_id)?;
         }
 
+        // ISO 32000-1:2008 §7.5.6 (`docs/spec/pdf.md:3639`): "The added trailer
+        // shall contain all the entries except the Prev entry (if present) from
+        // the previous trailer, whether modified or not."
+        //
+        // Only /Size, /Prev, /Root and /Info were being written, so every other
+        // entry the original trailer carried was dropped — /ID most notably,
+        // whose absence "might prevent the file from functioning in some
+        // workflows that depend on files being uniquely identified" (Table 15
+        // NOTE 2). Carry the rest across verbatim.
+        //
+        // The four handled above are skipped: /Size and /Prev are recomputed
+        // for this update by definition, /Root is written from the source
+        // trailer just above, and /Info is either rewritten here or inherited
+        // through the /Prev chain. /Encrypt cannot appear — an encrypted source
+        // is refused at the top of this function, because appending plaintext
+        // objects under a document key would corrupt them.
+        if let Some(trailer) = self.source.trailer().as_dict() {
+            let mut carried: Vec<&String> = trailer
+                .keys()
+                .filter(|k| !matches!(k.as_str(), "Size" | "Prev" | "Root" | "Info" | "XRefStm"))
+                .collect();
+            // Deterministic output: a HashMap's order is not stable, and two
+            // saves of one document must produce the same bytes.
+            carried.sort();
+            for key in carried {
+                if let Some(value) = trailer.get(key) {
+                    write!(writer, "  /{key} ")?;
+                    writer.write_all(&serializer.serialize(value))?;
+                    write!(writer, "\n")?;
+                }
+            }
+        }
+
         write!(writer, ">>\n")?;
         write!(writer, "startxref\n")?;
         write!(writer, "{}\n", xref_offset)?;
