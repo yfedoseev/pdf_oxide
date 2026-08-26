@@ -5309,6 +5309,27 @@ impl<'doc> TextExtractor<'doc> {
                 // two axes swap. The added conjunct re-checks both along the
                 // run's own writing axis (ISO 32000-1 §9.4.4).
                 let cur_font_size = self.state_stack.current().font_size;
+                // A run is contiguous glyphs, so the new origin must not skip
+                // an em of empty space past the run's own advance. `Td`, `TD`
+                // and `T*` all end the run outright; without a bound here `Tm`
+                // alone accepted an arbitrary forward jump, so two show
+                // operations positioned in different columns were glued into
+                // one span carrying no separator and a width spanning the void
+                // between them. ISO 32000-1:2008 §9.4.2, Table 108 gives `Tm`
+                // and `Td` the same effect on the text and text-line matrices,
+                // so a displacement that ends a run for one must end it for the
+                // other: continuity is a property of the resulting pen
+                // position, not of the operator that moved the pen.
+                //
+                // The bound is an em rather than a word space deliberately. A
+                // producer can leave an intra-word repositioning seam WIDER
+                // than the same font's declared space advance, so no
+                // word-space constant separates a seam from a space; only the
+                // source-order evidence the span merger reads (a space glyph
+                // occupies a character position, a seam is pure
+                // repositioning) tells them apart. Everything below an em is
+                // therefore left to the merger, and this rule speaks only to
+                // gaps too large to be typographic slack at any size.
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
                         Some(ref mut buffer)
@@ -5327,7 +5348,9 @@ impl<'doc> TextExtractor<'doc> {
                                     e,
                                     f,
                                     cur_font_size,
-                                ) =>
+                                )
+                                && e - (buffer.start_matrix.e + buffer.accumulated_width)
+                                    <= (cur_font_size * buffer.start_matrix.a).abs() =>
                         {
                             // Same line, same transform, LTR progression →
                             // update width to reflect actual visual extent
