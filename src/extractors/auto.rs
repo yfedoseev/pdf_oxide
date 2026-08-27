@@ -671,6 +671,15 @@ pub struct PageSignals {
     /// Path-ish ops ÷ all content ops — outlined/vectorised text
     /// (case F).
     pub vector_path_density: f32,
+    /// How many painted paths the page carries.
+    ///
+    /// The density beside it is `paths / (paths + glyphs + images)`, which
+    /// saturates at 1.0 as soon as the page has no glyphs and no images —
+    /// four paths and four thousand are indistinguishable by that ratio
+    /// alone. Outlined text is the case the ratio exists to catch, and it is
+    /// a case with *many* paths, so the count is what separates it from a
+    /// diagram, a logo, or a pattern swatch.
+    pub vector_path_count: usize,
     /// `MarkInfo.marked && !suspects` — high-precision digital prior.
     pub has_reliable_structure: bool,
     /// Scanner-vs-authoring producer prior (weak).
@@ -831,7 +840,22 @@ pub fn classify_from_signals(
         && s.fragmented_word_ratio <= 0.80;
 
     // Outlined/vectorised text (case F): paths dominate, ~no text/raster.
-    if !usable_text && s.vector_path_density > 0.60 && s.image_area_ratio < 0.20 {
+    //
+    // The path COUNT is load-bearing, not only the density. Text converted to
+    // outlines produces one or more paths per glyph, so a page of it carries
+    // paths in the hundreds or thousands; `min_glyphs` is already the bar for
+    // "enough characters to be text", and outlined text cannot clear that bar
+    // with fewer paths than glyphs it stands in for. Without the count a page
+    // holding four vector drawings and nothing else scores a density of 1.0 —
+    // the ratio saturates when there are no glyphs and no images to divide by
+    // — and a diagram, a logo or a pattern swatch is reported as a scan that
+    // OCR will recover. It is not a scan, there is no raster in it, and OCR
+    // returns nothing from it.
+    if !usable_text
+        && s.vector_path_density > 0.60
+        && s.vector_path_count >= min_glyphs
+        && s.image_area_ratio < 0.20
+    {
         return (PageKind::Scanned, 0.80, ReasonCode::NoTextLayerPresent);
     }
 
@@ -897,6 +921,23 @@ pub fn classify_from_signals(
     }
 
     // Nothing usable, some raster → OCR; tie-break with producer prior.
+    //
+    // "Some raster" was the stated premise and was never tested. A page with
+    // no text and no image — vector artwork, a chart, a rule-only frame —
+    // reached here and was reported as a scan, so a caller was told OCR would
+    // recover text from a page holding nothing OCR can read. `Empty` is the
+    // honest answer: its contract is "neither extract nor OCR; not an error",
+    // which is exactly the instruction such a page warrants. The page need not
+    // be visually blank for that to hold — `PageKind` classifies what text
+    // extraction should do, not whether the page has ink.
+    //
+    // The test keys on the CODEC, not the measured area: an image whose
+    // placement rectangle cannot be resolved contributes 0 to
+    // `image_area_ratio` while still being a raster the page draws, and gating
+    // on area alone would report a genuine scan as needing no OCR.
+    if s.codec == ImageCodecClass::None && s.image_area_ratio <= 0.0 {
+        return (PageKind::Empty, 0.80, ReasonCode::Empty);
+    }
     let conf = match s.producer_prior {
         ProducerPrior::Scanner => 0.85,
         _ => 0.70,
@@ -1938,6 +1979,7 @@ mod tests {
             fragmented_word_ratio: 0.0,
             consecutive_repeat_ratio: 0.0,
             vector_path_density: 0.0,
+            vector_path_count: 0,
             has_reliable_structure: false,
             producer_prior: ProducerPrior::Unknown,
             page_is_empty: false,
@@ -2077,5 +2119,84 @@ mod tests {
         assert!(AutoExtractor::model_cache_dir()
             .to_string_lossy()
             .contains("pdf_oxide"));
+    }
+}
+
+#[cfg(test)]
+mod vector_artwork_is_not_a_scan_tests {
+    use super::*;
+
+    fn base() -> PageSignals {
+        PageSignals {
+            text_glyph_count: 0,
+            text_area_ratio: 0.0,
+            image_area_ratio: 0.0,
+            codec: ImageCodecClass::None,
+            invisible_text_ratio: 0.0,
+            garbled_ratio: 0.0,
+            fragmented_word_ratio: 0.0,
+            consecutive_repeat_ratio: 0.0,
+            vector_path_density: 0.0,
+            vector_path_count: 0,
+            has_reliable_structure: false,
+            producer_prior: ProducerPrior::Unknown,
+            page_is_empty: false,
+        }
+    }
+
+    /// The outlined-text branch keys on path *density*, which is
+    /// `paths / (paths + glyphs + images)` and so saturates at 1.0 the moment a
+    /// page has no glyphs and no images — four drawings score exactly what four
+    /// thousand outlined glyphs would. The count is what separates them.
+    #[test]
+    fn a_handful_of_paths_is_artwork_not_outlined_text() {
+        let mut s = base();
+        s.vector_path_density = 1.0;
+        s.vector_path_count = 4;
+        let (kind, _, _) = classify_from_signals(&s, &AutoExtractOptions::default());
+        assert_ne!(
+            kind,
+            PageKind::Scanned,
+            "four vector paths and no raster is artwork; OCR recovers nothing"
+        );
+    }
+
+    /// The control: outlined text still routes to OCR, so the fix cannot pass
+    /// by disabling the branch. Text converted to outlines emits at least one
+    /// path per glyph, so its count is high.
+    #[test]
+    fn outlined_text_is_still_an_ocr_candidate() {
+        let mut s = base();
+        s.vector_path_density = 1.0;
+        s.vector_path_count = 2400;
+        let (kind, _, reason) = classify_from_signals(&s, &AutoExtractOptions::default());
+        assert_eq!(kind, PageKind::Scanned, "a page of outlined glyphs still needs OCR");
+        assert_eq!(reason, ReasonCode::NoTextLayerPresent);
+    }
+
+    /// The terminal fallback claimed "some raster" and never tested it.
+    #[test]
+    fn no_text_and_no_raster_is_not_a_scan() {
+        let s = base();
+        let (kind, _, _) = classify_from_signals(&s, &AutoExtractOptions::default());
+        assert_eq!(
+            kind,
+            PageKind::Empty,
+            "no text and no image: nothing to extract and nothing for OCR to read"
+        );
+    }
+
+    /// But an image whose placement cannot be measured is still a raster.
+    #[test]
+    fn an_unmeasurable_image_is_still_a_scan() {
+        let mut s = base();
+        s.codec = ImageCodecClass::Dct;
+        s.image_area_ratio = 0.0;
+        let (kind, _, _) = classify_from_signals(&s, &AutoExtractOptions::default());
+        assert_eq!(
+            kind,
+            PageKind::Scanned,
+            "gating on measured area alone would report a real scan as needing no OCR"
+        );
     }
 }

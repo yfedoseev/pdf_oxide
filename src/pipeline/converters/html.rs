@@ -410,6 +410,11 @@ impl HtmlOutputConverter {
 
         // Track which tables have been rendered
         let mut tables_rendered = vec![false; tables.len()];
+        // Spans a table claimed, kept so the ones it does not actually render
+        // can be recovered below. Without this a claimed-but-unrendered span is
+        // dropped outright, and unlike markdown this converter had no second
+        // chance at it.
+        let mut table_skipped_spans: Vec<Vec<&OrderedTextSpan>> = vec![Vec::new(); tables.len()];
 
         let mut result = String::new();
         let mut prev_span: Option<&OrderedTextSpan> = None;
@@ -469,6 +474,7 @@ impl HtmlOutputConverter {
                         tables_rendered[table_idx] = true;
                         prev_span = None;
                     }
+                    table_skipped_spans[table_idx].push(span);
                     continue;
                 }
             }
@@ -631,6 +637,88 @@ impl HtmlOutputConverter {
         // Close any heading / list left open at end of document.
         flush_heading(&mut result, &mut current_heading);
         flush_list(&mut result, &mut list_kind, &mut current_li);
+
+        // Recover claimed spans the table did not render.
+        //
+        // `span_in_table` decides ownership from a span's ORIGIN against a cell
+        // box, while the detector assigns a span to a cell by its bbox CENTRE.
+        // The two disagree at a boundary, so a span can be claimed here and yet
+        // appear in no cell's text — and this converter dropped it outright,
+        // where markdown has always had a recovery pass. The result was silent,
+        // permanent loss on the HTML surface alone.
+        //
+        // The comparison mirrors markdown's deliberately, so the two surfaces
+        // cannot drift: glyph-sequence for a single-token span, because the
+        // cell builder joins its members with a space where the flow assembler
+        // joins them with none; literal for a span that carries spaces of its
+        // own, because a squashed multi-word sequence can be found running
+        // across gaps the table never rendered as one string.
+        for (table_idx, skipped) in table_skipped_spans.iter().enumerate() {
+            if !tables_rendered[table_idx] || skipped.is_empty() {
+                continue;
+            }
+            // Compare the span against the table's CELL TEXT.
+            //
+            // Two other approaches were measured and rejected. Comparing
+            // against the *rendered* HTML fails on escaping — `&` and quotes
+            // are escaped there and not in the span — which duplicated whole
+            // paragraphs across a legal corpus. And testing membership by span
+            // identity fails outright: the detector's cell spans and the
+            // ordered spans this converter walks are different objects whose
+            // `sequence` values do not correspond, which duplicated 9814 words
+            // across eleven documents. Cell text is the only bridge the two
+            // sides actually share.
+            let rendered: String = tables[table_idx]
+                .rows
+                .iter()
+                .flat_map(|r| r.cells.iter())
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let rendered_glyphs: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+            let rendered_words: String = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut orphans: Vec<&&OrderedTextSpan> = skipped
+                .iter()
+                .filter(|s| {
+                    let trimmed = s.span.text.trim();
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    if trimmed.split_whitespace().nth(1).is_some() {
+                        // Multi-word: collapse runs of whitespace on both
+                        // sides. A literal test is too strict — the span keeps
+                        // the gaps the page laid out (`Canada   1220`) where
+                        // the cell text joins members with one space — and
+                        // removing whitespace entirely is too loose, letting a
+                        // sequence match across word gaps the table never
+                        // rendered as one string.
+                        let want = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+                        return !rendered_words.contains(&want);
+                    }
+                    // Single token: the only spacing disagreement possible is
+                    // the space the cell builder inserts between the members it
+                    // joined, so ignore whitespace outright.
+                    let glyphs: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+                    !glyphs.is_empty() && !rendered_glyphs.contains(&glyphs)
+                })
+                .collect();
+            if orphans.is_empty() {
+                continue;
+            }
+            // Reading order, not arrival order: a recovered span belongs where
+            // it was read, not appended wherever the loop happened to end.
+            orphans.sort_by_key(|s| s.reading_order);
+            let mut recovered = String::new();
+            for orphan in orphans {
+                if !recovered.is_empty() {
+                    recovered.push(' ');
+                }
+                recovered.push_str(&Self::escape_html(orphan.span.text.trim()));
+            }
+            if !recovered.is_empty() {
+                result.push_str(&format!("<p>{recovered}</p>\n"));
+            }
+        }
 
         // Render any tables that weren't matched to spans
         for (i, table) in tables.iter().enumerate() {
@@ -1046,7 +1134,43 @@ mod tests {
 
         assert!(result.contains("<p>Intro</p>"), "Should contain paragraph: {}", result);
         assert!(result.contains("<table>"), "Should contain table: {}", result);
-        assert!(!result.contains("Inside"), "Should exclude span in table region");
+        // The span lies in the table's region but the table renders only
+        // "Cell", so nothing re-emits "Inside". Dropping it here is the loss
+        // this converter used to suffer and markdown never did: suppression is
+        // only safe when the table actually renders the text it claimed.
+        assert!(
+            result.contains("Inside"),
+            "a claimed span the table does not render must survive: {}",
+            result
+        );
+    }
+
+    /// The other direction, so recovery cannot pass by emitting everything: a
+    /// span the table DOES render stays suppressed.
+    #[test]
+    fn test_convert_with_tables_suppresses_a_span_the_table_renders() {
+        let converter = HtmlOutputConverter::new();
+        let config = TextPipelineConfig::default();
+
+        let mut span_in_table = make_span("Cell", 50.0, 70.0, 12.0, FontWeight::Normal);
+        span_in_table.reading_order = 0;
+
+        let mut table = Table::new();
+        table.bbox = Some(Rect::new(10.0, 50.0, 200.0, 100.0));
+        let mut row = TableRow::new(false);
+        row.add_cell(TableCell::new("Cell".to_string(), false));
+        table.add_row(row);
+
+        let result = converter
+            .convert_with_tables(&[span_in_table], &[table], &config)
+            .unwrap();
+
+        assert_eq!(
+            result.matches("Cell").count(),
+            1,
+            "the table renders this span, so it must not also appear as prose: {}",
+            result
+        );
     }
 
     #[test]
