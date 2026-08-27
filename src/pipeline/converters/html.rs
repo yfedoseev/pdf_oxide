@@ -657,26 +657,48 @@ impl HtmlOutputConverter {
             if !tables_rendered[table_idx] || skipped.is_empty() {
                 continue;
             }
-            // Compare the span against the table's CELL TEXT.
+            // Compare the span against what the cells WILL RENDER, produced
+            // by the same span walk `render_cell_html` uses.
+            //
+            // The cell's own `text` field is not that string. `render_cell_html`
+            // walks `cell.spans` whenever it has any, inserting a space where
+            // `has_horizontal_gap` finds one and routing each span through
+            // `push_span_text`, which can itself split a column-spanning
+            // decimal (`1.10` -> `1 10`). Testing against `cell.text` therefore
+            // asked whether a *different* string contained the span, and
+            // recovered spans the table was about to render anyway: 140
+            // duplicated paragraphs over the corpus against 66 before the
+            // recovery pass existed.
             //
             // Two other approaches were measured and rejected. Comparing
             // against the *rendered* HTML fails on escaping — `&` and quotes
             // are escaped there and not in the span — which duplicated whole
-            // paragraphs across a legal corpus. And testing membership by span
-            // identity fails outright: the detector's cell spans and the
-            // ordered spans this converter walks are different objects whose
-            // `sequence` values do not correspond, which duplicated 9814 words
-            // across eleven documents. Cell text is the only bridge the two
-            // sides actually share.
-            let rendered: String = tables[table_idx]
+            // paragraphs across a legal corpus; sharing the span walk gets the
+            // same string without the escaping round-trip. And testing
+            // membership by span identity fails outright: the detector's cell
+            // spans and the ordered spans this converter walks are different
+            // objects whose `sequence` values do not correspond, which
+            // duplicated 9814 words across eleven documents.
+            let row_texts: Vec<String> = tables[table_idx]
                 .rows
                 .iter()
-                .flat_map(|r| r.cells.iter())
-                .map(|c| c.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let rendered_glyphs: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
-            let rendered_words: String = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(Self::cell_plain_text)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            // Per ROW, not per table. A row is what the reader sees on one
+            // line, so a flow span the detector split across that row's cells
+            // is the same content; a span whose glyphs are only found by
+            // running across the whole table is not.
+            let row_glyphs: Vec<String> = row_texts
+                .iter()
+                .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect())
+                .collect();
+            let rendered_glyphs: String = row_glyphs.concat();
             let mut orphans: Vec<&&OrderedTextSpan> = skipped
                 .iter()
                 .filter(|s| {
@@ -685,15 +707,28 @@ impl HtmlOutputConverter {
                         return false;
                     }
                     if trimmed.split_whitespace().nth(1).is_some() {
-                        // Multi-word: collapse runs of whitespace on both
-                        // sides. A literal test is too strict — the span keeps
-                        // the gaps the page laid out (`Canada   1220`) where
-                        // the cell text joins members with one space — and
-                        // removing whitespace entirely is too loose, letting a
-                        // sequence match across word gaps the table never
-                        // rendered as one string.
-                        let want = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-                        return !rendered_words.contains(&want);
+                        // Multi-word: compare glyph sequences, bounded to a
+                        // single row.
+                        //
+                        // Comparing whitespace-normalised text was too strict.
+                        // The two sides disagree about where the spaces go,
+                        // not about the glyphs: a table of contents renders
+                        // `Chapter I— Federal Trade Commission ....` from four
+                        // cells while the flow span reads
+                        // `Chapter I—Federal Trade Commission ....`, and one
+                        // file split `Department` as `D epartm ent` across
+                        // cells while another joined `National Park` into
+                        // `NationalPark`. Every one of those was recovered and
+                        // emitted a second time beside the table.
+                        //
+                        // Ignoring whitespace outright was the other extreme,
+                        // matching a sequence the table never rendered as one
+                        // string. The row is what resolves it: cells of one row
+                        // ARE adjacent on the page, so matching across them is
+                        // right, and matching across the whole table is not.
+                        let want: String =
+                            trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+                        return !row_glyphs.iter().any(|r| r.contains(&want));
                     }
                     // Single token: the only spacing disagreement possible is
                     // the space the cell builder inserts between the members it
@@ -744,6 +779,32 @@ impl HtmlOutputConverter {
         }
 
         Ok(result)
+    }
+
+    /// The visible text of a cell, by the same span walk `render_cell_html`
+    /// performs — same gap rule, same `push_span_text` — but without the
+    /// escaping and the `<strong>`/`<em>` wrappers.
+    ///
+    /// This exists so the orphan-recovery guard can ask "will the table
+    /// already show these glyphs?" against the string the table actually
+    /// shows, rather than against `cell.text`, which the renderer does not
+    /// use when the cell carries spans.
+    fn cell_plain_text(cell: &crate::structure::table_extractor::TableCell) -> String {
+        if cell.spans.is_empty() {
+            return cell.text.trim().to_string();
+        }
+        let mut out = String::new();
+        for (i, span) in cell.spans.iter().enumerate() {
+            if i > 0 {
+                let prev = &cell.spans[i - 1];
+                let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
+                if super::has_horizontal_gap(prev, span) && !already_has_space {
+                    out.push(' ');
+                }
+            }
+            crate::document::PdfDocument::push_span_text(&mut out, span);
+        }
+        out
     }
 
     /// Render the text content of a single table cell as HTML.
