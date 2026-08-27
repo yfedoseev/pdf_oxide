@@ -8716,12 +8716,35 @@ impl PdfDocument {
     /// flat-text output regardless of whether it sits at a line boundary (the
     /// PDF's own line wrap is not preserved here) or mid-word within a span
     /// whose glyphs were positioned individually.
+    ///
+    /// One shape is exempt: a soft hyphen that *terminates* the fragment and
+    /// directly follows a hyphen-minus. There the soft hyphen is the wrap
+    /// marker and the `-` is part of the word — a typesetter breaking an
+    /// already-hyphenated compound writes `Cross-<soft>` / `sectional`.
+    /// Dropping the marker here leaves a bare `Cross-`, which the rejoiner
+    /// downstream then reads as the wrap marker and removes, fusing the two
+    /// halves into `Crosssectional`. Keeping it lets the rejoiner take its
+    /// soft-hyphen branch, which strips the marker and preserves the hyphen;
+    /// the marker cannot survive a join, and a fragment that is never joined
+    /// keeps a character the page itself declares invisible.
     #[inline]
     fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
-        if s.contains('\u{00AD}') {
-            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
-        } else {
+        if !s.contains('\u{00AD}') {
             out.push_str(s);
+            return;
+        }
+        let keeps_wrap_marker = {
+            let mut cs = s.chars().rev();
+            cs.next() == Some('\u{00AD}') && cs.next() == Some('-')
+        };
+        let body = if keeps_wrap_marker {
+            &s[..s.len() - '\u{00AD}'.len_utf8()]
+        } else {
+            s
+        };
+        out.extend(body.chars().filter(|&c| c != '\u{00AD}'));
+        if keeps_wrap_marker {
+            out.push('\u{00AD}');
         }
     }
 
