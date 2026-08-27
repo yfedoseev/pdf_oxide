@@ -4,6 +4,16 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
+> Correctness under audit: 43 defects across rendering, text, files and colour
+
+The bulk of this release is an audit of contributions merged since v0.3.77,
+plus what a four-engine reference panel found when the result was measured
+against it. Two of the fixes are security-relevant: AES-256 encryption wrote
+files nothing could decrypt, and an incremental update dropped `/Encrypt`
+from the trailer while appending its objects in plaintext. Five more were
+aborts on valid files, which `panic = "abort"` turns into a dead host
+process rather than a catchable error.
+
 ### Added
 
 - **Structured diagnostics are readable from every binding built on the C ABI, and from WASM** — extraction records what it could not do (an unreadable font, a page with no text layer, a dropped glyph) as `Warning` values carrying a category, a page number and a message. Until now nothing outside Rust could see them: there was no C entry point, so all eighteen bindings were blind to every diagnostic the library produced. `pdf_document_structured_warnings` and `pdf_document_take_structured_warnings` return them as JSON, and `structuredWarnings` / `takeStructuredWarnings` return them as objects from WASM. The two accessors differ in whether they drain: reading is non-destructive, taking clears (#1190).
