@@ -1428,9 +1428,14 @@ impl PdfDocument {
             },
             Ok(false) => {
                 log::warn!("PDF is encrypted and requires a password");
-                self.push_warning(
-                    "PDF is encrypted and requires a password; call authenticate() before extracting text".to_string()
-                );
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Encryption,
+                    page: None,
+                    message: "PDF is encrypted and requires a password; call \
+                              authenticate() before extracting text"
+                        .to_string(),
+                    spec_section: Some("7.6"),
+                });
                 // Set handler anyway - user can call authenticate() later
             },
             Err(e) => {
@@ -10593,9 +10598,15 @@ impl PdfDocument {
                     "Structure tree references MCID {} but no spans found with that MCID",
                     mcid
                 );
-                self.push_warning(format!(
-                    "page {page_index}: structure tree references MCID {mcid} but no content spans found — some text may be missing"
-                ));
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Layout,
+                    page: Some(page_index),
+                    message: format!(
+                        "structure tree references MCID {mcid} but no content spans \
+                         carry it; some text may be missing"
+                    ),
+                    spec_section: Some("14.7.4.2"),
+                });
             }
         }
 
@@ -13101,6 +13112,11 @@ impl PdfDocument {
     ///
     /// This API makes previously invisible extraction degradations programmatically
     /// observable without requiring callers to hook into the `log` crate.
+    #[deprecated(
+        since = "0.3.78",
+        note = "use structured_warnings(), which carries a category, page and spec \
+                reference rather than a bare string"
+    )]
     pub fn warnings(&self) -> Vec<String> {
         self.accumulated_warnings.lock_or_recover().clone()
     }
@@ -13110,11 +13126,23 @@ impl PdfDocument {
     /// After this call, [`Self::warnings`] returns an empty `Vec` until new warnings
     /// are generated. Useful for incremental processing pipelines that want to
     /// inspect warnings on a per-page or per-operation basis.
+    #[deprecated(
+        since = "0.3.78",
+        note = "use take_structured_warnings(), which carries a category, page and \
+                spec reference rather than a bare string"
+    )]
     pub fn take_warnings(&self) -> Vec<String> {
         std::mem::take(&mut *self.accumulated_warnings.lock_or_recover())
     }
 
-    /// Record an extraction warning. Called internally when a silent fallback occurs.
+    /// Record an extraction warning as a bare string.
+    ///
+    /// Superseded by [`Self::push_structured_warning`]. Both producers that
+    /// used this now emit a categorised warning instead, so a consumer can
+    /// filter on the category and read the page rather than pattern-matching
+    /// English. Retained only so `warnings()` keeps its shape for the
+    /// deprecation window.
+    #[allow(dead_code)]
     pub(crate) fn push_warning(&self, msg: impl Into<String>) {
         self.accumulated_warnings.lock_or_recover().push(msg.into());
     }
@@ -21211,21 +21239,35 @@ impl PdfDocument {
             }
         }
 
-        // A scanned / image page produces no extractable text and would
-        // render as a silently-blank page. Emit a visible marker so a reader
-        // knows content was lost and OCR is required, rather than dropping
-        // (on a scanned corpus) ~half the document with no explanation. Gated
-        // to genuinely scanned/image pages (not legitimately-blank ones) and
-        // suppressible via `annotate_skipped_pages`.
-        if options.annotate_skipped_pages && markdown.trim().is_empty() {
+        // A scanned page produces no extractable text. That fact is reported
+        // as a diagnostic, not written into the content: a sentence spliced
+        // into the extracted text is indistinguishable from text the page
+        // actually contains, so every consumer indexes, embeds and searches it
+        // as though the document said it. No reference extractor does this —
+        // MuPDF, poppler, pypdf and pdfminer all return nothing for such a
+        // page and carry the reason out of band, and returning nothing is what
+        // `to_html_all` already does here with an empty page div.
+        //
+        // The caller reads the reason from `structured_warnings()`, or from
+        // `classify_document().pages_needing_ocr`, and decides whether to
+        // surface it, where, and in what language. `annotate_skipped_pages`
+        // could never make that decision for anyone but a Rust caller: every
+        // binding, the CLI and the MCP server construct `ConversionOptions`
+        // with the default and cannot reach the field.
+        if markdown.trim().is_empty() {
             if let Ok(c) = self.classify_page(page_index) {
                 use crate::extractors::auto::PageKind;
                 if matches!(c.kind, PageKind::Scanned | PageKind::ImageText) {
-                    return Ok(format!(
-                        "> [OCR REQUIRED — page {}]\n> This page is a scanned/rasterised image with no \
-                         extractable text layer; run OCR to recover its content.\n",
-                        page_index + 1
-                    ));
+                    self.push_structured_warning(crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::NoTextLayer,
+                        page: Some(page_index),
+                        message: format!(
+                            "page {} has no extractable text layer; it looks like a scan and \
+                             OCR is what would recover its content",
+                            page_index + 1
+                        ),
+                        spec_section: None,
+                    });
                 }
             }
         }

@@ -60,6 +60,12 @@ pub enum WarningCategory {
     /// A glyph produced no rendered output while the cursor still advanced,
     /// so the page renders with an invisible gap.
     GlyphDropped,
+    /// A page carries no extractable text layer and looks like a scan, so
+    /// extraction returns nothing for it and OCR is what would recover it.
+    ///
+    /// Raised instead of writing that sentence into the extracted content:
+    /// the caller decides whether to surface it, where, and in what language.
+    NoTextLayer,
 }
 
 impl WarningCategory {
@@ -76,6 +82,7 @@ impl WarningCategory {
             Self::Font => "font",
             Self::Layout => "layout",
             Self::GlyphDropped => "glyph_dropped",
+            Self::NoTextLayer => "no_text_layer",
         }
     }
 }
@@ -107,18 +114,51 @@ pub struct WarningSink {
 /// `PdfDocument::flatten_warnings()` which merges global +
 /// per-document warnings.
 ///
-/// Process-wide scope means warnings from concurrent extractions on
-/// different `PdfDocument` instances appear together in the snapshot.
-/// For per-document isolation, use the per-document sink directly
-/// via `PdfDocument::push_structured_warning`.
-static GLOBAL_WARNING_SINK: Mutex<Vec<Warning>> = Mutex::new(Vec::new());
+/// The sink is **thread-local**, not process-wide.
+///
+/// It was process-wide, and the drain is first-caller-wins, so two documents
+/// being read at the same time stole each other's warnings: whichever called
+/// `structured_warnings()` first collected the other's tail and reported it
+/// against the wrong file. libxml2 reached the same conclusion about its
+/// global handlers and deprecated them for per-context ones.
+///
+/// Thread-local scope fixes the case that actually occurs — a pool reading
+/// documents in parallel, one per thread. It does not fix two documents read
+/// sequentially on one thread where the first never drains; that needs the
+/// sink threaded into the producers, which are free functions with no
+/// document in scope. The producers are listed above so that work has a
+/// starting point.
+///
+/// Bounded, because a long-lived reader that never drains would otherwise grow
+/// without limit: at the cap a single `diagnostics_truncated` entry records
+/// how many were dropped rather than the vector continuing to grow.
+const MAX_SINK_ENTRIES: usize = 1000;
 
-/// Push a structured warning into the process-wide sink. Called by
+thread_local! {
+    static WARNING_SINK: std::cell::RefCell<Vec<Warning>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static DROPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Push a structured warning into this thread's sink. Called by
 /// free-function log sites that can't access a `&PdfDocument`.
 pub fn push_global_warning(warning: Warning) {
-    if let Ok(mut v) = GLOBAL_WARNING_SINK.lock() {
+    WARNING_SINK.with(|sink| {
+        let mut v = sink.borrow_mut();
+        if v.len() >= MAX_SINK_ENTRIES {
+            DROPPED.with(|d| d.set(d.get() + 1));
+            return;
+        }
+        // Repeats are common — one malformed font warns once per glyph — and a
+        // consumer wants to know it happened, not to read it a thousand times.
+        if let Some(last) = v.iter_mut().rev().take(16).find(|w| {
+            w.category == warning.category && w.page == warning.page && w.message == warning.message
+        }) {
+            let _ = last;
+            return;
+        }
         v.push(warning);
-    }
+    });
 }
 
 /// Drain the process-wide structured-warning sink, returning a snapshot
@@ -126,18 +166,24 @@ pub fn push_global_warning(warning: Warning) {
 /// `PdfDocument::flatten_warnings` to surface free-function warnings
 /// alongside per-document ones.
 pub fn drain_global_warnings() -> Vec<Warning> {
-    GLOBAL_WARNING_SINK
-        .lock()
-        .map(|mut v| std::mem::take(&mut *v))
-        .unwrap_or_default()
+    let mut out = WARNING_SINK.with(|sink| std::mem::take(&mut *sink.borrow_mut()));
+    let dropped = DROPPED.with(|d| d.replace(0));
+    if dropped > 0 {
+        out.push(Warning {
+            category: WarningCategory::SpecViolation,
+            page: None,
+            message: format!(
+                "{dropped} further diagnostics were dropped after the {MAX_SINK_ENTRIES}-entry cap"
+            ),
+            spec_section: None,
+        });
+    }
+    out
 }
 
-/// Snapshot the global sink without draining (for tests / observability).
+/// Snapshot this thread's sink without draining (for tests / observability).
 pub fn snapshot_global_warnings() -> Vec<Warning> {
-    GLOBAL_WARNING_SINK
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+    WARNING_SINK.with(|sink| sink.borrow().clone())
 }
 
 impl WarningSink {
@@ -284,5 +330,74 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(sink.len(), 10);
+    }
+}
+
+#[cfg(test)]
+mod sink_scope_tests {
+    use super::*;
+
+    fn w(msg: &str) -> Warning {
+        Warning {
+            category: WarningCategory::SpecViolation,
+            page: None,
+            message: msg.to_string(),
+            spec_section: None,
+        }
+    }
+
+    /// Two readers running at once must not collect each other's warnings.
+    ///
+    /// The sink was process-wide and the drain is first-caller-wins, so
+    /// whichever document asked first took the other's tail and reported it
+    /// against the wrong file.
+    #[test]
+    fn one_thread_does_not_drain_anothers_warnings() {
+        let _ = drain_global_warnings();
+        push_global_warning(w("belongs to the main thread"));
+
+        let other = std::thread::spawn(|| {
+            push_global_warning(w("belongs to the spawned thread"));
+            drain_global_warnings()
+        })
+        .join()
+        .expect("thread");
+
+        assert_eq!(other.len(), 1, "the other thread saw {other:?}");
+        assert_eq!(other[0].message, "belongs to the spawned thread");
+
+        let mine = drain_global_warnings();
+        assert_eq!(mine.len(), 1, "this thread saw {mine:?}");
+        assert_eq!(mine[0].message, "belongs to the main thread");
+    }
+
+    /// A repeated warning is recorded once, not once per occurrence.
+    #[test]
+    fn an_identical_warning_is_not_recorded_repeatedly() {
+        let _ = drain_global_warnings();
+        for _ in 0..50 {
+            push_global_warning(w("one malformed font, warned per glyph"));
+        }
+        assert_eq!(drain_global_warnings().len(), 1);
+    }
+
+    /// A reader that never drains does not grow without bound, and is told
+    /// how many were dropped rather than silently losing them.
+    #[test]
+    fn the_sink_is_bounded_and_reports_what_it_dropped() {
+        let _ = drain_global_warnings();
+        for i in 0..MAX_SINK_ENTRIES + 25 {
+            push_global_warning(w(&format!("distinct {i}")));
+        }
+        let out = drain_global_warnings();
+        assert_eq!(out.len(), MAX_SINK_ENTRIES + 1, "capped, plus one sentinel");
+        assert!(
+            out.last()
+                .expect("sentinel")
+                .message
+                .contains("were dropped"),
+            "the drop must be reported, not silent: {:?}",
+            out.last()
+        );
     }
 }
