@@ -8069,9 +8069,18 @@ impl PageRenderer {
                             };
 
                             if let Some(rect) = annot.rect {
-                                let x = rect[0] as f32;
-                                let y = rect[1] as f32;
-                                let annot_transform = base_transform.pre_translate(x, y);
+                                // §12.5.5: the appearance's transformed /BBox
+                                // is fitted to /Rect. Without the fit an
+                                // appearance declaring `/BBox [0 0 512 543]`
+                                // for a 93x98 pt annotation painted at its own
+                                // scale, covering a fifth of the page where
+                                // every reference renderer paints 1.5%.
+                                let fit = appearance_fit_matrix(&dict, &rect);
+                                let annot_transform = match fit {
+                                    Some(a) => base_transform.pre_concat(a),
+                                    None => base_transform
+                                        .pre_translate(rect[0] as f32, rect[1] as f32),
+                                };
 
                                 let old_fonts = self.fonts.clone();
                                 let old_cs = self.color_spaces.clone();
@@ -8081,11 +8090,10 @@ impl PageRenderer {
                                     }
                                 }
 
-                                // No /BBox clip here: `annot_transform` only
-                                // translates to the annotation's lower-left
-                                // corner, where §12.5.5 calls for the mapped
-                                // bounding box to be fitted to /Rect. See
-                                // `render_form_xobject_scoped`.
+                                // With the fit in place the form's own
+                                // /BBox clip is meaningful again (§8.10.2
+                                // step (c)); without it the clip would be
+                                // measured in the wrong coordinate system.
                                 self.render_form_xobject_scoped(
                                     pixmap,
                                     &dict,
@@ -8094,7 +8102,7 @@ impl PageRenderer {
                                     doc,
                                     page_num,
                                     &Object::Dictionary(std::collections::HashMap::new()),
-                                    false,
+                                    fit.is_some(),
                                 )?;
 
                                 self.fonts = old_fonts;
@@ -10233,6 +10241,88 @@ fn compose_overprint_channel(
 /// the file plainly meant to draw), or when the mask cannot be allocated.
 /// §7.9.5 lets a rectangle be written on either diagonal, so the corners are
 /// normalised rather than trusted.
+/// ISO 32000-1:2008 §12.5.5 — fit an annotation's appearance stream to its
+/// `/Rect`.
+///
+/// The appearance is a form XObject and carries its own coordinate system.
+/// The spec's algorithm is: map the four corners of `/BBox` through `/Matrix`
+/// and take the smallest upright rectangle enclosing them (the *transformed
+/// appearance box*), then compute the matrix `A` that maps that rectangle onto
+/// `/Rect`. Rendering the form under `A` — `/Matrix` is concatenated by the
+/// form renderer itself — puts the appearance where the annotation says it is,
+/// at the size the annotation says it is.
+///
+/// Returns `None` when the form declares no usable `/BBox`, or when the
+/// transformed box is degenerate on either axis: the spec performs no scaling
+/// in that case, and the caller keeps its plain translation to the rectangle's
+/// lower-left corner.
+fn appearance_fit_matrix(
+    dict: &std::collections::HashMap<String, Object>,
+    rect: &[f64; 4],
+) -> Option<Transform> {
+    let Some(Object::Array(arr)) = dict.get("BBox") else {
+        return None;
+    };
+    let n = |a: &Vec<Object>, i: usize| -> Option<f32> {
+        match a.get(i) {
+            Some(Object::Real(v)) => Some(*v as f32),
+            Some(Object::Integer(v)) => Some(*v as f32),
+            _ => None,
+        }
+    };
+    let (bx0, by0, bx1, by1) = (n(arr, 0)?, n(arr, 1)?, n(arr, 2)?, n(arr, 3)?);
+
+    // §7.9.5: a rectangle may be written on either diagonal.
+    let (bx0, bx1) = (bx0.min(bx1), bx0.max(bx1));
+    let (by0, by1) = (by0.min(by1), by0.max(by1));
+
+    let matrix = match dict.get("Matrix") {
+        Some(Object::Array(m)) if m.len() >= 6 => Transform::from_row(
+            n(m, 0).unwrap_or(1.0),
+            n(m, 1).unwrap_or(0.0),
+            n(m, 2).unwrap_or(0.0),
+            n(m, 3).unwrap_or(1.0),
+            n(m, 4).unwrap_or(0.0),
+            n(m, 5).unwrap_or(0.0),
+        ),
+        _ => Transform::identity(),
+    };
+
+    let mut corners = [
+        tiny_skia::Point::from_xy(bx0, by0),
+        tiny_skia::Point::from_xy(bx1, by0),
+        tiny_skia::Point::from_xy(bx1, by1),
+        tiny_skia::Point::from_xy(bx0, by1),
+    ];
+    matrix.map_points(&mut corners);
+    let tx0 = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let tx1 = corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+    let ty0 = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let ty1 = corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+    if !(tx0.is_finite() && tx1.is_finite() && ty0.is_finite() && ty1.is_finite()) {
+        return None;
+    }
+    let (tw, th) = (tx1 - tx0, ty1 - ty0);
+    if tw.abs() <= f32::EPSILON || th.abs() <= f32::EPSILON {
+        return None;
+    }
+
+    let (rx0, rx1) = (rect[0].min(rect[2]) as f32, rect[0].max(rect[2]) as f32);
+    let (ry0, ry1) = (rect[1].min(rect[3]) as f32, rect[1].max(rect[3]) as f32);
+    let (sx, sy) = ((rx1 - rx0) / tw, (ry1 - ry0) / th);
+    if !sx.is_finite() || !sy.is_finite() {
+        return None;
+    }
+    Some(Transform::from_row(
+        sx,
+        0.0,
+        0.0,
+        sy,
+        rx0 - sx * tx0,
+        ry0 - sy * ty0,
+    ))
+}
+
 fn form_bbox_clip(
     dict: &std::collections::HashMap<String, Object>,
     pixmap: &Pixmap,

@@ -258,7 +258,16 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // `3.80%` + `4.41%` into `3.80%4.41%` when the rate-table cells
     // sit ~265 pt apart and the table detector wasn't able to capture
     // them as a real grid.
-    if gap <= threshold {
+    // A span that ends before the previous one begins cannot be a
+    // continuation of it: the two are separated by a reading discontinuity —
+    // a new line, a new column, or a re-ordered run on an OCR text layer
+    // whose baselines jitter enough to scramble the row grouping. Treating
+    // that as "no gap" concatenated tokens that were never adjacent, so
+    // `It is the` came out as `theisIt`. Only a *complete* backward step
+    // counts: a small negative gap is glyph overlap (accent composition, an
+    // over-wide advance estimate) and must stay unseparated.
+    let steps_backward = current.bbox.x + current.bbox.width <= prev.bbox.x;
+    if gap <= threshold && !steps_backward {
         return false;
     }
 
