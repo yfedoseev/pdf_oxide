@@ -1526,6 +1526,12 @@ void pdf_oxide_elements_free(FfiElementList *handle);
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)
+FfiBarcodeImage *pdf_generate_datamatrix(const char *data,
+                                         int32_t size_px,
+                                         int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
 FfiBarcodeImage *pdf_generate_qr_code(const char *data,
                                       int32_t error_correction,
                                       int32_t size_px,
@@ -3676,6 +3682,18 @@ int32_t pdf_page_builder_barcode_1d(FfiPageBuilder *handle,
                                     float y,
                                     float w,
                                     float h,
+                                    int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * Place a Data Matrix image on the page (square: `size × size` points).
+ */
+int32_t pdf_page_builder_barcode_datamatrix(FfiPageBuilder *handle,
+                                    const char *data,
+                                    float x,
+                                    float y,
+                                    float size,
                                     int32_t *error_code);
 #endif
 

@@ -937,6 +937,8 @@ class _Native {
             'pdf_page_builder_newline'),
         pbBarcode1d = lib.lookupFunction<_PbBarcode1dC, _PbBarcode1dD>(
             'pdf_page_builder_barcode_1d'),
+        pbBarcodeDataMatrix = lib.lookupFunction<_PbBarcodeQrC, _PbBarcodeDataMatrixD>(
+            'pdf_page_builder_barcode_datamatrix'),
         pbBarcodeQr = lib.lookupFunction<_PbBarcodeQrC, _PbBarcodeQrD>(
             'pdf_page_builder_barcode_qr'),
         pbImage =
@@ -1101,6 +1103,8 @@ class _Native {
         getLogLevel =
             lib.lookupFunction<_GetLogC, _GetLogD>('pdf_oxide_get_log_level'),
         // ── Phase 7: barcodes / OCR / render variants / redaction / from_* ──
+        generateDataMatrix =
+            lib.lookupFunction<_GenQrC, _GenQrD>('pdf_generate_datamatrix'),
         generateQrCode =
             lib.lookupFunction<_GenQrC, _GenQrD>('pdf_generate_qr_code'),
         generateBarcode = lib

@@ -271,6 +271,13 @@ fn ffi_barcode_1d_and_qr_produce_valid_pdf() {
     };
     assert_eq!(ec, 0, "barcode_1d failed: {ret}");
 
+    // Data Matrix barcode
+    let data = cstring("https://example.com");
+    let ret = unsafe {
+        pdf_page_builder_barcode_datamatrix(page, data.as_ptr(), 72.0, 580.0, 100.0, &mut ec)
+    };
+    assert_eq!(ec, 0, "barcode_datamatrix failed: {ret}");
+
     // QR code
     let data = cstring("https://example.com");
     let ret =

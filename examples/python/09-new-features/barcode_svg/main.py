@@ -32,6 +32,15 @@ def main() -> None:
         f.write(svg)
     print(f"Written: {path} ({len(svg)} bytes)")
 
+    # Data Matrix SVG (size=256)
+    svg = pdf_oxide.generate_datamatrix_svg("https://github.com/yfedoseev/pdf_oxide", 1, 256)
+    assert svg.startswith("<svg")
+    assert "<rect" in svg, "QR SVG must contain rect elements"
+    path = os.path.join(OUT_DIR, "datamatrix_code.svg")
+    with open(path, "w") as f:
+        f.write(svg)
+    print(f"Written: {path} ({len(svg)} bytes)")
+
     # QR code SVG (error_correction=1=Medium, size=256)
     svg = pdf_oxide.generate_qr_svg("https://github.com/yfedoseev/pdf_oxide", 1, 256)
     assert svg.startswith("<svg")

@@ -141,6 +141,9 @@ extern int   pdf_page_builder_new_page_same_size(void* page, int* error_code);
 extern int   pdf_page_builder_barcode_1d(void* page, int barcode_type, const char* data,
                                          float x, float y, float w, float h,
                                          int* error_code);
+extern int   pdf_page_builder_barcode_datamatrix(void* page, const char* data,
+                                         float x, float y, float size,
+                                         int* error_code);
 extern int   pdf_page_builder_barcode_qr(void* page, const char* data,
                                          float x, float y, float size,
                                          int* error_code);
@@ -1116,6 +1119,16 @@ func (p *PageBuilder) Barcode1d(barcodeType int, data string, x, y, w, h float32
 		defer C.free(unsafe.Pointer(cd))
 		return C.pdf_page_builder_barcode_1d(hp, C.int(barcodeType), cd,
 			C.float(x), C.float(y), C.float(w), C.float(h), ec)
+	})
+}
+
+// BarcodeQr places a Data Matrix image on the page (square: size × size pt).
+func (p *PageBuilder) BarcodeDataMatrix(data string, x, y, size float32) *PageBuilder {
+	return p.callInt(func(hp unsafe.Pointer, ec *C.int) C.int {
+		cd := C.CString(data)
+		defer C.free(unsafe.Pointer(cd))
+		return C.pdf_page_builder_barcode_datamatrix(hp, cd,
+			C.float(x), C.float(y), C.float(size), ec)
 	})
 }
 

@@ -92,7 +92,8 @@ pub use annotation_builder::{
 };
 pub use appearance_stream::AppearanceStreamBuilder;
 pub use barcode::{
-    BarcodeGenerator, BarcodeOptions, BarcodeType, QrCodeOptions, QrErrorCorrection,
+    BarcodeGenerator, BarcodeOptions, BarcodeType, DataMatrixOptions, QrCodeOptions,
+    QrErrorCorrection,
 };
 pub use content_stream::{
     BlendMode, ContentStreamBuilder, ContentStreamOp, LineCap, LineJoin, PendingImage,

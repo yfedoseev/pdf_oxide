@@ -7,7 +7,7 @@
 
 use pdf_oxide::{
     error::Result,
-    writer::{BarcodeGenerator, BarcodeOptions, BarcodeType, QrCodeOptions},
+    writer::{BarcodeGenerator, BarcodeOptions, BarcodeType, DataMatrixOptions, QrCodeOptions},
 };
 use std::path::PathBuf;
 
@@ -34,6 +34,17 @@ fn main() -> Result<()> {
     )?;
     assert!(svg.starts_with("<svg"));
     let path = out_dir.join("ean13.svg");
+    std::fs::write(&path, &svg)?;
+    println!("Written: {} ({} bytes)", path.display(), svg.len());
+
+    // Data Matrix SVG
+    let svg = BarcodeGenerator::generate_datamatrix_svg(
+        "https://github.com/yfedoseev/pdf_oxide",
+        &DataMatrixOptions::default().size(256),
+    )?;
+    assert!(svg.starts_with("<svg"));
+    assert!(svg.contains("<rect"), "Data Matrix SVG must contain rect elements");
+    let path = out_dir.join("datamatrix.svg");
     std::fs::write(&path, &svg)?;
     println!("Written: {} ({} bytes)", path.display(), svg.len());
 

@@ -224,7 +224,7 @@ defmodule PdfOxide do
 
   defmodule Barcode do
     @moduledoc """
-    A generated/decoded barcode or QR code (native handle). Read its payload,
+    A generated/decoded 1d or 2d barcode (native handle). Read its payload,
     format and confidence, render it to PNG/SVG, or stamp it onto an editor page
     with `PdfOxide.add_barcode_to_page/7`. Free with `PdfOxide.barcode_close/1`
     (also GC-freed).
@@ -974,6 +974,10 @@ defmodule PdfOxide do
   def page_barcode_1d(%PageBuilder{ref: ref}, barcode_type, data, x, y, w, h),
     do: Native.pbld_barcode_1d(ref, barcode_type, data, x * 1.0, y * 1.0, w * 1.0, h * 1.0)
 
+  @doc "Place a Data Matrix image (square `size`×`size` points)."
+  def page_barcode_datamatrix(%PageBuilder{ref: ref}, data, x, y, size),
+    do: Native.pbld_barcode_datamatrix(ref, data, x * 1.0, y * 1.0, size * 1.0)
+
   @doc "Place a QR-code image (square `size`×`size` points)."
   def page_barcode_qr(%PageBuilder{ref: ref}, data, x, y, size),
     do: Native.pbld_barcode_qr(ref, data, x * 1.0, y * 1.0, size * 1.0)
@@ -1450,6 +1454,13 @@ defmodule PdfOxide do
 
   # ── helpers ──────────────────────────────────────────────────────────────────
   # ── phase 7: barcodes / QR ───────────────────────────────────────────────────
+  @doc """
+  Generate a Data Matrix barcode from `data` and `size_px` tune the symbol.
+  Returns `{:ok, %Barcode{}}`.
+  """
+  def generate_datamatrix_code(data, size_px \\ 256),
+    do: wrap_barcode(Native.barcode_generate_datamatrix(data, size_px))
+
   @doc """
   Generate a QR code from `data`. `error_correction` (0=L 1=M 2=Q 3=H) and
   `size_px` tune the symbol. Returns `{:ok, %Barcode{}}`.

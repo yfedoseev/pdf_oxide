@@ -2189,6 +2189,20 @@ namespace PdfOxide.Internal
         public static partial float pdf_barcode_get_confidence(NativeHandle barcodeHandle);
 
         /// <summary>
+        /// Generates a Data Matrix barcode.
+        /// </summary>
+        /// <param name="data">Data to encode.</param>
+        /// <param name="size">Image size in pixels.</param>
+        /// <param name="errorCode">Output parameter for error code.</param>
+        /// <returns>Barcode image handle, or null on error.</returns>
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial NativeHandle pdf_generate_datamatrix(
+            string data,
+            int size,
+            out int errorCode);
+
+        /// <summary>
         /// Generates a QR code.
         /// </summary>
         /// <param name="data">Data to encode.</param>
@@ -2311,6 +2325,10 @@ namespace PdfOxide.Internal
         [LibraryImport(LibName, EntryPoint = "pdf_barcode_get_svg", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial IntPtr PdfBarcodeGetSvg(IntPtr handle, int sizePx, out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_generate_datamatrix", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfGenerateQrCode(string data, int sizePx, out int errorCode);
 
         [LibraryImport(LibName, EntryPoint = "pdf_generate_qr_code", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -3926,6 +3944,10 @@ namespace PdfOxide.Internal
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial int pdf_add_barcode_to_page(NativeHandle handle, int pageIndex, [MarshalAs(UnmanagedType.LPUTF8Str)] string data, int format, double x, double y, out int errorCode);
+
+        [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr pdf_generate_datamatrix(NativeHandle handle, [MarshalAs(UnmanagedType.LPUTF8Str)] string data, int size, out int errorCode);
 
         [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -7694,6 +7716,12 @@ namespace PdfOxide.Internal
         public static partial int PdfPageBuilderBarcode1d(
             IntPtr page, int barcodeType, string data,
             float x, float y, float w, float h, out int errorCode);
+
+        /// <summary>Place a Data Matrix barcode image on the page (square: size × size).</summary>
+        [LibraryImport(LibName, EntryPoint = "pdf_page_builder_barcode_datamatrix", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial int PdfPageBuilderBarcodeDataMatrix(
+            IntPtr page, string data, float x, float y, float size, out int errorCode);
 
         /// <summary>Place a QR-code image on the page (square: size × size).</summary>
         [LibraryImport(LibName, EntryPoint = "pdf_page_builder_barcode_qr", StringMarshalling = StringMarshalling.Utf8)]

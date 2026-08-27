@@ -3017,6 +3017,18 @@ static BOOL POXPageStatus(int32_t rc, int32_t code, NSString* op, NSError** erro
                          code, @"pageBarcode1d", error);
 }
 
+- (BOOL)barcodeDataMatrixData:(NSString*)data
+                    x:(float)x
+                    y:(float)y
+                 size:(float)size
+                error:(NSError**)error {
+    POX_PAGE_GUARD(@"pageBarcodeDataMatrix");
+    int32_t code = 0;
+    return POXPageStatus(
+        pdf_page_builder_barcode_datamatrix(_handle, data.UTF8String, x, y, size, &code), code,
+        @"pageBarcodeDataMatrix", error);
+}
+
 - (BOOL)barcodeQrData:(NSString*)data
                     x:(float)x
                     y:(float)y
@@ -4362,6 +4374,21 @@ static void POXBuildByteArrays(NSArray<NSData*>* blobs, const uint8_t*** ptrs,
 
 @implementation POXBarcode {
     FfiBarcodeImage* _handle;
+}
+
++ (instancetype)generateDataMatrix:(NSString*)data
+               errorCorrection:(int32_t)errorCorrection
+                        sizePx:(int32_t)sizePx
+                         error:(NSError**)error {
+    int32_t code = 0;
+    FfiBarcodeImage* h =
+        pdf_generate_datamatrix(data.UTF8String, errorCorrection, sizePx, &code);
+    if (!h) {
+        if (error)
+            *error = POXMakeError(code, @"generateDataMatrix");
+        return nil;
+    }
+    return [[self alloc] initWithHandle:h];
 }
 
 + (instancetype)generateQrCode:(NSString*)data

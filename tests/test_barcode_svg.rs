@@ -36,6 +36,22 @@ fn test_barcode_svg_qr() {
 
 #[cfg(feature = "barcodes")]
 #[test]
+fn test_barcode_svg_datamatrix() {
+    use pdf_oxide::writer::{BarcodeGenerator, DmtxCodeOptions};
+    let svg = BarcodeGenerator::generate_datamatrix_svg(
+        "https://example.com",
+        &DataMatrixOptions::default().size(256),
+    )
+    .expect("generate_datamatrix_svg must succeed");
+
+    assert!(svg.starts_with("<svg"), "must be SVG, got: {}", &svg[..svg.len().min(40)]);
+    assert!(svg.contains("<rect"), "QR SVG must contain rect module elements");
+    assert!(svg.contains("viewBox"), "QR SVG must have viewBox");
+    println!("QR SVG length: {} bytes", svg.len());
+}
+
+#[cfg(feature = "barcodes")]
+#[test]
 fn test_qr_format_sentinel_no_collision() {
     // Before fix: QR used format=0, same as Code128 — indistinguishable.
     // After fix: QR uses format=100 (sentinel outside 0-7 range).

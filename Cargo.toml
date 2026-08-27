@@ -284,6 +284,7 @@ uuid = { version = "1.23", features = ["v4", "js"] }
 # Barcode/QR code generation (optional)
 qrcode = { version = "0.14", optional = true }
 barcoders = { version = "2.0", optional = true, features = ["image"] }
+datamatrix = { version = "0.3.3", optional = true }
 
 # Office document creation and export via office_oxide (always required)
 office_oxide = { version = "0.1.8", default-features = false }
@@ -490,7 +491,7 @@ signatures = [
 tsa-client = ["signatures", "dep:ureq"]
 
 # Barcode/QR code generation
-barcodes = ["dep:qrcode", "dep:barcoders"]
+barcodes = ["dep:qrcode", "dep:barcoders", "dep:datamatrix"]
 
 # Parallel page extraction via rayon
 parallel = ["dep:rayon"]

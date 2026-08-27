@@ -1413,6 +1413,18 @@ pdf_page_barcode_1d <- function(page, barcode_type, data, x, y, w, h) {
   invisible(page)
 }
 
+#' Place a Data Matrix barcode image on the page (square: `size` x `size` points).
+#' @param page A `pdfoxide_page_builder`.
+#' @param data QR data.
+#' @param x,y Position in points.
+#' @param size Side length in points.
+#' @export
+pdf_page_barcode_datamatrix <- function(page, data, x, y, size) {
+  .Call(C_r_page_barcode_datamatrix, page, data, as.double(x), as.double(y),
+        as.double(size))
+  invisible(page)
+}
+
 #' Place a QR-code image on the page (square: `size` x `size` points).
 #' @param page A `pdfoxide_page_builder`.
 #' @param data QR data.
@@ -2284,11 +2296,23 @@ pdf_x_results_close <- function(results) {
   invisible(.Call(C_r_pdf_x_results_close, results))
 }
 
-# ── PHASE-7: barcodes / QR ────────────────────────────────────────────────────
+# ── PHASE-7: barcodes / Data Matrix ────────────────────────────────────────────────────
 # A `pdfoxide_barcode` is an external pointer to a native FfiBarcodeImage freed by
 # the GC finalizer (or now via pdf_barcode_close). `error_correction`: 0=L 1=M
 # 2=Q 3=H. `format`: 0=Code128 1=Code39 2=EAN13 ... (see pdf_page_barcode_1d).
 
+#' Generate a Data Matrix barcode.
+#' @param data The data to encode.
+#' @param error_correction 0=L 1=M 2=Q 3=H.
+#' @param size_px Side length in pixels.
+#' @return A `pdfoxide_barcode` handle.
+#' @export
+pdf_generate_datamatrix <- function(data, size_px = 256L) {
+  structure(.Call(C_r_generate_datamatrix_code, data,
+                  as.integer(size_px)), class = "pdfoxide_barcode")
+}
+
+# ── PHASE-7: barcodes / QR ────────────────────────────────────────────────────
 #' Generate a QR code.
 #' @param data The data to encode.
 #' @param error_correction 0=L 1=M 2=Q 3=H.

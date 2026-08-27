@@ -3287,7 +3287,8 @@ pub extern "C" fn pdf_oxide_elements_free(handle: *mut FfiElementList) {
 // ─── Barcodes ───────────────────────────────────────────────────────────────
 
 use crate::writer::barcode::{
-    BarcodeGenerator, BarcodeOptions, BarcodeType, QrCodeOptions, QrErrorCorrection,
+    BarcodeGenerator, BarcodeOptions, BarcodeType, DataMatrixOptions, QrCodeOptions,
+    QrErrorCorrection,
 };
 
 /// Opaque handle for generated barcode image (PNG bytes)
@@ -3295,6 +3296,40 @@ pub struct FfiBarcodeImage {
     data: Vec<u8>,
     format: i32, // 0=QR, 1=Code128, etc.
     source_data: String,
+}
+
+#[no_mangle]
+pub extern "C" fn pdf_generate_datamatrix(
+    data: *const c_char,
+    size_px: i32,
+    error_code: *mut i32,
+) -> *mut FfiBarcodeImage {
+    if data.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let data_str = match c_str(data) {
+        Ok(s) => s,
+        Err(_) => {
+            set_error(error_code, ERR_INVALID_ARG);
+            return ptr::null_mut();
+        },
+    };
+    let opts = DataMatrixOptions::new().size(size_px.max(1) as u32);
+    match BarcodeGenerator::generate_datamatrix(data_str, &opts) {
+        Ok(png_bytes) => {
+            set_error(error_code, ERR_SUCCESS);
+            Box::into_raw(Box::new(FfiBarcodeImage {
+                data: png_bytes,
+                format: 101, // 101 = DMTX; avoids collision with 2D barcode format 100 (QR)
+                source_data: data_str.to_string(),
+            }))
+        },
+        Err(e) => {
+            set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
 }
 
 #[no_mangle]
@@ -3423,22 +3458,29 @@ pub extern "C" fn pdf_barcode_get_svg(
         let result = if bc.format == 100 {
             BarcodeGenerator::generate_qr_svg(&bc.source_data, &QrCodeOptions::default())
         } else {
-            let barcode_type = match bc.format {
-                0 => BarcodeType::Code128,
-                1 => BarcodeType::Code39,
-                2 => BarcodeType::Ean13,
-                3 => BarcodeType::Ean8,
-                4 => BarcodeType::UpcA,
-                5 => BarcodeType::Itf,
-                6 => BarcodeType::Code93,
-                7 => BarcodeType::Codabar,
-                _ => BarcodeType::Code128,
-            };
-            BarcodeGenerator::generate_1d_svg(
-                barcode_type,
-                &bc.source_data,
-                &BarcodeOptions::default(),
-            )
+            if bc.format == 101 {
+                BarcodeGenerator::generate_datamatrix_svg(
+                    &bc.source_data,
+                    &DataMatrixOptions::default(),
+                )
+            } else {
+                let barcode_type = match bc.format {
+                    0 => BarcodeType::Code128,
+                    1 => BarcodeType::Code39,
+                    2 => BarcodeType::Ean13,
+                    3 => BarcodeType::Ean8,
+                    4 => BarcodeType::UpcA,
+                    5 => BarcodeType::Itf,
+                    6 => BarcodeType::Code93,
+                    7 => BarcodeType::Codabar,
+                    _ => BarcodeType::Code128,
+                };
+                BarcodeGenerator::generate_1d_svg(
+                    barcode_type,
+                    &bc.source_data,
+                    &BarcodeOptions::default(),
+                )
+            }
         };
         match result {
             Ok(svg) => {
@@ -10820,6 +10862,40 @@ pub extern "C" fn pdf_page_builder_barcode_1d(
         },
     };
     push_page_op(handle, error_code, FfiPageOp::BarcodeImage { bytes, x, y, w, h })
+}
+
+/// Place a DataMatrix image on the page (square: `size × size` points).
+#[no_mangle]
+pub extern "C" fn pdf_page_builder_barcode_datamatrix(
+    handle: *mut FfiPageBuilder,
+    data: *const c_char,
+    x: f32,
+    y: f32,
+    size: f32,
+    error_code: *mut i32,
+) -> i32 {
+    let Some(data_s) = read_cstr_or_fail(data, error_code) else {
+        return -1;
+    };
+    let opts = crate::writer::DataMatrixOptions::new().size(size as u32);
+    let bytes = match crate::writer::BarcodeGenerator::generate_datamatrix(&data_s, &opts) {
+        Ok(b) => b,
+        Err(_) => {
+            set_error(error_code, ERR_INVALID_ARG);
+            return -1;
+        },
+    };
+    push_page_op(
+        handle,
+        error_code,
+        FfiPageOp::BarcodeImage {
+            bytes,
+            x,
+            y,
+            w: size,
+            h: size,
+        },
+    )
 }
 
 /// Place a QR-code image on the page (square: `size × size` points).

@@ -528,6 +528,10 @@ void pdf_oxide_element_get_page_rect(const FfiElementList *elements,
 
 void pdf_oxide_elements_free(FfiElementList *handle);
 
+FfiBarcodeImage *pdf_generate_datamatrix(const char *data,
+                                      int32_t size_px,
+                                      int32_t *error_code);
+
 FfiBarcodeImage *pdf_generate_qr_code(const char *data,
                                       int32_t error_correction,
                                       int32_t size_px,
@@ -1549,6 +1553,13 @@ int32_t pdf_page_builder_barcode_1d(FfiPageBuilder *handle,
                                     float y,
                                     float w,
                                     float h,
+                                    int32_t *error_code);
+
+int32_t pdf_page_builder_barcode_datamatrix(FfiPageBuilder *handle,
+                                    const char *data,
+                                    float x,
+                                    float y,
+                                    float size,
                                     int32_t *error_code);
 
 int32_t pdf_page_builder_barcode_qr(FfiPageBuilder *handle,

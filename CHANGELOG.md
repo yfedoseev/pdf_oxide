@@ -7,6 +7,7 @@ All notable changes to PDFOxide are documented here.
 ### Added
 
 - **An element's page-space rectangle is now exposed in every language binding** — `page_bbox()` reports a rect already mapped into the page's displayed frame, so callers on a rotated page get coordinates that match what they see rather than pre-`/Rotate` space. Available across the C ABI and every binding built on it (#1056, #1057).
+- **Data Matrix barcode generation** — Generate Data Matrix barcodes with configurable size (#1183).
 
 ### Changed
 
@@ -60,6 +61,7 @@ All notable changes to PDFOxide are documented here.
 ### Contributors
 
 Issues reported by:
+- **@Chaz6** — #1183 (generate Data Matrix barcodes)
 - **@tobocop2** — #1019 (rendering panics on a page carrying a zero-dimension image), #1017 (non-deterministic inline-image extraction on duplicate dictionary keys), #1018 (table cell text gains spaces inside words)
 - **@MannXo** — #1028 (extract_paths drops or merges geometry painted with B, B*, and b*)
 - **@mz-zarei** — #977 (extract_text() hangs indefinitely on a page with a degenerate content transform matrix)

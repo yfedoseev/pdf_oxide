@@ -97,6 +97,7 @@ extern "C" {
     BARCODE_FORMAT_CODE39 = 6,
     BARCODE_FORMAT_CODABAR = 7,
     BARCODE_FORMAT_ITF = 8
+    BARCODE_FORMAT_DATAMATRIX = 9,
   };
 
   // QR error correction levels
@@ -230,6 +231,7 @@ extern "C" {
   extern int pdf_save_rendered_image(const void* image, const char* path, int* error_code);
 
   // Barcode Operations
+  extern void* pdf_generate_datamatrix(const char* data, int size_px, int* error_code);
   extern void* pdf_generate_qr_code(const char* data, int error_correction, int size_px, int* error_code);
   extern void* pdf_generate_barcode(const char* data, int format, int size_px, int* error_code);
   extern uint8_t* pdf_barcode_get_image_png(const void* barcode, int size_px, size_t* out_size, int* error_code);
@@ -627,6 +629,8 @@ extern "C" {
 
   extern int   pdf_page_builder_barcode_1d(void* page, int barcode_type, const char* data,
                                             float x, float y, float w, float h, int* error_code);
+  extern int   pdf_page_builder_barcode_datamatrix(void* page, const char* data,
+                                                   float x, float y, float size, int* error_code);
   extern int   pdf_page_builder_barcode_qr(void* page, const char* data,
                                             float x, float y, float size, int* error_code);
   extern int   pdf_page_builder_image(void* page,
@@ -1548,6 +1552,25 @@ Napi::Value FreeSignature(const Napi::CallbackInfo& info) {
 // ============================================================
 // Barcode Operations
 // ============================================================
+
+Napi::Value GenerateDataMatrix(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 1 || !info[0].IsString()) {
+    throw Napi::TypeError::New(env, "invalid argument: (data)");
+  }
+
+  std::string data = info[0].As<Napi::String>().Utf8Value();
+  int errorCode = 0;
+
+  void* barcode = pdf_generate_datamatrix(data.c_str(), 300, &errorCode);
+
+  if (errorCode != 0 || !barcode) {
+    throw Napi::Error::New(env, "Failed to generate Data Matrix: " + getErrorMessage(errorCode));
+  }
+
+  return Napi::External<void>::New(env, barcode);
+}
 
 Napi::Value GenerateQRCode(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -4398,6 +4421,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("renderedImageHeight", Napi::Function::New(env, RenderedImageHeight));
 
   // Barcode Operations
+  exports.Set("generateDataMatrix", Napi::Function::New(env, GenerateDataMatrix));
   exports.Set("generateQRCode", Napi::Function::New(env, GenerateQRCode));
   exports.Set("generateBarcode", Napi::Function::New(env, GenerateBarcode));
   exports.Set("barcodeGetSVG", Napi::Function::New(env, BarcodeGetSVG));
@@ -4651,6 +4675,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   extern Napi::Value PageBuilderInlineColor(const Napi::CallbackInfo&);
   extern Napi::Value PageBuilderNewline(const Napi::CallbackInfo&);
   extern Napi::Value PageBuilderBarcode1d(const Napi::CallbackInfo&);
+  extern Napi::Value PageBuilderBarcodeDataMatrix(const Napi::CallbackInfo&);
   extern Napi::Value PageBuilderBarcodeQr(const Napi::CallbackInfo&);
   extern Napi::Value PageBuilderImage(const Napi::CallbackInfo&);
   extern Napi::Value PageBuilderImageWithAlt(const Napi::CallbackInfo&);
@@ -4742,6 +4767,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("pageBuilderInlineColor", Napi::Function::New(env, PageBuilderInlineColor));
   exports.Set("pageBuilderNewline", Napi::Function::New(env, PageBuilderNewline));
   exports.Set("pageBuilderBarcode1d", Napi::Function::New(env, PageBuilderBarcode1d));
+  exports.Set("pageBuilderBarcodeDataMatrix", Napi::Function::New(env, PageBuilderBarcodeDataMatrix));
   exports.Set("pageBuilderBarcodeQr", Napi::Function::New(env, PageBuilderBarcodeQr));
   exports.Set("pageBuilderImage", Napi::Function::New(env, PageBuilderImage));
   exports.Set("pageBuilderImageWithAlt", Napi::Function::New(env, PageBuilderImageWithAlt));
@@ -5333,6 +5359,19 @@ Napi::Value PageBuilderBarcode1d(const Napi::CallbackInfo& info) {
   int errorCode = 0;
   pdf_page_builder_barcode_1d(p, barcodeType, data.c_str(), x, y, w, h, &errorCode);
   throwOnError(env, errorCode, "PageBuilder.barcode1d");
+  return env.Undefined();
+}
+
+Napi::Value PageBuilderBarcodeDataMatrix(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  void* p = externPtr(info, 0, "page");
+  std::string data = requireString(info, 1, "data");
+  float x = static_cast<float>(requireNumber(info, 2, "x"));
+  float y = static_cast<float>(requireNumber(info, 3, "y"));
+  float size = static_cast<float>(requireNumber(info, 4, "size"));
+  int errorCode = 0;
+  pdf_page_builder_barcode_datamatrix(p, data.c_str(), x, y, size, &errorCode);
+  throwOnError(env, errorCode, "PageBuilder.barcodeDataMatrix");
   return env.Undefined();
 }
 

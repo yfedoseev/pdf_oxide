@@ -127,6 +127,18 @@ pub fn generate_barcode_svg(barcode_type: i32, data: String) -> Result<String, J
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Generate a Data Matrix barcode as an SVG string.
+///
+/// `size`: advisory pixel size.
+#[cfg(feature = "barcodes")]
+#[wasm_bindgen(js_name = "generateDataMatrixSvg")]
+pub fn generate_datamatrix_svg(data: String, size: u32) -> Result<String, JsValue> {
+    use crate::writer::{BarcodeGenerator, DataMatrixOptions};
+    let opts = DataMatrixOptions::new().size(size);
+    BarcodeGenerator::generate_datamatrix_svg(&data, &opts)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Generate a QR code as an SVG string.
 ///
 /// `errorCorrection`: 0=Low, 1=Medium, 2=Quartile, 3=High. `size`: advisory pixel size.
@@ -5468,6 +5480,27 @@ impl WasmFluentPageBuilder {
         let bytes = crate::writer::BarcodeGenerator::generate_1d(bt, &data, &opts)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.push(WasmPageOp::BarcodeImage { bytes, x, y, w, h })
+    }
+
+    /// Place a Data Matrix barcode image at `(x, y, size, size)` on the page.
+    #[wasm_bindgen(js_name = "barcodeDataMatrix")]
+    pub fn barcode_datamatrix(
+        &mut self,
+        data: String,
+        x: f32,
+        y: f32,
+        size: f32,
+    ) -> Result<(), JsValue> {
+        let opts = crate::writer::DataMatrixOptions::new().size(size as u32);
+        let bytes = crate::writer::BarcodeGenerator::generate_datamatrix(&data, &opts)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.push(WasmPageOp::BarcodeImage {
+            bytes,
+            x,
+            y,
+            w: size,
+            h: size,
+        })
     }
 
     /// Place a QR-code image at `(x, y, size, size)` on the page.

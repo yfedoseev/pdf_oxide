@@ -2736,6 +2736,11 @@ class PageBuilder {
                                                w, h, &c()),
                    "barcode_1d");
     }
+    PageBuilder& barcode_datamatrix(const std::string& data, float x, float y, float size) {
+        return op1(pdf_page_builder_barcode_datamatrix(ptr(), data.c_str(), x, y, size, &c()),
+                   "barcode_datamatrix");
+    }
+
     PageBuilder& barcode_qr(const std::string& data, float x, float y, float size) {
         return op1(pdf_page_builder_barcode_qr(ptr(), data.c_str(), x, y, size, &c()),
                    "barcode_qr");
@@ -3978,6 +3983,19 @@ inline std::vector<std::uint8_t> sign_bytes_pades_opts(
 /// Move-only; frees via pdf_barcode_free on close()/dtor.
 class Barcode {
   public:
+    /// Generate a Data Matrix barcode from `data`. `size_px` is the requested
+    /// raster size in pixels.
+    static Barcode generate_datamatrix_code(const std::string& data,
+                                            int size_px = 256) {
+        int32_t code = 0;
+        FfiBarcodeImage* h =
+            pdf_generate_datamatrix(data.c_str(), size_px, &code);
+        if (h == nullptr) {
+            throw Error(code, "Barcode::generate_datamatrix");
+        }
+        return Barcode(h);
+    }
+
     /// Generate a QR code from `data`. `error_correction` selects the EC level
     /// (0=L 1=M 2=Q 3=H); `size_px` is the requested raster size in pixels.
     static Barcode generate_qr_code(const std::string& data, int error_correction = 1,

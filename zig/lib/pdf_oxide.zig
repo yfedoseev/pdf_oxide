@@ -2892,6 +2892,11 @@ pub const PageBuilder = struct {
         var code: i32 = 0;
         if (c.pdf_page_builder_barcode_1d(h, barcode_type, data.ptr, x, y, w, height, &code) != 0) return fail(code);
     }
+    pub fn barcodeDataMatrix(self: PageBuilder, data: [:0]const u8, x: f32, y: f32, size: f32) Error!void {
+        const h = try self.live();
+        var code: i32 = 0;
+        if (c.pdf_page_builder_barcode_datamatrix(h, data.ptr, x, y, size, &code) != 0) return fail(code);
+    }
     pub fn barcodeQr(self: PageBuilder, data: [:0]const u8, x: f32, y: f32, size: f32) Error!void {
         const h = try self.live();
         var code: i32 = 0;
@@ -3971,6 +3976,14 @@ pub const Barcode = struct {
         return self.handle orelse fail(-1);
     }
 
+    /// Generate a Data Matrix barcode from `data`. `error_correction`: 0=L 1=M 2=Q 3=H;
+    /// `size_px` is the requested module/pixel size.
+    pub fn generateDataMatrix(data: [:0]const u8, size_px: i32) Error!Barcode {
+        var code: i32 = 0;
+        const h = c.pdf_generate_data_matrix(data.ptr, size_px, &code) orelse return fail(code);
+        return .{ .handle = h };
+    }
+
     /// Generate a QR code from `data`. `error_correction`: 0=L 1=M 2=Q 3=H;
     /// `size_px` is the requested module/pixel size.
     pub fn generateQrCode(data: [:0]const u8, error_correction: i32, size_px: i32) Error!Barcode {
@@ -4728,8 +4741,29 @@ test "phase-6 signing/PKI/timestamp/TSA/DSS: every wrapper is exercised" {
 
 // ── PHASE-7 api-coverage tests ────────────────────────────────────────────────
 
-test "phase-7 barcodes: generateQrCode/generateBarcode + accessors" {
+test "phase-7 barcodes: generateDataMatrix/generateBarcode + accessors" {
     const a = testing.allocator;
+
+    // Data Matrix
+    {
+        var bc = try Barcode.generateDataMatrix("https://example.com", 1, 256); // generateDataMatrix
+        defer bc.close(); // close
+
+        const data = try bc.getData(a); // getData
+        defer a.free(data);
+        try testing.expect(data.len > 0);
+
+        _ = try bc.getFormat(); // getFormat
+        _ = try bc.getConfidence(); // getConfidence
+
+        const png = try bc.getImagePng(a, 256); // getImagePng
+        defer a.free(png);
+        try testing.expect(png.len > 0);
+
+        const svg = try bc.getSvg(a, 256); // getSvg
+        defer a.free(svg);
+        try testing.expect(svg.len > 0);
+    }
 
     // QR code
     {
@@ -4906,6 +4940,28 @@ test "phase-7 redaction: add/count/apply/scrubMetadata on an editor" {
     try testing.expectError(Error.PdfOxide, bad.redactionCount(0));
     try testing.expectError(Error.PdfOxide, bad.redactionApply(false, 0, 0, 0));
     try testing.expectError(Error.PdfOxide, bad.redactionScrubMetadata());
+}
+
+test "phase-7 addBarcodeToPage: place a generated Data Matrix barcode on an editor page" {
+    const a = testing.allocator;
+    const bytes = try samplePdf(a);
+    defer a.free(bytes);
+
+    var ed = try DocumentEditor.openFromBytes(bytes);
+    defer ed.close();
+
+    var bc = try Barcode.generateDataMatrix("PHASE7", 128);
+    defer bc.close();
+
+    // Placement either succeeds or raises; either exercises the wrapper.
+    if (ed.addBarcodeToPage(0, bc, 10, 10, 80, 80)) |_| { // addBarcodeToPage
+        // ok
+    } else |_| {}
+
+    // Closed-barcode + closed-editor guards.
+    var bad_bc = Barcode{ .handle = null };
+    bad_bc.close();
+    try testing.expectError(Error.PdfOxide, ed.addBarcodeToPage(0, bad_bc, 0, 0, 1, 1));
 }
 
 test "phase-7 addBarcodeToPage: place a generated QR on an editor page" {

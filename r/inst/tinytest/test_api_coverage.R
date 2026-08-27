@@ -308,6 +308,29 @@ if (inherits(tsa_try, "pdfoxide_tsa_client")) {
 expect_true(is.function(pdf_tsa_request_timestamp))
 expect_true(is.function(pdf_tsa_request_timestamp_hash))
 
+# ── PHASE-7: barcodes / Data Matrix (generate -> accessors -> renders) ──────────────────
+datamatrix <- pdf_generate_datamatrix_code("hello-datamatrix", 1L, 128L)       # pdf_generate_datamatrix_code
+expect_inherits(datamatrix, "pdfoxide_barcode")
+expect_true(is.character(pdf_barcode_get_data(datamatrix)))     # pdf_barcode_get_data
+expect_true(is.integer(pdf_barcode_get_format(datamatrix)) ||
+            is.numeric(pdf_barcode_get_format(datamatrix)))     # pdf_barcode_get_format
+invisible(pdf_barcode_get_confidence(datamatrix))               # pdf_barcode_get_confidence (smoke)
+expect_true(length(pdf_barcode_get_image_png(datamatrix, 128L)) > 0)  # pdf_barcode_get_image_png
+expect_true(nchar(pdf_barcode_get_svg(datamatrix, 128L)) > 0)   # pdf_barcode_get_svg
+pdf_barcode_close(datamatrix); pdf_barcode_close(datamatrix)            # pdf_barcode_close (idempotent)
+bc <- pdf_generate_barcode("123456", 0L, 128L)          # pdf_generate_barcode
+expect_inherits(bc, "pdfoxide_barcode")
+expect_true(is.character(pdf_barcode_get_data(bc)))
+# add_barcode_to_page: queue a barcode onto an editor page (testable)
+ed7 <- pdf_editor_open_from_bytes(sample_pdf())
+bc2 <- pdf_generate_datamatrix_code("on-page", 1L, 64L)
+add_try <- tryCatch(
+  pdf_editor_add_barcode_to_page(ed7, 0L, bc2, 10, 10, 50, 50),
+  error = function(e) e)
+expect_true(is.null(add_try) || inherits(add_try, "error"))  # pdf_editor_add_barcode_to_page
+pdf_barcode_close(bc2); pdf_editor_close(ed7)
+pdf_barcode_close(bc)
+
 # ── PHASE-7: barcodes / QR (generate -> accessors -> renders) ──────────────────
 qr <- pdf_generate_qr_code("hello-qr", 1L, 128L)       # pdf_generate_qr_code
 expect_inherits(qr, "pdfoxide_barcode")

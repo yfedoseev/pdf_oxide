@@ -15,13 +15,14 @@
 //! - Code 93
 //! - Codabar
 //!
-//! ### 2D Barcodes (via `qrcode` crate)
-//! - QR Code (with configurable error correction levels)
+//! ### 2D Barcodes
+//! - QR Code (with configurable error correction levels via qrcode crate)
+//! - Data Matrix (with configurable error correction levels via datamatrix crate)
 //!
 //! ## Example
 //!
 //! ```ignore
-//! use pdf_oxide::writer::barcode::{BarcodeGenerator, BarcodeType, QrCodeOptions};
+//! use pdf_oxide::writer::barcode::{BarcodeGenerator, BarcodeType, DataMatrixOptions, QrCodeOptions};
 //!
 //! // Generate a Code 128 barcode
 //! let barcode_png = BarcodeGenerator::generate_1d(
@@ -35,6 +36,12 @@
 //! let qr_png = BarcodeGenerator::generate_qr(
 //!     "https://example.com",
 //!     QrCodeOptions::default().size(256),
+//! )?;
+//!
+//! // Generate a Data Matrix code
+//! let dmtx_png = BarcodeGenerator::generate_datamatrix(
+//!     "https://example.com",
+//!     DataMatrixOptions::default().size(256),
 //! )?;
 //! ```
 
@@ -132,6 +139,61 @@ impl QrCodeOptions {
     /// Set the error correction level.
     pub fn error_correction(mut self, level: QrErrorCorrection) -> Self {
         self.error_correction = level;
+        self
+    }
+
+    /// Set the quiet zone (border) in modules.
+    pub fn quiet_zone(mut self, modules: u32) -> Self {
+        self.quiet_zone = modules;
+        self
+    }
+
+    /// Set the foreground color (RGBA).
+    pub fn foreground(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
+        self.foreground = [r, g, b, a];
+        self
+    }
+
+    /// Set the background color (RGBA).
+    pub fn background(mut self, r: u8, g: u8, b: u8, a: u8) -> Self {
+        self.background = [r, g, b, a];
+        self
+    }
+}
+
+/// Options for DataMatrix code generation.
+#[derive(Debug, Clone)]
+pub struct DataMatrixOptions {
+    /// Size of the DataMatrix code in pixels (width = height)
+    pub size: u32,
+    /// Quiet zone (border) in modules
+    pub quiet_zone: u32,
+    /// Foreground color (RGBA)
+    pub foreground: [u8; 4],
+    /// Background color (RGBA)
+    pub background: [u8; 4],
+}
+
+impl Default for DataMatrixOptions {
+    fn default() -> Self {
+        Self {
+            size: 200,
+            quiet_zone: 2,
+            foreground: [0, 0, 0, 255],       // Black
+            background: [255, 255, 255, 255], // White
+        }
+    }
+}
+
+impl DataMatrixOptions {
+    /// Create new Data Matrix code options with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the size in pixels.
+    pub fn size(mut self, size: u32) -> Self {
+        self.size = size;
         self
     }
 
@@ -337,6 +399,124 @@ impl BarcodeGenerator {
             .map_err(|e| Error::Barcode(format!("SVG generation error: {}", e)))
     }
 
+    /// Generate a Data Matrix code as PNG bytes.
+    ///
+    /// # Arguments
+    /// * `data` - The data to encode (URL, text, etc.)
+    /// * `options` - Data Matrix code generation options
+    ///
+    /// # Returns
+    /// PNG image bytes
+    pub fn generate_datamatrix(data: &str, options: &DataMatrixOptions) -> Result<Vec<u8>> {
+        use datamatrix::{DataMatrix, SymbolList};
+
+        let dmtx = DataMatrix::encode_str(data, SymbolList::default())
+            .map_err(|e| Error::Barcode(format!("Data Matrix encoding error: {:?}", e)))?;
+        let bitmap = dmtx.bitmap();
+
+        let dmtx_width = bitmap.width();
+        let dmtx_height = bitmap.height();
+
+        let modules_x = dmtx_width + (options.quiet_zone as usize * 2);
+        let modules_y = dmtx_height + (options.quiet_zone as usize * 2);
+
+        let module_size = (options.size as usize / modules_x)
+            .min(options.size as usize / modules_y)
+            .max(1);
+
+        let content_width = modules_x * module_size;
+        let content_height = modules_y * module_size;
+
+        let target_width = options.size;
+        let target_height = options.size;
+
+        let mut img = image::RgbaImage::new(target_width, target_height);
+
+        let bg_color = image::Rgba(options.background);
+        for pixel in img.pixels_mut() {
+            *pixel = bg_color;
+        }
+
+        let offset_x = (target_width as usize - content_width) / 2
+            + (options.quiet_zone as usize * module_size);
+        let offset_y = (target_height as usize - content_height) / 2
+            + (options.quiet_zone as usize * module_size);
+
+        let fg_color = image::Rgba(options.foreground);
+
+        for (x, y) in bitmap.pixels() {
+            let start_x = offset_x + x * module_size;
+            let start_y = offset_y + y * module_size;
+
+            for dy in 0..module_size {
+                for dx in 0..module_size {
+                    let px = (start_x + dx) as u32;
+                    let py = (start_y + dy) as u32;
+                    if px < target_width && py < target_height {
+                        img.put_pixel(px, py, fg_color);
+                    }
+                }
+            }
+        }
+
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .map_err(|e| Error::Barcode(format!("PNG encoding error: {}", e)))?;
+
+        Ok(buf)
+    }
+
+    /// Generate a Data Matrix code as SVG.
+    ///
+    /// # Arguments
+    /// * `data` - The data to encode (URL, text, etc.)
+    /// * `options` - Data Matrix code generation options
+    ///
+    /// # Returns
+    /// PNG image bytes
+    pub fn generate_datamatrix_svg(data: &str, options: &DataMatrixOptions) -> Result<String> {
+        use datamatrix::{DataMatrix, SymbolList};
+
+        let dmtx = DataMatrix::encode_str(data, SymbolList::default())
+            .map_err(|e| Error::Barcode(format!("Data Matrix encoding error: {:?}", e)))?;
+        let bitmap = dmtx.bitmap();
+
+        let qr_width = bitmap.width();
+        let quiet = options.quiet_zone as usize;
+        let module_count = qr_width + quiet * 2;
+        let module_size = (options.size as usize / module_count).max(1);
+        let svg_size = module_count * module_size;
+
+        let fg = options.foreground;
+        let bg = options.background;
+        let fg_hex = format!("#{:02X}{:02X}{:02X}", fg[0], fg[1], fg[2]);
+        let bg_hex = format!("#{:02X}{:02X}{:02X}", bg[0], bg[1], bg[2]);
+
+        let mut rects = String::new();
+        for (x, y) in bitmap.pixels() {
+            let rx = (quiet + x) * module_size;
+            let ry = (quiet + y) * module_size;
+            rects.push_str(&format!(
+                r#"<rect x="{}" y="{}" width="{}" height="{}"/>"#,
+                rx, ry, module_size, module_size
+            ));
+        }
+
+        Ok(format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}" width="{s}" height="{s}"><rect width="{s}" height="{s}" fill="{bg}"/><g fill="{fg}">{rects}</g></svg>"#,
+            s = svg_size,
+            bg = bg_hex,
+            fg = fg_hex,
+            rects = rects
+        ))
+    }
+
+    /// Generate a Data Matrix code with default options.
+    pub fn generate_datamatrix_simple(data: &str, size: u32) -> Result<Vec<u8>> {
+        Self::generate_datamatrix(data, &DataMatrixOptions::default().size(size))
+    }
+
     /// Generate a QR code as PNG bytes.
     ///
     /// # Arguments
@@ -499,6 +679,13 @@ impl BarcodeGenerator {
         Err(Error::Barcode("Barcode generation requires the 'barcodes' feature".to_string()))
     }
 
+    /// Generate a Data Matrix image (requires `barcodes` feature).
+    pub fn generate_datamatrix(_data: &str, _options: &DataMatrixOptions) -> Result<Vec<u8>> {
+        Err(Error::Barcode(
+            "Data Matrix generation requires the 'barcodes' feature".to_string(),
+        ))
+    }
+
     /// Generate a QR code (requires `barcodes` feature).
     pub fn generate_qr(_data: &str, _options: &QrCodeOptions) -> Result<Vec<u8>> {
         Err(Error::Barcode("QR code generation requires the 'barcodes' feature".to_string()))
@@ -527,6 +714,14 @@ mod tests {
     #[test]
     fn test_generate_qr_code() {
         let png = BarcodeGenerator::generate_qr_simple("https://example.com", 200).unwrap();
+        assert!(!png.is_empty());
+        // Verify PNG header
+        assert_eq!(&png[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    }
+
+    #[test]
+    fn test_generate_datamatrix_code() {
+        let png = BarcodeGenerator::generate_datamatrix_simple("https://example.com", 200).unwrap();
         assert!(!png.is_empty());
         // Verify PNG header
         assert_eq!(&png[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -585,6 +780,16 @@ mod tests_no_feature {
     use super::*;
 
     #[test]
+    fn test_generate_datamatrix_not_enabled() {
+        let result = BarcodeGenerator::generate_datamatrix_simple("test", 200);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires the 'barcodes' feature"));
+    }
+
+    #[test]
     fn test_feature_not_enabled() {
         let result = BarcodeGenerator::generate_qr_simple("test", 200);
         assert!(result.is_err());
@@ -598,6 +803,16 @@ mod tests_no_feature {
     fn test_generate_1d_not_enabled() {
         let result =
             BarcodeGenerator::generate_1d(BarcodeType::Code128, "test", &BarcodeOptions::new());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires the 'barcodes' feature"));
+    }
+
+    #[test]
+    fn test_generate_datamatrix_not_enabled() {
+        let result = BarcodeGenerator::generate_datamatrix("test", &DataMatrixOptions::new());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

@@ -2314,6 +2314,14 @@ impl<'a> FluentPageBuilder<'a> {
 
     /// Place a QR code at `(x, y, size, size)` (square).
     /// `data` is the content to encode (URL, text, etc.).
+    pub fn barcode_datamatrix(self, data: &str, x: f32, y: f32, size: f32) -> Result<Self> {
+        let opts = crate::writer::DataMatrixOptions::new().size(size as u32);
+        let png = crate::writer::BarcodeGenerator::generate_datamatrix(data, &opts)?;
+        self.image_from_bytes(&png, crate::geometry::Rect::new(x, y, size, size))
+    }
+
+    /// Place a QR code at `(x, y, size, size)` (square).
+    /// `data` is the content to encode (URL, text, etc.).
     pub fn barcode_qr(self, data: &str, x: f32, y: f32, size: f32) -> Result<Self> {
         let opts = crate::writer::QrCodeOptions::new().size(size as u32);
         let png = crate::writer::BarcodeGenerator::generate_qr(data, &opts)?;

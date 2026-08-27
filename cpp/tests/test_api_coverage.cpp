@@ -479,6 +479,17 @@ int main() {
 
     // Barcodes: QR + a 1-D barcode are generatable; assert the accessors.
     {
+        auto dmtx = pdf_oxide::Barcode::generate_datamatrix("https://example.com/", 1,
+                                                            128); // generate_qr_code
+        CHECK(dmtx.get_data() == "https://example.com/");         // get_data
+        (void)dmtx.get_format();                                  // get_format
+        (void)dmtx.get_confidence();                              // get_confidence
+        auto png = dmtx.get_image_png(128);                       // get_image_png
+        CHECK(!png.empty());
+        auto svg = dmtx.get_svg(128); // get_svg
+        CHECK(!svg.empty());
+        dmtx.close();
+
         auto qr = pdf_oxide::Barcode::generate_qr_code("https://example.com/", 1,
                                                        128); // generate_qr_code
         CHECK(qr.get_data() == "https://example.com/");      // get_data
@@ -505,6 +516,22 @@ int main() {
             barcodeExercised = true; // unsupported data/format → Error is fine
         }
         CHECK(barcodeExercised);
+
+        // Stamp the Data Matrix barcode onto a page via the editor (add_barcode_to_page).
+        {
+            auto ed = pdf_oxide::DocumentEditor::open_from_bytes(bytes);
+            auto dmtx2 = pdf_oxide::Barcode::generate_datamatrix("X", 1, 64);
+            bool addExercised = false;
+            try {
+                ed.add_barcode_to_page(0, dmtx2, 10.0f, 10.0f, 50.0f,
+                                       50.0f); // add_barcode_to_page
+                addExercised = true;
+            } catch (const Error&) {
+                addExercised = true;
+            }
+            CHECK(addExercised);
+            ed.close();
+        }
 
         // Stamp the QR onto a page via the editor (add_barcode_to_page).
         {

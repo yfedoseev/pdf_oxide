@@ -6369,6 +6369,32 @@ impl PyFluentPageBuilder {
         Ok(slf)
     }
 
+    /// Place a Data Matrix barcode image at `(x, y, size, size, quiet_zone?)` on the page.
+    /// Errors surface here (at call time), not at `done()`.
+    #[pyo3(signature = (data, x, y, size, quiet_zone=1))]
+    fn barcode_datamatrix<'a>(
+        mut slf: PyRefMut<'a, Self>,
+        data: String,
+        x: f32,
+        y: f32,
+        size: f32,
+        quiet_zone: u32,
+    ) -> PyResult<PyRefMut<'a, Self>> {
+        let opts = crate::writer::DataMatrixOptions::new()
+            .size(size as u32)
+            .quiet_zone(quiet_zone as u32);
+        let bytes = crate::writer::BarcodeGenerator::generate_datamatrix(&data, &opts)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        slf.push(PendingPageOp::BarcodeImage {
+            bytes,
+            x,
+            y,
+            w: size,
+            h: size,
+        })?;
+        Ok(slf)
+    }
+
     /// Place a QR-code image at `(x, y, size, size)` on the page.
     /// Errors surface here (at call time), not at `done()`.
     fn barcode_qr<'a>(
@@ -7269,6 +7295,19 @@ fn generate_barcode_svg(barcode_type: i32, data: String) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
+/// Generate a Data Matrix barcode as an SVG string.
+///
+/// `size`: target pixel size (advisory for module sizing).
+#[cfg(feature = "barcodes")]
+#[pyfunction]
+#[pyo3(signature=(data,size,quiet_zone=1))]
+fn generate_datamatrix_svg(data: String, size: u32, quiet_zone: u32) -> PyResult<String> {
+    use crate::writer::{BarcodeGenerator, DataMatrixOptions};
+    let opts = DataMatrixOptions::new().size(size).quiet_zone(quiet_zone);
+    BarcodeGenerator::generate_datamatrix_svg(&data, &opts)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+}
+
 /// Generate a QR code as an SVG string.
 ///
 /// `error_correction`: 0=Low, 1=Medium (default), 2=Quartile, 3=High.
@@ -8076,6 +8115,8 @@ fn pdf_oxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(py_has_document_timestamp, m)?)?;
     #[cfg(feature = "barcodes")]
     m.add_function(pyo3::wrap_pyfunction!(generate_barcode_svg, m)?)?;
+    #[cfg(feature = "barcodes")]
+    m.add_function(pyo3::wrap_pyfunction!(generate_datamatrix_svg, m)?)?;
     #[cfg(feature = "barcodes")]
     m.add_function(pyo3::wrap_pyfunction!(generate_qr_svg, m)?)?;
     m.add("VERSION", env!("CARGO_PKG_VERSION"))?;

@@ -2089,6 +2089,22 @@ static ERL_NIF_TERM pbld_barcode_1d(ErlNifEnv *env, int argc, const ERL_NIF_TERM
     return rc == 0 ? enif_make_atom(env, "ok") : err_tuple(env, code);
 }
 
+static ERL_NIF_TERM pbld_barcode_datamatrix(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    GET_PBLD
+    char *data = term_to_cstr(env, a[1]);
+    if (!data) return enif_make_badarg(env);
+    double x, y, size;
+    if (!enif_get_double(env, a[2], &x) || !enif_get_double(env, a[3], &y) ||
+        !enif_get_double(env, a[4], &size)) {
+        enif_free(data); return enif_make_badarg(env);
+    }
+    int32_t code = 0;
+    int rc = pdf_page_builder_barcode_datamatrix(r->h, data, (float)x, (float)y, (float)size, &code);
+    enif_free(data);
+    return rc == 0 ? enif_make_atom(env, "ok") : err_tuple(env, code);
+}
+
 static ERL_NIF_TERM pbld_barcode_qr(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
     (void)argc;
     GET_PBLD
@@ -3159,6 +3175,21 @@ static ERL_NIF_TERM make_pdf(ErlNifEnv *env, Pdf *h) {
     if (!enif_get_resource(env, a[0], BARCODE_RES, (void **)&r))                 \
         return enif_make_badarg(env);                                            \
     if (!r->h) return enif_make_badarg(env);
+
+static ERL_NIF_TERM barcode_generate_datamatrix(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc;
+    char *data = term_to_cstr(env, a[0]);
+    int size_px;
+    if (!data || !enif_get_int(env, a[1], &ec) || !enif_get_int(env, a[2], &size_px)) {
+        enif_free(data);
+        return enif_make_badarg(env);
+    }
+    int32_t code = 0;
+    FfiBarcodeImage *h = pdf_generate_datamatrix(data, size_px, &code);
+    enif_free(data);
+    if (!h) return err_tuple(env, code);
+    MAKE_HANDLE(BARCODE_RES, BarcodeRes, h);
+}
 
 static ERL_NIF_TERM barcode_generate_qr(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
     (void)argc;
@@ -4701,6 +4732,7 @@ static ErlNifFunc funcs[] = {
     {"pbld_inline_color", 5, pbld_inline_color, 0},
     {"pbld_newline", 1, pbld_newline, 0},
     {"pbld_barcode_1d", 7, pbld_barcode_1d, 0},
+    {"pbld_barcode_datamatrix", 5, pbld_barcode_datamatrix, 0},
     {"pbld_barcode_qr", 5, pbld_barcode_qr, 0},
     {"pbld_image", 6, pbld_image, DIRTY},
     {"pbld_image_with_alt", 7, pbld_image_with_alt, DIRTY},
@@ -4801,6 +4833,7 @@ static ErlNifFunc funcs[] = {
     {"oxide_set_log_level", 1, oxide_set_log_level, 0},
     {"oxide_get_log_level", 0, oxide_get_log_level, 0},
     /* phase 7 — barcodes / QR */
+    {"barcode_generate_datamatrix", 2, barcode_generate_datamatrix, DIRTY},
     {"barcode_generate_qr", 3, barcode_generate_qr, DIRTY},
     {"barcode_generate", 3, barcode_generate, DIRTY},
     {"barcode_get_data", 1, barcode_get_data, 0},

@@ -57,7 +57,7 @@ export sticky_note, sticky_note_at, watermark, watermark_confidential, watermark
 export stamp, freetext, text_field, checkbox, combo_box, radio_group, push_button
 export signature_field, footnote, columns
 export inline, inline_bold, inline_italic, inline_color, newline
-export barcode_1d, barcode_qr, image, image_with_alt, image_artifact
+export barcode_1d, barcode_datamatrix, barcode_qr, image, image_with_alt, image_artifact
 export rect, filled_rect, line, stroke_rect, stroke_line
 export stroke_rect_dashed, stroke_line_dashed, text_in_rect, new_page_same_size, table
 export streaming_table_begin, streaming_table_begin_v2, streaming_table_set_batch_size
@@ -91,7 +91,7 @@ export pdf_a_error_count, pdf_a_warning_count, pdf_ua_error_count
 export pdf_ua_warning_count, pdf_x_error_count
 # Phase-7: barcodes/QR, OCR, render variants, redaction, image/HTML-CSS/merge
 # constructors, page getters, and timestamp.
-export Barcode, generate_qr_code, generate_barcode
+export Barcode, generate_datamatrix, generate_qr_code, generate_barcode
 export barcode_get_data, barcode_get_format, barcode_get_confidence
 export barcode_get_image_png, barcode_get_svg, add_barcode_to_page
 export OcrEngine, ocr_engine_create, page_needs_ocr, ocr_extract_text
@@ -2934,6 +2934,24 @@ function barcode_1d(
     return p
 end
 
+"""Place a Data Matrix image (square `size × size` points)."""
+function barcode_datamatrix(p::PageBuilder, data::AbstractString, x::Real, y::Real, size::Real)
+    code = Ref{Int32}(0)
+    rc = ccall(
+        (:pdf_page_builder_barcode_datamatrix, LIB),
+        Int32,
+        (Ptr{Cvoid}, Cstring, Float32, Float32, Float32, Ref{Int32}),
+        _pagebuilder(p),
+        data,
+        Float32(x),
+        Float32(y),
+        Float32(size),
+        code,
+    )
+    (rc != 0 || code[] != 0) && throw(PdfOxideError(code[], "barcode_datamatrix"))
+    return p
+end
+
 """Place a QR-code image (square `size × size` points)."""
 function barcode_qr(p::PageBuilder, data::AbstractString, x::Real, y::Real, size::Real)
     code = Ref{Int32}(0)
@@ -4617,6 +4635,24 @@ function close!(b::Barcode)
 end
 
 _barcode(b::Barcode) = (b.handle == C_NULL && error("Barcode is closed"); b.handle)
+
+"""Generate a Data Matrix image from `data`. `size_px` is a passthrough int."""
+function generate_datamatrix(
+    data::AbstractString,
+    size_px::Integer = 256,
+)
+    code = Ref{Int32}(0)
+    h = ccall(
+        (:pdf_generate_datamatrix, LIB),
+        Ptr{Cvoid},
+        (Cstring, Int32, Int32, Ref{Int32}),
+        data,
+        Int32(size_px),
+        code,
+    )
+    h == C_NULL && throw(PdfOxideError(code[], "generate_datamatrix_code"))
+    return Barcode(h)
+end
 
 """Generate a QR code from `data`. `error_correction`/`size_px` are passthrough ints."""
 function generate_qr_code(

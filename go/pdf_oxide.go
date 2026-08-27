@@ -156,6 +156,7 @@ extern int32_t pdf_oxide_highlight_annotation_get_quad_points_count(const void* 
 extern void pdf_oxide_highlight_annotation_get_quad_point(const void* annotations, int32_t index, int32_t quad_index, float* x1, float* y1, float* x2, float* y2, float* x3, float* y3, float* x4, float* y4, int* error_code);
 
 // Barcodes FFI declarations (9 functions)
+extern void* pdf_generate_datamatrix(const char* data, int32_t size_px, int* error_code);
 extern void* pdf_generate_qr_code(const char* data, int error_correction, int32_t size_px, int* error_code);
 extern void* pdf_generate_barcode(const char* data, int format, int32_t size_px, int* error_code);
 extern uint8_t* pdf_barcode_get_image_png(const void* barcode_handle, int32_t size_px, int32_t* out_len, int* error_code);
@@ -416,6 +417,7 @@ extern void pdf_rendered_image_free(void* handle);
 extern void* pdf_render_page_raw(void* doc, int32_t page_index, int32_t dpi, int32_t* out_width, int32_t* out_height, int* error_code);
 
 // Barcodes
+extern void* pdf_generate_datamatrix(const char* data, int32_t size_px, int* error_code);
 extern void* pdf_generate_qr_code(const char* data, int error_correction, int32_t size_px, int* error_code);
 extern void* pdf_generate_barcode(const char* data, int format, int32_t size_px, int* error_code);
 extern uint8_t* pdf_barcode_get_image_png(const void* barcode_handle, int32_t size_px, int32_t* out_len, int* error_code);
@@ -3954,6 +3956,18 @@ func (img *RenderedImage) Close() {
 // BarcodeImage holds a generated barcode
 type BarcodeImage struct {
 	handle unsafe.Pointer
+}
+
+// GenerateDataMatrix generates a Data Matrix image. errorCorrection: 0=Low, 1=Medium, 2=Quartile, 3=High
+func GenerateDataMatrix(data string, sizePx int) (*BarcodeImage, error) {
+	cData := C.CString(data)
+	defer C.free(unsafe.Pointer(cData))
+	var errorCode C.int
+	handle := C.pdf_generate_datamatrix(cData, C.int32_t(sizePx), &errorCode)
+	if errorCode != 0 {
+		return nil, ffiError(errorCode)
+	}
+	return &BarcodeImage{handle: handle}, nil
 }
 
 // GenerateQRCode generates a QR code image. errorCorrection: 0=Low, 1=Medium, 2=Quartile, 3=High

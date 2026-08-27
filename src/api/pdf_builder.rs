@@ -896,6 +896,48 @@ impl Pdf {
         PdfBuilder::new().from_images(paths)
     }
 
+    /// Create a PDF containing a Data Matrix barcode.
+    ///
+    /// Generates a Data Matrix barcode from the given data and creates a PDF with it.
+    /// Requires the `barcodes` feature.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::api::Pdf;
+    ///
+    /// let pdf = Pdf::from_datamatrix("https://example.com")?;
+    /// pdf.save("datamatrix.pdf")?;
+    /// ```
+    #[cfg(feature = "barcodes")]
+    pub fn from_datamatrix(data: &str) -> Result<Self> {
+        PdfBuilder::new().from_datamatrix(data)
+    }
+
+    /// Create a PDF containing a Data Matrix barcode with custom options.
+    ///
+    /// Allows specifying size and colors.
+    /// Requires the `barcodes` feature.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pdf_oxide::api::Pdf;
+    /// use pdf_oxide::writer::barcode::DataMatrixOptions;
+    ///
+    /// let options = DataMatrixOptions::new()
+    ///     .size(300)
+    /// let pdf = Pdf::from_qrcode_with_options("https://example.com", &options)?;
+    /// pdf.save("datamatrix.pdf")?;
+    /// ```
+    #[cfg(feature = "barcodes")]
+    pub fn from_datamatrix_with_options(
+        data: &str,
+        options: &crate::writer::barcode::DataMatrixOptions,
+    ) -> Result<Self> {
+        PdfBuilder::new().from_datamatrix_with_options(data, options)
+    }
+
     /// Create a PDF containing a QR code.
     ///
     /// Generates a QR code from the given data and creates a PDF with it.
@@ -3087,6 +3129,34 @@ impl PdfBuilder {
             editor: None,
             source_path: None,
         })
+    }
+
+    /// Build a PDF containing a Data Matrix barcode.
+    ///
+    /// Generates a Data Matrix barcode from the given data and creates a PDF with it.
+    /// Requires the `barcodes` feature.
+    #[cfg(feature = "barcodes")]
+    pub fn from_datamatrix(self, data: &str) -> Result<Pdf> {
+        use crate::writer::barcode::DataMatrixOptions;
+        self.from_datamatrix_with_options(data, &DataMatrixOptions::default().size(300))
+    }
+
+    /// Build a PDF containing a Data Matrix barcode with custom options.
+    ///
+    /// Allows specifying size and colors.
+    /// Requires the `barcodes` feature.
+    #[cfg(feature = "barcodes")]
+    pub fn from_datamatrix_with_options(
+        self,
+        data: &str,
+        options: &crate::writer::barcode::DataMatrixOptions,
+    ) -> Result<Pdf> {
+        use crate::writer::barcode::BarcodeGenerator;
+        use crate::writer::ImageData;
+
+        let png_bytes = BarcodeGenerator::generate_datamatrix(data, options)?;
+        let image = ImageData::from_bytes(&png_bytes).map_err(|e| Error::Image(e.to_string()))?;
+        self.from_image_data(image)
     }
 
     /// Build a PDF containing a QR code.

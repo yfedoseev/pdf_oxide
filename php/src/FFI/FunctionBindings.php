@@ -741,6 +741,33 @@ class FunctionBindings
 
 
     /**
+     * Generate a Data Matrix image.
+     *
+     * @param string $data Data to encode in Data Matrix
+     * @param int $sizePx Output bitmap edge in pixels
+     * @return CData Barcode handle
+     */
+    public function pdfGenerateDataMatrix(string $data, int $sizePx = 256): CData
+    {
+        // C: FfiBarcodeImage *pdf_generate_datamatrix(const char *data,
+        //        int32_t size_px, int32_t *err)
+        $cData = StringMarshaller::toCString($data);
+        $errorCode = $this->ffi->new('int32_t');
+
+        try {
+            $barcodeHandle = $this->ffi->pdf_generate_datamatrix(
+                $cData,
+                $sizePx,
+                FFI::addr($errorCode)
+            );
+            ErrorHandler::check((int) $errorCode->cdata, 'pdf_generate_datamatrix');
+            return $barcodeHandle;
+        } finally {
+            unset($cData);
+        }
+    }
+
+    /**
      * Generate a QR code.
      *
      * @param string $data Data to encode in QR code

@@ -272,6 +272,7 @@ from .pdf_oxide import (  # noqa: E402
     crypto_use_fips,
     disable_logging,
     generate_barcode_svg,
+    generate_datamatrix_svg,
     generate_qr_svg,
     get_log_level,
     has_document_timestamp,
@@ -329,6 +330,7 @@ __all__ = [
     "OfficeConverter",
     # Barcodes (#421)
     "generate_barcode_svg",
+    "generate_datamatrix_svg",
     "generate_qr_svg",
     # Logging
     "setup_logging",

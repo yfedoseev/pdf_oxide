@@ -473,6 +473,22 @@ defmodule PdfOxideTest do
   end
 
   describe "barcodes (phase 7)" do
+    test "generate_datamatrix -> data/format/png/svg" do
+      assert {:ok, bc} = PdfOxide.generate_datamatrix("hello-datamatrix", 1, 256)
+      assert %PdfOxide.Barcode{} = bc
+      assert {:ok, data} = PdfOxide.barcode_data(bc)
+      assert data =~ "hello-datamatrix"
+      assert {:ok, fmt} = PdfOxide.barcode_format(bc)
+      assert is_integer(fmt)
+      assert {:ok, conf} = PdfOxide.barcode_confidence(bc)
+      assert is_float(conf)
+      assert {:ok, png} = PdfOxide.barcode_png(bc, 128)
+      assert is_binary(png) and byte_size(png) > 0
+      assert {:ok, svg} = PdfOxide.barcode_svg(bc, 128)
+      assert is_binary(svg) and byte_size(svg) > 0
+      assert :ok = PdfOxide.barcode_close(bc)
+    end
+
     test "generate_qr_code -> data/format/png/svg" do
       assert {:ok, bc} = PdfOxide.generate_qr_code("hello-qr", 1, 256)
       assert %PdfOxide.Barcode{} = bc

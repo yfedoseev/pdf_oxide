@@ -172,6 +172,7 @@ defmodule PdfOxide.Native do
   def pbld_inline_color(_pb, _r, _g, _b, _text), do: nif_error()
   def pbld_newline(_pb), do: nif_error()
   def pbld_barcode_1d(_pb, _barcode_type, _data, _x, _y, _w, _h), do: nif_error()
+  def pbld_barcode_datamatrix(_pb, _data, _x, _y, _size), do: nif_error()
   def pbld_barcode_qr(_pb, _data, _x, _y, _size), do: nif_error()
   def pbld_image(_pb, _bytes, _x, _y, _w, _h), do: nif_error()
   def pbld_image_with_alt(_pb, _bytes, _x, _y, _w, _h, _alt_text), do: nif_error()
@@ -315,6 +316,7 @@ defmodule PdfOxide.Native do
 
   # phase 7 — barcodes / QR / OCR / render variants / redaction / constructors /
   # page getters / timestamp
+  def barcode_generate_datamatrix(_data, _size_px), do: nif_error()
   def barcode_generate_qr(_data, _error_correction, _size_px), do: nif_error()
   def barcode_generate(_data, _format, _size_px), do: nif_error()
   def barcode_get_data(_barcode), do: nif_error()

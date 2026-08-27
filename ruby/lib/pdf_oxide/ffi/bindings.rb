@@ -410,6 +410,7 @@ module PdfOxide
       # BARCODE OPERATIONS (7 functions)
       # ============================================================
 
+      attach_function :pdf_generate_datamatrix, %i[string int32 int32 pointer], :pointer
       # FfiBarcodeImage *pdf_generate_qr_code(const char *data, int32_t error_correction, int32_t size_px, int32_t *error_code)
       attach_function :pdf_generate_qr_code, %i[string int32 int32 pointer], :pointer
       # FfiBarcodeImage *pdf_generate_barcode(const char *data, int32_t format, int32_t size_px, int32_t *error_code)
@@ -1495,6 +1496,7 @@ module PdfOxide
       attach_function :pdf_oxide_word_list_free, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_at, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_barcode_1d, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
+      attach_function :pdf_page_builder_barcode_datamatrix, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_barcode_qr, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_checkbox, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false
       attach_function :pdf_page_builder_columns, %i[pointer pointer pointer pointer pointer pointer pointer pointer], :pointer, blocking: false

@@ -64,7 +64,7 @@ Text quality: 99.5% parity vs PyMuPDF/pypdfium2.
 - Pdf::from_markdown(text): Create PDF from Markdown
 - Pdf::from_html(html): Create PDF from HTML
 - Pdf::from_image(path) / from_images(paths): Create from PNG/JPEG/TIFF
-- Pdf::from_qrcode(data) / from_barcode(data, type): QR codes and barcodes
+- Pdf::from_datamatrix(data) / Pdf::from_qrcode(data) / from_barcode(data, type): 1d and 2d barcodes
 - PdfBuilder: Fluent API — title, author, page_size, margins, font_size, add_text, add_image
 - DocumentBuilder: Low-level — pages, text positioning, form fields, annotations, tables
 
