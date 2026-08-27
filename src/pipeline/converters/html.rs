@@ -798,7 +798,9 @@ impl HtmlOutputConverter {
             if i > 0 {
                 let prev = &cell.spans[i - 1];
                 let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
-                if super::has_horizontal_gap(prev, span) && !already_has_space {
+                let needs_break = super::has_horizontal_gap(prev, span)
+                    || super::spans_are_stacked(prev, span);
+                if needs_break && !already_has_space {
                     out.push(' ');
                 }
             }
@@ -838,7 +840,8 @@ impl HtmlOutputConverter {
             // and the span-gap logic in render_table_markdown).
             if i > 0 {
                 let prev = &cell.spans[i - 1];
-                let has_gap = super::has_horizontal_gap(prev, span);
+                let has_gap = super::has_horizontal_gap(prev, span)
+                    || super::spans_are_stacked(prev, span);
                 let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
                 if has_gap && !already_has_space {
                     out.push(' ');

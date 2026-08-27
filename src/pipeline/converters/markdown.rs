@@ -1204,8 +1204,9 @@ impl MarkdownOutputConverter {
                             // alone and so glued tight-set word pairs like
                             // "Value"+"Aktien" -> "ValueAktien" that the main text
                             // path separates via that same boundary metadata.
-                            let has_gap =
-                                super::has_horizontal_gap(prev, span) || span.split_boundary_before;
+                            let has_gap = super::has_horizontal_gap(prev, span)
+                                || super::spans_are_stacked(prev, span)
+                                || span.split_boundary_before;
                             let already_has_space =
                                 cell_md.ends_with(' ') || span.text.starts_with(' ');
                             if has_gap && !already_has_space {

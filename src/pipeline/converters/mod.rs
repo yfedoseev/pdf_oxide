@@ -290,6 +290,23 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     true
 }
 
+/// Two spans a table cell renders one after the other need a separator when
+/// they are not on the same line, whatever their horizontal relationship.
+///
+/// The cell renderers asked only `has_horizontal_gap`, which compares x. A
+/// cell that stacks its members vertically — a CAD sheet's contour labels, a
+/// wrapped sentence — has consecutive spans at nearly the same x and different
+/// y, so that test found no gap and ran them together, inventing words the
+/// page never draws (`128` above `126` became `128126`). The paragraph path
+/// has always inserted a separator between lines; the cell path had no
+/// equivalent.
+///
+/// The 0.5 × font-size threshold is the same line test used throughout.
+pub(crate) fn spans_are_stacked(prev: &TextSpan, current: &TextSpan) -> bool {
+    let font_size = prev.font_size.max(current.font_size).max(1.0);
+    (current.bbox.y - prev.bbox.y).abs() >= font_size * 0.5
+}
+
 /// Return the index of the table whose bounding box contains the span's
 /// origin AND that has a cell whose bbox also contains the span — i.e.
 /// the table is actually going to render this span as part of a cell.
