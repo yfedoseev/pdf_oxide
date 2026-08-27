@@ -6019,6 +6019,42 @@ impl WasmStreamingTable {
 // an `ocr_requested_but_unavailable` reason, never an opaque error).
 #[wasm_bindgen]
 impl WasmPdfDocument {
+    /// The document's structured diagnostics, as a real JS array of objects.
+    ///
+    /// Each entry carries `category` (a stable snake_case token), `page`,
+    /// `message` and `spec_section`. **Tolerate categories you do not know** —
+    /// they are added in minor releases.
+    ///
+    /// This is where the library reports *about* extraction. Nothing is
+    /// written into the extracted content: a page with no text extracts as
+    /// nothing and says so here, with its page index.
+    ///
+    /// Returned as an object rather than a JSON string, unlike the C ABI —
+    /// parity of the *data model* is what matters across surfaces, and making
+    /// a browser caller run `JSON.parse` on our output is a wart, not parity.
+    /// In the browser this is the whole channel: `src/ffi.rs` is compiled out
+    /// on wasm32, so the C accessor does not exist here.
+    #[wasm_bindgen(js_name = "structuredWarnings")]
+    pub fn structured_warnings(&mut self) -> Result<JsValue, JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        serde_wasm_bindgen::to_value(&inner.structured_warnings())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// As `structuredWarnings`, but drains: the returned entries are removed.
+    #[wasm_bindgen(js_name = "takeStructuredWarnings")]
+    pub fn take_structured_warnings(&mut self) -> Result<JsValue, JsValue> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| JsValue::from_str("Mutex lock failed"))?;
+        serde_wasm_bindgen::to_value(&inner.take_structured_warnings())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Cheap per-page text-vs-OCR classification → JSON
     /// `DocumentClassification`.
     #[wasm_bindgen(js_name = "classifyDocument")]
