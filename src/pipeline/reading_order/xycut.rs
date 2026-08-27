@@ -2058,15 +2058,32 @@ impl XYCutStrategy {
     }
 
     /// Sort indices in reading order (top-to-bottom, left-to-right).
+    ///
+    /// The row key is the baseline, banded, rather than `bbox.top()` compared
+    /// for exact equality. Two things were wrong with the old key. Exact
+    /// equality is not a row test at all — any sub-point difference put two
+    /// glyphs of one line into different "rows", so the `x` tiebreak never
+    /// ran and the order degenerated to a pure descending sort; on an OCR text
+    /// layer, whose per-word baselines jitter by a couple of points, that
+    /// emitted whole lines backwards. And `top()` is the wrong edge: it moves
+    /// with the font size, so on a line mixing a 2 pt punctuation span with an
+    /// 8 pt word the tops differ by more than the line spacing while the
+    /// baselines agree to a fraction of a point. ISO 32000-1:2008 §9.4.4 puts
+    /// the glyph displacement along the writing axis, which makes the baseline
+    /// — not the ascender — what identifies a line.
+    ///
+    /// `row_aware_span_cmp` is the same comparator the single-column geometric
+    /// path already uses, and its `i32` band key keeps the ordering a valid
+    /// total order.
     fn sort_indices(&self, all_spans: &[TextSpan], indices: &[usize]) -> Vec<usize> {
         let mut sorted: Vec<usize> = indices.to_vec();
         sorted.sort_by(|&a, &b| {
-            let y_cmp =
-                crate::utils::safe_float_cmp(all_spans[b].bbox.top(), all_spans[a].bbox.top());
-            if y_cmp != std::cmp::Ordering::Equal {
-                return y_cmp;
-            }
-            crate::utils::safe_float_cmp(all_spans[a].bbox.left(), all_spans[b].bbox.left())
+            crate::utils::row_aware_span_cmp(
+                all_spans[a].bbox.y,
+                all_spans[a].bbox.left(),
+                all_spans[b].bbox.y,
+                all_spans[b].bbox.left(),
+            )
         });
         sorted
     }

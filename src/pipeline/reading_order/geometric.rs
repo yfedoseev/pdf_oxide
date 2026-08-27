@@ -257,9 +257,21 @@ impl ReadingOrderStrategy for GeometricStrategy {
             if column.is_empty() {
                 continue;
             }
-            // Sort by Y descending (top of page first)
+            // Sort by row band, top of page first, then left-to-right within
+            // the band. A bare descending-Y sort has no X tiebreak at all, so
+            // a column's own lines came back in baseline order rather than
+            // reading order whenever two spans of one line differed by any
+            // amount — the single-column path above already uses this
+            // comparator for exactly that reason.
             let mut sorted = column.clone();
-            sorted.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
+            sorted.sort_by(|&a, &b| {
+                crate::utils::row_aware_span_cmp(
+                    spans[a].bbox.y,
+                    spans[a].bbox.x,
+                    spans[b].bbox.y,
+                    spans[b].bbox.x,
+                )
+            });
 
             if sorted.len() == 1 {
                 sub_groups.push(sorted);
