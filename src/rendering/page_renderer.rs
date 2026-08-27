@@ -4250,9 +4250,50 @@ impl PageRenderer {
                                             // Check if we need to decompress Group 4 CCITT.
                                             let expected_bytes =
                                                 ((mw as usize + 7) / 8) * mh as usize;
-                                            let mask_data = if raw_mask_data.len()
-                                                < expected_bytes / 2
-                                            {
+                                            // The filter name is authoritative about whether the
+                                            // bytes are still compressed; the size heuristic below
+                                            // is only a guess, and on a small stencil the
+                                            // compressed form can be the larger of the two.
+                                            let filter_is_jbig2 = mask_dict
+                                                .get("Filter")
+                                                .map(|f| match f {
+                                                    Object::Name(n) => n == "JBIG2Decode",
+                                                    Object::Array(a) => a
+                                                        .iter()
+                                                        .any(|o| o.as_name() == Some("JBIG2Decode")),
+                                                    _ => false,
+                                                })
+                                                .unwrap_or(false);
+                                            let mask_data = if filter_is_jbig2 {
+                                                // The stream decoder passes JBIG2 through
+                                                // untouched, so without this the compressed
+                                                // bitstream reached the stencil loop and almost
+                                                // every sample fell past the end of the buffer —
+                                                // the mask was ignored and a scanned page
+                                                // rendered as the raw grey scan with nothing
+                                                // knocked out.
+                                                match crate::extractors::images::decode_jbig2_stencil(
+                                                    &mask_stream,
+                                                    Some(ref_obj),
+                                                    mask_dict,
+                                                    Some(doc),
+                                                    mw,
+                                                    mh,
+                                                ) {
+                                                    Ok(packed) => {
+                                                        log::debug!(
+                                                            "JBIG2 stencil mask decoded: {} → {} bytes",
+                                                            raw_mask_data.len(),
+                                                            packed.len()
+                                                        );
+                                                        packed
+                                                    },
+                                                    Err(e) => {
+                                                        log::debug!("JBIG2 mask decode failed: {e}; leaving the base image visible");
+                                                        raw_mask_data
+                                                    },
+                                                }
+                                            } else if raw_mask_data.len() < expected_bytes / 2 {
                                                 // Data is still compressed — try Group 4 CCITT decompression
                                                 let k = mask_dict
                                                     .get("DecodeParms")

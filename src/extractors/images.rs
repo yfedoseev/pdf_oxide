@@ -2225,6 +2225,53 @@ fn save_raw_as_jpeg(
 }
 
 /// Decode a JBIG2-compressed PDF image stream into raw grayscale pixels.
+/// Decode a JBIG2 stencil into packed 1-bit rows in the PDF sample convention.
+///
+/// An explicit `/Mask` is an image mask, and §8.9.6.2 reads its *samples*: a
+/// sample of 0 marks the page. Table 12's example writes a JBIG2 image as
+/// `/DeviceGray /BitsPerComponent 1`, in which 0 is black — so a black JBIG2
+/// pixel is sample 0 and marks the page, which for an explicit mask means the
+/// base image shows through there.
+///
+/// Returns `((width + 7) / 8) * height` bytes, MSB first, which is the layout
+/// the stencil loop indexes. Without this the compressed bitstream reached
+/// that loop unchanged: almost every sample fell past the end of the buffer
+/// and the mask was silently ignored, so a scanned page rendered as the raw
+/// grey scan with no text knocked out.
+#[cfg(feature = "rendering")]
+pub(crate) fn decode_jbig2_stencil(
+    stream: &crate::object::Object,
+    obj_ref: Option<ObjectRef>,
+    dict: &std::collections::HashMap<String, crate::object::Object>,
+    doc: Option<&crate::document::PdfDocument>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let ImageData::Raw { pixels, .. } =
+        decode_jbig2_image(stream, obj_ref, dict, doc, width, height)?
+    else {
+        return Err(Error::Image("JBIG2 stencil decode returned no samples".to_string()));
+    };
+
+    let row_bytes = (width as usize).div_ceil(8);
+    // 0xFF = every sample 1 = "leave the previous contents unchanged", so a
+    // row the decoder did not reach masks nothing out rather than erasing the
+    // base image.
+    let mut packed = vec![0xFFu8; row_bytes * height as usize];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let Some(&g) = pixels.get(y * width as usize + x) else {
+                continue;
+            };
+            if g < 128 {
+                // black -> sample 0
+                packed[y * row_bytes + x / 8] &= !(0x80 >> (x % 8));
+            }
+        }
+    }
+    Ok(packed)
+}
+
 #[cfg(feature = "rendering")]
 fn decode_jbig2_image(
     xobject: &crate::object::Object,
