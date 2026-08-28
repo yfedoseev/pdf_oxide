@@ -6812,6 +6812,29 @@ impl PdfDocument {
                             // delta_x values of 56 pt and 78 pt.
                             text.push(' ');
                         }
+                    } else if y_diff >= prev.font_size.max(span.font_size).max(1.0) * 0.8
+                        && gap < FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
+                    {
+                        // Stacked lines, not a kerned run.
+                        //
+                        // `same_line_threshold` allows 1.2x the SMALLER font so
+                        // normal leading does not produce false breaks, which for
+                        // two spans of the same size admits everything below
+                        // 1.2 em -- including a plain single-spaced line advance.
+                        // A wrapped line is normally caught further down by its
+                        // large negative `delta_x` (it restarts at the left
+                        // margin), but stacked table-header labels start at or
+                        // to the RIGHT of the line above, so the gap is ~0 and
+                        // no arm here separates them: "Latency" over
+                        // "Efficiency" came out as "LatencyEfficiency".
+                        //
+                        // 0.8 em is below any real line advance (>= 1.0 em) and
+                        // well above a superscript or subscript shift (~0.3 em),
+                        // which must stay on the line it decorates. The gap bound
+                        // leaves the wide-gap column boundary below untouched.
+                        if !text.ends_with('\n') {
+                            text.push('\n');
+                        }
                     } else if y_diff > 2.0
                         && gap > FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
                     {
