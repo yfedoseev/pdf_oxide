@@ -1252,13 +1252,14 @@ impl PageRenderer {
                     let gs = gs_stack.current_mut();
                     let space_name = gs.fill_color_space.clone();
                     let resolved_space = self.color_spaces.get(&space_name);
+                    let is_pattern = self.is_pattern_space(&space_name);
                     gs.fill_color_components.clear();
                     gs.fill_color_components.extend_from_slice(components);
                     gs.fill_color_cmyk = None;
                     // §8.7.3: retain the pattern name for the Fill path when the
                     // active fill space is /Pattern; clear it otherwise so a
                     // later device-colour scn cannot paint a stale pattern.
-                    gs.fill_pattern_name = if space_name == "Pattern" {
+                    gs.fill_pattern_name = if is_pattern {
                         name.as_ref().map(|n| n.as_str().to_string())
                     } else {
                         None
@@ -1739,8 +1740,26 @@ impl PageRenderer {
                             // the region the solid-colour paint below is
                             // skipped; unsupported/shading patterns return
                             // false and fall through to the solid fallback.
-                            if gs_clone.fill_color_space == "Pattern"
-                                && gs_clone.fill_pattern_name.is_some()
+                            // §8.7.3: a Pattern-space fill routes to the tiling
+                            // rasteriser; a shading pattern (PatternType 2) is
+                            // not yet implemented and falls through to the
+                            // solid paint below.
+                            //
+                            // Do NOT turn that fallthrough into "paint
+                            // nothing". It looks right — the operands of an
+                            // `scn` in a Pattern space name a pattern rather
+                            // than a colour — and the corpus says otherwise:
+                            // skipping blanked eleven shading-pattern pages
+                            // that four renderers agree on, several of which
+                            // the fallback had been matching to five decimal
+                            // places. In a `[/Pattern <base>]` space `scn`
+                            // carries base-space components alongside the
+                            // name, and painting those approximates the
+                            // gradient far better than painting nothing.
+                            // The real fix is to paint the shading.
+                            let pattern_space_fill = gs_clone.fill_pattern_name.is_some()
+                                && self.is_pattern_space(&gs_clone.fill_color_space);
+                            if pattern_space_fill
                                 && self.fill_with_tiling_pattern(
                                     pixmap,
                                     &path,
@@ -1906,8 +1925,26 @@ impl PageRenderer {
                             // §8.7.3: Pattern-space fills route to the tiling
                             // rasteriser first; on success the solid fill side
                             // is skipped (the stroke side still runs below).
-                            let fill_by_pattern = gs_clone.fill_color_space == "Pattern"
-                                && gs_clone.fill_pattern_name.is_some()
+                            // §8.7.3: a Pattern-space fill routes to the tiling
+                            // rasteriser; a shading pattern (PatternType 2) is
+                            // not yet implemented and falls through to the
+                            // solid paint below.
+                            //
+                            // Do NOT turn that fallthrough into "paint
+                            // nothing". It looks right — the operands of an
+                            // `scn` in a Pattern space name a pattern rather
+                            // than a colour — and the corpus says otherwise:
+                            // skipping blanked eleven shading-pattern pages
+                            // that four renderers agree on, several of which
+                            // the fallback had been matching to five decimal
+                            // places. In a `[/Pattern <base>]` space `scn`
+                            // carries base-space components alongside the
+                            // name, and painting those approximates the
+                            // gradient far better than painting nothing.
+                            // The real fix is to paint the shading.
+                            let pattern_space_fill = gs_clone.fill_pattern_name.is_some()
+                                && self.is_pattern_space(&gs_clone.fill_color_space);
+                            let fill_by_pattern = pattern_space_fill
                                 && self.fill_with_tiling_pattern(
                                     pixmap,
                                     &path,
@@ -2065,8 +2102,26 @@ impl PageRenderer {
                             // §8.7.3: Pattern-space fills route to the tiling
                             // rasteriser first; on success the solid fill side
                             // is skipped (the stroke side, if any, still runs).
-                            let fill_by_pattern = gs_clone.fill_color_space == "Pattern"
-                                && gs_clone.fill_pattern_name.is_some()
+                            // §8.7.3: a Pattern-space fill routes to the tiling
+                            // rasteriser; a shading pattern (PatternType 2) is
+                            // not yet implemented and falls through to the
+                            // solid paint below.
+                            //
+                            // Do NOT turn that fallthrough into "paint
+                            // nothing". It looks right — the operands of an
+                            // `scn` in a Pattern space name a pattern rather
+                            // than a colour — and the corpus says otherwise:
+                            // skipping blanked eleven shading-pattern pages
+                            // that four renderers agree on, several of which
+                            // the fallback had been matching to five decimal
+                            // places. In a `[/Pattern <base>]` space `scn`
+                            // carries base-space components alongside the
+                            // name, and painting those approximates the
+                            // gradient far better than painting nothing.
+                            // The real fix is to paint the shading.
+                            let pattern_space_fill = gs_clone.fill_pattern_name.is_some()
+                                && self.is_pattern_space(&gs_clone.fill_color_space);
+                            let fill_by_pattern = pattern_space_fill
                                 && self.fill_with_tiling_pattern(
                                     pixmap,
                                     &path,
@@ -5187,6 +5242,25 @@ impl PageRenderer {
     /// over-large cell), so the caller paints its normal solid fill.
     /// Never panics and never loops unboundedly.
     #[allow(clippy::too_many_arguments)]
+    /// True iff the named fill colour space is a Pattern space (§8.7.3).
+    ///
+    /// `gs.fill_color_space` holds the *resource name* the content stream used,
+    /// which equals `Pattern` only when the stream wrote `/Pattern cs`
+    /// literally. A file reaching the space through a resource — `/R8 cs` where
+    /// `/R8` resolves to `/Pattern` or `[/Pattern /DeviceRGB]` — was not
+    /// recognised as a pattern at all, so `scn` never recorded the pattern name
+    /// and every such fill fell through to the solid-colour path.
+    fn is_pattern_space(&self, name: &str) -> bool {
+        if name == "Pattern" {
+            return true;
+        }
+        match self.color_spaces.get(name) {
+            Some(Object::Name(n)) => n == "Pattern",
+            Some(Object::Array(a)) => a.first().and_then(|o| o.as_name()) == Some("Pattern"),
+            _ => false,
+        }
+    }
+
     fn fill_with_tiling_pattern(
         &mut self,
         pixmap: &mut Pixmap,
