@@ -1352,8 +1352,23 @@ pub fn extract_image_from_xobject(
     image.set_rendering_intent(rendering_intent);
 
     if bits_per_component == 1 && image.color_space == ColorSpace::DeviceGray && is_ccitt {
+        // §7.3.10: any object may be written as an indirect reference, and
+        // `/DecodeParms` routinely is. `extract_ccitt_params_with_width` reads
+        // a dictionary or an array and returns None for a reference, so an
+        // unresolved one left `ccitt_params` unset — and with it unset,
+        // `to_dynamic_image` skips CCITT decompression entirely and unpacks
+        // the still-compressed bytes as though they were packed pixels. A
+        // 221-byte codestream standing in for 12,341 bytes of 344x287 image
+        // meant everything past the first ~1.8% of the page fell out of
+        // bounds and defaulted to white: the page rendered nearly blank at
+        // coverage 0.00988, where the ink derivable from the file is 0.07980
+        // and all four reference renderers report 0.08004-0.08297.
+        let decode_parms = dict.get("DecodeParms").and_then(|o| match o {
+            Object::Reference(_) => doc.and_then(|d| d.resolve_object(o).ok()),
+            other => Some(other.clone()),
+        });
         if let Some(mut ccitt_params) =
-            crate::object::extract_ccitt_params_with_width(dict.get("DecodeParms"), Some(width))
+            crate::object::extract_ccitt_params_with_width(decode_parms.as_ref(), Some(width))
         {
             if ccitt_params.rows.is_none() {
                 ccitt_params.rows = Some(height);
