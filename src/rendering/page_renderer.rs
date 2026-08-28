@@ -9780,7 +9780,16 @@ fn resize_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Op
         .resize(
             &src_img,
             &mut dst_img,
-            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)),
+            // The caller premultiplies before resampling (see the comment at the
+            // blit site). fast_image_resize's `use_alpha` defaults to true,
+            // which means "premultiply, resize, un-premultiply" -- applied to a
+            // buffer that is already premultiplied it divides the alpha back
+            // out, handing tiny_skia straight-alpha RGB in a buffer it reads as
+            // premultiplied. Opaque images are unaffected either way; one with
+            // a soft mask washes out as it shrinks.
+            &ResizeOptions::new()
+                .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
+                .use_alpha(false),
         )
         .ok()?;
     Some(dst_img.into_vec())

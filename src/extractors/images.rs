@@ -1134,7 +1134,29 @@ pub fn extract_image_from_xobject(
     // applies it itself (plate routing) must still do so for those.
     let mut decode_folded_in = false;
     let data = if is_jbig2 {
-        decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?
+        let decoded = decode_jbig2_image(xobject, obj_ref, dict, doc, width, height)?;
+        // The JBIG2 decoder expands straight to 8-bit gray, bypassing the
+        // packed-sample block below that is the only place /Decode is
+        // otherwise honoured. ISO 32000-1 8.9.5.2 Table 90 applies to a JBIG2
+        // image like any other, and Table 145 explicitly permits /Decode on a
+        // soft-mask image -- 11.6.5.3 requires the alpha be derived with the
+        // Decode transformation already performed. Scanners in the wild write
+        // /Decode [1 0] to normalise the polarity their encoder emitted, so
+        // dropping it inverts the mask exactly.
+        if decode_array_inverts_1bpc(dict.get("Decode")) {
+            decode_folded_in = true;
+            match decoded {
+                ImageData::Raw { mut pixels, format } => {
+                    for b in &mut pixels {
+                        *b = !*b;
+                    }
+                    ImageData::Raw { pixels, format }
+                },
+                other => other,
+            }
+        } else {
+            decoded
+        }
     } else if is_jpx {
         decode_jpx_image(xobject, obj_ref, doc, &color_space)?
     } else if is_jpeg_only || is_jpeg_chain {
