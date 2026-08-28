@@ -7407,6 +7407,30 @@ impl PageRenderer {
         let Some(source) = source_for_overprint(gs, fill_side) else {
             return;
         };
+        // §11.7.3: a Separation or DeviceN source may address the device's
+        // process colorants "as if they were spot colours" only when the group
+        // inherits the output device's native colour space. Otherwise "the
+        // Separation or DeviceN colour space shall be converted to its
+        // alternate colour space", and §11.7.4.3 NOTE 2 then reads that
+        // alternate as the current colour space for Table 149 — the "any
+        // process colour space" row, `B = c_s`.
+        //
+        // With no CMYK sidecar the composite pixmap IS the group colour space,
+        // and it is RGB, so the rasteriser has already written the correct
+        // alternate-space colour and there is nothing left to compose. Applying
+        // Table 149 row 3 here instead preserves the backdrop on all four
+        // process lanes with no spot lane in existence to receive `c_s`, which
+        // erases the paint outright: two scholarly pages painting body text in
+        // `[/Separation /Black <ICCBased N=3> …]` under `/OP true /op true
+        // /OPM 1` rendered blank, at coverage 0.00009 and 0.00286, where MuPDF,
+        // pdfium, poppler and Ghostscript all paint them.
+        //
+        // Scoped to this class deliberately: DeviceCMYK-direct and the other
+        // process spaces keep their composite behaviour, which several tests
+        // pin byte-exact on pages that likewise have no sidecar.
+        if self.cmyk_sidecar.is_none() && source.class == SourceCsClass::SeparationOrDeviceN {
+            return;
+        }
         let opm = gs.overprint_mode;
         let alpha_g = if fill_side {
             gs.fill_alpha
