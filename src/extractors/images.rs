@@ -920,7 +920,43 @@ pub fn extract_image_from_xobject(
     obj_ref: Option<ObjectRef>,
     color_space_map: Option<&std::collections::HashMap<String, crate::object::Object>>,
 ) -> Result<PdfImage> {
+    extract_image_from_xobject_at(doc, xobject, obj_ref, color_space_map, None)
+}
+
+/// Extract an image XObject, decoding no larger than `target` where the format
+/// allows it.
+///
+/// JPEG 2000 stores successive resolution levels, so a caller that already
+/// knows the image will be painted smaller than its stored size can have the
+/// decoder stop early instead of producing full-resolution samples that are
+/// immediately resampled away. Images "shall be mapped to the unit square in
+/// user space (as are all images)" (`docs/spec/pdf.md`:23985) "regardless of
+/// the number of samples in the image" (pdf.md:8475) — the stored sample count
+/// does not determine the painted size, so decoding past what is painted buys
+/// nothing.
+///
+/// It matters at the extremes: a real 12608 x 16806 JPX image peaks at 11.3 GB
+/// decoded in full, which no browser tab or phone survives, to be painted into
+/// a fraction of that.
+///
+/// `target` is a hint. Formats that cannot decode progressively ignore it, and
+/// even JPEG 2000 returns the smallest resolution level that still *covers*
+/// the target, so the result is never smaller than asked for. The returned
+/// [`PdfImage`] always reports the geometry of the samples it actually holds,
+/// which for a reduced decode is below the `/Width` and `/Height` of the
+/// dictionary.
+pub fn extract_image_from_xobject_at(
+    doc: Option<&crate::document::PdfDocument>,
+    xobject: &crate::object::Object,
+    obj_ref: Option<ObjectRef>,
+    color_space_map: Option<&std::collections::HashMap<String, crate::object::Object>>,
+    target: Option<(u32, u32)>,
+) -> Result<PdfImage> {
     use crate::object::Object;
+
+    // Set only by the JPX branch, which is the one format here that can honour
+    // `target`; `None` means the samples match the dictionary's dimensions.
+    let mut jpx_decoded_dims: Option<(u32, u32)> = None;
 
     let dict = xobject
         .as_dict()
@@ -1158,7 +1194,9 @@ pub fn extract_image_from_xobject(
             decoded
         }
     } else if is_jpx {
-        decode_jpx_image(xobject, obj_ref, doc, &color_space)?
+        let (data, dec_w, dec_h) = decode_jpx_image(xobject, obj_ref, doc, &color_space, target)?;
+        jpx_decoded_dims = Some((dec_w, dec_h));
+        data
     } else if is_jpeg_only || is_jpeg_chain {
         let decoded = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
             d.decode_stream_with_encryption(xobject, ref_id)?
@@ -1357,6 +1395,10 @@ pub fn extract_image_from_xobject(
     if i64::from(effective_bpc) != i64::from(bits_per_component) {
         samples_are_raw = false;
     }
+    // A reduced-resolution JPX decode holds fewer samples than the dictionary
+    // advertises; the buffer's geometry is what the samples actually are.
+    let (width, height) = jpx_decoded_dims.unwrap_or((width, height));
+
     let mut image = PdfImage::new(width, height, color_space, effective_bpc, data);
     image.set_samples_are_raw(samples_are_raw);
     image.set_decode_folded_in(decode_folded_in);
@@ -2427,14 +2469,15 @@ fn decode_jpx_image(
     obj_ref: Option<ObjectRef>,
     doc: Option<&crate::document::PdfDocument>,
     color_space: &ColorSpace,
-) -> Result<ImageData> {
+    target: Option<(u32, u32)>,
+) -> Result<(ImageData, u32, u32)> {
     let codestream: Vec<u8> = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
         d.decode_stream_with_encryption(xobject, ref_id)?
     } else {
         xobject.decode_stream_data()?
     };
 
-    let img = crate::decoders::jpx::decode_jpx(&codestream)?;
+    let img = crate::decoders::jpx::decode_jpx_at(&codestream, target)?;
 
     // The decoded sample layout is fixed by the codestream's component count
     // (ISO 32000-1 §7.4.9: a JPX stream carries its own colour space, which
@@ -2452,10 +2495,17 @@ fn decode_jpx_image(
         },
     };
 
-    Ok(ImageData::Raw {
-        pixels: img.samples,
-        format,
-    })
+    // The decoder may have chosen a lower resolution level than the `/Width`
+    // and `/Height` in the dictionary, so the caller must take the geometry
+    // from what came back rather than from the dictionary.
+    Ok((
+        ImageData::Raw {
+            pixels: img.samples,
+            format,
+        },
+        img.width,
+        img.height,
+    ))
 }
 
 #[cfg(not(feature = "jpeg2000"))]
@@ -2464,7 +2514,8 @@ fn decode_jpx_image(
     _obj_ref: Option<ObjectRef>,
     _doc: Option<&crate::document::PdfDocument>,
     _color_space: &ColorSpace,
-) -> Result<ImageData> {
+    _target: Option<(u32, u32)>,
+) -> Result<(ImageData, u32, u32)> {
     Err(Error::UnsupportedFilter(
         "JPXDecode (JPEG 2000) — rebuild with the `jpeg2000` feature to decode".to_string(),
     ))

@@ -47,7 +47,9 @@ pub(crate) mod separation_renderer;
 pub mod sidecar;
 mod text_rasterizer;
 
-pub use page_renderer::{ImageFormat, PageRenderer, RenderOptions, RenderedImage};
+pub use page_renderer::{
+    ImageFormat, PageRenderer, RenderOptions, RenderedImage, DEFAULT_MAX_OUTPUT_PIXELS,
+};
 pub use separation_renderer::{render_separation, render_separations, SeparationPlate};
 
 use crate::content::GraphicsState;
