@@ -245,6 +245,27 @@ fn is_fullwidth_or_math_op(c: char) -> bool {
 /// (e.g. `≤`, `＜`, `μ`), no space is inserted even if the geometric gap
 /// exceeds the threshold.  This mirrors the CJK-pair suppression in the text
 /// extraction path (`document.rs`).
+/// True for a character belonging to a right-to-left script.
+///
+/// Covers Hebrew, Arabic and its supplements and presentation forms, Syriac,
+/// Thaana and NKo — the ranges ISO 32000-1:2008 14.8.2.3.3 has in mind when it
+/// describes right-to-left show-text runs. Used to keep left-to-right
+/// positional reasoning from being applied to a script that advances the other
+/// way.
+fn is_rtl_char(c: char) -> bool {
+    matches!(c as u32,
+        0x0590..=0x05FF   // Hebrew
+        | 0x0600..=0x06FF // Arabic
+        | 0x0700..=0x074F // Syriac
+        | 0x0750..=0x077F // Arabic Supplement
+        | 0x0780..=0x07BF // Thaana
+        | 0x07C0..=0x07FF // NKo
+        | 0x08A0..=0x08FF // Arabic Extended-A
+        | 0xFB1D..=0xFDFF // Hebrew/Arabic Presentation Forms-A
+        | 0xFE70..=0xFEFF // Arabic Presentation Forms-B
+    )
+}
+
 pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     let font_size = prev.font_size.max(current.font_size).max(1.0);
     let prev_end_x = prev.bbox.x + prev.bbox.width;
@@ -266,7 +287,18 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // `It is the` came out as `theisIt`. Only a *complete* backward step
     // counts: a small negative gap is glyph overlap (accent composition, an
     // over-wide advance estimate) and must stay unseparated.
-    let steps_backward = current.bbox.x + current.bbox.width <= prev.bbox.x;
+    //
+    // The premise holds only for a left-to-right run. In Arabic, Hebrew and
+    // the other right-to-left scripts a continuation steps *leftward* by
+    // definition, so every glyph pair in a right-to-left word satisfies the
+    // test and the word is split into single letters. Word-final forms often
+    // carry a zero advance here as well, which makes the apparent step even
+    // larger. So the rule is scoped to runs with no right-to-left character on
+    // either side; a right-to-left run falls back to the plain gap test, which
+    // is what separated its words correctly before.
+    let steps_backward = current.bbox.x + current.bbox.width <= prev.bbox.x
+        && !prev.text.chars().any(is_rtl_char)
+        && !current.text.chars().any(is_rtl_char);
     if gap <= threshold && !steps_backward {
         return false;
     }
@@ -646,6 +678,68 @@ mod tests {
             font_size: 10.0,
             ..Default::default()
         }
+    }
+
+    // ========================================================================
+    // has_horizontal_gap right-to-left scoping
+    // ========================================================================
+
+    /// Build a span at an explicit x/width/size, for the RTL geometry below.
+    fn rtl_span(x: f32, w: f32, fs: f32, text: &str) -> crate::layout::TextSpan {
+        crate::layout::TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect::new(x, 0.0, w, fs),
+            font_size: fs,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn arabic_glyphs_stepping_leftward_are_not_separated() {
+        // Measured from the page that exposed this: two glyphs of one Arabic
+        // word, the second starting well left of the first and carrying a zero
+        // advance. A right-to-left continuation steps leftward by definition,
+        // so the backward-step discontinuity rule must not claim it.
+        let prev = rtl_span(497.37, 0.0, 22.0, "\u{629}");
+        let curr = rtl_span(386.46, 0.0, 22.0, "\u{632}");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "an RTL continuation is not a reading discontinuity"
+        );
+    }
+
+    #[test]
+    fn hebrew_glyphs_stepping_leftward_are_not_separated() {
+        let prev = rtl_span(300.0, 0.0, 12.0, "\u{5e9}");
+        let curr = rtl_span(288.0, 0.0, 12.0, "\u{5dc}");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "Hebrew advances right-to-left too"
+        );
+    }
+
+    #[test]
+    fn a_latin_backward_step_is_still_a_discontinuity() {
+        // The rule the RTL guard narrows must still fire for left-to-right
+        // text, where a run beginning left of the previous run's start is a
+        // new line or column — this is what stops `It is the` becoming
+        // `theisIt`.
+        let prev = rtl_span(300.0, 20.0, 12.0, "the");
+        let curr = rtl_span(100.0, 12.0, 12.0, "It");
+        assert!(
+            has_horizontal_gap(&prev, &curr),
+            "a Latin run starting 200pt back is a discontinuity"
+        );
+    }
+
+    #[test]
+    fn adjacent_latin_kerning_is_still_not_a_gap() {
+        let prev = rtl_span(100.0, 18.0, 12.0, "Effi");
+        let curr = rtl_span(118.1, 26.0, 12.0, "ciency");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "a sub-em gap is inter-glyph kerning"
+        );
     }
 
     #[test]
