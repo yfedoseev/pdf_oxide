@@ -6706,7 +6706,29 @@ impl PdfDocument {
                     // y-line break OR (when the two halves share a baseline band) as a
                     // large backward X jump, so it is gated at each break site below.
                     let hangul_midword_wrap = Self::hangul_midword_line_wrap(&text, prev, span);
-                    if y_diff > Self::same_line_threshold(prev, span) {
+                    if (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5 {
+                        // Two runs on different writing axes are not one line.
+                        // §9.4.4 puts the glyph displacement along the writing
+                        // direction the text matrix sets, so a matrix that
+                        // differs in rotation starts a new run by definition.
+                        //
+                        // The gap arithmetic below cannot see this. It reads an
+                        // axis-aligned `bbox.width`, which for a run on a
+                        // diagonal baseline is the width of a box drawn round
+                        // that diagonal rather than an advance along it. On a
+                        // perspective diagram whose labels sit at 20.3, 25.3,
+                        // 30.4 and 35.5 degrees, their boxes overlap, the gap
+                        // comes out negative, and the runs concatenated with no
+                        // separator at all — `Opt_Decoder` + `Opt_Heads` became
+                        // `Opt_DecoderOpt_Heads`.
+                        //
+                        // `pipeline/converters/mod.rs`already guards this for the
+                        // converter path; the shared assembly behind `.text`
+                        // and the extractors never consulted `rotation_degrees`.
+                        if !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    } else if y_diff > Self::same_line_threshold(prev, span) {
                         let font_size = prev.font_size.max(span.font_size).max(10.0);
                         let line_height = font_size * 1.2;
                         let num_breaks = (y_diff / line_height).round() as usize;
