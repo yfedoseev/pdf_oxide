@@ -8773,12 +8773,29 @@ impl PdfDocument {
         }
     }
 
-    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
-    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
-    /// it is never meaningful rendered content, so it must not survive into
-    /// flat-text output regardless of whether it sits at a line boundary (the
-    /// PDF's own line wrap is not preserved here) or mid-word within a span
-    /// whose glyphs were positioned individually.
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN) **only where it marks
+    /// a hyphenation point**: between two alphabetic characters.
+    ///
+    /// §14.8.2.2.3 treats a soft hyphen as an incidental artifact of layout,
+    /// which is what licenses removing it — but only where it is one. Annex D
+    /// note 5 is explicit that it is not always: "The hyphen character is also
+    /// encoded as 255 in WinAnsiEncoding. The meaning of this duplicate code
+    /// shall be 'soft hyphen,' but it shall be **typographically the same as
+    /// hyphen**." A producer using that code draws a visible hyphen, so
+    /// removing it deletes a character the reader sees.
+    ///
+    /// Stripping unconditionally did exactly that. A part number `SS<shy>2541
+    /// <shy>03<shy>M` became `SS254103M` and a date `2023<shy>06<shy>15`
+    /// became `20230615`; both render with visible hyphens and poppler and
+    /// MuPDF both keep them. It also fired on a 0xAD byte that was the low half
+    /// of a GBK sequence, and on a maths font that maps U+00AD to a large
+    /// parenthesis, deleting one side of the delimiter pair.
+    ///
+    /// Requiring a letter on both sides keeps every one of those and still
+    /// removes the hyphenation marker in `ultrasonographi<shy>cally`, which is
+    /// the case the rule exists for. A digit, a symbol, a space or a
+    /// misdecoded byte on either side means this is not a word being
+    /// hyphenated.
     ///
     /// One shape is exempt: a soft hyphen that *terminates* the fragment and
     /// directly follows a hyphen-minus. There the soft hyphen is the wrap
@@ -8805,7 +8822,29 @@ impl PdfDocument {
         } else {
             s
         };
-        out.extend(body.chars().filter(|&c| c != '\u{00AD}'));
+        // Drop a soft hyphen only between two alphabetic characters; anything
+        // else is a visible hyphen, a delimiter glyph, or a misdecoded byte.
+        let chars: Vec<char> = body.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c != '\u{00AD}' {
+                out.push(c);
+                continue;
+            }
+            let before = chars[..i].iter().rev().find(|c| **c != '\u{00AD}');
+            let after = chars[i + 1..].iter().find(|c| **c != '\u{00AD}');
+            // A letter on both sides is a word being hyphenated. So is a
+            // letter before and nothing after: that is the fragment-final wrap
+            // marker, which is the line-break case this rule exists for, and
+            // the following fragment carries the rest of the word.
+            let hyphenating = match (before, after) {
+                (Some(b), Some(a)) => b.is_alphabetic() && a.is_alphabetic(),
+                (Some(b), None) => b.is_alphabetic(),
+                _ => false,
+            };
+            if !hyphenating {
+                out.push(c);
+            }
+        }
         if keeps_wrap_marker {
             out.push('\u{00AD}');
         }
@@ -33150,5 +33189,57 @@ mod ink_dict_extractor_tests {
         let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF should parse");
         let inks = doc.get_page_inks(0).expect("page-inks walk must not panic");
         assert!(inks.is_empty(), "self-cycle yields no plates");
+    }
+}
+#[cfg(test)]
+mod soft_hyphen_scope_tests {
+    use super::PdfDocument;
+
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        PdfDocument::push_str_without_soft_hyphens(&mut out, s);
+        out
+    }
+
+    /// The case the rule exists for: a word hyphenated across a line break
+    /// leaves the marker at the end of its fragment.
+    #[test]
+    fn a_fragment_final_marker_after_a_letter_is_removed() {
+        assert_eq!(strip("ultrasonographi\u{00AD}"), "ultrasonographi");
+    }
+
+    /// And between two letters within one fragment.
+    #[test]
+    fn a_marker_between_two_letters_is_removed() {
+        assert_eq!(strip("Pharmaceu\u{00AD}ticals"), "Pharmaceuticals");
+    }
+
+    /// Annex D note 5: WinAnsi 255 is a soft hyphen "typographically the same
+    /// as hyphen", so a producer using it in a part number draws a visible
+    /// hyphen. Removing it deletes a character the reader sees.
+    #[test]
+    fn a_marker_between_a_letter_and_a_digit_is_kept() {
+        assert_eq!(strip("SS\u{00AD}2541"), "SS\u{00AD}2541");
+    }
+
+    #[test]
+    fn a_marker_between_two_digits_is_kept() {
+        assert_eq!(strip("2023\u{00AD}06\u{00AD}15"), "2023\u{00AD}06\u{00AD}15");
+    }
+
+    /// A 0xAD that is the low half of a misdecoded multi-byte sequence, and a
+    /// maths font mapping U+00AD to a delimiter glyph: neither is hyphenation.
+    #[test]
+    fn a_marker_next_to_punctuation_or_space_is_kept() {
+        assert_eq!(strip("\u{00A1}\u{00AD}"), "\u{00A1}\u{00AD}");
+        assert_eq!(strip("log \u{00AD} p"), "log \u{00AD} p");
+    }
+
+    /// The existing exemption: a marker directly after a hyphen-minus at the
+    /// end of a fragment is the wrap marker for an already-hyphenated
+    /// compound, and must survive so the rejoiner keeps the real hyphen.
+    #[test]
+    fn a_marker_after_a_hyphen_minus_still_survives() {
+        assert_eq!(strip("Cross-\u{00AD}"), "Cross-\u{00AD}");
     }
 }
