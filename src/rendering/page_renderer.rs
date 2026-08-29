@@ -8272,7 +8272,23 @@ impl PageRenderer {
                                     doc,
                                     page_num,
                                     &Object::Dictionary(std::collections::HashMap::new()),
-                                    fit.is_some(),
+                                    // Do not clip the appearance to its own
+                                    // /BBox. Table 95 says those boundaries
+                                    // "shall be used to clip the form XObject",
+                                    // and once the fit above places the box
+                                    // exactly that clip is well defined — but
+                                    // 12.5.5 scales the BBox to fill /Rect, so a
+                                    // border stroked *on* the boundary is half
+                                    // outside it by construction. Widget
+                                    // appearances routinely do exactly that
+                                    // (`1 w 0 G 0 0 149.9998 22 re S` inside a
+                                    // /BBox [0 0 150 22]), and clipping halves
+                                    // the stroke: a black 1-unit border rendered
+                                    // pale and thin, where MuPDF, poppler and
+                                    // Ghostscript all draw it solid. The fit is
+                                    // what this path needed; the clip can return
+                                    // once it accounts for stroke width.
+                                    false,
                                 )?;
 
                                 self.fonts = old_fonts;
