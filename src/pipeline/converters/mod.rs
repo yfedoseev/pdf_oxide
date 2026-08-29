@@ -267,6 +267,15 @@ fn is_rtl_char(c: char) -> bool {
 }
 
 pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
+    // Runs on different writing axes are not comparable along page-x at all.
+    // ISO 32000-1:2008 9.4.4: a glyph's displacement is interpreted in text
+    // space, so a 90-degree run's `bbox.width` is its advance along a
+    // physically vertical axis. Subtracting it from a horizontal run's x gave
+    // `72 - (32 + 343.30) = -303.30` for a rotated marginal stamp beside a body
+    // line, which read as "no gap" and glued the two together.
+    if (prev.rotation_degrees - current.rotation_degrees).abs() > 0.5 {
+        return true;
+    }
     let font_size = prev.font_size.max(current.font_size).max(1.0);
     let prev_end_x = prev.bbox.x + prev.bbox.width;
     let gap = current.bbox.x - prev_end_x;

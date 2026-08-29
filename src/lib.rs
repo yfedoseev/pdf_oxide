@@ -423,6 +423,59 @@ pub(crate) mod utils {
         }
     }
 
+    /// `row_aware_span_cmp` with the run's writing axis as the primary key.
+    ///
+    /// Row banding compares baselines along page-y and orders within a band
+    /// along page-x. Both only mean something for runs that share a writing
+    /// axis. ISO 32000-1:2008 §9.4.4: "Both the glyph's shape and its
+    /// displacement (horizontal or vertical) shall be interpreted in text
+    /// space", so a run at 90° to the body advances along a different page
+    /// axis — its `bbox.width` is an extent the body's x arithmetic cannot
+    /// compare against.
+    ///
+    /// Without this, a rotated marginal stamp whose baseline happened to fall
+    /// inside a body line's 3 pt band sorted to the front of that band on x
+    /// (its origin is near the page edge) and was emitted *inside* the
+    /// sentence, with no separator because the gap test computed
+    /// `72 − (32 + 343.30)` between two perpendicular runs.
+    ///
+    /// Quadrants rather than raw angles, so jitter around a right angle does
+    /// not split a group. Pages whose content is *dominantly* rotated are
+    /// rewritten into their reading frame upstream, which zeroes
+    /// `rotation_degrees`; there this key is constant and changes nothing. It
+    /// separates only a minority run that disagrees with its neighbours.
+    #[inline]
+    pub fn row_aware_span_cmp_axis(
+        a_rot: f32,
+        a_y: f32,
+        a_x: f32,
+        b_rot: f32,
+        b_y: f32,
+        b_x: f32,
+    ) -> Ordering {
+        quadrant_key(a_rot)
+            .cmp(&quadrant_key(b_rot))
+            .then_with(|| row_aware_span_cmp(a_y, a_x, b_y, b_x))
+    }
+
+    /// Writing-axis bucket for a run's rotation: 0/90/180/270, or a distinct
+    /// bucket for anything that is not within half a degree of a right angle.
+    #[inline]
+    fn quadrant_key(rot: f32) -> i32 {
+        if !rot.is_finite() {
+            return i32::MAX;
+        }
+        let norm = rot.rem_euclid(360.0);
+        for (q, angle) in [(0, 0.0), (1, 90.0), (2, 180.0), (3, 270.0)] {
+            if (norm - angle).abs() <= 0.5 || (norm - (angle + 360.0)).abs() <= 0.5 {
+                return q;
+            }
+        }
+        // Off-axis runs get their own bucket, ordered by angle so the result
+        // stays a total order.
+        4 + (norm as i32)
+    }
+
     /// Dominant text-matrix rotation of a page's spans, if any.
     ///
     /// Returns the snapped rotation (`90` / `180` / `-90`) shared by at

@@ -222,7 +222,14 @@ impl ReadingOrderStrategy for GeometricStrategy {
         if !is_likely_columnar(&spans) {
             let mut indexed: Vec<(usize, TextSpan)> = spans.into_iter().enumerate().collect();
             indexed.sort_by(|(_, a), (_, b)| {
-                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+                crate::utils::row_aware_span_cmp_axis(
+                    a.rotation_degrees,
+                    a.bbox.y,
+                    a.bbox.x,
+                    b.rotation_degrees,
+                    b.bbox.y,
+                    b.bbox.x,
+                )
             });
             return Ok(indexed
                 .into_iter()
@@ -265,9 +272,11 @@ impl ReadingOrderStrategy for GeometricStrategy {
             // comparator for exactly that reason.
             let mut sorted = column.clone();
             sorted.sort_by(|&a, &b| {
-                crate::utils::row_aware_span_cmp(
+                crate::utils::row_aware_span_cmp_axis(
+                    spans[a].rotation_degrees,
                     spans[a].bbox.y,
                     spans[a].bbox.x,
+                    spans[b].rotation_degrees,
                     spans[b].bbox.y,
                     spans[b].bbox.x,
                 )

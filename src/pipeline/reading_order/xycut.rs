@@ -2078,9 +2078,11 @@ impl XYCutStrategy {
     fn sort_indices(&self, all_spans: &[TextSpan], indices: &[usize]) -> Vec<usize> {
         let mut sorted: Vec<usize> = indices.to_vec();
         sorted.sort_by(|&a, &b| {
-            crate::utils::row_aware_span_cmp(
+            crate::utils::row_aware_span_cmp_axis(
+                all_spans[a].rotation_degrees,
                 all_spans[a].bbox.y,
                 all_spans[a].bbox.left(),
+                all_spans[b].rotation_degrees,
                 all_spans[b].bbox.y,
                 all_spans[b].bbox.left(),
             )
