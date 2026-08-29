@@ -750,7 +750,47 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
         return Vec::new();
     }
 
-    let mut columns = detect_columns(spans, config.column_tolerance, config.column_merge_threshold);
+    // The pitch cap is a REFINEMENT, so probe it the same way the finer
+    // text-edge lattice is probed below: adopt it only when the grid it
+    // produces still passes every emission gate, and otherwise keep the
+    // uncapped columns.
+    //
+    // Without that it is a cliff. Once the cap has split a page's columns,
+    // that column set is the only one tried; it either survives the gates or
+    // the page becomes prose, and nothing preserves the set that would have
+    // produced a table. Measured across the corpus, the cap moved 255 table
+    // pages to prose and 59 the other way — the same mechanism in both
+    // directions, so the gains were not evidence the rule was right.
+    let columns_uncapped =
+        detect_columns(spans, config.column_tolerance, config.column_merge_threshold, None);
+    let columns_capped = detect_columns(
+        spans,
+        config.column_tolerance,
+        config.column_merge_threshold,
+        Some(config),
+    );
+    let mut columns = if columns_capped.len() == columns_uncapped.len() {
+        columns_capped
+    } else {
+        let probe_rows = detect_rows(spans, config.row_tolerance);
+        let capped_holds = probe_rows.len() >= 2
+            && columns_capped.len() >= config.min_table_columns.max(2)
+            && columns_capped.len() <= config.max_table_columns
+            && {
+                let g = assign_spans_to_cells(spans, &columns_capped, &probe_rows);
+                validate_table_structure_internal(&g, config) && {
+                    let t = grid_to_table(&g, spans, None);
+                    is_valid_table(&t)
+                        && passes_spatial_quality_gate(&t)
+                        && !looks_like_prose_paragraph(&t)
+                }
+            };
+        if capped_holds {
+            columns_capped
+        } else {
+            columns_uncapped
+        }
+    };
 
     // Greedy X-center clustering fragments a single logical cell whose
     // words are internally spaced (e.g. an agenda row "Receiving Dock
@@ -1036,6 +1076,7 @@ fn detect_columns(
     spans: &[TextSpan],
     column_tolerance: f32,
     merge_threshold: f32,
+    cap_to_pitch: Option<&TableDetectionConfig>,
 ) -> Vec<ColumnCluster> {
     // Sort span indices by X coordinate before clustering for deterministic results.
     let mut sorted_indices: Vec<usize> = (0..spans.len()).collect();
@@ -1099,8 +1140,41 @@ fn detect_columns(
     // lattice predicate carries the column-count floor that makes the tolerance
     // mean something, and it is the same predicate this ratio was borrowed
     // from, so the two stay in step.
-    let effective_merge_threshold = if is_regular_lattice(&columns) {
-        let mut gaps: Vec<f32> = columns
+    // Measure the pitch on the columns that actually recur down the page, not
+    // on the greedy pre-merge clusters. Those clusters are one per distinct
+    // word-start x, so they include the running head, the page number, every
+    // indent level and every wrapped continuation: an indented legal index
+    // produced 13 of them where the table has 4 columns, and a leader-dot fee
+    // table 17 for 4. Their centres sit on a ~21-27 pt "pitch" that is just the
+    // average word-start spacing of prose, so the gate answered "lattice" about
+    // pages that have none, capped the merge threshold, and split the real
+    // columns apart until the emission gates rejected the page as prose.
+    //
+    // `detect_text_edge_columns` keeps only x edges recurring across several
+    // rows, which is what a column is. A dense numeric lattice still has those
+    // on a regular pitch, so the case this cap exists for keeps it; an indented
+    // index has too few to clear the lattice floor and keeps the fixed
+    // threshold.
+    // Cap the merge threshold to the table's own pitch, measured on the columns
+    // that actually recur down the page rather than on the greedy clusters
+    // built above. Those are one per distinct word-start x, so they include the
+    // running head, the page number, every indent level and every wrapped
+    // continuation: an indented legal index gave 13 of them where the table has
+    // 4 columns, a leader-dot fee table 17 for 4. Their centres sit on a
+    // ~21-27 pt "pitch" that is only the average word-start spacing of prose,
+    // so the gate said "lattice" about pages that have none, capped the
+    // threshold, split the real columns apart, and the emission gates then
+    // rejected the page as prose — 255 table pages lost across the corpus.
+    //
+    // `detect_text_edge_columns` keeps only x edges recurring across several
+    // rows, which is what a column is. A dense numeric lattice still has those
+    // on a regular pitch and keeps the cap; an indented index has too few to
+    // clear the lattice floor and keeps the fixed threshold.
+    let pitch_columns = cap_to_pitch
+        .map(|c| detect_text_edge_columns(spans, c))
+        .unwrap_or_default();
+    let effective_merge_threshold = if is_regular_lattice(&pitch_columns) {
+        let mut gaps: Vec<f32> = pitch_columns
             .windows(2)
             .map(|w| w[1].x_center - w[0].x_center)
             .filter(|g| *g > 0.0)
@@ -1199,7 +1273,13 @@ fn gaps_are_on_pitch(gaps: &[f32]) -> bool {
         .iter()
         .filter(|&&g| g >= median * 0.6 && g <= median * 1.6)
         .count();
-    on_pitch + 2 >= gaps.len()
+    // Proportional, not a fixed allowance. `on_pitch + 2 >= gaps.len()` means
+    // something different at every width: with 4 gaps it lets half of them be
+    // arbitrary, and with 30 it is nearly unreachable. A page then fell on one
+    // side of the gate or the other according to how many incidental x
+    // clusters it happened to carry — a running head, a page number, one
+    // wrapped line — rather than according to whether it is a lattice.
+    on_pitch * 5 >= gaps.len() * 4
 }
 
 fn is_regular_lattice(cols: &[ColumnCluster]) -> bool {
@@ -5032,7 +5112,7 @@ mod tests {
         ];
         let config = TableDetectionConfig::default();
         let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
         assert_eq!(
             columns.len(),
             4,
@@ -5054,7 +5134,7 @@ mod tests {
         ];
         let config = TableDetectionConfig::default();
         let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
         assert_eq!(
             columns.len(),
             2,
@@ -5094,7 +5174,7 @@ mod tests {
         }
         let config = TableDetectionConfig::default();
         let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
         assert!(
             columns.len() <= 2,
             "an irregular label/number layout has no pitch to scale to, so the \
@@ -5124,7 +5204,7 @@ mod tests {
         }
         let config = TableDetectionConfig::default();
         let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
         assert_eq!(
             columns.len(),
             6,
@@ -5155,9 +5235,9 @@ mod tests {
         ];
         let config = TableDetectionConfig::default();
         let cols_ordered =
-            detect_columns(&spans_ordered, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans_ordered, config.column_tolerance, config.column_merge_threshold, Some(&config));
         let cols_reversed =
-            detect_columns(&spans_reversed, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans_reversed, config.column_tolerance, config.column_merge_threshold, Some(&config));
         assert_eq!(
             cols_ordered.len(),
             cols_reversed.len(),
@@ -5187,7 +5267,7 @@ mod tests {
             create_test_span("C", 10.0, 80.0, 30.0, 10.0),
             create_test_span("D", 50.0, 80.0, 30.0, 10.0),
         ];
-        let columns = detect_columns(&spans, 15.0, 25.0);
+        let columns = detect_columns(&spans, 15.0, 25.0, Some(&TableDetectionConfig::default()));
         let rows = detect_rows(&spans, 2.8);
         let grid = assign_spans_to_cells(&spans, &columns, &rows);
         let header = detect_header_row(&grid, &spans);
@@ -6214,7 +6294,7 @@ mod tests {
         };
 
         let greedy_cols =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold);
+            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
         // With tight tolerance + scattered spans, greedy should exceed 6.
         assert!(
             greedy_cols.len() > 6,
