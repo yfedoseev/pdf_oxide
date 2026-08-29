@@ -2479,12 +2479,32 @@ fn decode_jpx_image(
 
     let img = crate::decoders::jpx::decode_jpx_at(&codestream, target)?;
 
-    // The decoded sample layout is fixed by the codestream's component count
-    // (ISO 32000-1 §7.4.9: a JPX stream carries its own colour space, which
-    // agrees with the component count). The XObject's /ColorSpace is reserved
-    // for future disambiguation (e.g. SMask/alpha handling).
-    let _ = color_space;
-    let format = match img.num_components {
+    // A JPX codestream may carry an opacity channel alongside its colour
+    // channels — a greyscale image decodes to two components, an RGB one to
+    // four. Table 89's /SMaskInData entry (`docs/spec/pdf.md`:14527) governs
+    // that channel and defaults to 0:
+    //
+    //   0  If present, encoded soft-mask image information shall be ignored.
+    //
+    // So unless the image asks otherwise, the extra channel is dropped and the
+    // image is painted from its colour channels alone. Refusing to decode it —
+    // which is what an unrecognised component count used to do — loses the
+    // whole image: one real file is a single 551x337 grey+alpha JPX covering
+    // the page, and rejecting it rendered the page blank.
+    //
+    // How many of the decoded components are colour comes from the dictionary
+    // when it says, per the same table's /ColorSpace entry (pdf.md:14487):
+    // "If ColorSpace is present, any colour space specifications in the
+    // JPEG2000 data shall be ignored."
+    let declared = color_space.components();
+    let decoded = usize::from(img.num_components);
+    let colour_components = if declared > 0 && declared <= decoded {
+        declared
+    } else {
+        decoded
+    };
+
+    let format = match colour_components {
         1 => PixelFormat::Grayscale,
         3 => PixelFormat::RGB,
         4 => PixelFormat::CMYK,
@@ -2495,12 +2515,30 @@ fn decode_jpx_image(
         },
     };
 
+    // Drop the trailing opacity channel(s) if the decode produced more
+    // components than the colour space accounts for.
+    let samples = if colour_components == decoded {
+        img.samples
+    } else {
+        let px = img.samples.len() / decoded.max(1);
+        let mut out = Vec::with_capacity(px * colour_components);
+        for i in 0..px {
+            let base = i * decoded;
+            out.extend_from_slice(&img.samples[base..base + colour_components]);
+        }
+        log::debug!(
+            "JPXDecode: {decoded} components decoded, {colour_components} are colour; \
+             dropping the opacity channel per /SMaskInData default 0"
+        );
+        out
+    };
+
     // The decoder may have chosen a lower resolution level than the `/Width`
     // and `/Height` in the dictionary, so the caller must take the geometry
     // from what came back rather than from the dictionary.
     Ok((
         ImageData::Raw {
-            pixels: img.samples,
+            pixels: samples,
             format,
         },
         img.width,
