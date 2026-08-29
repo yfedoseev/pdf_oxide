@@ -132,7 +132,40 @@ pub struct RenderOptions {
     /// exact (issue #480). Not part of the public API; set via
     /// `render_page_fit` only.
     pub(crate) scale_override: Option<f32>,
+    /// Largest output raster this render may allocate, in pixels.
+    ///
+    /// A page box times the requested scale is not bounded by anything in the
+    /// file, and some real documents are enormous: one 6 MB PDF in the wild
+    /// declares a 12608 x 16806 pt page carrying a 211.9 megapixel image,
+    /// which at 72 dpi is an 847 MB pixmap before a single copy is taken. With
+    /// the working buffers a render of it reached 11.6 GB and the process was
+    /// killed — and an OOM kill is a signal, so the caller gets no `Result` to
+    /// handle and the host simply dies.
+    ///
+    /// That is unacceptable where this library is meant to run. A browser tab
+    /// is commonly capped well under 4 GB and a mobile app is terminated long
+    /// before it, so an unbounded raster is the difference between the library
+    /// working on those targets and not.
+    ///
+    /// Over budget, the scale is reduced to fit rather than failing: a caller
+    /// asking for a thumbnail of a huge page wants the thumbnail, and a viewer
+    /// would do the same. Set it higher for a print pipeline, lower for a
+    /// constrained target.
+    pub max_output_pixels: u64,
 }
+
+/// Default output-raster budget: 16 megapixels, i.e. a 64 MB RGBA pixmap.
+///
+/// Sized to clear any realistic page while still bounding the pathological
+/// ones. A 4K display is 8.3 Mpx and A4 at 300 dpi is 8.7 Mpx, both well
+/// inside it; across a 2007-document corpus the largest page rasterises to
+/// 8.03 Mpx at 72 dpi, so nothing real is touched by this cap.
+///
+/// It is also the knob for constrained hosts, because it bounds the decode as
+/// well as the raster: on a 12608 x 16806 page carrying a JPEG 2000 image of
+/// the same size, peak RSS falls from 11.0 GB unbounded to 2.8 GB here, and to
+/// 799 MB at 4 Mpx. Lower it on mobile and WASM; raise it for print.
+pub const DEFAULT_MAX_OUTPUT_PIXELS: u64 = 16_000_000;
 
 impl Default for RenderOptions {
     fn default() -> Self {
@@ -144,6 +177,7 @@ impl Default for RenderOptions {
             jpeg_quality: 85,
             excluded_layers: HashSet::new(),
             scale_override: None,
+            max_output_pixels: DEFAULT_MAX_OUTPUT_PIXELS,
         }
     }
 }
@@ -494,10 +528,44 @@ impl PageRenderer {
         // in the shared helper rather than at each call site.
         let rotation = page_info.rotation;
         let (page_w, page_h) = super::rotated_page_extent(&media_box, rotation);
-        let scale = self
+        let mut scale = self
             .options
             .scale_override
             .unwrap_or(self.options.dpi as f32 / 72.0);
+
+        // Hold the raster to the caller's budget. Nothing in the file bounds
+        // `page_box x scale`, so without this a single document can demand
+        // more memory than the machine has and take the process down by OOM
+        // rather than returning an error — and an OOM kill is a signal, so the
+        // caller gets no `Result` to handle. Reduce the scale instead of
+        // failing: the caller asked for an image of this page, and a smaller
+        // one is far more useful than a dead process.
+        //
+        // This lowers `scale` itself rather than the pixmap dimensions,
+        // because the page transform below is derived from `scale`. Shrinking
+        // only the buffer would crop the page to its top-left corner instead
+        // of scaling it down.
+        {
+            let budget = self.options.max_output_pixels.max(1);
+            let want = (f64::from(page_w) * f64::from(scale)).ceil()
+                * (f64::from(page_h) * f64::from(scale)).ceil();
+            if want > budget as f64 {
+                let shrunk = scale * (budget as f64 / want).sqrt() as f32;
+                // Keep a scale that still yields at least one pixel per axis.
+                let floor = (1.0 / page_w.max(page_h).max(1.0)) as f32;
+                let shrunk = shrunk.max(floor);
+                log::warn!(
+                    "page raster {:.0}x{:.0} ({want:.0} px) exceeds the {budget} px budget; \
+                     rendering at scale {shrunk} instead of {scale}. Raise \
+                     RenderOptions::max_output_pixels to render at full size.",
+                    f64::from(page_w) * f64::from(scale),
+                    f64::from(page_h) * f64::from(scale),
+                );
+                scale = shrunk;
+            }
+        }
+        let scale = scale;
+
         let (width, height) = if self.options.scale_override.is_some() {
             // Float scale path: round to avoid off-by-one from exact fractional pixels.
             // Clamp to 1 so extreme aspect ratios never produce a 0-sized pixmap.
@@ -721,6 +789,7 @@ impl PageRenderer {
             page_num,
             resources,
             None,
+            None,
         )
     }
 
@@ -742,6 +811,7 @@ impl PageRenderer {
         page_num: usize,
         resources: &Object,
         initial_clip: Option<tiny_skia::Mask>,
+        inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         // Per-render snapshot lives on `self.excluded_layers_snapshot` (filled
         // by `render_page_with_options`). Recursive calls into this function
@@ -755,8 +825,38 @@ impl PageRenderer {
         let excluded_layers: &HashSet<String> = snapshot.as_deref().unwrap_or(empty_ref);
         let mut gs_stack = GraphicsStateStack::new();
 
-        // PDF default: DeviceGray, black
-        {
+        // §8.10.1 (`docs/spec/pdf.md`:15226): "Except as described above, the
+        // initial graphics state for the form shall be inherited from the
+        // graphics state that is in effect at the time Do is invoked." Only
+        // the CTM, the /BBox clip and the q/Q bracket are the form's own;
+        // everything else — alpha, blend mode, colour and colour space — comes
+        // from the caller. Starting a form from a fresh default state instead
+        // silently discarded all of it: a highlight annotation drawn under a
+        // multiply blend painted opaque over the text it should tint, and a
+        // fill in a Separation or DeviceN space resolved to the default black.
+        if let Some(parent) = inherited {
+            let mut seed = parent.clone();
+            // Three pieces of the parent's state are *not* inherited as data,
+            // because the `Do` path has already applied them by other means and
+            // taking them again would apply them twice.
+            //
+            // The CTM is one of the "except as described above" items: §8.10.1
+            // step (b) concatenates the form's /Matrix onto it, and this
+            // renderer carries the result in the transform passed alongside the
+            // operators. Copying the parent's matrix here as well composed it a
+            // second time and pushed the form's content off the page.
+            seed.ctm = Matrix::identity();
+            seed.text_matrix = Matrix::identity();
+            seed.text_line_matrix = Matrix::identity();
+            // A soft mask is applied to the form's *result*, not to each
+            // painting operation inside it — §11.6.5.2 composites a group
+            // through the mask when it is painted into its parent. Leaving it
+            // in the seed made every fill inside the form apply the mask too,
+            // so a 50% luminosity mask came out at 25%.
+            seed.smask = None;
+            *gs_stack.current_mut() = seed;
+        } else {
+            // Top-level content stream: the PDF default, DeviceGray black.
             let gs = gs_stack.current_mut();
             gs.fill_color_space = "DeviceGray".to_string();
             gs.stroke_color_space = "DeviceGray".to_string();
@@ -1396,9 +1496,9 @@ impl PageRenderer {
                                                 let base = doc
                                                     .resolve_object(&arr[1])
                                                     .unwrap_or_else(|_| arr[1].clone());
-                                                if let Some(rgb) =
-                                                    components_to_rgb_in_space(&base, components, doc)
-                                                {
+                                                if let Some(rgb) = components_to_rgb_in_space(
+                                                    &base, components, doc,
+                                                ) {
                                                     gs.fill_color_rgb = rgb;
                                                     handled = true;
                                                 }
@@ -3570,13 +3670,38 @@ impl PageRenderer {
             None
         };
 
-        let shading = match shading_obj.as_ref().and_then(|o| o.as_dict()) {
+        let Some(shading_obj) = shading_obj else {
+            log::debug!("Shading '{}' not found in resources", name);
+            return Ok(());
+        };
+
+        self.render_shading_object(pixmap, &shading_obj, transform, gs, doc, clip_mask)
+    }
+
+    /// Paint an already-resolved shading object.
+    ///
+    /// Split out of `render_shading` so a type 2 (shading) pattern can reach
+    /// the same painter: its shading is inline at `Pattern/<name>/Shading`
+    /// rather than named in the `Shading` subdictionary, so there is nothing
+    /// to look up by name.
+    #[allow(clippy::too_many_arguments)]
+    fn render_shading_object(
+        &self,
+        pixmap: &mut Pixmap,
+        shading_obj: &Object,
+        transform: Transform,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Result<()> {
+        let shading = match shading_obj.as_dict() {
             Some(d) => d.clone(),
             None => {
-                log::debug!("Shading '{}' not found in resources", name);
+                log::debug!("shading object is not a dictionary");
                 return Ok(());
             },
         };
+        let shading_obj = Some(shading_obj.clone());
 
         let shading_type = shading
             .get("ShadingType")
@@ -3662,7 +3787,7 @@ impl PageRenderer {
                 )
             },
             _ => {
-                log::debug!("Unsupported shading type {} for '{}'", shading_type, name);
+                log::debug!("Unsupported shading type {shading_type}");
                 Ok(())
             },
         }
@@ -4098,8 +4223,10 @@ impl PageRenderer {
     /// `Some("Image")`, etc., or `None` when the lookup fails or the
     /// XObject lacks a `/Subtype`. Used by the `Do` operator dispatcher
     /// to pick the correct post-Do colour-lane modulators per ISO
-    /// 32000-1 §11.4.7 (Image XObjects paint with outer gs; Form
-    /// XObjects run their own operators with their own gs).
+    /// 32000-1 §11.4.7. Both inherit the invoking graphics state: §8.10.1
+    /// (pdf.md:15226) says a form's initial state "shall be inherited from
+    /// the graphics state that is in effect at the time Do is invoked",
+    /// with only the CTM, the /BBox clip and the q/Q bracket its own.
     fn xobject_subtype(&self, name: &str, resources: &Object, doc: &PdfDocument) -> Option<String> {
         let res_dict = resources.as_dict()?;
         let xobj_entry = res_dict.get("XObject")?;
@@ -4220,6 +4347,10 @@ impl PageRenderer {
                                         let old_cs = self.color_spaces.clone();
                                         self.load_resources(doc, form_resources)?;
 
+                                        // §8.10.1 (pdf.md:15226): the form's
+                                        // initial graphics state is inherited
+                                        // from the state in effect at `Do`.
+                                        let invoking = gs.clone();
                                         if let Err(e) = self.render_form_xobject(
                                             pixmap,
                                             &dict,
@@ -4228,6 +4359,7 @@ impl PageRenderer {
                                             doc,
                                             page_num,
                                             form_resources,
+                                            Some(&invoking),
                                         ) {
                                             log::warn!(
                                                 "Skipping malformed Form XObject '{}': {}",
@@ -4251,6 +4383,36 @@ impl PageRenderer {
         Ok(())
     }
 
+    /// The size in device pixels that an image drawn under `transform` occupies.
+    ///
+    /// An image "shall be mapped to the unit square in user space (as are all
+    /// images)" (`docs/spec/pdf.md`:23985), so its painted extent is the length of
+    /// that square's two edge vectors under the CTM. One source sample per device
+    /// pixel is the most the rasteriser can represent, which makes this the
+    /// useful decode and resample target.
+    ///
+    /// The result is additionally capped by the pixmap: an image scaled far past
+    /// the page cannot show more detail than the page can hold. Returns `None`
+    /// when the transform is degenerate or non-finite, meaning "no useful bound".
+    fn device_footprint(transform: Transform, pixmap: &Pixmap) -> Option<(u32, u32)> {
+        let edge_w = transform.sx.hypot(transform.ky).abs();
+        let edge_h = transform.kx.hypot(transform.sy).abs();
+        if !edge_w.is_finite() || !edge_h.is_finite() {
+            return None;
+        }
+
+        let fit = |edge: f32, page: u32| -> u32 {
+            let want = edge.ceil();
+            if want < 1.0 {
+                1
+            } else {
+                (want as u32).min(page.max(1))
+            }
+        };
+
+        Some((fit(edge_w, pixmap.width()), fit(edge_h, pixmap.height())))
+    }
+
     /// Render an image XObject.
     fn render_image(
         &mut self,
@@ -4264,12 +4426,22 @@ impl PageRenderer {
         mask_obj: Option<Object>,
         gs: &GraphicsState,
     ) -> Result<()> {
-        use crate::extractors::images::extract_image_from_xobject;
+        use crate::extractors::images::extract_image_from_xobject_at;
 
         // Use robust image extractor to handle various formats and color spaces
         let color_space_map = self.color_spaces.clone();
-        let pdf_image =
-            extract_image_from_xobject(Some(doc), xobject, obj_ref, Some(&color_space_map))?;
+        // Tell the extractor how large this image will actually be painted, so
+        // a format that can decode progressively (JPEG 2000) stops at the
+        // resolution level that covers it instead of decoding samples that the
+        // resampler below would immediately discard.
+        let target = Self::device_footprint(transform, pixmap);
+        let pdf_image = extract_image_from_xobject_at(
+            Some(doc),
+            xobject,
+            obj_ref,
+            Some(&color_space_map),
+            target,
+        )?;
         let dynamic_image = pdf_image.to_dynamic_image()?;
         let mut rgba_image = dynamic_image.to_rgba8();
 
@@ -4279,11 +4451,15 @@ impl PageRenderer {
             if let Some(ref_obj) = mask_ref.as_reference() {
                 if let Ok(mask_stream) = doc.load_object(ref_obj) {
                     // Try to decode the mask as an image
-                    match extract_image_from_xobject(
+                    match extract_image_from_xobject_at(
                         Some(doc),
                         &mask_stream,
                         Some(ref_obj),
                         Some(&color_space_map),
+                        // A /Mask is mapped to the same unit square as the
+                        // image it masks (pdf.md:23985), so it is painted at
+                        // the same footprint and needs no more detail.
+                        target,
                     ) {
                         Ok(mask_image) => {
                             if let Ok(mask_dyn) = mask_image.to_dynamic_image() {
@@ -4348,9 +4524,9 @@ impl PageRenderer {
                                                 .get("Filter")
                                                 .map(|f| match f {
                                                     Object::Name(n) => n == "JBIG2Decode",
-                                                    Object::Array(a) => a
-                                                        .iter()
-                                                        .any(|o| o.as_name() == Some("JBIG2Decode")),
+                                                    Object::Array(a) => a.iter().any(|o| {
+                                                        o.as_name() == Some("JBIG2Decode")
+                                                    }),
                                                     _ => false,
                                                 })
                                                 .unwrap_or(false);
@@ -4566,11 +4742,14 @@ impl PageRenderer {
         if let Some(smask_ref) = smask_obj {
             if let Ok(resolved_smask) = doc.resolve_object(&smask_ref) {
                 let smask_obj_ref = smask_ref.as_reference();
-                if let Ok(smask_image) = extract_image_from_xobject(
+                if let Ok(smask_image) = extract_image_from_xobject_at(
                     Some(doc),
                     &resolved_smask,
                     smask_obj_ref,
                     Some(&color_space_map),
+                    // As for /Mask above: an /SMask shares the base image's
+                    // unit square, so it shares its footprint.
+                    target,
                 ) {
                     if let Ok(smask_dyn) = smask_image.to_dynamic_image() {
                         let smask_gray = smask_dyn.to_luma8();
@@ -5016,6 +5195,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         parent_resources: &Object,
+        inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         self.render_form_xobject_scoped(
             pixmap,
@@ -5026,6 +5206,7 @@ impl PageRenderer {
             page_num,
             parent_resources,
             true,
+            inherited,
         )
     }
 
@@ -5052,6 +5233,7 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
         clip_to_bbox: bool,
+        inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         // A form's own /Resources /XObject may name the form itself, directly
         // or through a cycle. Guarded the same way Type 3 glyphs and soft-mask
@@ -5072,6 +5254,7 @@ impl PageRenderer {
             page_num,
             parent_resources,
             clip_to_bbox,
+            inherited,
         );
         self.form_depth -= 1;
         result
@@ -5088,6 +5271,7 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
         clip_to_bbox: bool,
+        inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         // Parse /Matrix from form dict (default: identity)
         let form_matrix = if let Some(Object::Array(arr)) = dict.get("Matrix") {
@@ -5219,6 +5403,7 @@ impl PageRenderer {
                     page_num,
                     &form_resources,
                     bbox_clip,
+                    inherited,
                 )?;
             }
 
@@ -5249,6 +5434,7 @@ impl PageRenderer {
                 page_num,
                 &form_resources,
                 bbox_clip,
+                inherited,
             )?;
         }
 
@@ -5351,14 +5537,81 @@ impl PageRenderer {
             return Ok(false);
         };
 
-        // Only tiling patterns (PatternType 1) are handled here; shading
-        // patterns (PatternType 2) are left to the caller's solid fallback.
-        if pdict
+        let pattern_type = pdict
             .get("PatternType")
             .and_then(|o| o.as_integer())
-            .unwrap_or(1)
-            != 1
-        {
+            .unwrap_or(1);
+
+        // A shading pattern paints its gradient through the shape being
+        // filled. ISO 32000-1:2008 §8.7.4.1 (`docs/spec/pdf.md`:12899-12902):
+        //
+        //   By setting a shading pattern as the current colour in the graphics
+        //   state, a PDF content stream may use it with painting operators
+        //   such as f (fill), S (stroke), Tj (show text) ... to paint a path,
+        //   character glyph, or mask with a smooth colour transition. When a
+        //   shading is used in this way, the geometry of the gradient fill is
+        //   independent of that of the object being painted.
+        //
+        // So the gradient is required, not optional: painting a solid colour
+        // instead is a wrong result, not an approximation. It was also a
+        // silently bad one — the fallback paints `fill_color_components`, and
+        // a coloured pattern is selected by `/P0 scn` with *no* operands, so
+        // there are no components and the stale fill colour is used. In a
+        // stream whose first colour operator is that `scn`, the stale colour
+        // is the initial black, and a pale gradient rendered as a black flood.
+        //
+        // Table 77 (pdf.md:12929) fixes the coordinate frame: unlike `sh`,
+        // whose coordinates are in current user space, "when a shading
+        // dictionary is used in a type 2 pattern, the coordinates are
+        // expressed in pattern space" — hence `base_transform` composed with
+        // the pattern's own matrix, not the CTM at the fill.
+        if pattern_type == 2 {
+            let Some(shading_entry) = pdict.get("Shading") else {
+                return Ok(false);
+            };
+            let shading_obj = doc.resolve_object(shading_entry)?;
+
+            let m: Vec<f32> = pdict
+                .get("Matrix")
+                .and_then(|o| o.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|o| {
+                            o.as_integer()
+                                .map(|i| i as f32)
+                                .or_else(|| o.as_real().map(|r| r as f32))
+                        })
+                        .collect()
+                })
+                .filter(|v: &Vec<f32>| v.len() == 6)
+                .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+            let pattern_matrix = Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]);
+
+            // The shape being filled becomes the clip, since the gradient's
+            // own geometry is independent of it.
+            let Some(mut mask) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) else {
+                return Ok(false);
+            };
+            guarded_mask_fill_path(&mut mask, path, fill_rule, true, path_transform);
+            if let Some(c) = clip {
+                for (mv, cv) in mask.data_mut().iter_mut().zip(c.data().iter()) {
+                    *mv = (*mv).min(*cv);
+                }
+            }
+
+            self.render_shading_object(
+                pixmap,
+                &shading_obj,
+                base_transform.pre_concat(pattern_matrix),
+                gs,
+                doc,
+                Some(&mask),
+            )?;
+            return Ok(true);
+        }
+
+        // Only tiling patterns (PatternType 1) go through the tiling path below.
+        if pattern_type != 1 {
             return Ok(false);
         }
         let paint_type = pdict
@@ -7833,6 +8086,9 @@ impl PageRenderer {
             doc,
             page_num,
             &form_resources_obj,
+            // A soft-mask group is evaluated in its own initial state
+            // (§11.6.5.2), not the state that set the /SMask.
+            None,
         );
 
         // Resolve /TR transfer function once. The audit fixture uses
@@ -8252,8 +8508,9 @@ impl PageRenderer {
                                 let fit = appearance_fit_matrix(&dict, &rect);
                                 let annot_transform = match fit {
                                     Some(a) => base_transform.pre_concat(a),
-                                    None => base_transform
-                                        .pre_translate(rect[0] as f32, rect[1] as f32),
+                                    None => {
+                                        base_transform.pre_translate(rect[0] as f32, rect[1] as f32)
+                                    },
                                 };
 
                                 let old_fonts = self.fonts.clone();
@@ -8293,6 +8550,11 @@ impl PageRenderer {
                                     // what this path needed; the clip can return
                                     // once it accounts for stroke width.
                                     false,
+                                    // An annotation appearance is not invoked
+                                    // by a `Do` inside a content stream, so
+                                    // there is no invoking state to inherit:
+                                    // §12.5.5 renders it in its own.
+                                    None,
                                 )?;
 
                                 self.fonts = old_fonts;
@@ -10131,12 +10393,7 @@ fn components_to_rgb_in_space(
         match (n, components.len()) {
             (1, 1) => Some((components[0], components[0], components[0])),
             (3, 3) => Some((components[0], components[1], components[2])),
-            (4, 4) => Some(cmyk_to_rgb(
-                components[0],
-                components[1],
-                components[2],
-                components[3],
-            )),
+            (4, 4) => Some(cmyk_to_rgb(components[0], components[1], components[2], components[3])),
             _ => None,
         }
     };
@@ -10579,9 +10836,15 @@ fn appearance_fit_matrix(
     ];
     matrix.map_points(&mut corners);
     let tx0 = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-    let tx1 = corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+    let tx1 = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::NEG_INFINITY, f32::max);
     let ty0 = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-    let ty1 = corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+    let ty1 = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::NEG_INFINITY, f32::max);
     if !(tx0.is_finite() && tx1.is_finite() && ty0.is_finite() && ty1.is_finite()) {
         return None;
     }
@@ -10596,14 +10859,7 @@ fn appearance_fit_matrix(
     if !sx.is_finite() || !sy.is_finite() {
         return None;
     }
-    Some(Transform::from_row(
-        sx,
-        0.0,
-        0.0,
-        sy,
-        rx0 - sx * tx0,
-        ry0 - sy * ty0,
-    ))
+    Some(Transform::from_row(sx, 0.0, 0.0, sy, rx0 - sx * tx0, ry0 - sy * ty0))
 }
 
 fn form_bbox_clip(

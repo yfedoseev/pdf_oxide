@@ -6922,7 +6922,9 @@ impl PdfDocument {
             while let Some((_, table)) = pending_tables.pop() {
                 flush_table(&mut text, table);
             }
-            text
+            // Close soft-hyphen wraps now the line seams exist: the span
+            // writer could not tell a mid-word wrap from a marker to keep.
+            Self::join_soft_hyphen_wraps(&text)
         };
 
         // Annotation text is already included via annotation_content_spans() in
@@ -8808,7 +8810,91 @@ impl PdfDocument {
     /// the marker cannot survive a join, and a fragment that is never joined
     /// keeps a character the page itself declares invisible.
     #[inline]
+    /// Close soft-hyphen line wraps in assembled output.
+    ///
+    /// U+00AD marks a break offered *inside* a word (ISO 32000-1:2008
+    /// §14.8.2.2.3), so wherever one survives with a letter on each side —
+    /// with only the whitespace the line assembler inserted in between — the
+    /// two halves are one word and the marker plus that whitespace go away.
+    ///
+    /// This has to happen on assembled text rather than per span: the span
+    /// writer sees `"wonder\u{AD}"` and `"ful"` as separate fragments and
+    /// cannot tell a mid-word wrap from a marker it must keep, and the space
+    /// that stands in for the line break is added later still. A soft hyphen
+    /// whose neighbours are not both letters is left alone — it is a glyph or
+    /// a misdecoded byte, not hyphenation.
+    fn join_soft_hyphen_wraps(s: &str) -> String {
+        if !s.contains('\u{00AD}') {
+            return s.to_string();
+        }
+        let mut out = String::with_capacity(s.len());
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c != '\u{00AD}' || !out.chars().next_back().is_some_and(|p| p.is_alphabetic()) {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            // Skip the whitespace standing in for the wrap: spaces and tabs,
+            // and at most one newline, so a marker at a real line end still
+            // closes but paragraph breaks are never swallowed.
+            let mut j = i + 1;
+            let mut newlines = 0;
+            while j < chars.len() {
+                match chars[j] {
+                    ' ' | '\t' | '\r' => j += 1,
+                    '\n' if newlines == 0 => {
+                        newlines += 1;
+                        j += 1;
+                    },
+                    _ => break,
+                }
+            }
+            if chars.get(j).is_some_and(|n| n.is_alphabetic()) {
+                // Drop the marker and the whitespace: the word rejoins.
+                i = j;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
     fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
+        // Close a hyphenation point that straddles two fragments.
+        //
+        // A fragment-final soft hyphen is ambiguous on its own: it is either a
+        // word split across two spans of the SAME line, where the halves must
+        // join directly ("ultrasonographi" + "cally"), or the wrap marker at a
+        // line end, which `TextPostProcessor::rejoin_hyphenated_words` needs in
+        // order to rejoin the next line without a space. The fragment cannot
+        // tell them apart, but the seam can: a line break or a space is pushed
+        // into `out` between fragments, so a soft hyphen still sitting at the
+        // end of `out` means the next fragment is directly adjacent to it.
+        //
+        // Deciding here keeps both cases right. Stripping it eagerly in the
+        // loop below instead — which is what this used to do — silently
+        // deleted the wrap marker, and a word broken across a line came back
+        // as "wonder ful".
+        if s.starts_with(char::is_alphabetic) {
+            // Look back past any spaces the assembler inserted where the file
+            // had a line break. A soft hyphen is by definition a break offered
+            // *inside* a word (§14.8.2.2.3), so a space following one is
+            // layout rather than a word boundary, and the halves still belong
+            // together. A newline is left alone: line structure still exists
+            // there, and `rejoin_hyphenated_words` decides whether the two
+            // lines are one paragraph.
+            let spaces = out.len() - out.trim_end_matches(' ').len();
+            let head = &out[..out.len() - spaces];
+            let mut back = head.chars().rev();
+            if back.next() == Some('\u{00AD}') && back.next().is_some_and(char::is_alphabetic) {
+                out.truncate(head.len() - '\u{00AD}'.len_utf8());
+            }
+        }
+
         if !s.contains('\u{00AD}') {
             out.push_str(s);
             return;
@@ -8832,13 +8918,13 @@ impl PdfDocument {
             }
             let before = chars[..i].iter().rev().find(|c| **c != '\u{00AD}');
             let after = chars[i + 1..].iter().find(|c| **c != '\u{00AD}');
-            // A letter on both sides is a word being hyphenated. So is a
-            // letter before and nothing after: that is the fragment-final wrap
-            // marker, which is the line-break case this rule exists for, and
-            // the following fragment carries the rest of the word.
+            // Only a letter on BOTH sides is a hyphenation point that can be
+            // resolved here. A fragment-final marker is left in place: it may
+            // be a line-wrap marker that the converter still needs, and if the
+            // next fragment turns out to be adjacent it is removed at the seam
+            // above.
             let hyphenating = match (before, after) {
                 (Some(b), Some(a)) => b.is_alphabetic() && a.is_alphabetic(),
-                (Some(b), None) => b.is_alphabetic(),
                 _ => false,
             };
             if !hyphenating {
@@ -21397,7 +21483,7 @@ impl PdfDocument {
             }
         }
 
-        Ok(markdown)
+        Ok(Self::join_soft_hyphen_wraps(&markdown))
     }
 
     /// Generate Markdown for extracted images.
@@ -21492,7 +21578,7 @@ impl PdfDocument {
             }
         }
 
-        Ok(markdown)
+        Ok(Self::join_soft_hyphen_wraps(&markdown))
     }
 
     /// Convert a page to Markdown with automatic OCR fallback for scanned pages.
@@ -21819,7 +21905,7 @@ impl PdfDocument {
             }
         }
 
-        Ok(html)
+        Ok(Self::join_soft_hyphen_wraps(&html))
     }
 
     /// Generate HTML for extracted images.
@@ -21879,7 +21965,7 @@ impl PdfDocument {
         }
 
         html.push_str("</div>\n");
-        Ok(html)
+        Ok(Self::join_soft_hyphen_wraps(&html))
     }
 
     /// Convert a page to plain text.
@@ -33201,11 +33287,84 @@ mod soft_hyphen_scope_tests {
         out
     }
 
-    /// The case the rule exists for: a word hyphenated across a line break
-    /// leaves the marker at the end of its fragment.
+    /// Appending `b` after `a`, the way the span assembler does.
+    fn strip_seam(a: &str, sep: &str, b: &str) -> String {
+        let mut out = String::new();
+        PdfDocument::push_str_without_soft_hyphens(&mut out, a);
+        out.push_str(sep);
+        PdfDocument::push_str_without_soft_hyphens(&mut out, b);
+        out
+    }
+
+    /// A fragment-final marker is **kept** when the fragment is taken alone,
+    /// because at that point it cannot be told from a line-wrap marker — and
+    /// `TextPostProcessor::rejoin_hyphenated_words` needs the wrap marker to
+    /// rejoin the next line without inserting a space.
     #[test]
-    fn a_fragment_final_marker_after_a_letter_is_removed() {
-        assert_eq!(strip("ultrasonographi\u{00AD}"), "ultrasonographi");
+    fn a_fragment_final_marker_is_kept_on_its_own() {
+        assert_eq!(strip("ultrasonographi\u{00AD}"), "ultrasonographi\u{00AD}");
+    }
+
+    /// ... and is removed once the next fragment proves it was a mid-word
+    /// split on the same line, with nothing between the two halves.
+    #[test]
+    fn a_marker_between_two_adjacent_fragments_is_removed() {
+        assert_eq!(strip_seam("ultrasonographi\u{00AD}", "", "cally"), "ultrasonographically");
+    }
+
+    /// A line break between the fragments means it was a wrap marker, so it
+    /// survives for the converter to act on.
+    #[test]
+    fn a_marker_before_a_line_break_survives_as_the_wrap_marker() {
+        assert_eq!(strip_seam("wonder\u{00AD}", "\n", "ful"), "wonder\u{00AD}\nful");
+    }
+
+    /// A space between the fragments is layout, not a word boundary: the
+    /// assembler puts one where the file had a line break, and a soft hyphen
+    /// only ever marks a break *inside* a word. So the halves still join.
+    #[test]
+    fn a_marker_before_a_space_still_joins_the_word() {
+        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonderful");
+    }
+
+    /// But a soft hyphen that does not follow a letter is not a hyphenation
+    /// point at all — it is a glyph or a misdecoded byte — and nothing is
+    /// joined across it.
+    #[test]
+    fn a_marker_not_preceded_by_a_letter_joins_nothing() {
+        assert_eq!(strip_seam("log \u{00AD}", " ", "p"), "log \u{00AD} p");
+    }
+
+    fn join(s: &str) -> String {
+        PdfDocument::join_soft_hyphen_wraps(s)
+    }
+
+    /// The wrap this whole mechanism exists for, on assembled text: the
+    /// marker and the space standing in for the line break both go.
+    #[test]
+    fn an_assembled_wrap_rejoins_without_a_space() {
+        assert_eq!(join("a truly wonder\u{00AD} ful example"), "a truly wonderful example");
+        assert_eq!(join("modali\u{00AD}\nties"), "modalities");
+    }
+
+    /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
+    /// content and must survive.
+    #[test]
+    fn a_mojibake_byte_is_not_treated_as_hyphenation() {
+        assert_eq!(join("\u{00A1}\u{00AD} \u{00A1}\u{00AD}"), "\u{00A1}\u{00AD} \u{00A1}\u{00AD}");
+    }
+
+    /// A font that maps U+00AD to a delimiter glyph leaves it between spaces,
+    /// so it is not hyphenation either.
+    #[test]
+    fn a_delimiter_glyph_is_not_treated_as_hyphenation() {
+        assert_eq!(join("log \u{00AD} p \u{00AE}"), "log \u{00AD} p \u{00AE}");
+    }
+
+    /// A paragraph break is never swallowed, even after a marker.
+    #[test]
+    fn a_blank_line_after_a_marker_is_preserved() {
+        assert_eq!(join("word\u{00AD}\n\nNext"), "word\u{00AD}\n\nNext");
     }
 
     /// And between two letters within one fragment.
