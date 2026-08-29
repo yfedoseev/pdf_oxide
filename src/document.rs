@@ -8852,7 +8852,20 @@ impl PdfDocument {
                     _ => break,
                 }
             }
-            if chars.get(j).is_some_and(|n| n.is_alphabetic()) {
+            // Whether the halves belong together depends on what separates
+            // them. Adjacent fragments are contiguous glyphs on one line, so
+            // they are one word whatever the case. Once whitespace intervenes
+            // it stands in for a line wrap, and only a **lowercase**
+            // continuation is the rest of the broken word — an uppercase one
+            // starts a new sentence, a heading, or the next column of a scan.
+            // `TextPostProcessor::rejoin_hyphenated_words` has always drawn
+            // the line here for the same reason; dropping the test glued
+            // "pre" to "The" across a multi-column scan.
+            let adjacent = j == i + 1;
+            let continues = chars
+                .get(j)
+                .is_some_and(|n| n.is_alphabetic() && (adjacent || n.is_lowercase()));
+            if continues {
                 // Drop the marker and the whitespace: the word rejoins.
                 i = j;
             } else {
@@ -8880,6 +8893,9 @@ impl PdfDocument {
         // deleted the wrap marker, and a word broken across a line came back
         // as "wonder ful".
         if s.starts_with(char::is_alphabetic) {
+            // Same rule as `join_soft_hyphen_wraps` below: once whitespace
+            // separates the halves it stands in for a line wrap, and only a
+            // lowercase continuation is the rest of the broken word.
             // Look back past any spaces the assembler inserted where the file
             // had a line break. A soft hyphen is by definition a break offered
             // *inside* a word (§14.8.2.2.3), so a space following one is
@@ -8889,8 +8905,12 @@ impl PdfDocument {
             // lines are one paragraph.
             let spaces = out.len() - out.trim_end_matches(' ').len();
             let head = &out[..out.len() - spaces];
+            let continues = spaces == 0 || s.starts_with(char::is_lowercase);
             let mut back = head.chars().rev();
-            if back.next() == Some('\u{00AD}') && back.next().is_some_and(char::is_alphabetic) {
+            if continues
+                && back.next() == Some('\u{00AD}')
+                && back.next().is_some_and(char::is_alphabetic)
+            {
                 out.truncate(head.len() - '\u{00AD}'.len_utf8());
             }
         }
@@ -33365,6 +33385,33 @@ mod soft_hyphen_scope_tests {
     #[test]
     fn a_blank_line_after_a_marker_is_preserved() {
         assert_eq!(join("word\u{00AD}\n\nNext"), "word\u{00AD}\n\nNext");
+    }
+
+    /// An **uppercase** continuation after the wrap is not the rest of the
+    /// word — it is a new sentence, a heading, or the next column of a scan.
+    /// Gluing them produced "preThe" across a multi-column newspaper scan.
+    #[test]
+    fn an_uppercase_continuation_across_a_wrap_is_not_joined() {
+        assert_eq!(
+            join("The bill to pre\u{00AD} The clerk of laid bill"),
+            "The bill to pre\u{00AD} The clerk of laid bill"
+        );
+        assert_eq!(join("word\u{00AD}\nNext"), "word\u{00AD}\nNext");
+    }
+
+    /// ... but adjacent fragments are contiguous glyphs on one line, so they
+    /// are one word whatever the case follows.
+    #[test]
+    fn adjacent_fragments_join_regardless_of_case() {
+        assert_eq!(join("Mac\u{00AD}Donald"), "MacDonald");
+        assert_eq!(strip_seam("Mac\u{00AD}", "", "Donald"), "MacDonald");
+    }
+
+    /// The seam path draws the same line as the assembled-text path.
+    #[test]
+    fn the_seam_also_refuses_an_uppercase_continuation() {
+        assert_eq!(strip_seam("pre\u{00AD}", " ", "The"), "pre\u{00AD} The");
+        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonderful");
     }
 
     /// And between two letters within one fragment.
