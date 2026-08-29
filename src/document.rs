@@ -6811,6 +6811,39 @@ impl PdfDocument {
                             // -1.75 pt and -12.75 pt sit alongside
                             // delta_x values of 56 pt and 78 pt.
                             text.push(' ');
+                        } else if gap < -fs * 3.0
+                            && delta_x.abs() <= fs * 0.5
+                            && !hangul_midword_wrap
+                            && !prev.rtl_draw_logical
+                            && !span.rtl_draw_logical
+                            && !text.ends_with(' ')
+                            && !text.ends_with('\n')
+                        {
+                            // Two runs drawn over the SAME horizontal extent
+                            // from the SAME origin — an overlaid pair of chart
+                            // legend labels, or a stamped duplicate. The
+                            // current span restarts within half an em of the
+                            // previous span's ORIGIN while overlapping its ink
+                            // by more than three em: that is neither kerning
+                            // nor a wrap, it is a second line of text drawn in
+                            // the same place, and §9.4.3 makes it two runs.
+                            //
+                            // Nothing above this point claims the shape, so
+                            // the pair concatenated. It only became reachable
+                            // when the leaf sort stopped comparing baselines
+                            // with an exact float equality: two labels whose
+                            // tops differ by 8.6e-4 pt used to fall into
+                            // separate groups and keep draw order, and now
+                            // interleave by x.
+                            //
+                            // A superscript or subscript always advances
+                            // forward, so `gap < -3 em` excludes it outright;
+                            // the widest kerning overlap this file admits
+                            // anywhere is `gap > -fs`, three times narrower; a
+                            // fraction denominator sits ~2 em back, failing
+                            // the half-em origin test; and CJK glyphs advance
+                            // an em at a time and never overlap backwards.
+                            text.push('\n');
                         }
                     } else if y_diff >= prev.font_size.max(span.font_size).max(1.0) * 0.8
                         && gap < FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
