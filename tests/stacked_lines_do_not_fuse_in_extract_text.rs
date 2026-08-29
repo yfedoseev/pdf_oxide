@@ -110,6 +110,21 @@ fn a_superscript_stays_attached_to_its_word() {
     );
 }
 
+/// A footnote marker raised over a same-size comma. Measured from the page
+/// that exposed the over-split: the comma and the marker are both 7.04 pt and
+/// the marker sits 5.78 pt higher — 0.82 em, which an earlier 0.8 em bound
+/// treated as a line advance. It is a decoration of the line, not a new one.
+#[test]
+fn a_footnote_marker_over_a_small_comma_stays_on_its_line() {
+    let pdf = two_run_page((",", 318.05, 550.26, 7.04), ("*", 320.20, 556.04, 7.04));
+    let text = text_of(&pdf);
+    assert!(
+        !text.contains(",\n*") && !text.trim_end().ends_with(','),
+        "a marker raised 0.82 em over its comma decorates that line and must \
+         not be split onto its own; got {text:?}"
+    );
+}
+
 /// Two runs genuinely on one baseline, adjacent, are one word and must stay
 /// joined — the fix must not separate on horizontal adjacency alone.
 #[test]

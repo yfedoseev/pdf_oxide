@@ -6845,7 +6845,7 @@ impl PdfDocument {
                             // an em at a time and never overlap backwards.
                             text.push('\n');
                         }
-                    } else if y_diff >= prev.font_size.max(span.font_size).max(1.0) * 0.8
+                    } else if y_diff >= prev.font_size.max(span.font_size).max(1.0)
                         && gap < FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
                     {
                         // Stacked lines, not a kerned run.
@@ -6861,10 +6861,17 @@ impl PdfDocument {
                         // no arm here separates them: "Latency" over
                         // "Efficiency" came out as "LatencyEfficiency".
                         //
-                        // 0.8 em is below any real line advance (>= 1.0 em) and
-                        // well above a superscript or subscript shift (~0.3 em),
-                        // which must stay on the line it decorates. The gap bound
-                        // leaves the wide-gap column boundary below untouched.
+                        // One em is the bound: a real line advance is at least
+                        // that (normal leading is ~1.2 em) and a superscript
+                        // shift is less, so the two separate cleanly. Measured —
+                        // a footnote marker raised over a 7.04 pt comma sits at
+                        // 0.82 em, two stacked 7.24 pt labels at 1.10 em. An
+                        // earlier 0.8 bound fell between them and split the
+                        // marker onto its own line: the marker's own run is
+                        // small, so max_fs is small and the shift is a much
+                        // larger fraction of it than the ~0.3 em a superscript
+                        // costs against body text. The gap bound leaves the
+                        // wide-gap column boundary below untouched.
                         if !text.ends_with('\n') {
                             text.push('\n');
                         }

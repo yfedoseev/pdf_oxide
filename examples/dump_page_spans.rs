@@ -28,8 +28,8 @@ fn main() {
             }
         }
         println!(
-            "x={:7.2} y={:7.2} w={:7.2} h={:6.2}  {:?}",
-            s.bbox.x, s.bbox.y, s.bbox.width, s.bbox.height, s.text
+            "x={:7.2} y={:7.2} w={:7.2} h={:6.2} fs={:6.2}  {:?}",
+            s.bbox.x, s.bbox.y, s.bbox.width, s.bbox.height, s.font_size, s.text
         );
     }
 }
