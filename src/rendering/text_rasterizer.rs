@@ -1443,9 +1443,17 @@ impl TextRasterizer {
                                     let px =
                                         (x_cursor + x_offset + paint_origin_dx) * h_scale + rise_x;
                                     let py = y_cursor + y_offset + paint_origin_dy + rise_y;
+                                    // No y reflection here. ISO 32000-1:2008 9.4.4 makes
+                                    // the rendering matrix Tfs/Th/Trise x Tm x CTM the whole
+                                    // glyph-space-to-device transform, and the page's single
+                                    // y-flip already lives in page_base_transform. The primary
+                                    // glyph path above and the CID and substituted-CJK paths
+                                    // all compose this same `combined_base` with a positive
+                                    // scale; this fallback branch was the only place that
+                                    // negated it, so a run routed here came out mirrored.
                                     let cjk_transform = combined_base
                                         .pre_translate(px, py)
-                                        .pre_scale(cjk_scale, -cjk_scale);
+                                        .pre_scale(cjk_scale, cjk_scale);
                                     guarded_fill_path(
                                         pixmap,
                                         &cjk_path,

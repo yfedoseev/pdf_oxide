@@ -1376,6 +1376,33 @@ impl PageRenderer {
                                                 // correct.
                                                 handled = true;
                                             },
+                                            "Pattern" if arr.len() > 1 => {
+                                                // Uncoloured tiling pattern (PaintType 2). ISO
+                                                // 32000-1:2008 8.7.3.3: the pattern cell has no
+                                                // colour of its own, and the operands preceding
+                                                // the pattern name are components in the
+                                                // *underlying* colour space, which is the second
+                                                // element of the [/Pattern base] array. Table 74's
+                                                // scn row says the same.
+                                                //
+                                                // Without this arm the array fell through to the
+                                                // grey fallback below, which reads components[0]
+                                                // as a grey level: `0 0 1 /P scn` — pure blue —
+                                                // became (0,0,0) and the stencil poured black,
+                                                // rendering as grey once the cell's own coverage
+                                                // was applied. `arr.len() > 1` leaves the bare
+                                                // /Pattern and [/Pattern] forms to the existing
+                                                // behaviour, since they name no underlying space.
+                                                let base = doc
+                                                    .resolve_object(&arr[1])
+                                                    .unwrap_or_else(|_| arr[1].clone());
+                                                if let Some(rgb) =
+                                                    components_to_rgb_in_space(&base, components, doc)
+                                                {
+                                                    gs.fill_color_rgb = rgb;
+                                                    handled = true;
+                                                }
+                                            },
                                             _ => {},
                                         }
                                     }
@@ -2263,6 +2290,8 @@ impl PageRenderer {
                     if excluded_layer_depth == 0 {
                         if let Some(path) = current_path.clone().finish() {
                             pending_clip = Some((path, tiny_skia::FillRule::Winding));
+                        } else if let Some(empty) = degenerate_clip_path(&current_path) {
+                            pending_clip = Some((empty, tiny_skia::FillRule::Winding));
                         }
                     }
                 },
@@ -2270,6 +2299,8 @@ impl PageRenderer {
                     if excluded_layer_depth == 0 {
                         if let Some(path) = current_path.clone().finish() {
                             pending_clip = Some((path, tiny_skia::FillRule::EvenOdd));
+                        } else if let Some(empty) = degenerate_clip_path(&current_path) {
+                            pending_clip = Some((empty, tiny_skia::FillRule::EvenOdd));
                         }
                     }
                 },
@@ -9795,6 +9826,33 @@ fn resize_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Op
     Some(dst_img.into_vec())
 }
 
+/// The clip a current path made of a single `m` describes.
+///
+/// ISO 32000-1:2008 8.5.3.3.1: "A single-point open subpath (specified by a
+/// trailing m operator) shall produce no output", and 8.5.4 sets the clip to
+/// the *intersection* of the current clip with the new path — an intersection
+/// with an empty region is empty. tiny-skia's `PathBuilder::finish` rejects a
+/// lone move-to and returns `None`, and reading that as "no clip was asked
+/// for" leaves the previous, far larger clip in force. A following unbounded
+/// `sh` then paints its gradient across that whole region (Table 77), which
+/// on one scanned page flooded the entire sheet with DeviceN black.
+///
+/// Returns an equivalent two-verb zero-area path, which the rasteriser
+/// accepts and reduces to an all-zero mask. Only the lone-move-to case is
+/// converted: `finish` also returns `None` for a non-finite bound, where an
+/// arithmetic limit rather than the file is what failed, and resolving that
+/// must never paint less than the file asked for.
+fn degenerate_clip_path(builder: &PathBuilder) -> Option<tiny_skia::Path> {
+    if builder.len() != 1 {
+        return None;
+    }
+    let p = builder.last_point()?;
+    let mut pb = PathBuilder::new();
+    pb.move_to(p.x, p.y);
+    pb.line_to(p.x, p.y);
+    pb.finish()
+}
+
 /// Encode a tiny_skia `Pixmap` to PNG.
 ///
 /// Uses fdeflate (ultra-fast) compression via the `image` crate instead of
@@ -10032,6 +10090,63 @@ fn pixmap_paint_for_image_blit(
 /// `crate::color::rgb_to_cmyk`, which keeps the overprint round-trip consistent
 /// within the process gamut. A real ICC/OutputIntent CMM still takes precedence
 /// when a profile is available.
+/// Interpret `components` as a colour in `space`, as RGB in 0..1.
+///
+/// Used for the operands an uncoloured tiling pattern's `scn` supplies in the
+/// pattern's underlying colour space (ISO 32000-1:2008 8.7.3.3, Table 74).
+/// Device spaces are decided by name; an ICCBased space by its `/N`, whose
+/// value the spec ties to the number of components (8.6.5.5, Table 66); the
+/// CIE-based spaces by their component count, which is all this needs since
+/// their conversion is approximated the same way elsewhere in this file.
+///
+/// Returns `None` when the space is unrecognised or the operand count does not
+/// match it, so the caller can leave the existing fallback in charge rather
+/// than paint a colour derived from a guess.
+fn components_to_rgb_in_space(
+    space: &Object,
+    components: &[f32],
+    doc: &PdfDocument,
+) -> Option<(f32, f32, f32)> {
+    let n_to_rgb = |n: usize| -> Option<(f32, f32, f32)> {
+        match (n, components.len()) {
+            (1, 1) => Some((components[0], components[0], components[0])),
+            (3, 3) => Some((components[0], components[1], components[2])),
+            (4, 4) => Some(cmyk_to_rgb(
+                components[0],
+                components[1],
+                components[2],
+                components[3],
+            )),
+            _ => None,
+        }
+    };
+    match space {
+        Object::Name(n) => match n.as_str() {
+            "DeviceGray" | "G" | "CalGray" => n_to_rgb(1),
+            "DeviceRGB" | "RGB" | "CalRGB" | "Lab" => n_to_rgb(3),
+            "DeviceCMYK" | "CMYK" => n_to_rgb(4),
+            _ => None,
+        },
+        Object::Array(a) => {
+            let tag = a.first().and_then(|o| o.as_name())?;
+            match tag {
+                "CalGray" => n_to_rgb(1),
+                "CalRGB" | "Lab" => n_to_rgb(3),
+                "ICCBased" => {
+                    let stream = doc.resolve_object(a.get(1)?).ok()?;
+                    let n = stream
+                        .as_dict()
+                        .and_then(|d| d.get("N"))
+                        .and_then(|o| o.as_integer())? as usize;
+                    n_to_rgb(n)
+                },
+                _ => None,
+            }
+        },
+        _ => None,
+    }
+}
+
 fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     crate::color::cmyk_to_rgb(c, m, y, k)
 }
