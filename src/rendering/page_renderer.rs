@@ -1635,7 +1635,11 @@ impl PageRenderer {
                 },
 
                 // Path painting — suppressed when inside an excluded OCG layer
-                Operator::Stroke => {
+                Operator::Stroke | Operator::CloseAndStroke => {
+                    // `s` closes the subpath first (Table 60).
+                    if matches!(op, Operator::CloseAndStroke) {
+                        current_path.close();
+                    }
                     if excluded_layer_depth == 0 {
                         apply_pending_clip(
                             &mut pending_clip,

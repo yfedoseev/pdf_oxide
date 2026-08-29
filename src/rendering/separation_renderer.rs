@@ -1708,7 +1708,11 @@ fn execute_separation_operators(
                 current_path.close();
             },
 
-            Operator::Stroke => {
+            Operator::Stroke | Operator::CloseAndStroke => {
+                // `s` closes the subpath first (Table 60).
+                if matches!(op, Operator::CloseAndStroke) {
+                    current_path.close();
+                }
                 apply_separation_clip(
                     &mut pending_clip,
                     &mut clip_stack,

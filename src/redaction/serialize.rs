@@ -145,6 +145,7 @@ pub(crate) fn serialize_operator(output: &mut Vec<u8>, op: &Operator) {
 
         // Path painting
         Operator::Stroke => output.extend_from_slice(b"S\n"),
+        Operator::CloseAndStroke => output.extend_from_slice(b"s\n"),
         Operator::Fill => output.extend_from_slice(b"f\n"),
         Operator::FillEvenOdd => output.extend_from_slice(b"f*\n"),
         Operator::CloseFillStroke => output.extend_from_slice(b"b\n"),

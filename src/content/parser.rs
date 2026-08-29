@@ -2264,6 +2264,14 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
             }
         },
         "S" => Operator::Stroke,
+        // ISO 32000-1:2008 Table 60 (pdf.md:9532): `s` is "the same effect as
+        // the sequence h S". `parse_content_stream_paths_only` decomposes it,
+        // but this table — which the streaming parser and therefore annotation
+        // appearance streams go through — had no entry at all, so the operator
+        // was dropped and the path never stroked. Widget borders are commonly
+        // drawn exactly this way (`0 G 0.5 0.5 149 21 re s`), which is why
+        // AcroForm field borders were missing across the corpus.
+        "s" => Operator::CloseAndStroke,
         "f" | "F" => Operator::Fill, // "F" is obsolete equivalent of "f" (nonzero winding fill)
         "f*" => Operator::FillEvenOdd,
         "b" => Operator::CloseFillStroke,
