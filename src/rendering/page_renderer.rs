@@ -5657,6 +5657,33 @@ impl PageRenderer {
                         .flatten(),
                     caller_clip,
                 );
+                // A transparency group does NOT inherit the alpha constant or
+                // the blend mode. Table 58 says of each, in the same words:
+                // "A conforming reader shall implicitly reset this parameter to
+                // its initial value at the beginning of execution of a
+                // transparency group XObject" — alpha constant at
+                // `docs/spec/pdf.md`:8805 (initial value 1.0), blend mode just
+                // above it (initial value Normal).
+                //
+                // The reason is the same one that already excludes the soft
+                // mask from the seed: they apply to the group's *result* when
+                // it is composited into its parent (§11.6.6), not to each
+                // painting operation inside it. Inheriting them applied the
+                // value twice — a group drawn under `/ca 0.5` had every fill
+                // inside it painted at half alpha and was then composited at
+                // half alpha again, so it came out lighter than any reference
+                // renderer draws it.
+                //
+                // A plain (non-group) form is different and keeps inheriting
+                // both: §8.10.1 gives it the invoking state, and there is no
+                // separate composite step to apply them at.
+                let group_seed = inherited.map(|parent| {
+                    let mut g = parent.clone();
+                    g.fill_alpha = 1.0;
+                    g.stroke_alpha = 1.0;
+                    g.blend_mode = "Normal".to_string();
+                    g
+                });
                 self.execute_operators_clipped(
                     &mut group_pixmap,
                     combined_transform,
@@ -5665,7 +5692,7 @@ impl PageRenderer {
                     page_num,
                     &form_resources,
                     bbox_clip,
-                    inherited,
+                    group_seed.as_ref(),
                 )?;
             }
 
