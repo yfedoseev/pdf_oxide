@@ -8883,10 +8883,28 @@ impl PdfDocument {
             // `TextPostProcessor::rejoin_hyphenated_words` has always drawn
             // the line here for the same reason; dropping the test glued
             // "pre" to "The" across a multi-column scan.
+            // Only fragments that are genuinely contiguous. Once any
+            // whitespace intervenes, whether the halves belong together is a
+            // question about the page's geometry — is the continuation the next
+            // line of the *same column*? — and that information is gone by the
+            // time this runs on assembled text.
+            //
+            // Guessing from the characters alone is not good enough. A
+            // lowercase continuation was the guess, and on a re-ordered scan
+            // the fragment that follows a marker is lowercase but unrelated:
+            // one page gained `conthe`, `conand`, `rewas`, `locomoshe`,
+            // `sesper`, `Durper` and `introalone`, none of which it contains.
+            // Length cannot separate the cases either — the bad joins came from
+            // fragments of two to seven characters, and a legitimate wrap
+            // ("modali-" + "ties") is six.
+            //
+            // v0.3.77 did not close these, and neither does MuPDF, pdfium,
+            // poppler, pypdf or pdfminer: on the document above the previous
+            // release agreed with pymupdf and pypdf exactly, and closing the
+            // wrap moved us away from all three. So the conservative reading is
+            // also the one the panel corroborates.
             let adjacent = j == i + 1;
-            let continues = chars
-                .get(j)
-                .is_some_and(|n| n.is_alphabetic() && (adjacent || n.is_lowercase()));
+            let continues = adjacent && chars.get(j).is_some_and(|n| n.is_alphabetic());
             if continues {
                 // Drop the marker and the whitespace: the word rejoins.
                 i = j;
@@ -33428,12 +33446,34 @@ mod soft_hyphen_scope_tests {
         PdfDocument::join_soft_hyphen_wraps(s)
     }
 
-    /// The wrap this whole mechanism exists for, on assembled text: the
-    /// marker and the space standing in for the line break both go.
+    /// A marker separated from its continuation by whitespace is **kept**, and
+    /// so is the whitespace.
+    ///
+    /// This pass used to close such a wrap on a lowercase continuation. That
+    /// guess is wrong on a re-ordered page, where the fragment following a
+    /// marker is lowercase but unrelated, and it invented `conthe`, `rewas`
+    /// and `locomoshe` on a scrambled scan. Whether the halves belong together
+    /// is a question about column geometry, which is gone by the time the text
+    /// is assembled — so this pass no longer guesses.
+    ///
+    /// v0.3.77 did not close these either, and on the document that exposed it
+    /// the previous release agreed with pymupdf and pypdf **exactly** while
+    /// closing the wrap moved us away from poppler, pymupdf and pypdf at once.
     #[test]
-    fn an_assembled_wrap_rejoins_without_a_space() {
-        assert_eq!(join("a truly wonder\u{00AD} ful example"), "a truly wonderful example");
-        assert_eq!(join("modali\u{00AD}\nties"), "modalities");
+    fn a_wrap_separated_by_whitespace_is_left_alone() {
+        assert_eq!(
+            join("a truly wonder\u{00AD} ful example"),
+            "a truly wonder\u{00AD} ful example"
+        );
+        assert_eq!(join("modali\u{00AD}\nties"), "modali\u{00AD}\nties");
+    }
+
+    /// Contiguous fragments still join: with nothing between them the two are
+    /// glyphs of one word and the marker is its hyphenation point. This is the
+    /// case the seam handles and the one that stays closed.
+    #[test]
+    fn contiguous_fragments_still_join() {
+        assert_eq!(join("ultrasonographi\u{00AD}cally"), "ultrasonographically");
     }
 
     /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
