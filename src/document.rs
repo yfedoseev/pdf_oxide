@@ -8927,7 +8927,13 @@ impl PdfDocument {
             // lines are one paragraph.
             let spaces = out.len() - out.trim_end_matches(' ').len();
             let head = &out[..out.len() - spaces];
-            let continues = spaces == 0 || s.starts_with(char::is_lowercase);
+            // Only fragments with NOTHING between them. A space means the
+            // assembler decided these spans were separate runs, and on a
+            // multi-column scan the run after a column-ending wrap belongs to
+            // another column: `prin<shy>` + `from` is textually identical to
+            // `wonder<shy>` + `ful`, so text alone cannot tell them apart and
+            // the geometry-bearing caller must decide.
+            let continues = spaces == 0;
             let mut back = head.chars().rev();
             if continues
                 && back.next() == Some('\u{00AD}')
@@ -33361,12 +33367,22 @@ mod soft_hyphen_scope_tests {
         assert_eq!(strip_seam("wonder\u{00AD}", "\n", "ful"), "wonder\u{00AD}\nful");
     }
 
-    /// A space between the fragments is layout, not a word boundary: the
-    /// assembler puts one where the file had a line break, and a soft hyphen
-    /// only ever marks a break *inside* a word. So the halves still join.
+    /// At the seam, only fragments with **nothing** between them are joined.
+    ///
+    /// A space means the assembler decided these were separate runs, and it
+    /// decided that from the span rectangles. `prin<shy>` + `from` on a
+    /// multi-column scan is textually identical to `wonder<shy>` + `ful` on a
+    /// wrapped line, so this function — which sees only text — cannot tell
+    /// them apart and must not guess. Closing the wrap across a space fused
+    /// words from different columns and cost 464 words against poppler on one
+    /// newspaper.
+    ///
+    /// The genuine wrap is still closed, one level up, by
+    /// `join_soft_hyphen_wraps` on assembled text.
     #[test]
-    fn a_marker_before_a_space_still_joins_the_word() {
-        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonderful");
+    fn the_seam_joins_only_directly_adjacent_fragments() {
+        assert_eq!(strip_seam("wonder\u{00AD}", "", "ful"), "wonderful");
+        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonder\u{00AD} ful");
     }
 
     /// But a soft hyphen that does not follow a letter is not a hyphenation
@@ -33429,11 +33445,25 @@ mod soft_hyphen_scope_tests {
         assert_eq!(strip_seam("Mac\u{00AD}", "", "Donald"), "MacDonald");
     }
 
-    /// The seam path draws the same line as the assembled-text path.
+    /// ... so an uppercase continuation across a space is refused, while an
+    /// adjacent one joins on the same grounds as `Mac` + `Donald`: with
+    /// nothing between them the two fragments are contiguous glyphs, and the
+    /// marker between contiguous glyphs is a hyphenation point whatever case
+    /// follows.
     #[test]
-    fn the_seam_also_refuses_an_uppercase_continuation() {
+    fn the_seam_refuses_an_uppercase_continuation_across_a_space() {
         assert_eq!(strip_seam("pre\u{00AD}", " ", "The"), "pre\u{00AD} The");
-        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonderful");
+        assert_eq!(strip_seam("pre\u{00AD}", "", "The"), "preThe");
+    }
+
+    /// The column-boundary case this restriction exists for: a wrap that ends
+    /// a column, followed by a fragment from the next column.
+    #[test]
+    fn a_column_ending_wrap_does_not_swallow_the_next_column() {
+        assert_eq!(
+            strip_seam("the prin\u{00AD}", " ", "from the icene"),
+            "the prin\u{00AD} from the icene"
+        );
     }
 
     /// And between two letters within one fragment.
