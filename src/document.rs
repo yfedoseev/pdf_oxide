@@ -1026,6 +1026,24 @@ impl ReadingFrame {
     }
 }
 
+/// RAII borrow of the thread-local warning sink on behalf of one document.
+///
+/// See [`PdfDocument::sink_scope`] for why this exists.
+pub(crate) struct SinkScope<'a> {
+    doc: &'a PdfDocument,
+    stashed: Vec<crate::extractors::warnings::Warning>,
+}
+
+impl Drop for SinkScope<'_> {
+    fn drop(&mut self) {
+        let mine = crate::extractors::warnings::drain_global_warnings();
+        if !mine.is_empty() {
+            self.doc.warning_sink.extend(mine);
+        }
+        crate::extractors::warnings::restore_global_warnings(std::mem::take(&mut self.stashed));
+    }
+}
+
 impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
@@ -5615,6 +5633,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         let base_spans = self.extract_spans(page_index)?;
         // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3 vertical writing mode):
         // glyphs run top-to-bottom in columns that progress right-to-left, so
@@ -13456,6 +13478,27 @@ impl PdfDocument {
     /// (which returns the form-flattening side-effect log, a
     /// `&[String]` — different feature). Both the Rust and Python
     /// (`PyDocument`) surfaces now agree on `structured_warnings`.
+    /// Borrow this thread's free-function warning sink for the duration of one
+    /// operation on this document.
+    ///
+    /// Five diagnostic producers hold no `PdfDocument` — the stream parser, the
+    /// operator-cap notice and the rasterizer's dropped-glyph report among them
+    /// — so they write to a thread-local sink instead. That sink is keyed by
+    /// thread, not by document, and the drain is first-caller-wins, so two
+    /// documents read in sequence on one thread took each other's diagnostics.
+    ///
+    /// On entry the guard sets aside whatever was already pending (it belongs
+    /// to somebody else); on drop it absorbs what this operation raised into
+    /// this document's own sink and puts the other document's entries back
+    /// exactly as they were. Nesting is safe: each level stashes and restores
+    /// its own slice.
+    fn sink_scope(&self) -> SinkScope<'_> {
+        SinkScope {
+            doc: self,
+            stashed: crate::extractors::warnings::drain_global_warnings(),
+        }
+    }
+
     pub fn structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
         let global = crate::extractors::warnings::drain_global_warnings();
         if !global.is_empty() {
@@ -21162,6 +21205,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         self.to_markdown_inner(page_index, options, &[])
     }
 
@@ -21817,6 +21864,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         self.to_html_inner(page_index, options, &[])
     }
 
@@ -22232,6 +22283,10 @@ impl PdfDocument {
         &self,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty markdown");
             return Ok(String::new());
@@ -22436,6 +22491,10 @@ impl PdfDocument {
     /// ```
     #[allow(clippy::wrong_self_convention)] // Needs mutable access for caching
     pub fn to_html_all(&self, options: &crate::converters::ConversionOptions) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         use std::fmt::Write as _;
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty HTML");
