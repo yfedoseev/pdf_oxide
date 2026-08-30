@@ -1645,11 +1645,12 @@ impl XYCutStrategy {
         // cut that would shred a table (the recursion then falls back to a row
         // cut and reads the table row-major), never adds or reorders anything.
         //
-        // `core_right` (left edge + non-whitespace-char count × ~0.5 em) is
-        // used instead of `bbox.right` so trailing-whitespace / advance-width
-        // bbox inflation on a real left column's last word is not mistaken for
-        // a glyph crossing the gutter. `overlap_tol` (~ one body em) lets a
-        // single straddling glyph slip past.
+        // `core_right` (left edge + char count × ~0.5 em, capped at
+        // `bbox.right`) is used instead of `bbox.right` alone so
+        // trailing-whitespace / advance-width bbox inflation on a real left
+        // column's last word is not mistaken for a glyph crossing the gutter.
+        // `overlap_tol` (~ one body em) lets a single straddling glyph slip
+        // past.
         let mut right_x_max = f32::MIN;
         let mut max_font = 0.0f32;
         for &i in &right {
@@ -1661,9 +1662,20 @@ impl XYCutStrategy {
             .iter()
             .filter(|&&i| {
                 let s = &all_spans[i];
-                let nonws = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+                // Count EVERY character, not just the non-whitespace ones. An
+                // inter-word space consumes an advance exactly as a glyph does,
+                // so excluding spaces under-measures justified prose by about a
+                // ninth of its width — enough that a full-measure body line
+                // reaching the right margin scored short of it and was not
+                // counted. Clamping to `bbox.right()` keeps the estimate from
+                // over-reaching instead: the result is never wider than the ink
+                // actually is, which is what the trailing-whitespace concern
+                // above is really about.
+                let chars = s.text.chars().count().max(1) as f32;
                 let approx_char_width = (s.font_size * 0.45).max(2.5);
-                s.bbox.left() + nonws * approx_char_width >= right_x_max - overlap_tol
+                let core_right =
+                    (s.bbox.left() + chars * approx_char_width).min(s.bbox.right());
+                core_right >= right_x_max - overlap_tol
             })
             .count();
         if full_width_left_rows >= 3 {
@@ -2327,6 +2339,85 @@ mod tests {
         let texts: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
         // First output must be from y=400 (header), not y=180 (body bottom).
         assert!(texts[0].contains("HEADER"), "expected HEADER first, got sequence {:?}", texts);
+    }
+
+    /// Build the span set that exposes the full-measure-line guard.
+    ///
+    /// The region runs x 72..523.28 (451.28 pt wide). `include_body` adds
+    /// eleven justified body lines that span the whole measure; the short
+    /// fragments are present either way and are what create the density
+    /// valley, since the projection discards anything wider than 55% of the
+    /// region — which on a single-column page is every real body line.
+    fn full_measure_page(include_body: bool) -> Vec<TextSpan> {
+        const LEFT: f32 = 72.0;
+        const RIGHT: f32 = 523.28;
+        const FS: f32 = 10.9;
+        let mut spans = Vec::new();
+
+        if include_body {
+            // "word " × 18 + "end" = 93 characters, 18 of them spaces.
+            // At 0.45 em the full count reaches the right margin
+            // (72 + 93 × 4.905 = 528 pt, capped at the bbox) while the
+            // non-whitespace count alone reaches only 440 pt — short of the
+            // 512.38 pt bar. That difference is the whole defect.
+            let prose = format!("{}end", "word ".repeat(18));
+            let mut y = 600.0;
+            for _ in 0..11 {
+                spans.push(make_span_text(LEFT, y, RIGHT - LEFT, FS, &prose, FS));
+                y -= 14.0;
+            }
+        }
+
+        // Two clusters of short fragments with a 108 pt channel between them
+        // at x 222..330. This is the relative density dip the valley test
+        // accepts; it is not an empty corridor on the real page either.
+        let mut y = 440.0;
+        for _ in 0..6 {
+            spans.push(make_span_text(LEFT, y, 150.0, FS, "left frag", FS));
+            spans.push(make_span_text(330.0, y, RIGHT - 330.0, FS, "right frag", FS));
+            y -= 14.0;
+        }
+        spans
+    }
+
+    /// A column gutter is a corridor the lines do not cross. When full-measure
+    /// body lines carry ink across the candidate cut, there is no gutter there
+    /// whatever the projection says, and the cut must be refused.
+    ///
+    /// The guard for this already existed but estimated a span's ink width from
+    /// its *non-whitespace* character count. Inter-word spaces consume an
+    /// advance too, so justified prose measured about a ninth short and lines
+    /// that genuinely reached the right margin went uncounted.
+    #[test]
+    fn a_cut_crossed_by_full_measure_lines_is_refused() {
+        let strategy = XYCutStrategy::new();
+        let spans = full_measure_page(true);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+
+        assert!(
+            strategy.find_horizontal_split_indexed(&spans, &indices).is_none(),
+            "eleven body lines span the whole measure, so no column cut is legal"
+        );
+    }
+
+    /// Counter-case, and the reason the test above is not vacuous: with the
+    /// full-measure lines removed the fragment geometry is unchanged, the same
+    /// valley is found, and the cut IS taken. So the assertion above turns on
+    /// the guard rather than on the valley never being detected at all.
+    #[test]
+    fn the_same_fragment_geometry_alone_is_still_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = full_measure_page(false);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_some(),
+            "without the body lines this geometry is a genuine two-column split"
+        );
+        let (left, right) = split.unwrap();
+        assert_eq!(left.len(), 6, "six fragments belong to the left column");
+        assert_eq!(right.len(), 6, "six fragments belong to the right column");
     }
 
     /// Single-column page with a tall header band ("Title" or "Chapter
