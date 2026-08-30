@@ -1654,6 +1654,13 @@ module PdfOxide
       attach_function :pdf_document_extract_text_auto, %i[pointer int32 pointer], :pointer
       attach_function :pdf_document_extract_page_auto, %i[pointer int32 string pointer], :pointer
 
+      # Structured diagnostics — malloc'd JSON array of warning objects
+      # ("[]" when there are none); free with free_string.  `category` is
+      # an open-ended snake_case token: keep it a string and tolerate
+      # tokens this binding has never seen.  The `take_` variant drains.
+      attach_function :pdf_document_structured_warnings,      %i[pointer pointer], :pointer
+      attach_function :pdf_document_take_structured_warnings, %i[pointer pointer], :pointer
+
       # Models subsystem (#519 provisioning trio).
       attach_function :pdf_oxide_prefetch_models,    %i[string pointer], :pointer
       attach_function :pdf_oxide_model_manifest,     [],                  :pointer

@@ -1068,6 +1068,22 @@ class Document {
                                    "Document::classify_document");
     }
 
+    /// The document's structured diagnostics as a raw JSON array ("[]" when
+    /// there are none). Non-destructive. Each entry's `category` is an
+    /// open-ended snake_case token — tolerate tokens you do not know.
+    std::string structured_warnings() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_structured_warnings(ptr(), &code), code,
+                                   "Document::structured_warnings");
+    }
+
+    /// As `structured_warnings`, but drains: the returned entries are removed.
+    std::string take_structured_warnings() const {
+        int32_t code = 0;
+        return detail::take_string(pdf_document_take_structured_warnings(ptr(), &code),
+                                   code, "Document::take_structured_warnings");
+    }
+
     // ── PHASE-8: header / footer / artifact removal ──────────────────────────
 
     /// Erase the detected header region on `page_index`. Returns the C status.

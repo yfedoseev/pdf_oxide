@@ -104,6 +104,7 @@ export(pdf_extract_text_in_rect, pdf_extract_words_in_rect, pdf_extract_lines_in
 export(pdf_extract_tables_in_rect, pdf_extract_images_in_rect)
 export(pdf_extract_all_text, pdf_extract_text_auto, pdf_extract_page_auto)
 export(pdf_classify_page, pdf_classify_document)
+export(pdf_structured_warnings, pdf_take_structured_warnings)
 export(pdf_remove_headers, pdf_remove_footers, pdf_remove_artifacts)
 export(pdf_erase_header, pdf_erase_footer, pdf_erase_artifacts)
 export(pdf_get_form_fields, pdf_export_form_data_to_bytes, pdf_import_form_data)

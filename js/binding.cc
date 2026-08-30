@@ -139,6 +139,8 @@ extern "C" {
   extern char* pdf_document_extract_text(void* handle, int32_t page_index, int* error_code);
   extern char* pdf_document_classify_page(void* handle, int32_t page_index, int* error_code);
   extern char* pdf_document_classify_document(void* handle, int* error_code);
+  extern char* pdf_document_structured_warnings(void* handle, int* error_code);
+  extern char* pdf_document_take_structured_warnings(void* handle, int* error_code);
   extern char* pdf_document_extract_text_auto(void* handle, int32_t page_index, int* error_code);
   extern char* pdf_document_extract_page_auto(void* handle, int32_t page_index, const char* options_json, int* error_code);
   extern char* pdf_document_to_markdown(void* handle, int32_t page_index, int* error_code);
@@ -908,6 +910,48 @@ Napi::Value ClassifyDocument(const Napi::CallbackInfo& info) {
   }
   if (!s) {
     throw Napi::Error::New(env, "classifyDocument failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+// Structured diagnostics as a raw JSON array string ("[]" when there are
+// none). `category` is an open-ended snake_case token, so it stays a string
+// here — callers must tolerate tokens they do not know.
+Napi::Value StructuredWarnings(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsExternal()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int errorCode = 0;
+  char* s = pdf_document_structured_warnings(handle, &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "structuredWarnings failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "structuredWarnings failed: returned null");
+  }
+  std::string result(s);
+  free_string(s);
+  return Napi::String::New(env, result);
+}
+
+// As StructuredWarnings, but drains: the returned entries are removed.
+Napi::Value TakeStructuredWarnings(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsExternal()) {
+    throw Napi::TypeError::New(env, "invalid arguments");
+  }
+  LOCK_DOC(info, handle);
+  int errorCode = 0;
+  char* s = pdf_document_take_structured_warnings(handle, &errorCode);
+  if (errorCode != 0) {
+    throw Napi::Error::New(env, "takeStructuredWarnings failed: " + getErrorMessage(errorCode));
+  }
+  if (!s) {
+    throw Napi::Error::New(env, "takeStructuredWarnings failed: returned null");
   }
   std::string result(s);
   free_string(s);
@@ -4345,6 +4389,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("extractText", Napi::Function::New(env, ExtractText));
   exports.Set("classifyPage", Napi::Function::New(env, ClassifyPage));
   exports.Set("classifyDocument", Napi::Function::New(env, ClassifyDocument));
+  exports.Set("structuredWarnings", Napi::Function::New(env, StructuredWarnings));
+  exports.Set("takeStructuredWarnings", Napi::Function::New(env, TakeStructuredWarnings));
   exports.Set("extractTextAuto", Napi::Function::New(env, ExtractTextAuto));
   exports.Set("extractPageAuto", Napi::Function::New(env, ExtractPageAuto));
   exports.Set("toMarkdown", Napi::Function::New(env, ToMarkdown));

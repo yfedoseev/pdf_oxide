@@ -1440,6 +1440,16 @@ static NSArray<POXSearchResult*>* POXTakeSearchResults(FfiSearchResults* list) {
     return POXTakeString(pdf_document_classify_document(_handle, &code), code,
                          @"classifyDocument", error);
 }
+- (NSString*)structuredWarningsWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_structured_warnings(_handle, &code), code,
+                         @"structuredWarnings", error);
+}
+- (NSString*)takeStructuredWarningsWithError:(NSError**)error {
+    int32_t code = 0;
+    return POXTakeString(pdf_document_take_structured_warnings(_handle, &code), code,
+                         @"takeStructuredWarnings", error);
+}
 
 // ── Header / footer / artifact removal ───────────────────────────────────────
 

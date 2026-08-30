@@ -504,6 +504,39 @@ namespace PdfOxide.Core
             finally { _lock.ExitReadLock(); }
         }
 
+        /// <summary>The document's structured diagnostics as a raw JSON array
+        /// ("[]" when there are none). Non-destructive: a later call returns the
+        /// same entries plus any raised since. Each entry's snake_case
+        /// <c>category</c> token is open-ended — tolerate unknown ones.</summary>
+        public string StructuredWarnings()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.PdfDocumentStructuredWarnings(_handle, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
+        /// <summary>As <see cref="StructuredWarnings"/>, but drains: the returned
+        /// entries are removed, so a batch pipeline can read per document without
+        /// the sink growing across the run.</summary>
+        public string TakeStructuredWarnings()
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                ThrowIfDisposed();
+                var ptr = NativeMethods.PdfDocumentTakeStructuredWarnings(_handle, out var errorCode);
+                ExceptionMapper.ThrowIfError(errorCode);
+                return StringMarshaler.PtrToStringAndFree(ptr);
+            }
+            finally { _lock.ExitReadLock(); }
+        }
+
         /// <summary>#517/#513: one-shot auto text extraction — graceful
         /// native fallback (never an opaque OCR error).</summary>
         public string ExtractTextAuto(int pageIndex)

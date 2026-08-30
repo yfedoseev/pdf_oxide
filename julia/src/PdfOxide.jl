@@ -112,6 +112,7 @@ export extract_text_in_rect, extract_words_in_rect, extract_lines_in_rect
 export extract_tables_in_rect, extract_images_in_rect
 export extract_text_auto, extract_all_text, extract_page_auto
 export classify_page, classify_document
+export structured_warnings, take_structured_warnings
 export erase_header, erase_footer, erase_artifacts
 export remove_headers, remove_footers, remove_artifacts
 export FormField, get_form_fields, form_field_count
@@ -5842,6 +5843,39 @@ function classify_document(d::PdfDocument)
         code,
     )
     return _take_string(ptr, code[], "classify_document")
+end
+
+"""
+    structured_warnings(d::PdfDocument) -> String
+
+The document's structured diagnostics as a raw JSON array string (`"[]"` when
+there are none). Non-destructive: a later call returns the same entries plus
+any raised since. Each entry's `category` is an open-ended snake_case token —
+tolerate tokens you do not know.
+"""
+function structured_warnings(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_structured_warnings, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "structured_warnings")
+end
+
+"""As `structured_warnings`, but drains: the returned entries are removed."""
+function take_structured_warnings(d::PdfDocument)
+    code = Ref{Int32}(0)
+    ptr = ccall(
+        (:pdf_document_take_structured_warnings, LIB),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ref{Int32}),
+        _doc(d),
+        code,
+    )
+    return _take_string(ptr, code[], "take_structured_warnings")
 end
 
 # ── Header / footer / artifact removal (mutating; -> count) ────────────────────

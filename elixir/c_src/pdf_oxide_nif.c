@@ -3962,6 +3962,17 @@ static ERL_NIF_TERM doc_classify_document(ErlNifEnv *env, int argc, const ERL_NI
     int32_t code = 0;
     return ok_string(env, pdf_document_classify_document(r->h, &code), code);
 }
+static ERL_NIF_TERM doc_structured_warnings(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_structured_warnings(r->h, &code), code);
+}
+static ERL_NIF_TERM doc_take_structured_warnings(ErlNifEnv *env, int argc,
+                                                 const ERL_NIF_TERM a[]) {
+    (void)argc; GET_DOC
+    int32_t code = 0;
+    return ok_string(env, pdf_document_take_structured_warnings(r->h, &code), code);
+}
 
 /* ── header / footer / artifact erase + remove ────────────────────────────── */
 static ERL_NIF_TERM doc_erase_header(ErlNifEnv *env, int argc, const ERL_NIF_TERM a[]) {
@@ -4863,6 +4874,8 @@ static ErlNifFunc funcs[] = {
     {"doc_extract_page_auto", 3, doc_extract_page_auto, DIRTY},
     {"doc_classify_page", 2, doc_classify_page, DIRTY},
     {"doc_classify_document", 1, doc_classify_document, DIRTY},
+    {"doc_structured_warnings", 1, doc_structured_warnings, DIRTY},
+    {"doc_take_structured_warnings", 1, doc_take_structured_warnings, DIRTY},
     /* phase 8 — header / footer / artifact */
     {"doc_erase_header", 2, doc_erase_header, DIRTY},
     {"doc_erase_footer", 2, doc_erase_footer, DIRTY},

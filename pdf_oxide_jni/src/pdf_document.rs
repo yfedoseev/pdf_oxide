@@ -367,3 +367,71 @@ pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeExtractStructured<'l
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
+
+// ─────────────────────── structured warnings ──────────────────────────────
+
+/// `nativeStructuredWarnings` — the document's structured diagnostics as a
+/// JSON array string (`"[]"` when there are none). Non-destructive: a later
+/// call returns the same entries plus any raised since.
+///
+/// The array stays a raw JSON string rather than a typed record: each entry's
+/// `category` is an open-ended snake_case token and new tokens ship in minor
+/// releases, so callers must tolerate ones they do not know.
+///
+/// # Safety
+///
+/// JVM-invoked. `handle` must be valid.
+#[no_mangle]
+pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeStructuredWarnings<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jni::objects::JString<'local> {
+    env.with_env(|env| -> Result<jni::objects::JString<'local>, JniError> {
+        // SAFETY: Java side asserted handle != 0 before calling.
+        let doc = unsafe { doc_ref(handle) };
+        match serde_json::to_string(&doc.structured_warnings()) {
+            Ok(json) => Ok(env.new_string(json)?),
+            Err(e) => {
+                let class = jni::strings::JNIString::from("java/lang/RuntimeException");
+                let msg = jni::strings::JNIString::from(format!(
+                    "structured warnings serialization failed: {e}"
+                ));
+                let _ = env.throw_new(&class, &msg);
+                Err(JniError::JavaException)
+            },
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `nativeTakeStructuredWarnings` — as `nativeStructuredWarnings`, but drains:
+/// the returned entries are removed, so a batch pipeline can read per document
+/// without the sink growing across the run.
+///
+/// # Safety
+///
+/// JVM-invoked. `handle` must be valid.
+#[no_mangle]
+pub extern "system" fn Java_fyi_oxide_pdf_PdfDocument_nativeTakeStructuredWarnings<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jni::objects::JString<'local> {
+    env.with_env(|env| -> Result<jni::objects::JString<'local>, JniError> {
+        // SAFETY: Java side asserted handle != 0 before calling.
+        let doc = unsafe { doc_ref(handle) };
+        match serde_json::to_string(&doc.take_structured_warnings()) {
+            Ok(json) => Ok(env.new_string(json)?),
+            Err(e) => {
+                let class = jni::strings::JNIString::from("java/lang/RuntimeException");
+                let msg = jni::strings::JNIString::from(format!(
+                    "structured warnings serialization failed: {e}"
+                ));
+                let _ = env.throw_new(&class, &msg);
+                Err(JniError::JavaException)
+            },
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}

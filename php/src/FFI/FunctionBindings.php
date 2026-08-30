@@ -1809,6 +1809,33 @@ class FunctionBindings
     }
 
     /**
+     * The document's structured diagnostics as a raw JSON array
+     * (`"[]"` when there are none). Non-destructive: a later call returns
+     * the same entries plus any raised since. Each entry's `category` is an
+     * open-ended snake_case token — tolerate tokens you do not know.
+     */
+    public function pdfDocumentStructuredWarnings(CData $handle): string
+    {
+        $errorCode = $this->ffi->new('int');
+        $json = $this->ffi->pdf_document_structured_warnings($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_structured_warnings');
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
+     * As `pdfDocumentStructuredWarnings`, but drains: the returned entries
+     * are removed, so a batch pipeline can read per document without the
+     * sink growing across the run.
+     */
+    public function pdfDocumentTakeStructuredWarnings(CData $handle): string
+    {
+        $errorCode = $this->ffi->new('int');
+        $json = $this->ffi->pdf_document_take_structured_warnings($handle, FFI::addr($errorCode));
+        ErrorHandler::check($errorCode->cdata, 'pdf_document_take_structured_warnings');
+        return StringMarshaller::fromCString($json);
+    }
+
+    /**
      * #519: one-shot auto text extraction — auto-routes text vs OCR
      * with graceful native fallback. Never returns the opaque OCR
      * error #513; per spec the fallback is logged + reflected in the

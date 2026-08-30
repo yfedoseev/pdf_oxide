@@ -450,6 +450,24 @@ class PdfDocumentImpl {
     return native.classifyDocument(this._handle);
   }
 
+  /** The document's structured diagnostics as a raw JSON array string
+   * (`'[]'` when there are none; `JSON.parse` it). Non-destructive: a
+   * later call returns the same entries plus any raised since. Each
+   * entry's `category` is an open-ended snake_case token — tolerate
+   * tokens this version does not know. */
+  structuredWarnings(): string {
+    this.ensureOpen();
+    return native.structuredWarnings(this._handle);
+  }
+
+  /** As {@link structuredWarnings}, but drains: the returned entries
+   * are removed, so a batch pipeline can read per document without the
+   * sink growing across the run. */
+  takeStructuredWarnings(): string {
+    this.ensureOpen();
+    return native.takeStructuredWarnings(this._handle);
+  }
+
   /** #517/#513: one-shot auto text extraction — graceful native
    * fallback (never an opaque OCR error). */
   extractTextAuto(pageIndex: number): string {

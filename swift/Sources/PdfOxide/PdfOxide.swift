@@ -1134,6 +1134,20 @@ public final class Document {
         return try takeString(
             pdf_document_classify_document(try ptr(), &code), code, "classifyDocument")
     }
+    /// The document's structured diagnostics as a raw JSON array ("[]" when
+    /// there are none). Non-destructive; `category` tokens are open-ended.
+    public func structuredWarnings() throws -> String {
+        var code: Int32 = 0
+        return try takeString(
+            pdf_document_structured_warnings(try ptr(), &code), code, "structuredWarnings")
+    }
+    /// As `structuredWarnings`, but drains: the returned entries are removed.
+    public func takeStructuredWarnings() throws -> String {
+        var code: Int32 = 0
+        return try takeString(
+            pdf_document_take_structured_warnings(try ptr(), &code), code,
+            "takeStructuredWarnings")
+    }
 
     // ── Final phase: header / footer / artifact removal ──────────────────────
 

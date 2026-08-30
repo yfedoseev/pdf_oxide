@@ -3190,6 +3190,16 @@ SEXP r_doc_classify_document(SEXP ext) {
     return take_string(pdf_document_classify_document(doc_ptr(ext), &code), code,
                        "classify_document");
 }
+SEXP r_doc_structured_warnings(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_structured_warnings(doc_ptr(ext), &code), code,
+                       "structured_warnings");
+}
+SEXP r_doc_take_structured_warnings(SEXP ext) {
+    int32_t code = 0;
+    return take_string(pdf_document_take_structured_warnings(doc_ptr(ext), &code), code,
+                       "take_structured_warnings");
+}
 
 /* ── HEADER / FOOTER / ARTIFACT (all int32 status) ── */
 SEXP r_doc_remove_headers(SEXP ext, SEXP threshold) {
@@ -3902,6 +3912,8 @@ static const R_CallMethodDef CallEntries[] = {
     CDEF(r_doc_extract_page_auto, 3),
     CDEF(r_doc_classify_page, 2),
     CDEF(r_doc_classify_document, 1),
+    CDEF(r_doc_structured_warnings, 1),
+    CDEF(r_doc_take_structured_warnings, 1),
     CDEF(r_doc_remove_headers, 2),
     CDEF(r_doc_remove_footers, 2),
     CDEF(r_doc_remove_artifacts, 2),
