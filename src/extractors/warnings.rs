@@ -66,6 +66,13 @@ pub enum WarningCategory {
     /// Raised instead of writing that sentence into the extracted content:
     /// the caller decides whether to surface it, where, and in what language.
     NoTextLayer,
+    /// An image was not embedded in the converted output because its encoded
+    /// size exceeds the inline-image cap.
+    ///
+    /// Raised instead of writing an HTML comment into the markdown: the
+    /// content is what the page draws, and a note about why the library
+    /// declined to inline something is a diagnostic about the library.
+    ImageSuppressed,
 }
 
 impl WarningCategory {
@@ -83,6 +90,7 @@ impl WarningCategory {
             Self::Layout => "layout",
             Self::GlyphDropped => "glyph_dropped",
             Self::NoTextLayer => "no_text_layer",
+            Self::ImageSuppressed => "image_suppressed",
         }
     }
 }

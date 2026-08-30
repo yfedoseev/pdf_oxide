@@ -21580,10 +21580,6 @@ impl PdfDocument {
             if options.embed_images {
                 match image.to_base64_data_uri() {
                     Ok(data_uri) => {
-                        if !has_content {
-                            markdown.push_str("\n\n---\n\n");
-                            has_content = true;
-                        }
                         let alt = format!("Image {} from page {}", i + 1, page_index + 1);
                         if data_uri.len() > MAX_BASE64_DATA_URI {
                             // Estimate decoded binary size from the base64
@@ -21596,14 +21592,38 @@ impl PdfDocument {
                                 .unwrap_or(&data_uri);
                             let unpadded = payload.trim_end_matches('=').len();
                             let approx_binary_kb = (unpadded * 3 / 4) / 1024;
-                            markdown.push_str(&format!(
-                                "<!-- ![{}] suppressed: ~{} KB decoded image (base64 data URI {} KB) exceeds {} KB inline-image cap -->\n\n",
-                                alt,
-                                approx_binary_kb,
-                                data_uri.len() / 1024,
-                                MAX_BASE64_DATA_URI / 1024
-                            ));
+                            // Report, do not write. The converted document is
+                            // what the page draws; an explanation of why this
+                            // library declined to inline something is a
+                            // diagnostic about the library, and belongs
+                            // out-of-band where the caller can decide whether
+                            // to surface it, where, and in what language.
+                            self.push_structured_warning(
+                                crate::extractors::warnings::Warning {
+                                    category:
+                                        crate::extractors::warnings::WarningCategory::ImageSuppressed,
+                                    page: Some(page_index),
+                                    message: format!(
+                                        "image {} on page {} is ~{} KB decoded ({} KB as a base64 data URI) and exceeds the {} KB inline-image cap, so it was not embedded",
+                                        i + 1,
+                                        page_index + 1,
+                                        approx_binary_kb,
+                                        data_uri.len() / 1024,
+                                        MAX_BASE64_DATA_URI / 1024
+                                    ),
+                                    spec_section: None,
+                                },
+                            );
                         } else {
+                            // The separator introduces the image block, so it
+                            // is emitted only once something is actually going
+                            // to follow it. Emitting it before the size check
+                            // left a bare horizontal rule on a page whose only
+                            // image was suppressed.
+                            if !has_content {
+                                markdown.push_str("\n\n---\n\n");
+                                has_content = true;
+                            }
                             markdown.push_str(&format!("![{}]({})\n\n", alt, data_uri));
                         }
                     },
