@@ -595,7 +595,28 @@ impl TextRasterizer {
                         );
                     }
 
-                    if has_unicode_cmap {
+                    // A CIDFontType0's codes are CIDs, and §9.7.4.2
+                    // (`docs/spec/pdf.md`:18643-18652) routes them through the
+                    // CFF, not through the sfnt cmap: with CIDFont operators in
+                    // the Top DICT "the CIDs shall be used to determine the GID
+                    // value ... using the charset table in the CFF program",
+                    // and without them "the CIDs shall be used directly as GID
+                    // values". The cmap belongs to the Type 2 mechanism, which
+                    // the same clause describes separately as TrueType's way of
+                    // mapping "character codes to glyph indices".
+                    //
+                    // The trap is that Table 126 (:19786) *requires* an
+                    // OpenType CIDFontType0 to include a "cmap" table. So its
+                    // presence says nothing about how the codes should be
+                    // resolved, yet it made `has_unicode_cmap` true and won the
+                    // dispatch below — sending CIDs through a Unicode lookup,
+                    // where they all resolved to glyph 0. One page whose whole
+                    // content was a single Tj rendered blank for that reason,
+                    // its CIDs coming from an embedded CMap with a private
+                    // `GrpOne` ordering for which no predefined table exists.
+                    let cid_keyed_cff = info.subtype == "Type0"
+                        && info.cid_font_type.as_deref() == Some("CIDFontType0");
+                    if has_unicode_cmap && !cid_keyed_cff {
                         log::debug!("Using embedded font data for '{}'", info.base_font);
                         Some((None, Arc::clone(embedded), 0, false))
                     } else if info.subtype == "Type0"
