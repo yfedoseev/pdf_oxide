@@ -305,7 +305,18 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // larger. So the rule is scoped to runs with no right-to-left character on
     // either side; a right-to-left run falls back to the plain gap test, which
     // is what separated its words correctly before.
-    let steps_backward = current.bbox.x + current.bbox.width <= prev.bbox.x
+    // A *large* backward jump is a discontinuity even when the two boxes still
+    // overlap. Requiring a complete step missed the case where a second
+    // overlaid layer, or a run re-ordered on an OCR text layer, starts well to
+    // the left of where the previous run ended but stretches past its start:
+    // "…Labeling Technologies" ending at 396.07 followed by a run beginning at
+    // 205.31 is a gap of −190.76 pt, and the two were concatenated as
+    // "TechnologiesA Guide". The bound mirrors the one `extract_text` uses for
+    // the same judgement (twenty ems), which is far outside the range of the
+    // glyph overlap this rule exists to tolerate.
+    let backward_em = prev.font_size.max(current.font_size).max(6.0) * 20.0;
+    let steps_backward = (current.bbox.x + current.bbox.width <= prev.bbox.x
+        || gap < -backward_em)
         && !prev.text.chars().any(is_rtl_char)
         && !current.text.chars().any(is_rtl_char);
     if gap <= threshold && !steps_backward {

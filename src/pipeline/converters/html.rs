@@ -489,7 +489,18 @@ impl HtmlOutputConverter {
 
                     // Heading text is emitted without emphasis wrapping — a bold
                     // heading must be <h2>…</h2>, not <h2><strong>…</strong></h2>.
-                    let text = self.escaped_span_text(span, span.span.text.trim());
+                    // Keep the span's own whitespace. A producer that sets each
+                    // word as its own span routinely puts the separator inside
+                    // the span ("To ", "get this ", "file "), leaving gaps of a
+                    // few hundredths of a point between them — far under the
+                    // 0.15 em bar `has_horizontal_gap` applies. Trimming here
+                    // destroyed the one unambiguous separator the file gives us
+                    // and then asked geometry to reinvent it, which produced
+                    // "Toget thisfileintothe communityof peers". The paragraph
+                    // branch below already gets this right. `flush_heading`
+                    // trims the accumulated buffer, so no stray whitespace
+                    // reaches the emitted <hN>.
+                    let text = self.escaped_span_text(span, &span.span.text);
                     let same_level = matches!(current_heading, Some((lvl, _)) if lvl == level);
                     if same_level {
                         // Continuation of the same heading run — join with the
@@ -502,7 +513,9 @@ impl HtmlOutputConverter {
                                 || (same_line && super::has_horizontal_gap(&prev.span, &span.span))
                         });
                         if let Some((_, ref mut buf)) = current_heading {
-                            if !buf.is_empty() && need_space && !buf.ends_with(' ') {
+                            let already_spaced = buf.ends_with(' ')
+                                || span.span.text.starts_with(char::is_whitespace);
+                            if !buf.is_empty() && need_space && !already_spaced {
                                 buf.push(' ');
                             }
                             buf.push_str(&text);
@@ -526,7 +539,18 @@ impl HtmlOutputConverter {
             let is_marker = super::is_bullet_span(text_raw)
                 || super::starts_with_bullet(text_raw)
                 || ordered.is_some();
-            if is_marker || super::is_list_item_role(span.struct_role) {
+            // A list marker has to begin a visual line. Without that condition
+            // any mid-sentence `X. ` opens a list: `p. 132.` in a citation
+            // became `<ol><li>132.</li></ol>` and `p.` was discarded by
+            // `strip_list_marker`, and a lone bullet glyph mid-line opened a
+            // `<ul>` that flushed empty. The markdown converter has carried this
+            // requirement all along (its equivalent block sits inside an
+            // `else if !same_line` arm), which is why only HTML shows it.
+            // A structure-tree list role stays authoritative wherever it sits.
+            let starts_line = prev_span.is_none_or(|prev| {
+                (span.span.bbox.y - prev.span.bbox.y).abs() >= span.span.font_size * 0.5
+            });
+            if (is_marker && starts_line) || super::is_list_item_role(span.struct_role) {
                 close_paragraph(&mut result, &mut current_content, &mut in_paragraph);
 
                 if list_kind.is_none() {
@@ -698,7 +722,6 @@ impl HtmlOutputConverter {
                 .iter()
                 .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect())
                 .collect();
-            let rendered_glyphs: String = row_glyphs.concat();
             let mut orphans: Vec<&&OrderedTextSpan> = skipped
                 .iter()
                 .filter(|s| {
@@ -733,8 +756,14 @@ impl HtmlOutputConverter {
                     // Single token: the only spacing disagreement possible is
                     // the space the cell builder inserts between the members it
                     // joined, so ignore whitespace outright.
+                    // Bounded to a row, exactly as the multi-word branch above
+                    // is. Testing against the whole table concatenated meant a
+                    // short orphan — "5", "of", "A" — was suppressed by any
+                    // coincidental occurrence of those glyphs anywhere in the
+                    // table, and the span stayed lost. A row is the unit that
+                    // is actually adjacent on the page.
                     let glyphs: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-                    !glyphs.is_empty() && !rendered_glyphs.contains(&glyphs)
+                    !glyphs.is_empty() && !row_glyphs.iter().any(|r| r.contains(&glyphs))
                 })
                 .collect();
             if orphans.is_empty() {
