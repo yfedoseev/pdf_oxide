@@ -8078,6 +8078,30 @@ impl PageRenderer {
         // The form's /Matrix is still composed on top of `base_transform`
         // by `render_form_xobject`, so the mask remains positioned by
         // its own matrix within the page-aligned device frame.
+        // A Luminosity group that paints nothing carries no luminosity to
+        // derive a mask from. Read literally, §11.6.5.2 still produces a mask
+        // here — the group leaves the backdrop untouched, and Table 144
+        // defaults /BC to "the colour space's initial value, representing
+        // black", whose luminosity is 0 — so the mask would be 0 everywhere
+        // and the masked content would vanish.
+        //
+        // Every reference engine disagrees, and not by computing a different
+        // value: they discard the mask. Removing the /SMask entry from one
+        // such file and re-rendering gives MuPDF byte-identical output
+        // (ink 0.15986, mean 244.91/242.05/240.46 either way). pdfium,
+        // poppler and Ghostscript all paint it too.
+        //
+        // It is also the only reading that fits the file: the page embeds a
+        // 918x427 photograph with its own nearly-opaque /SMask, and the
+        // group that would erase it is the two bytes `q Q`. A producer that
+        // wanted the picture invisible would not have embedded it.
+        //
+        // So: render the group, and if it painted nothing, drop the mask.
+        // The test is behavioural rather than syntactic so that a group whose
+        // operators draw only invisible things is caught too. A group that
+        // paints something genuinely dark still masks — that is the feature
+        // working, and this deliberately does not touch it.
+        let backdrop = mask_pixmap.data().to_vec();
         let _ = self.render_form_xobject(
             &mut mask_pixmap,
             &form_dict,
@@ -8090,6 +8114,14 @@ impl PageRenderer {
             // (§11.6.5.2), not the state that set the /SMask.
             None,
         );
+        if mask_pixmap.data() == backdrop.as_slice() {
+            log::debug!(
+                "luminosity soft-mask group painted nothing; discarding the mask \
+                 (matches MuPDF/pdfium/poppler/Ghostscript, departs from a literal \
+                 reading of ISO 32000-1 11.6.5.2)"
+            );
+            return Ok(());
+        }
 
         // Resolve /TR transfer function once. The audit fixture uses
         // a Type-2 power function (`N=2` squares the input); the
