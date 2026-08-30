@@ -3114,7 +3114,15 @@ impl PageRenderer {
                             )
                         });
                         self.render_xobject(
-                            pixmap, name, transform, &gs_clone, resources, doc, page_num, clip,
+                            pixmap,
+                            name,
+                            transform,
+                            &gs_clone,
+                            resources,
+                            doc,
+                            page_num,
+                            clip,
+                            base_transform,
                         )?;
                         if let Some(snap) = cmyk_compose_snap {
                             self.apply_cmyk_compose_after_paint(
@@ -3174,7 +3182,15 @@ impl PageRenderer {
                         };
                         if is_image_mask {
                             if let Err(e) = self.render_image_mask(
-                                pixmap, &synthetic, None, transform, doc, clip, &gs_clone,
+                                pixmap,
+                                &synthetic,
+                                None,
+                                transform,
+                                doc,
+                                clip,
+                                &gs_clone,
+                                base_transform,
+                                resources,
                             ) {
                                 log::warn!("Skipping unrenderable inline ImageMask: {}", e);
                             }
@@ -4243,6 +4259,7 @@ impl PageRenderer {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_xobject(
         &mut self,
         pixmap: &mut Pixmap,
@@ -4253,6 +4270,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         clip_mask: Option<&tiny_skia::Mask>,
+        base_transform: Transform,
     ) -> Result<()> {
         // Get XObject from resources
         if let Object::Dictionary(res_dict) = resources {
@@ -4305,8 +4323,15 @@ impl PageRenderer {
                                             let render_gs: &GraphicsState =
                                                 spliced.as_ref().unwrap_or(gs);
                                             if let Err(e) = self.render_image_mask(
-                                                pixmap, &xobj, xobj_ref, transform, doc, clip_mask,
+                                                pixmap,
+                                                &xobj,
+                                                xobj_ref,
+                                                transform,
+                                                doc,
+                                                clip_mask,
                                                 render_gs,
+                                                base_transform,
+                                                resources,
                                             ) {
                                                 log::warn!(
                                                     "Skipping unrenderable ImageMask XObject '{}': {}",
@@ -5033,6 +5058,121 @@ impl PageRenderer {
     /// and inverted `/Decode` polarities, and bilinear/bicubic resampling
     /// chosen by the image-space-to-user-space scale (matches
     /// `render_image`).
+    /// Paint a shading pattern through an image mask's stencil.
+    ///
+    /// Returns `Some(true)` when the pattern was painted, `Some(false)` when
+    /// the named pattern is not a shading pattern (so the caller falls back to
+    /// its flat-colour path), and `None` when the mask cannot be built.
+    #[allow(clippy::too_many_arguments)]
+    fn image_mask_shading_pattern(
+        &mut self,
+        pixmap: &mut Pixmap,
+        dict: &std::collections::HashMap<String, Object>,
+        raw: &[u8],
+        width: u32,
+        height: u32,
+        row_bytes: usize,
+        transform: Transform,
+        clip_mask: Option<&tiny_skia::Mask>,
+        gs: &GraphicsState,
+        base_transform: Transform,
+        resources: &Object,
+        doc: &PdfDocument,
+    ) -> Result<Option<bool>> {
+        // Resolve the pattern first; if it is a tiling pattern there is
+        // nothing for this path to do.
+        let Some(pattern_name) = gs.fill_pattern_name.as_deref() else {
+            return Ok(Some(false));
+        };
+        let Some(res_dict) = resources.as_dict() else {
+            return Ok(Some(false));
+        };
+        let Some(group) = res_dict.get("Pattern") else {
+            return Ok(Some(false));
+        };
+        let group = doc.resolve_object(group)?;
+        let Some(map) = group.as_dict() else {
+            return Ok(Some(false));
+        };
+        let Some(entry) = map.get(pattern_name) else {
+            return Ok(Some(false));
+        };
+        let pattern_obj = doc.resolve_object(entry)?;
+
+        // §8.9.6.4: sample 0 paints under the default /Decode; [1 0] inverts.
+        let invert = match dict.get("Decode") {
+            Some(Object::Array(arr)) => match arr.first() {
+                Some(Object::Integer(1)) => true,
+                Some(Object::Real(v)) => (*v - 1.0).abs() < 1e-6,
+                _ => false,
+            },
+            _ => false,
+        };
+
+        // Rasterise the stencil into a full-opacity pixmap, then let the
+        // existing blit put it into device space so the mask lands exactly
+        // where the flat-colour path would have painted.
+        let mut stencil = vec![0u8; (width as usize) * (height as usize) * 4];
+        for y in 0..height as usize {
+            let row = y * row_bytes;
+            for x in 0..width as usize {
+                let byte = raw.get(row + x / 8).copied().unwrap_or(0);
+                let bit = (byte >> (7 - (x % 8))) & 1;
+                let paints = if invert { bit == 1 } else { bit == 0 };
+                if paints {
+                    let o = (y * width as usize + x) * 4;
+                    stencil[o] = 255;
+                    stencil[o + 1] = 255;
+                    stencil[o + 2] = 255;
+                    stencil[o + 3] = 255;
+                }
+            }
+        }
+        let Some(stencil_pixmap) = Pixmap::from_vec(
+            stencil,
+            tiny_skia::IntSize::from_wh(width, height).ok_or_else(|| {
+                Error::Image(format!("ImageMask has an unusable size {width}x{height}"))
+            })?,
+        ) else {
+            return Ok(None);
+        };
+
+        let Some(mut coverage) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+            return Ok(None);
+        };
+        let image_transform = image_unit_square_transform(transform, width, height);
+        coverage.draw_pixmap(
+            0,
+            0,
+            stencil_pixmap.as_ref(),
+            &pixmap_paint_for_image_blit(image_transform, 1.0, "Normal"),
+            image_transform,
+            clip_mask,
+        );
+
+        let Some(mut mask) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) else {
+            return Ok(None);
+        };
+        for (m, px) in mask
+            .data_mut()
+            .iter_mut()
+            .zip(coverage.data().chunks_exact(4))
+        {
+            *m = px[3];
+        }
+
+        self.paint_shading_pattern_through_mask(
+            pixmap,
+            &pattern_obj,
+            base_transform,
+            &mask,
+            gs,
+            doc,
+        )
+        .map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn render_image_mask(
         &mut self,
         pixmap: &mut Pixmap,
@@ -5042,6 +5182,8 @@ impl PageRenderer {
         doc: &PdfDocument,
         clip_mask: Option<&tiny_skia::Mask>,
         gs: &GraphicsState,
+        base_transform: Transform,
+        resources: &Object,
     ) -> Result<()> {
         let dict = xobject
             .as_dict()
@@ -5112,6 +5254,41 @@ impl PageRenderer {
                 let blank = if invert { 0x00 } else { 0xFF };
                 let from = rows_valid.saturating_mul(row_bytes).min(raw.len());
                 raw[from..].fill(blank);
+            }
+        }
+
+        // When the fill colour is a shading pattern the stencil is not painted
+        // with a colour at all — it becomes the coverage the gradient is
+        // painted through. §8.7.4.1 (`docs/spec/pdf.md`:12899-12902) names this
+        // case directly: a shading pattern set as the current colour may be
+        // used "with painting operators such as f (fill), S (stroke), Tj (show
+        // text), or Do (paint external object) **with an image mask**".
+        //
+        // Only `f` was handled. Here the stencil was painted in
+        // `gs.fill_color_rgb`, which a coloured pattern never sets — `/R9 scn`
+        // carries no operands — so the whole image came out in whatever flat
+        // colour happened to be current. On the file that surfaced this we
+        // rendered a mean tone of 180.75 where the panel agrees on 230.01.
+        let fill_is_pattern =
+            gs.fill_pattern_name.is_some() && self.is_pattern_space(&gs.fill_color_space);
+        if fill_is_pattern {
+            if let Some(painted) = self.image_mask_shading_pattern(
+                pixmap,
+                dict,
+                &raw,
+                width,
+                height,
+                row_bytes,
+                transform,
+                clip_mask,
+                gs,
+                base_transform,
+                resources,
+                doc,
+            )? {
+                if painted {
+                    return Ok(());
+                }
             }
         }
 
@@ -5482,6 +5659,73 @@ impl PageRenderer {
         }
     }
 
+    /// Paint a `PatternType 2` (shading) pattern through an arbitrary
+    /// coverage mask.
+    ///
+    /// §8.7.4.1 (`docs/spec/pdf.md`:12899-12902) lists what a shading pattern
+    /// set as the current colour may be used with: "painting operators such as
+    /// **f** (fill), **S** (stroke), **Tj** (show text), or **Do** (paint
+    /// external object) **with an image mask**". The shape differs each time;
+    /// what the shading needs is only the coverage, so every one of those
+    /// callers reduces to a mask plus this.
+    ///
+    /// Returns `false` when the object is not a type 2 pattern, so the caller
+    /// can fall through to its own handling.
+    fn paint_shading_pattern_through_mask(
+        &mut self,
+        pixmap: &mut Pixmap,
+        pattern_obj: &Object,
+        base_transform: Transform,
+        mask: &tiny_skia::Mask,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+    ) -> Result<bool> {
+        let Some(pdict) = pattern_obj.as_dict() else {
+            return Ok(false);
+        };
+        if pdict
+            .get("PatternType")
+            .and_then(|o| o.as_integer())
+            .unwrap_or(1)
+            != 2
+        {
+            return Ok(false);
+        }
+        let Some(shading_entry) = pdict.get("Shading") else {
+            return Ok(false);
+        };
+        let shading_obj = doc.resolve_object(shading_entry)?;
+
+        // Table 77 (:12929): in a type 2 pattern the shading's coordinates are
+        // in pattern space, so the pattern's own matrix rides on the base
+        // transform rather than the CTM in force at the paint.
+        let m: Vec<f32> = pdict
+            .get("Matrix")
+            .and_then(|o| o.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|o| {
+                        o.as_integer()
+                            .map(|i| i as f32)
+                            .or_else(|| o.as_real().map(|r| r as f32))
+                    })
+                    .collect()
+            })
+            .filter(|v: &Vec<f32>| v.len() == 6)
+            .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let pattern_matrix = Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]);
+
+        self.render_shading_object(
+            pixmap,
+            &shading_obj,
+            base_transform.pre_concat(pattern_matrix),
+            gs,
+            doc,
+            Some(mask),
+        )?;
+        Ok(true)
+    }
+
     fn fill_with_tiling_pattern(
         &mut self,
         pixmap: &mut Pixmap,
@@ -5566,27 +5810,6 @@ impl PageRenderer {
         // expressed in pattern space" — hence `base_transform` composed with
         // the pattern's own matrix, not the CTM at the fill.
         if pattern_type == 2 {
-            let Some(shading_entry) = pdict.get("Shading") else {
-                return Ok(false);
-            };
-            let shading_obj = doc.resolve_object(shading_entry)?;
-
-            let m: Vec<f32> = pdict
-                .get("Matrix")
-                .and_then(|o| o.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|o| {
-                            o.as_integer()
-                                .map(|i| i as f32)
-                                .or_else(|| o.as_real().map(|r| r as f32))
-                        })
-                        .collect()
-                })
-                .filter(|v: &Vec<f32>| v.len() == 6)
-                .unwrap_or_else(|| vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
-            let pattern_matrix = Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]);
-
             // The shape being filled becomes the clip, since the gradient's
             // own geometry is independent of it.
             let Some(mut mask) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) else {
@@ -5598,16 +5821,14 @@ impl PageRenderer {
                     *mv = (*mv).min(*cv);
                 }
             }
-
-            self.render_shading_object(
+            return self.paint_shading_pattern_through_mask(
                 pixmap,
-                &shading_obj,
-                base_transform.pre_concat(pattern_matrix),
+                &pattern_obj,
+                base_transform,
+                &mask,
                 gs,
                 doc,
-                Some(&mask),
-            )?;
-            return Ok(true);
+            );
         }
 
         // Only tiling patterns (PatternType 1) go through the tiling path below.
@@ -6566,6 +6787,12 @@ impl PageRenderer {
                                             doc,
                                             clip_mask,
                                             &cov_gs,
+                                            // Coverage rasterisation only —
+                                            // this path measures the stencil's
+                                            // ink, so a pattern fill would be
+                                            // irrelevant to it.
+                                            Transform::identity(),
+                                            &Object::Dictionary(Default::default()),
                                         );
                                     } else {
                                         let smask = dict.get("SMask").cloned();
