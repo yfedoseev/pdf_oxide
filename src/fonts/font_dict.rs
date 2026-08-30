@@ -2113,6 +2113,31 @@ fn wrap_cff_in_opentype(cff_data: &[u8]) -> Vec<u8> {
     let entry_selector: u16 = 2;
     let range_shift: u16 = (num_tables * 16) - search_range;
 
+    // The em size the CFF's charstrings are actually drawn in.
+    //
+    // ISO 32000-1:2008 §9.2.2 (`docs/spec/pdf.md`:8459-8461): "The
+    // transformation from glyph space to text space shall be defined by the
+    // font matrix. For most types of fonts, this matrix shall be predefined to
+    // map 1000 units of glyph space to 1 unit of text space." *Most* — a CFF
+    // may declare its own `/FontMatrix` (Adobe TN #5176, operator 12 7), and
+    // subsetters from a 2048-unit-em workflow routinely emit 1/2048.
+    //
+    // This head table is ours, fabricated to wrap a bare CFF, and the
+    // rasteriser scales every outline by `font_size / units_per_em` read from
+    // it. Writing 1000 unconditionally therefore painted a 2048-unit font at
+    // 2.048x its intended size. Advances were unaffected — they come from
+    // `/Widths` — so the glyphs simply overlapped and smeared, which on one
+    // form rendered the whole page about 21 grey levels too dark.
+    //
+    // Only a plain uniform scale is folded in; anything skewed, rotated or
+    // non-uniform keeps the 1000 default, which is also the CFF default.
+    let units_per_em: u16 = crate::fonts::cff_encoding::parse_cff_font_matrix_scale(cff_data)
+        .map(|sx| (1.0 / sx).round())
+        .filter(|u| (16.0..=16384.0).contains(u))
+        .map(|u| u as u16)
+        .unwrap_or(1000);
+    let [upem_hi, upem_lo] = units_per_em.to_be_bytes();
+
     // Minimal head table (54 bytes) — OpenType spec required fields
     let head_table: [u8; 54] = [
         0x00, 0x01, 0x00, 0x00, // majorVersion=1, minorVersion=0
@@ -2120,7 +2145,7 @@ fn wrap_cff_in_opentype(cff_data: &[u8]) -> Vec<u8> {
         0x00, 0x00, 0x00, 0x00, // checksumAdjustment (0, will be ignored)
         0x5F, 0x0F, 0x3C, 0xF5, // magicNumber
         0x00, 0x0B, // flags (baseline at y=0, lsb at x=0, etc)
-        0x03, 0xE8, // unitsPerEm = 1000
+        upem_hi, upem_lo, // unitsPerEm, from the CFF's own /FontMatrix
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // created (0)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // modified (0)
         0xFF, 0x38, // xMin = -200
