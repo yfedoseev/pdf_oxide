@@ -171,6 +171,30 @@ final class PdfDocument
         return $this->bindings->pdfDocumentExtractTextAuto($this->requireHandle(), $pageIndex);
     }
 
+    /**
+     * This document's structured diagnostics as a raw JSON array string
+     * (`"[]"` when there are none). Non-destructive: a later call returns the
+     * same entries plus any raised since.
+     *
+     * Left as a string on purpose: each entry's `category` is an open-ended
+     * snake_case token and new ones ship in minor releases, so callers must
+     * tolerate tokens they do not know.
+     */
+    public function structuredWarnings(): string
+    {
+        return $this->bindings->pdfDocumentStructuredWarnings($this->requireHandle());
+    }
+
+    /**
+     * As `structuredWarnings()`, but drains: the returned entries are removed,
+     * so a batch pipeline can read per document without the sink growing
+     * across the run.
+     */
+    public function takeStructuredWarnings(): string
+    {
+        return $this->bindings->pdfDocumentTakeStructuredWarnings($this->requireHandle());
+    }
+
     /** PDF version as `['major' => int, 'minor' => int]`. */
     public function version(): array
     {

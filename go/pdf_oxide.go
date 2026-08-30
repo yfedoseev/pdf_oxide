@@ -47,6 +47,8 @@ extern char* pdf_document_to_plain_text(void* handle, int32_t page_index, int* e
 extern char* pdf_document_to_markdown_all(void* handle, int* error_code);
 extern char* pdf_document_classify_page(void* handle, int32_t page_index, int* error_code);
 extern char* pdf_document_classify_document(void* handle, int* error_code);
+extern char* pdf_document_structured_warnings(void* handle, int* error_code);
+extern char* pdf_document_take_structured_warnings(void* handle, int* error_code);
 extern char* pdf_document_extract_text_auto(void* handle, int32_t page_index, int* error_code);
 extern char* pdf_document_extract_page_auto(void* handle, int32_t page_index, const char* options_json, int* error_code);
 extern char* pdf_document_extract_structured_to_json(void* handle, int32_t page_index, int* error_code);
@@ -699,6 +701,51 @@ func (doc *PdfDocument) ClassifyDocument() (string, error) {
 	defer doc.mu.Unlock()
 	var errorCode C.int
 	c := C.pdf_document_classify_document(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// StructuredWarnings returns the document's structured diagnostics as a raw
+// JSON array string ("[]" when there are none). Non-destructive: a later call
+// returns the same entries plus any raised since.
+//
+// Each entry carries a snake_case "category" token; new tokens are added in
+// minor releases, so callers must tolerate ones they do not know.
+func (doc *PdfDocument) StructuredWarnings() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	c := C.pdf_document_structured_warnings(doc.handle, &errorCode)
+	if errorCode != 0 {
+		return "", ffiError(errorCode)
+	}
+	if c == nil {
+		return "", ErrInternal
+	}
+	s := C.GoString(c)
+	C.free_string(c)
+	return s, nil
+}
+
+// TakeStructuredWarnings is StructuredWarnings but draining: the returned
+// entries are removed, so a batch pipeline can read per document without the
+// sink growing across the run.
+func (doc *PdfDocument) TakeStructuredWarnings() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var errorCode C.int
+	c := C.pdf_document_take_structured_warnings(doc.handle, &errorCode)
 	if errorCode != 0 {
 		return "", ffiError(errorCode)
 	}

@@ -43,6 +43,14 @@
   ([^PdfDocument doc] (.toHtml doc))
   ([^PdfDocument doc page] (.toHtml doc (int page))))
 (defn extract-structured [^PdfDocument doc page] (.extractStructured doc (int page)))
+(defn structured-warnings
+  "The document's structured diagnostics as a raw JSON array string (\"[]\"
+  when there are none). Non-destructive. Each entry's `category` is an
+  open-ended snake_case token -- tolerate tokens you do not know."
+  [^PdfDocument doc] (.structuredWarnings doc))
+(defn take-structured-warnings
+  "As `structured-warnings`, but drains: the returned entries are removed."
+  [^PdfDocument doc] (.takeStructuredWarnings doc))
 (defn render
   (^bytes [^PdfDocument doc page] (.render doc (int page)))
   (^bytes [^PdfDocument doc page dpi] (.render doc (int page) (int dpi))))

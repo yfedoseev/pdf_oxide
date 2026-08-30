@@ -166,6 +166,9 @@ var (
 	ffiPdfDocumentExtractPageAuto  func(handle uintptr, pageIndex int32, optionsJSON string, errCode *int32) *byte
 	// #536 structure-tree-ordered structured extraction (JSON StructuredPage).
 	ffiPdfDocumentExtractStructuredToJSON func(handle uintptr, pageIndex int32, errCode *int32) *byte
+	// Structured diagnostics — raw JSON array; `category` tokens are open-ended.
+	ffiPdfDocumentStructuredWarnings     func(handle uintptr, errCode *int32) *byte
+	ffiPdfDocumentTakeStructuredWarnings func(handle uintptr, errCode *int32) *byte
 
 	// PdfCreator — minimal, enough to generate test fixtures via FromMarkdown.
 	ffiPdfFromMarkdown func(markdown string, errCode *int32) uintptr
@@ -283,6 +286,8 @@ func registerFFI(lib uintptr) {
 	r(&ffiPdfDocumentExtractTextAuto, "pdf_document_extract_text_auto")
 	r(&ffiPdfDocumentExtractPageAuto, "pdf_document_extract_page_auto")
 	r(&ffiPdfDocumentExtractStructuredToJSON, "pdf_document_extract_structured_to_json")
+	r(&ffiPdfDocumentStructuredWarnings, "pdf_document_structured_warnings")
+	r(&ffiPdfDocumentTakeStructuredWarnings, "pdf_document_take_structured_warnings")
 	r(&ffiPdfDocumentToHtmlAll, "pdf_document_to_html_all")
 	r(&ffiPdfDocumentToPlainTextAll, "pdf_document_to_plain_text_all")
 
@@ -579,6 +584,36 @@ func (doc *PdfDocument) ClassifyDocument() (string, error) {
 	defer doc.mu.Unlock()
 	var ec int32
 	p := ffiPdfDocumentClassifyDocument(doc.handle, &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// StructuredWarnings — raw JSON array of structured diagnostics ("[]" when
+// there are none). Non-destructive; `category` tokens are open-ended, so
+// callers must tolerate ones they do not know.
+func (doc *PdfDocument) StructuredWarnings() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	p := ffiPdfDocumentStructuredWarnings(doc.handle, &ec)
+	if ec != 0 {
+		return "", ffiErrorFromInt(int(ec))
+	}
+	return goStringAndFree(p), nil
+}
+
+// TakeStructuredWarnings — as StructuredWarnings, but drains the entries.
+func (doc *PdfDocument) TakeStructuredWarnings() (string, error) {
+	if err := doc.acquireRead(); err != nil {
+		return "", err
+	}
+	defer doc.mu.Unlock()
+	var ec int32
+	p := ffiPdfDocumentTakeStructuredWarnings(doc.handle, &ec)
 	if ec != 0 {
 		return "", ffiErrorFromInt(int(ec))
 	}

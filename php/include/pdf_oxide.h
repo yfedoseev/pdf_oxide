@@ -1201,6 +1201,10 @@ char *pdf_document_classify_page(PdfDocument *handle, int32_t page_index, int32_
 
 char *pdf_document_classify_document(PdfDocument *handle, int32_t *error_code);
 
+char *pdf_document_structured_warnings(PdfDocument *handle, int32_t *error_code);
+
+char *pdf_document_take_structured_warnings(PdfDocument *handle, int32_t *error_code);
+
 char *pdf_document_extract_text_auto(PdfDocument *handle, int32_t page_index, int32_t *error_code);
 
 char *pdf_document_extract_page_auto(PdfDocument *handle,

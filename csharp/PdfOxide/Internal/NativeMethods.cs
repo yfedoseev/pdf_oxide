@@ -128,6 +128,19 @@ namespace PdfOxide.Internal
             NativeHandle handle,
             out int errorCode);
 
+        // Structured diagnostics — JSON array; `category` tokens are open-ended.
+        [LibraryImport(LibName, EntryPoint = "pdf_document_structured_warnings", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentStructuredWarnings(
+            NativeHandle handle,
+            out int errorCode);
+
+        [LibraryImport(LibName, EntryPoint = "pdf_document_take_structured_warnings", StringMarshalling = StringMarshalling.Utf8)]
+        [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static partial IntPtr PdfDocumentTakeStructuredWarnings(
+            NativeHandle handle,
+            out int errorCode);
+
         [LibraryImport(LibName, EntryPoint = "pdf_document_extract_text_auto", StringMarshalling = StringMarshalling.Utf8)]
         [UnmanagedCallConv(CallConvs = new[] { typeof(CallConvCdecl) })]
         public static partial IntPtr PdfDocumentExtractTextAuto(

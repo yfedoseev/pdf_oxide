@@ -380,6 +380,11 @@ typedef struct {
                                 error:(NSError**)error;
 - (nullable NSString*)classifyPage:(NSInteger)page error:(NSError**)error;
 - (nullable NSString*)classifyDocumentWithError:(NSError**)error;
+/// Structured diagnostics as a raw JSON array string (`"[]"` when there are
+/// none). Non-destructive; `category` tokens are open-ended.
+- (nullable NSString*)structuredWarningsWithError:(NSError**)error;
+/// As `structuredWarningsWithError:`, but drains the returned entries.
+- (nullable NSString*)takeStructuredWarningsWithError:(NSError**)error;
 
 // ── Header / footer / artifact removal ───────────────────────────────────────
 - (int32_t)eraseHeader:(NSInteger)page error:(NSError**)error;

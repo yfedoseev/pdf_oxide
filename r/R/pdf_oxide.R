@@ -2804,6 +2804,18 @@ pdf_classify_page <- function(doc, page) {
 #' @export
 pdf_classify_document <- function(doc) .Call(C_r_doc_classify_document, doc)
 
+#' The document's structured diagnostics as a raw JSON array string (`"[]"`
+#' when there are none). Non-destructive. Each entry's `category` is an
+#' open-ended snake_case token -- tolerate tokens you do not know.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_structured_warnings <- function(doc) .Call(C_r_doc_structured_warnings, doc)
+
+#' As `pdf_structured_warnings()`, but drains: the returned entries are removed.
+#' @param doc A `pdfoxide_document`.
+#' @export
+pdf_take_structured_warnings <- function(doc) .Call(C_r_doc_take_structured_warnings, doc)
+
 # ── Header / footer / artifact removal ────────────────────────────────────────
 
 #' Remove repeating headers / footers / artifacts across the document.

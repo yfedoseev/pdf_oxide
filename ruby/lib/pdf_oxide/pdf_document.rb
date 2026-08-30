@@ -170,6 +170,32 @@ module PdfOxide
       StringMarshaller.from_c_string(ptr) || ''
     end
 
+    # This document's structured diagnostics, as a raw JSON array string
+    # (`"[]"` when there are none). Non-destructive: a later call returns
+    # the same entries plus any raised since.
+    #
+    # Left unparsed on purpose: each entry's `category` is an open-ended
+    # snake_case token and new ones ship in minor releases, so callers
+    # must tolerate tokens they do not know.
+    # @return [String] JSON array.
+    def structured_warnings
+      err = ::FFI::MemoryPointer.new(:int32)
+      ptr = Bindings.pdf_document_structured_warnings(handle, err)
+      raise_for_code(err.read_int32, 'structured_warnings')
+      StringMarshaller.from_c_string(ptr) || ''
+    end
+
+    # As {#structured_warnings}, but drains: the returned entries are
+    # removed, so a batch pipeline can read per document without the sink
+    # growing across the run.
+    # @return [String] JSON array.
+    def take_structured_warnings
+      err = ::FFI::MemoryPointer.new(:int32)
+      ptr = Bindings.pdf_document_take_structured_warnings(handle, err)
+      raise_for_code(err.read_int32, 'take_structured_warnings')
+      StringMarshaller.from_c_string(ptr) || ''
+    end
+
     # Convert one page to Markdown.
     # @param page_index [Integer]
     # @return [String] Markdown.
