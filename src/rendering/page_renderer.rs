@@ -9883,7 +9883,7 @@ fn project_lab_to_rgb(dict_obj: &Object, values: &[f32]) -> Option<(f32, f32, f3
 /// Linear XYZ → sRGB via the standard ITU-R BT.709 / sRGB primaries
 /// matrix and the §IEC 61966-2-1 piecewise transfer function. Inputs
 /// are CIE XYZ tristimulus values normalised so Y_white = 1.
-fn xyz_to_srgb(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+pub(crate) fn xyz_to_srgb(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     // sRGB primaries matrix (D65 reference). The PDF Cal* /Lab specs
     // express XYZ tristimulus values; sRGB is the canonical output.
     let r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;

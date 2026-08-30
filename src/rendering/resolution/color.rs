@@ -171,7 +171,8 @@ impl ColorResolver {
 
         match type_name {
             "DeviceGray" | "G" | "CalGray" => Ok(first_as_gray(components, alpha)),
-            "DeviceRGB" | "RGB" | "CalRGB" => Ok(three_as_rgb(components, alpha)),
+            "DeviceRGB" | "RGB" => Ok(three_as_rgb(components, alpha)),
+            "CalRGB" => Ok(resolve_calrgb(arr, components, ctx, alpha)),
             "DeviceCMYK" | "CMYK" => Ok(four_as_cmyk_native(components, alpha)),
             "ICCBased" => self.resolve_iccbased(arr, components, ctx, alpha),
             "Separation" | "DeviceN" => {
@@ -628,6 +629,73 @@ impl ColorResolver {
             .map(|b| f32::from(*b) / 255.0)
             .collect();
         self.resolve_spaced(&base, &base_components, ctx, alpha)
+    }
+}
+
+/// §8.6.5.3 CalRGB: apply `/Gamma`, then `/Matrix`, then project XYZ to sRGB.
+///
+/// > The transformation defined by the **Gamma** and **Matrix** entries in the
+/// > **CalRGB** colour space dictionary shall be
+/// > `X = X_A x A^G_R + X_B x B^G_G + X_C x C^G_B`
+///
+/// (and likewise for Y and Z, `docs/spec/pdf.md`:10313-10320).
+///
+/// Treating the components as if they were already sRGB — which is what
+/// sharing the `DeviceRGB` arm did — skips the encoding transfer entirely.
+/// With the common `/Gamma [1 1 1]` the components are *linear*, and linear
+/// values read as sRGB render too dark: on the corpus file for this case we
+/// were 31.5 grey levels below two engines that agreed with each other while
+/// coverage matched to 0.0003, which is the signature of a colour-conversion
+/// error rather than a geometry one.
+fn resolve_calrgb(
+    arr: &[Object],
+    components: &[f32],
+    ctx: &ResolutionContext,
+    alpha: f32,
+) -> ResolvedColor {
+    let [a, b, c] = match components {
+        [a, b, c, ..] => [*a, *b, *c],
+        _ => return first_as_gray(components, alpha),
+    };
+
+    let dict = arr
+        .get(1)
+        .map(|o| ctx.doc.resolve_object(o).unwrap_or_else(|_| o.clone()));
+    let dict = dict.as_ref().and_then(|o| o.as_dict());
+
+    let nums = |key: &str, want: usize| -> Option<Vec<f32>> {
+        let v: Vec<f32> = dict?
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter_map(|o| {
+                o.as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| o.as_integer().map(|i| i as f32))
+            })
+            .collect();
+        (v.len() == want).then_some(v)
+    };
+
+    // Table 66 defaults: Gamma [1 1 1], Matrix the identity.
+    let g = nums("Gamma", 3).unwrap_or_else(|| vec![1.0, 1.0, 1.0]);
+    let m = nums("Matrix", 9).unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
+    let ag = a.max(0.0).powf(g[0]);
+    let bg = b.max(0.0).powf(g[1]);
+    let cg = c.max(0.0).powf(g[2]);
+
+    // Matrix is [XA YA ZA XB YB ZB XC YC ZC].
+    let x = m[0] * ag + m[3] * bg + m[6] * cg;
+    let y = m[1] * ag + m[4] * bg + m[7] * cg;
+    let z = m[2] * ag + m[5] * bg + m[8] * cg;
+
+    let (r, gg, bb) = crate::rendering::page_renderer::xyz_to_srgb(x, y, z);
+    ResolvedColor::Rgba {
+        r: r.clamp(0.0, 1.0),
+        g: gg.clamp(0.0, 1.0),
+        b: bb.clamp(0.0, 1.0),
+        a: alpha,
     }
 }
 
