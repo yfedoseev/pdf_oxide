@@ -8114,7 +8114,13 @@ impl PageRenderer {
             // (§11.6.5.2), not the state that set the /SMask.
             None,
         );
-        if mask_pixmap.data() == backdrop.as_slice() {
+        // Only when the file gave no /BC. An explicit backdrop is a
+        // deliberate statement about what the mask should be outside the
+        // group's own marks, and §11.6.5.2 says the group is composited
+        // against it, so a producer that wrote one meant it even if the group
+        // paints nothing. This rule is for the *default* black backdrop, which
+        // the producer never chose.
+        if smask.backdrop.is_none() && mask_pixmap.data() == backdrop.as_slice() {
             log::debug!(
                 "luminosity soft-mask group painted nothing; discarding the mask \
                  (matches MuPDF/pdfium/poppler/Ghostscript, departs from a literal \
