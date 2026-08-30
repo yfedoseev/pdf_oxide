@@ -4422,9 +4422,26 @@ impl PageRenderer {
                                             xobj.decode_stream_data()?
                                         };
 
-                                        // Form XObjects can have their own Resources dictionary.
+                                        // Form XObjects can have their own Resources dictionary,
+                                        // and §7.3.10 (pdf.md:2032) allows it to be written as a
+                                        // reference: "Except were documented to the contrary any
+                                        // object value may be a direct or an indirect reference".
+                                        // It must therefore be resolved before use — `load_resources`
+                                        // matches only `Object::Dictionary`, so handing it an
+                                        // unresolved reference loaded nothing and returned `Ok`.
+                                        // The form's fonts then went missing from the cache and its
+                                        // text fell back to a system font matched on the resource
+                                        // name, painting the raw content bytes as Latin-1.
+                                        // Table 79 (pdf.md:15249) makes this the only place those
+                                        // fonts can be found: an independent form XObject's
+                                        // resources "shall not be promoted to the outer content
+                                        // stream's resource dictionary".
+                                        let resolved_form_resources =
+                                            dict.get("Resources").and_then(|r| {
+                                                doc.resolve_object(r).ok()
+                                            });
                                         let form_resources =
-                                            dict.get("Resources").unwrap_or(resources);
+                                            resolved_form_resources.as_ref().unwrap_or(resources);
 
                                         // Save current fonts and load form-specific fonts
                                         let old_fonts = self.fonts.clone();
