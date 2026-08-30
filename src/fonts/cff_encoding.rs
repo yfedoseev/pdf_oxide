@@ -559,6 +559,101 @@ fn parse_dict_operand(data: &[u8], pos: usize) -> Option<(i32, usize)> {
     }
 }
 
+/// Decode a CFF DICT real number (`b0 == 30`) into an `f64`.
+///
+/// Adobe Technical Note #5176 §4 encodes a real as packed nibbles: `0`-`9` are
+/// digits, `0xa` a decimal point, `0xb` `E`, `0xc` `E-`, `0xe` a minus sign and
+/// `0xf` terminates. `parse_dict_operand` deliberately discards these — it only
+/// needs the integer offsets — so this reads them properly where the value
+/// matters.
+///
+/// Returns `(value, bytes consumed including the 30 marker)`.
+fn parse_dict_real(data: &[u8], pos: usize) -> Option<(f64, usize)> {
+    if pos >= data.len() || data[pos] != 30 {
+        return None;
+    }
+    let mut text = String::new();
+    let mut i = pos + 1;
+    while i < data.len() {
+        for nib in [(data[i] >> 4) & 0x0F, data[i] & 0x0F] {
+            match nib {
+                0..=9 => text.push((b'0' + nib) as char),
+                0xa => text.push('.'),
+                0xb => text.push('E'),
+                0xc => text.push_str("E-"),
+                0xe => text.push('-'),
+                0xf => return text.parse::<f64>().ok().map(|v| (v, i - pos + 1)),
+                _ => {}, // 0xd is reserved
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The uniform glyph-space scale declared by a bare CFF's Top DICT
+/// `/FontMatrix` (Adobe TN #5176, operator `12 7`), if it has one and it is a
+/// plain uniform scale.
+///
+/// ISO 32000-1:2008 §9.2.2 (`docs/spec/pdf.md`:8459-8461) fixes glyph space:
+/// "The transformation from glyph space to text space shall be defined by the
+/// font matrix. For most types of fonts, this matrix shall be predefined to map
+/// 1000 units of glyph space to 1 unit of text space." A CFF is free to declare
+/// otherwise, and subsetters targeting a 2048-unit em routinely do. The
+/// charstring coordinates are then in those units, so assuming 1000 paints
+/// every outline at `2048/1000` of its intended size.
+///
+/// Returns `None` for a skewed, rotated, non-uniform or absent matrix — the
+/// caller keeps its 1000-unit default, which is also the CFF default.
+pub(crate) fn parse_cff_font_matrix_scale(font_data: &[u8]) -> Option<f64> {
+    let cff_data = extract_cff_from_opentype(font_data).unwrap_or(font_data);
+    if cff_data.len() < 4 || cff_data[0] != 1 {
+        return None;
+    }
+    let hdr_size = cff_data[2] as usize;
+    let (_, after_name) = parse_index(cff_data, hdr_size)?;
+    let (top_dicts, _) = parse_index(cff_data, after_name)?;
+    let dict = top_dicts.first()?;
+
+    let mut operands: Vec<f64> = Vec::new();
+    let mut pos = 0usize;
+    while pos < dict.len() {
+        let b0 = dict[pos];
+        if b0 <= 21 {
+            let op = if b0 == 12 {
+                pos += 1;
+                if pos >= dict.len() {
+                    break;
+                }
+                (12u16 << 8) | dict[pos] as u16
+            } else {
+                b0 as u16
+            };
+            // 12 7 = FontMatrix, six operands [a b c d e f].
+            if op == 0x0C07 && operands.len() >= 6 {
+                let m = &operands[operands.len() - 6..];
+                let (a, b, c, d) = (m[0], m[1], m[2], m[3]);
+                // Only a plain uniform scale is safe to fold into unitsPerEm.
+                if b.abs() < 1e-12 && c.abs() < 1e-12 && a > 0.0 && (a - d).abs() < 1e-12 {
+                    return Some(a);
+                }
+                return None;
+            }
+            operands.clear();
+            pos += 1;
+        } else if b0 == 30 {
+            let (v, used) = parse_dict_real(dict, pos)?;
+            operands.push(v);
+            pos += used;
+        } else {
+            let (v, used) = parse_dict_operand(dict, pos)?;
+            operands.push(v as f64);
+            pos += used;
+        }
+    }
+    None
+}
+
 /// Parse a CFF Top DICT to extract encoding and charset offsets.
 fn parse_top_dict(dict_data: &[u8]) -> (i32, i32) {
     let mut encoding_offset: i32 = 0; // Default: StandardEncoding
@@ -2478,5 +2573,73 @@ mod tests {
         // For this helper we only need the first 2 bytes.
         let data = [0x01u8, 0x2C]; // count = 300 (0x012C)
         assert_eq!(read_index_count(&data, 0), Some(300));
+    }
+
+    /// A bare CFF whose Top DICT declares `/FontMatrix [1/2048 0 0 1/2048 0 0]`.
+    ///
+    /// Built here rather than embedded as a fixture. Layout: header
+    /// `01 00 04 01`, Name INDEX ("Test"), Top DICT INDEX carrying six real
+    /// operands then operator `12 7`, then an integer and operator `17`
+    /// (CharStrings), empty String and GlobalSubr INDEXes, and a CharStrings
+    /// INDEX with two trivial glyphs.
+    ///
+    /// `1E 0A 00 04 88 28 12 FF` is the real-number encoding of 0.00048828125
+    /// — nibbles `. 0 0 0 4 8 8 2 8 1 2` terminated by `F`.
+    const CFF_2048: &[u8] = &[
+        0x01, 0x00, 0x04, 0x01, 0x00, 0x01, 0x01, 0x01, 0x05, 0x54, 0x65, 0x73, 0x74, 0x00, 0x01,
+        0x01, 0x01, 0x21, 0x1E, 0x0A, 0x00, 0x04, 0x88, 0x28, 0x12, 0xFF, 0x1E, 0x0A, 0xFF, 0x1E,
+        0x0A, 0xFF, 0x1E, 0x0A, 0x00, 0x04, 0x88, 0x28, 0x12, 0xFF, 0x1E, 0x0A, 0xFF, 0x1E, 0x0A,
+        0xFF, 0x0C, 0x07, 0xC1, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x01, 0x06, 0x0B,
+        0x1C, 0x04, 0x00, 0x8B, 0x0E, 0x1C, 0x04, 0x00, 0x8B, 0x0E,
+    ];
+
+    /// The same font with the `/FontMatrix` operator removed, so the CFF
+    /// default of 1/1000 applies and nothing should be folded in.
+    fn cff_without_font_matrix() -> Vec<u8> {
+        let mut v = CFF_2048.to_vec();
+        // Strip the six real operands and the `0C 07` operator from the Top
+        // DICT, leaving only the CharStrings offset — then fix the INDEX
+        // offset byte that follows the count/offSize header.
+        let start = 18; // first byte of the Top DICT data
+        let end = 48; // one past the `0C 07`
+        v.drain(start..end);
+        v[17] = 0x21 - (end - start) as u8;
+        v
+    }
+
+    /// A subsetter targeting a 2048-unit em declares it, and the glyph-space
+    /// scale must come from the font rather than from the 1000-unit
+    /// assumption in ISO 32000-1 §9.2.2 ("For **most** types of fonts").
+    #[test]
+    fn a_font_matrix_of_one_over_2048_is_read() {
+        let sx = parse_cff_font_matrix_scale(CFF_2048)
+            .expect("the Top DICT declares a FontMatrix, so a scale must come back");
+        assert!(
+            (1.0 / sx - 2048.0).abs() < 1.0,
+            "expected a 2048-unit em, got 1/{sx} = {}",
+            1.0 / sx
+        );
+    }
+
+    /// No `/FontMatrix` means the CFF default, and the caller must keep its own
+    /// 1000-unit assumption rather than being handed a value to fold in.
+    #[test]
+    fn an_absent_font_matrix_yields_nothing_to_fold_in() {
+        assert_eq!(
+            parse_cff_font_matrix_scale(&cff_without_font_matrix()),
+            None,
+            "a CFF with no FontMatrix must not override the default em size"
+        );
+    }
+
+    /// The real-number decoder handles the forms Adobe TN #5176 §4 defines:
+    /// a decimal point, a leading minus, and an exponent.
+    #[test]
+    fn dict_reals_decode() {
+        // 0.001 -> nibbles . 0 0 1, terminated
+        assert_eq!(parse_dict_real(&[0x1E, 0x0A, 0x00, 0x1F], 0), Some((0.001, 4)));
+        // -2.5 -> minus, 2, point, 5
+        let (v, _) = parse_dict_real(&[0x1E, 0xE2, 0xA5, 0xFF], 0).expect("negative real");
+        assert!((v + 2.5).abs() < 1e-9, "expected -2.5, got {v}");
     }
 }
