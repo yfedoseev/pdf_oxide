@@ -4460,6 +4460,7 @@ impl PageRenderer {
                                             doc,
                                             page_num,
                                             form_resources,
+                                            clip_mask,
                                             Some(&invoking),
                                         ) {
                                             log::warn!(
@@ -5448,6 +5449,7 @@ impl PageRenderer {
         doc: &PdfDocument,
         page_num: usize,
         parent_resources: &Object,
+        caller_clip: Option<&tiny_skia::Mask>,
         inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         self.render_form_xobject_scoped(
@@ -5459,6 +5461,7 @@ impl PageRenderer {
             page_num,
             parent_resources,
             true,
+            caller_clip,
             inherited,
         )
     }
@@ -5486,6 +5489,7 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
         clip_to_bbox: bool,
+        caller_clip: Option<&tiny_skia::Mask>,
         inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         // A form's own /Resources /XObject may name the form itself, directly
@@ -5507,6 +5511,7 @@ impl PageRenderer {
             page_num,
             parent_resources,
             clip_to_bbox,
+            caller_clip,
             inherited,
         );
         self.form_depth -= 1;
@@ -5524,6 +5529,7 @@ impl PageRenderer {
         page_num: usize,
         parent_resources: &Object,
         clip_to_bbox: bool,
+        caller_clip: Option<&tiny_skia::Mask>,
         inherited: Option<&GraphicsState>,
     ) -> Result<()> {
         // Parse /Matrix from form dict (default: identity)
@@ -5645,9 +5651,12 @@ impl PageRenderer {
                 // any other, so §8.10.2 step (c) applies to it too; without
                 // the clip the group's content bleeds past its own box before
                 // the group is composited onto the parent.
-                let bbox_clip = clip_to_bbox
-                    .then(|| form_bbox_clip(dict, &group_pixmap, combined_transform))
-                    .flatten();
+                let bbox_clip = intersect_clips(
+                    clip_to_bbox
+                        .then(|| form_bbox_clip(dict, &group_pixmap, combined_transform))
+                        .flatten(),
+                    caller_clip,
+                );
                 self.execute_operators_clipped(
                     &mut group_pixmap,
                     combined_transform,
@@ -5676,9 +5685,12 @@ impl PageRenderer {
             }
         } else {
             // Non-group form XObject: render directly, clipped to its /BBox.
-            let bbox_clip = clip_to_bbox
-                .then(|| form_bbox_clip(dict, pixmap, combined_transform))
-                .flatten();
+            let bbox_clip = intersect_clips(
+                clip_to_bbox
+                    .then(|| form_bbox_clip(dict, pixmap, combined_transform))
+                    .flatten(),
+                caller_clip,
+            );
             self.execute_operators_clipped(
                 pixmap,
                 combined_transform,
@@ -8414,7 +8426,9 @@ impl PageRenderer {
             page_num,
             &form_resources_obj,
             // A soft-mask group is evaluated in its own initial state
-            // (§11.6.5.2), not the state that set the /SMask.
+            // (§11.6.5.2), not the state that set the /SMask — so neither the
+            // invoking graphics state nor the clip in force at the `gs` applies.
+            None,
             None,
         );
         // Only when the file gave no /BC. An explicit backdrop is a
@@ -8893,8 +8907,10 @@ impl PageRenderer {
                                     false,
                                     // An annotation appearance is not invoked
                                     // by a `Do` inside a content stream, so
-                                    // there is no invoking state to inherit:
-                                    // §12.5.5 renders it in its own.
+                                    // there is neither a clip in force nor an
+                                    // invoking state to inherit: §12.5.5
+                                    // renders it in its own.
+                                    None,
                                     None,
                                 )?;
 
@@ -11201,6 +11217,31 @@ fn appearance_fit_matrix(
         return None;
     }
     Some(Transform::from_row(sx, 0.0, 0.0, sy, rx0 - sx * tx0, ry0 - sy * ty0))
+}
+
+/// Intersect a form's own `/BBox` clip with the clip in force at its `Do`.
+///
+/// ISO 32000-1:2008 §8.10.2 lists what invoking a form does to the graphics
+/// state, and clipping the form to its `/BBox` is *in addition to* the current
+/// clipping path — §8.5.4 makes the clip cumulative: a new path "shall be
+/// intersected with the current clipping path". The caller's clip was being
+/// dropped at the form boundary, so a form invoked inside a `re W n` painted
+/// across everything the clip was there to exclude.
+fn intersect_clips(
+    own: Option<tiny_skia::Mask>,
+    caller: Option<&tiny_skia::Mask>,
+) -> Option<tiny_skia::Mask> {
+    match (own, caller) {
+        (Some(mut m), Some(c)) => {
+            for (mv, cv) in m.data_mut().iter_mut().zip(c.data().iter()) {
+                *mv = (*mv).min(*cv);
+            }
+            Some(m)
+        },
+        (Some(m), None) => Some(m),
+        (None, Some(c)) => Some(c.clone()),
+        (None, None) => None,
+    }
 }
 
 fn form_bbox_clip(
