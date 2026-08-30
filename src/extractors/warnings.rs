@@ -194,6 +194,22 @@ pub fn snapshot_global_warnings() -> Vec<Warning> {
     WARNING_SINK.with(|sink| sink.borrow().clone())
 }
 
+/// Put warnings back at the front of this thread's sink.
+///
+/// Used to restore diagnostics belonging to a document that is mid-flight when
+/// another document borrows the thread. Order is preserved so a later drain
+/// sees them as they were raised.
+pub(crate) fn restore_global_warnings(mut warnings: Vec<Warning>) {
+    if warnings.is_empty() {
+        return;
+    }
+    WARNING_SINK.with(|sink| {
+        let mut v = sink.borrow_mut();
+        warnings.append(&mut v);
+        *v = warnings;
+    });
+}
+
 impl WarningSink {
     /// Create an empty sink.
     pub fn new() -> Self {
