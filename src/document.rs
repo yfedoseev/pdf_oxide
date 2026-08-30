@@ -13449,6 +13449,17 @@ impl PdfDocument {
     /// Drain and return all accumulated structured warnings.
     /// Companion to [`Self::structured_warnings`].
     pub fn take_structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        // Drain the free-function sink first, exactly as the non-draining
+        // companion does. Five of the nine producers — every parser
+        // `SpecViolation`, the operator-cap truncation, the Type 3 and missing
+        // `/ToUnicode` font diagnostics, and the dropped-glyph report — write
+        // only there, so without this a caller who uses the draining accessor
+        // saw none of them. That is the accessor the C ABI exposes, which put
+        // the gap in front of every binding.
+        let global = crate::extractors::warnings::drain_global_warnings();
+        if !global.is_empty() {
+            self.warning_sink.extend(global);
+        }
         self.warning_sink.take()
     }
 
