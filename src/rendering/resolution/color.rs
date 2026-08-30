@@ -554,16 +554,18 @@ impl ColorResolver {
         &self,
         arr: &[Object],
         components: &[f32],
-        _ctx: &ResolutionContext,
+        ctx: &ResolutionContext,
         alpha: f32,
     ) -> Result<ResolvedColor> {
-        // Indexed: [/Indexed base hival lookup]. The component is the
-        // palette index, scaled 0..255 inside the renderer's existing
-        // inline path. We replicate that fallback (gray = index/255) since
-        // the full lookup path requires palette-stream decoding the pilot
-        // operator doesn't need yet. Image extraction handles indexed
-        // images through a richer path in `src/extractors/images.rs`.
-        let _ = arr;
+        // `[/Indexed base hival lookup]` (§8.6.6.3). The operand is a palette
+        // index, and the colour is whatever the palette holds there,
+        // interpreted in `base`.
+        //
+        // This used to return `index / 255` as a grey level, which is not a
+        // fallback so much as a different picture: index 3 of a palette of
+        // saturated colours painted near-black. The file named for this case
+        // rendered a mean tone of 222.34 where four engines agree on
+        // 231.72-235.49.
         if components.is_empty() {
             return Ok(ResolvedColor::Rgba {
                 r: 0.0,
@@ -572,13 +574,100 @@ impl ColorResolver {
                 a: alpha,
             });
         }
-        let g = (components[0] / 255.0).clamp(0.0, 1.0);
-        Ok(ResolvedColor::Rgba {
-            r: g,
-            g,
-            b: g,
-            a: alpha,
-        })
+        if arr.len() < 4 {
+            return Ok(first_as_gray(components, alpha));
+        }
+
+        let base = ctx
+            .doc
+            .resolve_object(&arr[1])
+            .unwrap_or_else(|_| arr[1].clone());
+        let hival = ctx
+            .doc
+            .resolve_object(&arr[2])
+            .unwrap_or_else(|_| arr[2].clone())
+            .as_integer()
+            .unwrap_or(0)
+            .max(0) as usize;
+
+        // §8.6.6.3 (`docs/spec/pdf.md`:11053-11054): the index "should be an
+        // integer in the range 0 to hival. If the value is a real number, it
+        // shall be rounded to the nearest integer; if it is outside the range
+        // 0 to hival, it shall be adjusted to the nearest value within that
+        // range." Both halves matter here — the test file for this case uses
+        // `-17 sc`, `6.5 sc` and `17 sc` and annotates each with the expected
+        // snap.
+        let idx = (components[0].round().max(0.0) as usize).min(hival);
+
+        let lookup = ctx
+            .doc
+            .resolve_object(&arr[3])
+            .unwrap_or_else(|_| arr[3].clone());
+        let palette: Vec<u8> = match &lookup {
+            Object::String(bytes) => bytes.clone(),
+            Object::Stream { .. } => match lookup.decode_stream_data() {
+                Ok(b) => b,
+                Err(_) => return Ok(first_as_gray(components, alpha)),
+            },
+            _ => return Ok(first_as_gray(components, alpha)),
+        };
+
+        let n = base_component_count(&base, ctx);
+        if n == 0 {
+            return Ok(first_as_gray(components, alpha));
+        }
+        let off = idx * n;
+        if off + n > palette.len() {
+            return Ok(first_as_gray(components, alpha));
+        }
+
+        // Palette entries are bytes; the base space takes components in its
+        // own range, which for every family reachable here is 0..1.
+        let base_components: Vec<f32> = palette[off..off + n]
+            .iter()
+            .map(|b| f32::from(*b) / 255.0)
+            .collect();
+        self.resolve_spaced(&base, &base_components, ctx, alpha)
+    }
+}
+
+/// Number of colour components the base of an `/Indexed` space takes.
+///
+/// Only the families a palette base may legally be (§8.6.6.3 excludes
+/// `/Pattern` and another `/Indexed`); anything unrecognised answers 0 so the
+/// caller can fall back rather than index a palette with the wrong stride.
+fn base_component_count(base: &Object, ctx: &ResolutionContext) -> usize {
+    if let Some(name) = base.as_name() {
+        return match name {
+            "DeviceGray" | "G" | "CalGray" => 1,
+            "DeviceRGB" | "RGB" | "CalRGB" | "Lab" => 3,
+            "DeviceCMYK" | "CMYK" => 4,
+            _ => 0,
+        };
+    }
+    let Some(arr) = base.as_array() else {
+        return 0;
+    };
+    match arr.first().and_then(|o| o.as_name()) {
+        Some("DeviceGray" | "G" | "CalGray") => 1,
+        Some("DeviceRGB" | "RGB" | "CalRGB" | "Lab") => 3,
+        Some("DeviceCMYK" | "CMYK") => 4,
+        Some("ICCBased") => arr
+            .get(1)
+            .map(|o| ctx.doc.resolve_object(o).unwrap_or_else(|_| o.clone()))
+            .and_then(|st| {
+                st.as_dict()
+                    .and_then(|d| d.get("N").and_then(|n| n.as_integer()))
+            })
+            .map(|n| n.clamp(0, 4) as usize)
+            .unwrap_or(0),
+        Some("Separation") => 1,
+        Some("DeviceN") => arr
+            .get(1)
+            .and_then(|o| o.as_array())
+            .map(|names| names.len())
+            .unwrap_or(0),
+        _ => 0,
     }
 }
 

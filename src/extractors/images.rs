@@ -1803,8 +1803,25 @@ fn expand_indexed_to_rgb_with_transform(
         } else {
             &[]
         };
+        // The palette defines the valid index range, so its last complete
+        // entry is `hival` as far as this buffer is concerned.
+        let last_entry = if n == 0 {
+            0
+        } else {
+            (palette.len() / n).saturating_sub(1)
+        };
         for x in 0..w {
-            let idx = read_index(row, x);
+            // ISO 32000-1:2008 §8.6.6.3 (`docs/spec/pdf.md`:11053-11054): the
+            // index "should be an integer in the range 0 to hival … if it is
+            // outside the range 0 to hival, it shall be adjusted to the
+            // nearest value within that range."
+            //
+            // Adjusted to the nearest value, not treated as an error. Emitting
+            // black for an out-of-range index — which is what this did — is a
+            // colour the file never asked for, and it darkens the page: on the
+            // file named for this case we rendered a mean tone of 222.34 where
+            // four engines agree on 231.72–235.49.
+            let idx = read_index(row, x).min(last_entry);
             let off = idx * n;
             if off + n > palette.len() {
                 out.extend_from_slice(&[0, 0, 0]);
@@ -2839,12 +2856,19 @@ mod indexed_tests {
     }
 
     #[test]
-    fn expand_indexed_out_of_range_index() {
-        // Palette only has 2 entries but raw has index 5 → zeroed
+    fn expand_indexed_out_of_range_index_clamps_to_the_last_entry() {
+        // ISO 32000-1:2008 §8.6.6.3 (`docs/spec/pdf.md`:11053-11054): an index
+        // "outside the range 0 to hival … shall be adjusted to the nearest
+        // value within that range". Adjusted, not zeroed — black is a colour
+        // the file never named, and emitting it darkens the image.
+        //
+        // This previously asserted `[0, 0, 0]` for the out-of-range sample,
+        // which pinned behaviour rather than a decision: the comment read only
+        // "→ zeroed" and cited nothing.
         let palette = vec![10, 20, 30, 40, 50, 60];
         let raw = vec![0, 5];
         let out = expand_indexed_to_rgb(&raw, &palette, PixelFormat::RGB, 2, 1, 8).unwrap();
-        assert_eq!(out, vec![10, 20, 30, 0, 0, 0]);
+        assert_eq!(out, vec![10, 20, 30, 40, 50, 60]);
     }
 
     #[test]
@@ -2873,7 +2897,9 @@ mod indexed_tests {
         // Index 2 (> hival) must now be treated as out-of-range → black pixel.
         let raw = vec![0, 1, 2];
         let out = expand_indexed_to_rgb(&raw, &palette, fmt, 3, 1, 8).unwrap();
-        assert_eq!(out, vec![10, 20, 30, 40, 50, 60, 0, 0, 0]);
+        // Truncated to hival = 1 (two entries), so index 2 clamps to entry 1
+        // per §8.6.6.3 rather than being zeroed.
+        assert_eq!(out, vec![10, 20, 30, 40, 50, 60, 40, 50, 60]);
     }
 
     #[test]
