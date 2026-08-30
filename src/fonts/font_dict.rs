@@ -608,7 +608,13 @@ impl FontInfo {
             // user-defined CharProcs glyph-program model; the
             // standard glyph name registry doesn't apply, so
             // extraction may fall back to glyph-name heuristics.
-            crate::extractors::warnings::push_global_warning(
+            // Straight to THIS document's sink. The free-function sink is
+            // keyed by thread, not by document, so two documents parsed in
+            // sequence on one thread take each other's warnings. `from_dict`
+            // already holds `doc`, so no signature has to change — and it must
+            // not, because this is a `pub fn` and the crate ships bindings for
+            // fourteen languages.
+            doc.push_structured_warning(
                 crate::extractors::warnings::Warning {
                     category: crate::extractors::warnings::WarningCategory::Type3Font,
                     page: None,
@@ -1080,7 +1086,10 @@ impl FontInfo {
                 // Spec §9.10.2 "ToUnicode CMaps" describes the
                 // mapping; absent ToUnicode triggers the fallback
                 // chain (Encoding → AGL → CID-as-Unicode) per §9.10.3.
-                crate::extractors::warnings::push_global_warning(
+                // Same reasoning as the Type 3 site above: the document is
+                // already in scope, so the warning is attributed to it rather
+                // than to whichever thread happened to parse it.
+                doc.push_structured_warning(
                     crate::extractors::warnings::Warning {
                         category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
                         page: None,
