@@ -3701,6 +3701,51 @@ impl PageRenderer {
     /// rather than named in the `Shading` subdictionary, so there is nothing
     /// to look up by name.
     #[allow(clippy::too_many_arguments)]
+    /// Intersect the active clip with a shading's own `/BBox` (Table 78).
+    ///
+    /// Returns `None` when the shading declares no box, when it is unusable,
+    /// or when a mask cannot be allocated — in each case the caller keeps the
+    /// clip it already had, because failing to allocate must never paint
+    /// *less* than the file asked for.
+    fn shading_bbox_mask(
+        shading: &std::collections::HashMap<String, Object>,
+        pixmap: &Pixmap,
+        transform: Transform,
+        clip_mask: Option<&tiny_skia::Mask>,
+    ) -> Option<tiny_skia::Mask> {
+        let arr = shading.get("BBox")?.as_array()?;
+        if arr.len() < 4 {
+            return None;
+        }
+        let n = |i: usize| -> Option<f32> {
+            arr.get(i).and_then(|o| {
+                o.as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| o.as_integer().map(|i| i as f32))
+            })
+        };
+        let (x0, y0, x1, y1) = (n(0)?, n(1)?, n(2)?, n(3)?);
+        // §7.9.5: a rectangle may be given by any two diagonally opposite
+        // corners, so normalise rather than assume.
+        let rect = tiny_skia::Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))?;
+
+        let mut pb = PathBuilder::new();
+        pb.push_rect(rect);
+        let path = pb.finish()?;
+        if !device_bounds_rasterizable(&path, transform) {
+            return None;
+        }
+
+        let mut mask = tiny_skia::Mask::new(pixmap.width(), pixmap.height())?;
+        guarded_mask_fill_path(&mut mask, &path, tiny_skia::FillRule::Winding, true, transform);
+        if let Some(c) = clip_mask {
+            for (mv, cv) in mask.data_mut().iter_mut().zip(c.data().iter()) {
+                *mv = (*mv).min(*cv);
+            }
+        }
+        Some(mask)
+    }
+
     fn render_shading_object(
         &self,
         pixmap: &mut Pixmap,
@@ -3718,6 +3763,20 @@ impl PageRenderer {
             },
         };
         let shading_obj = Some(shading_obj.clone());
+
+        // Table 78 (`docs/spec/pdf.md`:12997): a shading's own `/BBox` is "an
+        // array of four numbers giving the left, bottom, right, and top
+        // coordinates … interpreted in the shading's target coordinate space.
+        // If present, this bounding box shall be applied as a temporary
+        // clipping boundary when the shading is painted, in addition to the
+        // current clipping path and any other clipping boundaries in effect."
+        //
+        // Without it a pattern fill covering more area than the shading
+        // declares paints the whole fill: one page fills 595x842 with a
+        // pattern whose shading is bounded to [72 72 540 720], and we covered
+        // 74.3% of the page where the panel covers 51.9%.
+        let bbox_clip = Self::shading_bbox_mask(&shading, pixmap, transform, clip_mask);
+        let clip_mask = bbox_clip.as_ref().or(clip_mask);
 
         let shading_type = shading
             .get("ShadingType")
