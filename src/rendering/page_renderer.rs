@@ -10927,6 +10927,38 @@ fn form_bbox_clip(
     }
     let rect = tiny_skia::Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))?;
 
+    // Grow the box by half a device pixel before rasterising it.
+    //
+    // The clip exists to exclude content that lies outside the form's own
+    // box, and at that job a half-pixel makes no difference. What it does
+    // avoid is attenuating the boundary twice: a producer routinely sizes the
+    // /BBox to exactly the geometry inside it, so the edge pixels are already
+    // partially covered by the content's own antialiasing, and multiplying
+    // that by the clip's partial coverage darkens — or here, lightens — a
+    // one-pixel ring that no other renderer touches.
+    //
+    // Measured on a luminosity soft mask whose /BBox maps to exactly the outer
+    // extent of the stroke it bounds: with the clip we sat 0.54 grey levels
+    // off MuPDF, without it 0.06. Rasterising non-antialiased instead makes it
+    // worse (0.68), because a box ending on a half-pixel then loses the whole
+    // column rather than half of it.
+    let inflate = {
+        // Half a device pixel, expressed back in the box's own space.
+        let sx = transform.sx.hypot(transform.ky).abs();
+        let sy = transform.kx.hypot(transform.sy).abs();
+        (
+            if sx > f32::EPSILON { 0.5 / sx } else { 0.0 },
+            if sy > f32::EPSILON { 0.5 / sy } else { 0.0 },
+        )
+    };
+    let rect = tiny_skia::Rect::from_ltrb(
+        rect.left() - inflate.0,
+        rect.top() - inflate.1,
+        rect.right() + inflate.0,
+        rect.bottom() + inflate.1,
+    )
+    .unwrap_or(rect);
+
     let mut pb = PathBuilder::new();
     pb.push_rect(rect);
     let path = pb.finish()?;
