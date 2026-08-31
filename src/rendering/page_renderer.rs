@@ -2555,17 +2555,49 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let adv = self.text_rasterizer.render_text(
-                                pixmap,
-                                text,
-                                transform,
-                                gs,
-                                colors.as_ref(),
-                                resources,
-                                doc,
-                                clip,
-                                &self.fonts,
-                            )?;
+                            // A shading pattern paints the glyphs through
+                            // their own coverage; the advance still has to come
+                            // from the font, or the text matrix stops moving.
+                            let pattern_painted = if self.text_takes_a_fill_pattern(gs) {
+                                match self.glyph_coverage_mask(
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    gs,
+                                    |r, scratch, cgs, fonts| {
+                                        let _ = r.render_text(
+                                            scratch, text, transform, cgs, None, resources, doc,
+                                            clip, fonts,
+                                        );
+                                    },
+                                ) {
+                                    Some(mask) => self.paint_pattern_through_mask_from_resources(
+                                        pixmap,
+                                        &mask,
+                                        base_transform,
+                                        gs,
+                                        doc,
+                                        resources,
+                                    )?,
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            };
+                            let adv = if pattern_painted {
+                                self.text_rasterizer.measure_text(text, gs, &self.fonts)
+                            } else {
+                                self.text_rasterizer.render_text(
+                                    pixmap,
+                                    text,
+                                    transform,
+                                    gs,
+                                    colors.as_ref(),
+                                    resources,
+                                    doc,
+                                    clip,
+                                    &self.fonts,
+                                )?
+                            };
                             let gs_for_apply = gs_stack.current().clone();
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
@@ -2693,17 +2725,49 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let adv = self.text_rasterizer.render_text(
-                                pixmap,
-                                text,
-                                transform,
-                                gs,
-                                colors.as_ref(),
-                                resources,
-                                doc,
-                                clip,
-                                &self.fonts,
-                            )?;
+                            // A shading pattern paints the glyphs through
+                            // their own coverage; the advance still has to come
+                            // from the font, or the text matrix stops moving.
+                            let pattern_painted = if self.text_takes_a_fill_pattern(gs) {
+                                match self.glyph_coverage_mask(
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    gs,
+                                    |r, scratch, cgs, fonts| {
+                                        let _ = r.render_text(
+                                            scratch, text, transform, cgs, None, resources, doc,
+                                            clip, fonts,
+                                        );
+                                    },
+                                ) {
+                                    Some(mask) => self.paint_pattern_through_mask_from_resources(
+                                        pixmap,
+                                        &mask,
+                                        base_transform,
+                                        gs,
+                                        doc,
+                                        resources,
+                                    )?,
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            };
+                            let adv = if pattern_painted {
+                                self.text_rasterizer.measure_text(text, gs, &self.fonts)
+                            } else {
+                                self.text_rasterizer.render_text(
+                                    pixmap,
+                                    text,
+                                    transform,
+                                    gs,
+                                    colors.as_ref(),
+                                    resources,
+                                    doc,
+                                    clip,
+                                    &self.fonts,
+                                )?
+                            };
                             let gs_for_apply = gs_stack.current().clone();
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
@@ -2827,17 +2891,46 @@ impl PageRenderer {
                                     array, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let adv = self.text_rasterizer.render_tj_array(
-                                pixmap,
-                                array,
-                                transform,
-                                gs,
-                                colors.as_ref(),
-                                resources,
-                                doc,
-                                clip,
-                                &self.fonts,
-                            )?;
+                            let pattern_painted = if self.text_takes_a_fill_pattern(gs) {
+                                match self.glyph_coverage_mask(
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    gs,
+                                    |r, scratch, cgs, fonts| {
+                                        let _ = r.render_tj_array(
+                                            scratch, array, transform, cgs, None, resources, doc,
+                                            clip, fonts,
+                                        );
+                                    },
+                                ) {
+                                    Some(mask) => self.paint_pattern_through_mask_from_resources(
+                                        pixmap,
+                                        &mask,
+                                        base_transform,
+                                        gs,
+                                        doc,
+                                        resources,
+                                    )?,
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            };
+                            let adv = if pattern_painted {
+                                self.text_rasterizer.measure_tj_array(array, gs, &self.fonts)
+                            } else {
+                                self.text_rasterizer.render_tj_array(
+                                    pixmap,
+                                    array,
+                                    transform,
+                                    gs,
+                                    colors.as_ref(),
+                                    resources,
+                                    doc,
+                                    clip,
+                                    &self.fonts,
+                                )?
+                            };
                             let gs_for_apply = gs_stack.current().clone();
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
@@ -2974,17 +3067,49 @@ impl PageRenderer {
                                     text, transform, gs, resources, doc, clip,
                                 )
                             });
-                            let adv = self.text_rasterizer.render_text(
-                                pixmap,
-                                text,
-                                transform,
-                                gs,
-                                colors.as_ref(),
-                                resources,
-                                doc,
-                                clip,
-                                &self.fonts,
-                            )?;
+                            // A shading pattern paints the glyphs through
+                            // their own coverage; the advance still has to come
+                            // from the font, or the text matrix stops moving.
+                            let pattern_painted = if self.text_takes_a_fill_pattern(gs) {
+                                match self.glyph_coverage_mask(
+                                    pixmap.width(),
+                                    pixmap.height(),
+                                    gs,
+                                    |r, scratch, cgs, fonts| {
+                                        let _ = r.render_text(
+                                            scratch, text, transform, cgs, None, resources, doc,
+                                            clip, fonts,
+                                        );
+                                    },
+                                ) {
+                                    Some(mask) => self.paint_pattern_through_mask_from_resources(
+                                        pixmap,
+                                        &mask,
+                                        base_transform,
+                                        gs,
+                                        doc,
+                                        resources,
+                                    )?,
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            };
+                            let adv = if pattern_painted {
+                                self.text_rasterizer.measure_text(text, gs, &self.fonts)
+                            } else {
+                                self.text_rasterizer.render_text(
+                                    pixmap,
+                                    text,
+                                    transform,
+                                    gs,
+                                    colors.as_ref(),
+                                    resources,
+                                    doc,
+                                    clip,
+                                    &self.fonts,
+                                )?
+                            };
                             let gs_for_apply = gs_stack.current().clone();
                             if let Some(snap) = cmyk_compose_snap {
                                 self.apply_cmyk_compose_after_paint(
@@ -5772,6 +5897,87 @@ impl PageRenderer {
             Some(Object::Array(a)) => a.first().and_then(|o| o.as_name()) == Some("Pattern"),
             _ => false,
         }
+    }
+
+    /// Build a glyph-outline coverage mask for a text show.
+    ///
+    /// The glyphs are re-run into a scratch pixmap with
+    /// [`Self::coverage_only_gs`] — opaque black on a transparent backdrop —
+    /// so the alpha channel is per-pixel coverage including antialiased edges.
+    fn glyph_coverage_mask(
+        &self,
+        width: u32,
+        height: u32,
+        gs: &GraphicsState,
+        draw: impl FnOnce(&TextRasterizer, &mut Pixmap, &GraphicsState, &HashMap<String, Arc<FontInfo>>),
+    ) -> Option<tiny_skia::Mask> {
+        let mut scratch = Pixmap::new(width, height)?;
+        let cov_gs = Self::coverage_only_gs(gs);
+        draw(&self.text_rasterizer, &mut scratch, &cov_gs, &self.fonts);
+        Some(tiny_skia::Mask::from_pixmap(
+            scratch.as_ref(),
+            tiny_skia::MaskType::Alpha,
+        ))
+    }
+
+    /// Resolve the current fill pattern from `resources` and paint it through
+    /// `mask`.
+    ///
+    /// §8.7.4.1 (`docs/spec/pdf.md`:12899-12902) names `Tj` (show text)
+    /// alongside `f` and `S` among the operators a shading pattern may paint
+    /// with, so a glyph under a pattern fill is required to take the gradient
+    /// rather than a solid colour. Table 77 (:12929) puts a type 2 pattern's
+    /// coordinates in *pattern* space, and §8.7.2 (:12338-12342) defines that
+    /// against the parent content stream's **default** space — so the pattern
+    /// matrix rides on `base_transform`, never on the CTM in force at the show,
+    /// and never on the text matrix, whose geometry lives inside the mask.
+    ///
+    /// Returns `false` when there is no pattern to paint or it is not a type 2
+    /// one, so the caller falls through to its ordinary paint. A tiling pattern
+    /// (PatternType 1) is a repeated content stream rather than a per-pixel
+    /// colour function, so a mask cannot serve it; it still paints flat.
+    fn paint_pattern_through_mask_from_resources(
+        &mut self,
+        pixmap: &mut Pixmap,
+        mask: &tiny_skia::Mask,
+        base_transform: Transform,
+        gs: &GraphicsState,
+        doc: &PdfDocument,
+        resources: &Object,
+    ) -> Result<bool> {
+        let Some(name) = gs.fill_pattern_name.as_deref() else {
+            return Ok(false);
+        };
+        // The pattern lives in the resources the show was given, which inside a
+        // form XObject is the form's own dictionary (§8.7.2 NOTE 1, :12349).
+        let Some(res_dict) = resources.as_dict() else {
+            return Ok(false);
+        };
+        let Some(group) = res_dict.get("Pattern") else {
+            return Ok(false);
+        };
+        let group = doc.resolve_object(group)?;
+        let Some(map) = group.as_dict() else {
+            return Ok(false);
+        };
+        let Some(entry) = map.get(name) else {
+            return Ok(false);
+        };
+        let pattern_obj = doc.resolve_object(entry)?;
+        self.paint_shading_pattern_through_mask(pixmap, &pattern_obj, base_transform, mask, gs, doc)
+    }
+
+    /// Whether this show should paint through a fill pattern rather than a
+    /// solid colour.
+    ///
+    /// Modes 3 and 7 paint nothing (§9.3.6) and [`Self::coverage_only_gs`]
+    /// deliberately forces mode 0, so they have to be excluded here — without
+    /// that, every invisible OCR layer under a pattern fill would paint a
+    /// visible gradient across the page.
+    fn text_takes_a_fill_pattern(&self, gs: &GraphicsState) -> bool {
+        gs.fill_pattern_name.is_some()
+            && self.is_pattern_space(&gs.fill_color_space)
+            && matches!(gs.render_mode, 0 | 2 | 4 | 6)
     }
 
     /// Paint a `PatternType 2` (shading) pattern through an arbitrary
