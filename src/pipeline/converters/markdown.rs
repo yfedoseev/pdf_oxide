@@ -2009,7 +2009,16 @@ impl MarkdownOutputConverter {
                             .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
                     // A closed wrap joins its halves directly — the marker was
                     // the hyphenation point, not a word boundary.
-                    if !wrap_closed && no_existing_ws && (visual_gap || punct_boundary) {
+                    // A footnote marker sits at the base word's advance edge,
+                    // so `has_horizontal_gap` declines it; the base being a
+                    // prose word rather than a subscript host is what separates
+                    // it from `H2O`.
+                    let marker_boundary =
+                        super::is_reference_marker_boundary(&prev.span, &span.span);
+                    if !wrap_closed
+                        && no_existing_ws
+                        && (visual_gap || punct_boundary || marker_boundary)
+                    {
                         current_line.push(' ');
                     }
                 }
