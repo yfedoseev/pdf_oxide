@@ -1588,9 +1588,40 @@ impl MarkdownOutputConverter {
             }
 
             // Check for paragraph break or line break
-            let same_line = prev_span
+            let mut same_line = prev_span
                 .map(|prev| (span.span.bbox.y - prev.span.bbox.y).abs() < span.span.font_size * 0.5)
                 .unwrap_or(true);
+
+            // Close a soft-hyphen wrap, using the same geometry the text
+            // assembler uses. §14.8.2.2.3 makes U+00AD a break offered *inside*
+            // a word, and §9.4.2 leaves the glyph positions as the only evidence
+            // of where the line ended — evidence that is gone once the markdown
+            // is a string, which is why the downstream pass cannot decide this.
+            //
+            // Two signals must coincide: the baseline drops about one line, and
+            // the continuation returns left of where the previous run ended.
+            // Over the corpus that accepts genuine wraps and rejects the false
+            // joins a re-ordered scan offers, whose baseline "drop" is band
+            // jitter rather than a line advance.
+            let mut wrap_closed = false;
+            if let Some(prev) = prev_span {
+                let em = prev.span.font_size.max(span.span.font_size).max(6.0);
+                let drop = prev.span.bbox.y - span.span.bbox.y;
+                let seam_gap =
+                    span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
+                if current_line
+                    .strip_suffix('\u{00AD}')
+                    .is_some_and(|t| t.ends_with(char::is_alphabetic))
+                    && span.span.text.starts_with(char::is_alphabetic)
+                    && drop >= em * 0.6
+                    && drop <= em * 1.6
+                    && seam_gap < -em
+                {
+                    current_line.pop();
+                    same_line = true;
+                    wrap_closed = true;
+                }
+            }
 
             if let Some(prev) = prev_span {
                 // Group boundary: when group_id changes, insert a paragraph break
@@ -1976,7 +2007,9 @@ impl MarkdownOutputConverter {
                             .chars()
                             .next()
                             .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-                    if no_existing_ws && (visual_gap || punct_boundary) {
+                    // A closed wrap joins its halves directly — the marker was
+                    // the hyphenation point, not a word boundary.
+                    if !wrap_closed && no_existing_ws && (visual_gap || punct_boundary) {
                         current_line.push(' ');
                     }
                 }

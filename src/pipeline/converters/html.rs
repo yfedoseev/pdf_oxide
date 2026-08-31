@@ -614,10 +614,39 @@ impl HtmlOutputConverter {
             //      tokens come out as "InpatientBed" because the same_line gate
             //      above skips the space-insertion check whenever y_diff >
             //      0.5 × font_size.
+            // Close a soft-hyphen wrap, using the same geometry the text
+            // assembler uses. §14.8.2.2.3 makes U+00AD a break offered *inside*
+            // a word, and §9.4.2 leaves the glyph positions as the only evidence
+            // of where the line ended — evidence that is gone once the HTML is a
+            // string, which is why the downstream pass cannot decide this.
+            //
+            // Two signals must coincide: the baseline drops about one line, and
+            // the continuation returns left of where the previous run ended. A
+            // re-ordered scan's apparent "drop" is band jitter and fails the
+            // first test.
+            let mut wrap_closed = false;
+            if let Some(prev) = prev_span {
+                let em = prev.span.font_size.max(span.span.font_size).max(6.0);
+                let drop = prev.span.bbox.y - span.span.bbox.y;
+                let seam_gap = span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
+                if current_content
+                    .strip_suffix('\u{00AD}')
+                    .is_some_and(|t| t.ends_with(char::is_alphabetic))
+                    && span.span.text.starts_with(char::is_alphabetic)
+                    && drop >= em * 0.6
+                    && drop <= em * 1.6
+                    && seam_gap < -em
+                {
+                    current_content.pop();
+                    wrap_closed = true;
+                }
+            }
+
             if let Some(prev) = prev_span {
                 let y_diff = (span.span.bbox.y - prev.span.bbox.y).abs();
                 let same_line = y_diff < span.span.font_size * 0.5;
-                let need_space_between_lines = !same_line
+                let need_space_between_lines = !wrap_closed
+                    && !same_line
                     && y_diff > 0.0
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
@@ -642,7 +671,8 @@ impl HtmlOutputConverter {
                     matches!((cs.next(), cs.next(), cs.next()),
                              (Some(c), Some('.'), None) if c.is_alphabetic())
                 };
-                let need_space_same_line = same_line
+                let need_space_same_line = !wrap_closed
+                    && same_line
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
                     && !span.span.text.starts_with(' ')
