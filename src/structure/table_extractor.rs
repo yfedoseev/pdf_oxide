@@ -485,6 +485,16 @@ pub fn extract_table_from_spans(
     table_elem: &StructElem,
     spans: &[crate::layout::TextSpan],
 ) -> Result<Table, Error> {
+    extract_table_from_spans_on_page(table_elem, spans, None)
+}
+
+/// Extract a table from one page's spans, resolving marked-content references
+/// against that page. See `extract_table_on_page`.
+pub fn extract_table_from_spans_on_page(
+    table_elem: &StructElem,
+    spans: &[crate::layout::TextSpan],
+    page: Option<u32>,
+) -> Result<Table, Error> {
     // Convert spans to TextBlocks for MCID matching, applying column-spanning
     // decimal split so that "12.11" (sailing score columns) becomes "12 11".
     let text_blocks: Vec<TextBlock> = spans
@@ -506,7 +516,7 @@ pub fn extract_table_from_spans(
             }
         })
         .collect();
-    extract_table(table_elem, &text_blocks)
+    extract_table_on_page(table_elem, &text_blocks, page)
 }
 
 /// Return the display text for a span when used as a table cell token.
@@ -570,6 +580,22 @@ pub(super) fn span_text_for_cell(span: &crate::layout::TextSpan) -> String {
 /// # Returns
 /// * `Table` containing all rows and cells
 pub fn extract_table(table_elem: &StructElem, text_blocks: &[TextBlock]) -> Result<Table, Error> {
+    extract_table_on_page(table_elem, text_blocks, None)
+}
+
+/// Extract a table, resolving marked-content references against one page.
+///
+/// `page` is the page whose spans `text_blocks` came from. A `Table` element
+/// covers the whole table however many pages it is laid out across
+/// (§14.8.4.3.4, `docs/spec/pdf.md`:37818), so without the qualifier every page
+/// emits every row of it — and, because MCID numbering restarts in each content
+/// stream (§14.7.4.2, :35825-35827), each of those rows then fills itself from
+/// whatever this page happens to have numbered the same.
+pub fn extract_table_on_page(
+    table_elem: &StructElem,
+    text_blocks: &[TextBlock],
+    page: Option<u32>,
+) -> Result<Table, Error> {
     let mut table = Table::new();
 
     // Check table structure
@@ -588,20 +614,23 @@ pub fn extract_table(table_elem: &StructElem, text_blocks: &[TextBlock]) -> Resu
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TR => {
                     // Direct row in table
-                    let row = extract_row(elem, text_blocks, false)?;
+                    if page.is_some_and(|p| !element_has_page_content(elem, p)) {
+                        continue;
+                    }
+                    let row = extract_row(elem, text_blocks, false, page)?;
                     table.add_row(row);
                 },
                 StructType::THead => {
                     // Header row group
-                    extract_row_group(elem, text_blocks, true, &mut table)?;
+                    extract_row_group(elem, text_blocks, true, &mut table, page)?;
                 },
                 StructType::TBody => {
                     // Body row group
-                    extract_row_group(elem, text_blocks, false, &mut table)?;
+                    extract_row_group(elem, text_blocks, false, &mut table, page)?;
                 },
                 StructType::TFoot => {
                     // Footer row group
-                    extract_row_group(elem, text_blocks, false, &mut table)?;
+                    extract_row_group(elem, text_blocks, false, &mut table, page)?;
                 },
                 _ => {
                     // Skip other elements (caption, etc.)
@@ -625,11 +654,15 @@ fn extract_row_group(
     text_blocks: &[TextBlock],
     is_header: bool,
     table: &mut Table,
+    page_filter: Option<u32>,
 ) -> Result<(), Error> {
     for child in &group_elem.children {
         match child {
             StructChild::StructElem(elem) if elem.struct_type == StructType::TR => {
-                let row = extract_row(elem, text_blocks, is_header)?;
+                if page_filter.is_some_and(|p| !element_has_page_content(elem, p)) {
+                    continue;
+                }
+                let row = extract_row(elem, text_blocks, is_header, page_filter)?;
                 table.add_row(row);
             },
             _ => {
@@ -645,6 +678,7 @@ fn extract_row(
     tr_elem: &StructElem,
     text_blocks: &[TextBlock],
     force_header: bool,
+    page_filter: Option<u32>,
 ) -> Result<TableRow, Error> {
     let mut row = TableRow::new(force_header);
 
@@ -653,12 +687,12 @@ fn extract_row(
             StructChild::StructElem(elem) => match elem.struct_type {
                 StructType::TH => {
                     // Header cell
-                    let cell = extract_cell(elem, text_blocks, true)?;
+                    let cell = extract_cell(elem, text_blocks, true, page_filter)?;
                     row.add_cell(cell);
                 },
                 StructType::TD => {
                     // Data cell
-                    let cell = extract_cell(elem, text_blocks, false)?;
+                    let cell = extract_cell(elem, text_blocks, false, page_filter)?;
                     row.add_cell(cell);
                 },
                 _ => {
@@ -682,10 +716,18 @@ fn extract_cell(
     cell_elem: &StructElem,
     text_blocks: &[TextBlock],
     is_header: bool,
+    page_filter: Option<u32>,
 ) -> Result<TableCell, Error> {
-    // Collect all MCIDs from this cell
-    let mut mcids = Vec::new();
-    collect_mcids(cell_elem, &mut mcids);
+    // Collect all marked-content references from this cell, each with the page
+    // whose content stream its number belongs to.
+    let mut mcid_refs = Vec::new();
+    collect_mcids(cell_elem, &mut mcid_refs);
+    // `text_blocks` are one page's spans, so a reference naming another page's
+    // stream can never be satisfied here and must not be matched by number.
+    if let Some(page) = page_filter {
+        mcid_refs.retain(|(_, p)| *p == page);
+    }
+    let mcids: Vec<u32> = mcid_refs.iter().map(|(m, _)| *m).collect();
 
     // Find all text blocks that match these MCIDs, joining them with position-aware
     // spacing: insert a space only when there is a genuine horizontal gap between
@@ -841,12 +883,22 @@ fn extract_cell(
     Ok(cell)
 }
 
-/// Recursively collect all MCIDs from a structure element and its children.
-fn collect_mcids(elem: &StructElem, mcids: &mut Vec<u32>) {
+/// Recursively collect this element's marked-content references as
+/// `(mcid, page)` pairs.
+///
+/// The page has to travel with the identifier. ISO 32000-1:2008 §14.7.4.2
+/// (`docs/spec/pdf.md`:35825-35827) says an MCID "uniquely identifies the
+/// marked-content sequence **within its content stream**", and Table 324
+/// (:35912) repeats it for the marked-content reference dictionary — so the
+/// number alone names nothing. `/Pg` (Table 324 at :35909, Table 323 at
+/// :35712) is what names the stream, and a `Table` element legitimately spans
+/// pages (§14.8.4.3.4, :37818). Dropping the page made every page's cells
+/// resolve against every other page's numbering.
+fn collect_mcids(elem: &StructElem, mcids: &mut Vec<(u32, u32)>) {
     for child in &elem.children {
         match child {
-            StructChild::MarkedContentRef { mcid, .. } => {
-                mcids.push(*mcid);
+            StructChild::MarkedContentRef { mcid, page, .. } => {
+                mcids.push((*mcid, *page));
             },
             StructChild::StructElem(child_elem) => {
                 // Recursively collect from child elements
