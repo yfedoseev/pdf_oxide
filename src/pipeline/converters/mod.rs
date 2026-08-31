@@ -445,7 +445,91 @@ pub(crate) fn span_in_table(span: &OrderedTextSpan, tables: &[Table]) -> Option<
     let sx = span.span.bbox.x;
     let sy = span.span.bbox.y;
 
+    // Two tiers ahead of the geometric fallback, so this predicate answers from
+    // what the table ACTUALLY renders rather than re-deriving ownership from a
+    // different test over a different span population.
+    //
+    // The detector claims a span by its **centre**, with a 3 pt snap, over
+    // *populated* cells. This function historically claimed by the span's
+    // **origin**, with a 2 pt slack, over the *full lattice* — placeholder cells
+    // included. Those disagree at the edges: a span whose centre snaps in from
+    // outside is rendered by the cell AND emitted in prose (duplication, at the
+    // left and bottom edges), while one whose origin lands in an empty lattice
+    // square is suppressed from prose and rendered by nobody (loss, at the top
+    // and right).
+    //
+    // `TableCell::spans` is the bridge: it holds the word spans the cell really
+    // renders, and a placeholder cell has none. That distinction already exists,
+    // so no field and no struct change is needed. Identity matching was tried
+    // before and reverted because the detector consumes
+    // `extract_table_word_spans` while the converters walk flow spans — two
+    // populations whose `sequence` values do not correspond. Geometry against
+    // the cell's own spans works where identity cannot.
+    //
+    // A tier that applies is **decisive** for its table: it answers both ways,
+    // so the span it declines is left to prose rather than falling through to a
+    // rule that would suppress it and leave it rendered by nobody.
+    let mut undecided: Vec<usize> = Vec::with_capacity(tables.len());
     for (i, table) in tables.iter().enumerate() {
+        // Tier 1 — marked content. Exact for tagged PDFs, and the same test
+        // `extract_text` applies.
+        let table_has_mcids = table
+            .rows
+            .iter()
+            .any(|r| r.cells.iter().any(|c| !c.mcids.is_empty()));
+        if table_has_mcids {
+            if let Some(mcid) = span.span.mcid {
+                if table
+                    .rows
+                    .iter()
+                    .any(|r| r.cells.iter().any(|c| c.mcids.contains(&mcid)))
+                {
+                    return Some(i);
+                }
+                continue;
+            }
+        }
+
+        // Tier 2 — the cell's own ink. Claim the span only where the runs the
+        // cell renders actually cover it, on the same line.
+        let table_has_spans = table
+            .rows
+            .iter()
+            .any(|r| r.cells.iter().any(|c| !c.spans.is_empty()));
+        if table_has_spans {
+            let sw = span.span.bbox.width;
+            let s_end = sx + sw;
+            let band = span.span.font_size.max(1.0) * 0.5;
+            let mut covered = 0.0f32;
+            for row in &table.rows {
+                for cell in &row.cells {
+                    for member in &cell.spans {
+                        if (member.bbox.y - sy).abs() > band {
+                            continue;
+                        }
+                        let m_end = member.bbox.x + member.bbox.width;
+                        let lo = sx.max(member.bbox.x);
+                        let hi = s_end.min(m_end);
+                        if hi > lo {
+                            covered += hi - lo;
+                        }
+                    }
+                }
+            }
+            if sw > 0.0 && covered >= sw * 0.5 {
+                return Some(i);
+            }
+            continue;
+        }
+
+        // Tier 3 — a table whose cells carry neither MCIDs nor spans
+        // (MCID-built tables and unit-test fixtures). The legacy geometric rule
+        // is all there is.
+        undecided.push(i);
+    }
+
+    for i in undecided {
+        let table = &tables[i];
         let Some(ref bbox) = table.bbox else { continue };
         let tolerance = 2.0;
         let in_outer_bbox = sx >= bbox.x - tolerance
@@ -1078,5 +1162,148 @@ mod tests {
         let base = marker_span(100.0, 30.0, 10.0, "SAME+Font", "phosphorylation");
         let marker = marker_span(131.0, 5.0, 6.5, "SAME+Font", "55");
         assert!(!is_reference_marker_boundary(&base, &marker));
+    }
+}
+
+#[cfg(test)]
+mod span_ownership_tests {
+    use super::*;
+    use crate::layout::TextSpan;
+    use crate::pipeline::ordered_span::OrderedTextSpan;
+    use crate::structure::table_extractor::{Table, TableCell, TableRow};
+
+    fn span_at(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
+        let mut s = TextSpan::default();
+        s.text = text.to_string();
+        s.bbox = crate::geometry::Rect { x, y, width, height: 10.0 };
+        s.font_size = 10.0;
+        s
+    }
+
+    /// A table whose single populated cell renders one run, plus an empty
+    /// placeholder cell in the lattice beside it. `bbox` covers both.
+    fn table_with_a_placeholder_cell() -> Table {
+        let mut populated = TableCell::new("Region".to_string(), false);
+        populated.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+        populated.spans = vec![span_at("Region", 102.0, 701.0, 34.0)];
+
+        // The lattice square the detector left empty — no text was placed in it.
+        let mut placeholder = TableCell::new(String::new(), false);
+        placeholder.bbox = Some(crate::geometry::Rect {
+            x: 160.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+
+        let mut row = TableRow::new(false);
+        row.add_cell(populated);
+        row.add_cell(placeholder);
+
+        let mut table = Table::new();
+        table.add_row(row);
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+        table
+    }
+
+    /// The loss half. A span whose origin lands in an empty lattice square is
+    /// rendered by no cell, so suppressing it from prose deletes it from the
+    /// document. The origin test said it belonged to the table; the cell's own
+    /// ink says otherwise, and the ink is what gets rendered.
+    #[test]
+    fn a_span_no_cell_renders_is_left_to_prose() {
+        let table = table_with_a_placeholder_cell();
+        let orphan = OrderedTextSpan::new(span_at("footnote", 165.0, 703.0, 40.0), 0);
+
+        assert_eq!(
+            span_in_table(&orphan, std::slice::from_ref(&table)),
+            None,
+            "a span sitting in an empty lattice square was suppressed from prose \
+             and is rendered by nobody, so it is lost from every surface"
+        );
+    }
+
+    /// The counter-case, and the reason the predicate cannot simply answer
+    /// `None`: a span the cell really does render must stay out of prose, or it
+    /// appears twice.
+    #[test]
+    fn a_span_a_cell_renders_is_claimed_by_it() {
+        let table = table_with_a_placeholder_cell();
+        let owned = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
+
+        assert_eq!(
+            span_in_table(&owned, std::slice::from_ref(&table)),
+            Some(0),
+            "a span the cell renders was also emitted into prose, so it appears twice"
+        );
+    }
+
+    /// A tagged table answers from marked content, which is exact — and it
+    /// answers both ways, so an unclaimed span is not swept up by geometry.
+    #[test]
+    fn marked_content_decides_a_tagged_table_both_ways() {
+        let mut cell = TableCell::new("Region".to_string(), false);
+        cell.mcids = vec![7];
+        cell.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+        let mut row = TableRow::new(false);
+        row.add_cell(cell);
+        let mut table = Table::new();
+        table.add_row(row);
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+
+        let mut inside = span_at("Region", 102.0, 701.0, 34.0);
+        inside.mcid = Some(7);
+        assert_eq!(
+            span_in_table(&OrderedTextSpan::new(inside, 0), std::slice::from_ref(&table)),
+            Some(0)
+        );
+
+        let mut other = span_at("caption", 102.0, 701.0, 34.0);
+        other.mcid = Some(9);
+        assert_eq!(
+            span_in_table(&OrderedTextSpan::new(other, 0), std::slice::from_ref(&table)),
+            None,
+            "a span the table's marked content does not claim must reach prose, \
+             even though it sits inside the table's bbox"
+        );
+    }
+
+    /// A table carrying neither marked content nor cell spans still falls back
+    /// to the geometric rule, which is all there is for it.
+    #[test]
+    fn a_bare_table_still_uses_the_geometric_rule() {
+        let mut table = Table::new();
+        table.add_row(TableRow::new(false));
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+        let inside = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
+        assert_eq!(
+            span_in_table(&inside, std::slice::from_ref(&table)),
+            Some(0)
+        );
     }
 }
