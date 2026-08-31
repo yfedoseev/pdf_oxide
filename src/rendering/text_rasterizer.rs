@@ -1607,7 +1607,25 @@ impl TextRasterizer {
                     Some(crate::fonts::CIDToGIDMap::Explicit(map)) => {
                         *map.get(char_code as usize).unwrap_or(&0)
                     },
-                    None => char_code, // CIDFontType0 + Identity-H: CID == GID
+                    // §9.7.4.2 (`docs/spec/pdf.md`:18641-18644): when the
+                    // embedded CFF's Top DICT uses CIDFont operators, "the CIDs
+                    // shall be used to determine the GID value for the glyph
+                    // procedure using the charset table in the CFF program",
+                    // and the NOTE at :18646 warns the two "may differ". Only
+                    // when it does NOT use those operators (:18649-18650) may
+                    // "the CIDs be used directly as GID values".
+                    //
+                    // Treating the CID as the GID unconditionally blanked every
+                    // glyph of a CID-keyed subset whose charset renumbers: one
+                    // headline asked for GID 13391 where the font maps that CID
+                    // to GID 107, and 13391 is past the end of a 315-glyph
+                    // CharStrings INDEX, so all 23 glyphs resolved to no
+                    // outline and the line rendered blank.
+                    None => font_info
+                        .cff_cid_to_gid
+                        .as_ref()
+                        .and_then(|m| m.get(&char_code).copied())
+                        .unwrap_or(char_code),
                 }
             } else if let Some(cff_map) = &font_info.cff_gid_map {
                 *cff_map.get(&(char_code as u8)).unwrap_or(&0)
@@ -2217,6 +2235,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: true,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
