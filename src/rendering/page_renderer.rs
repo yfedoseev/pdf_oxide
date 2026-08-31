@@ -4042,79 +4042,24 @@ impl PageRenderer {
             })
             .unwrap_or((0.0, 1.0));
 
-        // Extract endpoint component arrays from `/Function`. Handles
-        // Type 2 (exponential) — where the endpoints are evaluated by
-        // applying the shading's `/Domain` to the function's
-        // exponential interpolation — and Type 3 (stitching) — where
-        // the first sub-function's `/C0` and the last sub-function's
-        // `/C1` are taken at face value. Type 3 with non-trivial
-        // `/Encode` is not honoured; see the body comment below.
+        // Evaluate the shading's `/Function` at the two ends of `/Domain`.
+        //
+        // Reading `/C0` and `/C1` off the dictionary only ever worked for a
+        // type 2 (exponential) function. §7.10 allows three others, and a
+        // **type 3 stitching function over type 0 sampled sub-functions** —
+        // which is what a gradient exported by most authoring tools actually
+        // is — has neither entry. That fell through to `None`, and
+        // `render_axial_shading`'s black-to-white safety net then painted a
+        // grey ramp where the file asks for a colour.
+        //
+        // Evaluating also honours the stitching `/Encode`, which the previous
+        // "first sub-function's C0, last one's C1" shortcut could not: an
+        // `/Encode [1 0 1 0]` reverses each sub-domain, so those two entries
+        // are not the endpoints at all.
         let func_obj = shading.get("Function")?;
         let resolved_func = doc.resolve_object(func_obj).ok()?;
-        let func_dict = resolved_func.as_dict()?;
-        let func_type = func_dict.get("FunctionType").and_then(|o| o.as_integer())?;
-        let to_components = |arr: &[Object]| -> Vec<f32> {
-            arr.iter()
-                .map(|o| match o {
-                    Object::Real(v) => *v as f32,
-                    Object::Integer(v) => *v as f32,
-                    _ => 0.0,
-                })
-                .collect()
-        };
-        let (c0_comps, c1_comps) = match func_type {
-            2 => {
-                // Type 2: exponential interpolation
-                // f(x) = C0 + x^N * (C1 - C0).
-                // The shading's geometric `t=0` evaluates `f(Domain[0])`
-                // and `t=1` evaluates `f(Domain[1])`, so when /Domain
-                // is non-default the endpoint colours are NOT raw /C0
-                // and /C1.
-                let c0 = to_components(func_dict.get("C0").and_then(|o| o.as_array())?);
-                let c1 = to_components(func_dict.get("C1").and_then(|o| o.as_array())?);
-                let n = func_dict
-                    .get("N")
-                    .and_then(|o| match o {
-                        Object::Real(v) => Some(*v as f32),
-                        Object::Integer(v) => Some(*v as f32),
-                        _ => None,
-                    })
-                    .unwrap_or(1.0);
-                let eval = |x: f32| -> Vec<f32> {
-                    let p = x.abs().powf(n) * x.signum();
-                    c0.iter()
-                        .zip(c1.iter())
-                        .map(|(a, b)| *a + p * (*b - *a))
-                        .collect()
-                };
-                (eval(domain0), eval(domain1))
-            },
-            3 => {
-                // Type 3: stitching. The shading's `/Domain` maps to a
-                // sub-function via stitching `/Bounds` and `/Encode`
-                // arrays. The current path takes the first
-                // sub-function's `/C0` and the last sub-function's
-                // `/C1` at face value — correct for the default
-                // `Domain [0 1]` with natural `Encode`, but ignores
-                // `Encode`-driven sub-domain remapping. Documented gap.
-                let funcs = func_dict.get("Functions").and_then(|o| o.as_array())?;
-                let first = funcs.first()?;
-                let last = funcs.last().unwrap_or(first);
-                let first_resolved = doc.resolve_object(first).ok()?;
-                let last_resolved = doc.resolve_object(last).ok()?;
-                let first_dict = first_resolved.as_dict()?;
-                let last_dict = last_resolved.as_dict()?;
-                let c0 = first_dict.get("C0").and_then(|o| o.as_array())?;
-                let c1 = last_dict.get("C1").and_then(|o| o.as_array())?;
-                (to_components(c0), to_components(c1))
-            },
-            // Function types 0 (sampled) and 4 (PostScript Type 4
-            // calculator) used as the shading's own /Function are
-            // out-of-scope for endpoint pre-resolution — they produce
-            // colours at intermediate domain points, not at two fixed
-            // /C0 / /C1 arrays. Caller falls back to inline.
-            _ => return None,
-        };
+        let c0_comps = evaluate_pdf_function_at(doc, &resolved_func, domain0, 0)?;
+        let c1_comps = evaluate_pdf_function_at(doc, &resolved_func, domain1, 0)?;
 
         // Fold in `gs.fill_alpha` here — it's the alpha the inline
         // code path multiplies into each gradient stop's RGBA when
@@ -10093,6 +10038,103 @@ fn evaluate_type3_multi(
     let sub_resolved = doc.resolve_object(sub_obj).ok()?;
     let sub_dict = sub_resolved.as_dict()?;
     evaluate_bc_tint_function(doc, &sub_resolved, sub_dict, &[encoded])
+}
+
+/// Evaluate a PDF function at one point of its domain (§7.10).
+///
+/// Handles type 0 (sampled), type 2 (exponential) and type 3 (stitching),
+/// which is the closure a shading's `/Function` is drawn from in practice.
+/// Type 4 (PostScript calculator) returns `None` so the caller keeps its
+/// existing fallback.
+///
+/// `depth` bounds stitching recursion; a function whose `/Functions` entry
+/// refers back to itself would otherwise not terminate.
+fn evaluate_pdf_function_at(
+    doc: &PdfDocument,
+    func: &Object,
+    t: f32,
+    depth: u8,
+) -> Option<Vec<f32>> {
+    const MAX_FUNCTION_DEPTH: u8 = 8;
+    if depth > MAX_FUNCTION_DEPTH {
+        return None;
+    }
+    let dict = func.as_dict()?;
+    let ftype = dict.get("FunctionType").and_then(|o| o.as_integer())?;
+    let nums = |key: &str| -> Option<Vec<f32>> {
+        dict.get(key).and_then(|o| o.as_array()).map(|a| {
+            a.iter()
+                .map(|o| match o {
+                    Object::Real(v) => *v as f32,
+                    Object::Integer(v) => *v as f32,
+                    _ => 0.0,
+                })
+                .collect()
+        })
+    };
+    let domain = nums("Domain").unwrap_or_else(|| vec![0.0, 1.0]);
+    let d0 = domain.first().copied().unwrap_or(0.0);
+    let d1 = domain.get(1).copied().unwrap_or(1.0);
+    let t = t.clamp(d0.min(d1), d0.max(d1));
+
+    match ftype {
+        0 => evaluate_type0_multi(func, dict, &[t]),
+        2 => {
+            // f(x) = C0 + x^N (C1 - C0), with x the position within /Domain.
+            let c0 = nums("C0").unwrap_or_else(|| vec![0.0]);
+            let c1 = nums("C1").unwrap_or_else(|| vec![1.0]);
+            let n = dict
+                .get("N")
+                .and_then(|o| {
+                    o.as_real()
+                        .map(|r| r as f32)
+                        .or_else(|| o.as_integer().map(|i| i as f32))
+                })
+                .unwrap_or(1.0);
+            let span = d1 - d0;
+            let x = if span.abs() < f32::EPSILON {
+                0.0
+            } else {
+                (t - d0) / span
+            };
+            let k = x.powf(n);
+            Some(
+                c0.iter()
+                    .zip(c1.iter())
+                    .map(|(a, b)| a + k * (b - a))
+                    .collect(),
+            )
+        },
+        3 => {
+            // §7.10.4: /Bounds partitions /Domain into k+1 sub-domains; the
+            // sub-domain containing t is linearly remapped onto the matching
+            // /Encode pair before its sub-function is evaluated.
+            let funcs = dict.get("Functions").and_then(|o| o.as_array())?;
+            if funcs.is_empty() {
+                return None;
+            }
+            let bounds = nums("Bounds").unwrap_or_default();
+            let encode = nums("Encode").unwrap_or_default();
+            let k = bounds
+                .iter()
+                .position(|b| t < *b)
+                .unwrap_or(funcs.len() - 1)
+                .min(funcs.len() - 1);
+            let lo = if k == 0 { d0 } else { bounds[k - 1] };
+            let hi = if k >= bounds.len() { d1 } else { bounds[k] };
+            let e0 = encode.get(2 * k).copied().unwrap_or(0.0);
+            let e1 = encode.get(2 * k + 1).copied().unwrap_or(1.0);
+            let span = hi - lo;
+            let u = if span.abs() < f32::EPSILON {
+                e0
+            } else {
+                e0 + (t - lo) * (e1 - e0) / span
+            };
+            let sub = doc.resolve_object(funcs.get(k)?).ok()?;
+            evaluate_pdf_function_at(doc, &sub, u, depth + 1)
+        },
+        _ => None,
+    }
 }
 
 /// Evaluate a Type 0 (sampled) function with n-dimensional input `bc`
