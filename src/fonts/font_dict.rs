@@ -129,6 +129,15 @@ pub struct FontInfo {
     /// CFF byte_code → glyph_id mapping for embedded CFF subset fonts.
     /// Allows direct glyph rendering without Unicode cmap.
     pub cff_gid_map: Option<HashMap<u8, u16>>,
+    /// CID → GID mapping read from a **CID-keyed** CFF's charset.
+    ///
+    /// ISO 32000-1:2008 §9.7.4.2 (`docs/spec/pdf.md`:18641-18644): when the
+    /// embedded CFF's Top DICT uses CIDFont operators, "the CIDs shall be used
+    /// to determine the GID value for the glyph procedure using the charset
+    /// table in the CFF program" — and the NOTE at :18646 warns the two "may
+    /// differ". `None` means the font is not CID-keyed, in which case the same
+    /// clause (:18649-18650) says the CIDs are the GIDs.
+    pub cff_cid_to_gid: Option<HashMap<u16, u16>>,
     /// Pre-computed byte→char lookup for simple (non-Type0) fonts.
     /// Index by byte value (0-255). '\0' means "use full char_to_unicode fallback".
     /// Built lazily on first text decode. Avoids per-byte HashMap lookups.
@@ -1304,6 +1313,24 @@ impl FontInfo {
         // tables are frequently sparse (some prepress subsetters emit only
         // `space` and `A`) and would silently drop most content bytes to
         // `.notdef` without this routing.
+        // A CID-keyed CFF carries its own CID -> GID table in the charset, and
+        // §9.7.4.2 requires it to be used. Only built for Type0, since the
+        // clause is about CIDFonts; `None` for everything else means "the CID
+        // is the GID", which is the other half of the same clause.
+        let cff_cid_to_gid = if subtype == "Type0" {
+            embedded_font_data.as_ref().and_then(|data| {
+                super::cff_encoding::parse_cff_cid_to_gid(data).inspect(|map| {
+                    log::debug!(
+                        "Font '{}': CID-keyed CFF, {} CID->GID entries from the charset",
+                        base_font,
+                        map.len()
+                    );
+                })
+            })
+        } else {
+            None
+        };
+
         let cff_gid_map = if subtype != "Type0" {
             embedded_font_data.as_ref().and_then(|data| {
                 super::cff_encoding::parse_cff_gid_mapping_with_pdf_encoding(
@@ -1485,6 +1512,7 @@ impl FontInfo {
             cid_default_width,
             has_explicit_dw,
             cff_gid_map,
+            cff_cid_to_gid,
             multi_char_map: diff_multi_char_map,
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6539,6 +6567,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6582,6 +6611,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6628,6 +6658,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6671,6 +6702,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6720,6 +6752,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6770,6 +6803,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6819,6 +6853,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6866,6 +6901,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7011,6 +7047,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7146,6 +7183,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7199,6 +7237,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7245,6 +7284,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7295,6 +7335,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7341,6 +7382,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7387,6 +7429,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7437,6 +7480,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7483,6 +7527,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7529,6 +7574,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7579,6 +7625,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7624,6 +7671,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7669,6 +7717,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7714,6 +7763,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7759,6 +7809,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7804,6 +7855,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7849,6 +7901,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7894,6 +7947,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7939,6 +7993,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8232,6 +8287,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8289,6 +8345,7 @@ mod tests {
             cid_default_width: 800.0, // CID default width
             has_explicit_dw: true,    // F15: /DW was explicitly set
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8342,6 +8399,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8405,6 +8463,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8465,6 +8524,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10645,6 +10705,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10699,6 +10760,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10749,6 +10811,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10797,6 +10860,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10851,6 +10915,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -11002,6 +11067,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
