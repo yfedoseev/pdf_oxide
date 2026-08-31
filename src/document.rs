@@ -1044,6 +1044,26 @@ impl Drop for SinkScope<'_> {
     }
 }
 
+/// What the geometry at a seam says about a soft-hyphen wrap.
+///
+/// ISO 32000-1:2008 §14.8.2.2.3 makes U+00AD a break offered *inside* a word,
+/// so a marker with a letter on each side is either a wrap to close or a
+/// coincidence to leave alone — and §9.4.2 puts the only evidence in the glyph
+/// positions, which are gone once the text is assembled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoftHyphenSeam {
+    /// A line wrap: the baseline dropped by about one line and the
+    /// continuation returned to the left of where the previous run ended.
+    Close,
+    /// Neither a wrap nor contiguous glyphs. The marker has to survive, and
+    /// the seam has to be made non-empty so nothing downstream reads string
+    /// adjacency as page adjacency.
+    Keep,
+    /// Contiguous glyphs on one line — a word the file split into two runs.
+    /// Left to the existing rule, which already closes it.
+    Contiguous,
+}
+
 impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
@@ -6726,19 +6746,7 @@ impl PdfDocument {
                 // survives — which is why the earlier attempt to decide this in
                 // `join_soft_hyphen_wraps` could not be made safe.
                 if let Some(prev) = &prev_span {
-                    let em = prev.font_size.max(span.font_size).max(6.0);
-                    let drop = prev.bbox.y - span.bbox.y;
-                    let seam_gap = span.bbox.x - (prev.bbox.x + prev.bbox.width);
-                    let wrap_closes = text
-                        .strip_suffix('\u{00AD}')
-                        .is_some_and(|t| t.ends_with(char::is_alphabetic))
-                        && span.text.starts_with(char::is_alphabetic)
-                        && drop >= em * 0.6
-                        && drop <= em * 1.6
-                        && seam_gap < -em;
-                    if wrap_closes {
-                        text.pop();
-                        Self::push_span_text(&mut text, span);
+                    if Self::apply_soft_hyphen_seam(&mut text, prev, span) {
                         prev_span = Some(span.clone());
                         continue;
                     }
@@ -8909,6 +8917,78 @@ impl PdfDocument {
     /// that stands in for the line break is added later still. A soft hyphen
     /// whose neighbours are not both letters is left alone — it is a glyph or
     /// a misdecoded byte, not hyphenation.
+    /// Act on a soft-hyphen seam between `prev` and `span`, and report whether
+    /// `span` has been consumed.
+    ///
+    /// `text` is the output assembled so far. On a wrap the marker and the
+    /// span are both written here and the caller moves on; otherwise `text` is
+    /// left ready for the caller's own cascade to append the span.
+    fn apply_soft_hyphen_seam(text: &mut String, prev: &TextSpan, span: &TextSpan) -> bool {
+        let marker_seam = text
+            .strip_suffix('\u{00AD}')
+            .is_some_and(|t| t.ends_with(char::is_alphabetic))
+            && span.text.starts_with(char::is_alphabetic);
+        if !marker_seam {
+            return false;
+        }
+        let em = prev.font_size.max(span.font_size).max(6.0);
+        let drop = prev.bbox.y - span.bbox.y;
+        let seam_gap = span.bbox.x - (prev.bbox.x + prev.bbox.width);
+        match Self::soft_hyphen_seam(em, drop, seam_gap) {
+            SoftHyphenSeam::Close => {
+                text.pop();
+                Self::push_span_text(text, span);
+                true
+            },
+            SoftHyphenSeam::Keep => {
+                // The marker has to survive, so put a separator where the
+                // assembler was about to put nothing.
+                //
+                // Downstream, `push_str_without_soft_hyphens` reads an empty
+                // seam as proof that the two runs are contiguous glyphs and
+                // drops the marker. On a re-ordered scan that inference is
+                // false: the next run in reading order can begin 40 pt to the
+                // *left* of where this one ended, and the string is adjacent
+                // only because nothing was inserted. A space makes the seam
+                // non-empty, which is the truth the geometry reports.
+                text.push(' ');
+                false
+            },
+            SoftHyphenSeam::Contiguous => false,
+        }
+    }
+
+    /// Classify a soft-hyphen seam from the geometry either side of it.
+    ///
+    /// `em` is the larger of the two font sizes, `drop` the baseline fall from
+    /// the previous run to this one, and `seam_gap` the horizontal distance
+    /// from where the previous run ended to where this one starts (negative
+    /// when the new run begins to the left).
+    ///
+    /// Measured over the 2008-document corpus: of 1272 seams with a letter
+    /// either side of a marker, `Close` accepts 34 and every one is a genuine
+    /// wrap (`admini-stration`, `усло-виях`, `gezamen-lijke`), while the
+    /// scrambled scans' false joins (`con-the`, `con-and`, `locomo-she`,
+    /// `im-by`, `Dur-per`) all fall to `Keep`. Real wraps sit at 1.08-1.40 em
+    /// of baseline drop; the false ones at -0.29 to +0.59 em, which is OCR
+    /// band jitter rather than a line advance.
+    ///
+    /// Length cannot separate the cases — the bad joins came from fragments of
+    /// two to seven characters and a legitimate wrap (`modali-` + `ties`) is
+    /// six — and neither can case, since the false continuations are lowercase
+    /// too.
+    fn soft_hyphen_seam(em: f32, drop: f32, seam_gap: f32) -> SoftHyphenSeam {
+        if drop >= em * 0.6 && drop <= em * 1.6 && seam_gap < -em {
+            return SoftHyphenSeam::Close;
+        }
+        // One baseline, and the next run starts where this one ended: the file
+        // split a word across two runs and the marker sits at the split.
+        if drop.abs() <= em * 0.35 && seam_gap > -em * 0.35 && seam_gap < em * 0.6 {
+            return SoftHyphenSeam::Contiguous;
+        }
+        SoftHyphenSeam::Keep
+    }
+
     fn join_soft_hyphen_wraps(s: &str) -> String {
         if !s.contains('\u{00AD}') {
             return s.to_string();
@@ -20879,7 +20959,11 @@ impl PdfDocument {
             if !table_elems.is_empty() {
                 let mut tables = Vec::new();
                 for table_elem in &table_elems {
-                    match crate::structure::extract_table_from_spans(table_elem, spans) {
+                    match crate::structure::extract_table_from_spans_on_page(
+                        table_elem,
+                        spans,
+                        Some(page_index as u32),
+                    ) {
                         Ok(mut table) if !table.is_empty() => {
                             // Compute bbox from spans matching the table's MCIDs
                             if table.bbox.is_none() {
@@ -33671,5 +33755,140 @@ mod soft_hyphen_scope_tests {
     #[test]
     fn a_marker_after_a_hyphen_minus_still_survives() {
         assert_eq!(strip("Cross-\u{00AD}"), "Cross-\u{00AD}");
+    }
+}
+
+#[cfg(test)]
+mod soft_hyphen_seam_tests {
+    use super::*;
+
+    /// A span at a given baseline and left edge, with a width.
+    fn seam_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
+        TextSpan {
+            provenance: None,
+            text_rise: 0.0,
+            text: text.to_string(),
+            bbox: crate::geometry::Rect { x, y, width, height: font_size },
+            font_name: "F1".to_string(),
+            font_size,
+            font_weight: crate::layout::FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: crate::layout::Color::new(0.0, 0.0, 0.0),
+            mcid: None,
+            mcid_scope: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            artifact_type: None,
+            char_widths: Vec::new(),
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 0.0,
+            wmode: 0,
+            rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
+        }
+    }
+
+    /// The five false joins measured on a scrambled OCR scan: one baseline,
+    /// and the next run starting well to the left of where the last ended.
+    /// The marker has to survive, and the seam has to become non-empty so that
+    /// nothing downstream reads string adjacency as page adjacency.
+    #[test]
+    fn a_backward_seam_keeps_the_marker_and_separates_the_runs() {
+        // The exact geometry of the `con` + `and` seam.
+        let prev = seam_span("con\u{00AD}", 315.45, 639.61, 19.28, 9.9);
+        let span = seam_span("and ", 294.82, 639.20, 17.70, 9.9);
+        let mut text = String::from("ducted the\ncon\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(!consumed, "the span must be left to the caller's cascade");
+        assert!(
+            text.ends_with("con\u{00AD} "),
+            "the marker was dropped or the seam left empty, so the next run will \
+             glue to it and invent a word: {text:?}"
+        );
+    }
+
+    /// The counter-case at the same seam: a real line wrap, one line down and
+    /// back to the left margin. Both halves join and the marker goes.
+    #[test]
+    fn a_line_wrap_closes_and_consumes_the_span() {
+        let prev = seam_span("admini\u{00AD}", 430.0, 700.0, 30.0, 10.0);
+        let span = seam_span("stration", 72.0, 686.0, 38.0, 10.0);
+        let mut text = String::from("the admini\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(consumed, "a wrap writes the span itself");
+        assert!(
+            text.contains("administration"),
+            "a genuine wrap was left broken: {text:?}"
+        );
+    }
+
+    /// Contiguous glyphs on one line — a word the file split into two runs.
+    /// Left untouched for the existing rule, which already closes it.
+    #[test]
+    fn contiguous_runs_are_left_to_the_existing_rule() {
+        let prev = seam_span("recon\u{00AD}", 72.0, 700.0, 28.0, 10.0);
+        let span = seam_span("struction", 100.0, 700.0, 42.0, 10.0);
+        let mut text = String::from("recon\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(!consumed);
+        assert_eq!(
+            text, "recon\u{00AD}",
+            "an empty seam between contiguous glyphs must stay empty: {text:?}"
+        );
+    }
+
+    /// A marker with no letter after it is a glyph or a misdecoded byte, not
+    /// hyphenation, and nothing here applies.
+    #[test]
+    fn a_marker_before_a_non_letter_is_not_a_seam() {
+        let prev = seam_span("re\u{00AD}", 315.0, 640.0, 12.0, 9.9);
+        let span = seam_span("42", 281.0, 639.4, 11.0, 9.9);
+        let mut text = String::from("re\u{00AD}");
+
+        assert!(!PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span));
+        assert_eq!(text, "re\u{00AD}");
+    }
+
+    /// The classifier's own boundaries, in em, from the corpus measurements:
+    /// accepted wraps sit at 1.08-1.40 em of baseline drop, the false joins at
+    /// -0.29 to +0.59 em.
+    #[test]
+    fn the_classifier_separates_wraps_from_band_jitter() {
+        let em = 10.0;
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, 14.0, -30.0),
+            SoftHyphenSeam::Close
+        );
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, 0.41, -39.9),
+            SoftHyphenSeam::Keep
+        );
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, -2.9, -25.0),
+            SoftHyphenSeam::Keep
+        );
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, 5.9, -30.0),
+            SoftHyphenSeam::Keep,
+            "0.59 em is band jitter, not a line advance"
+        );
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, 0.0, 0.0),
+            SoftHyphenSeam::Contiguous
+        );
     }
 }
