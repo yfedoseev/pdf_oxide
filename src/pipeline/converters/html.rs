@@ -676,7 +676,13 @@ impl HtmlOutputConverter {
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
                     && !span.span.text.starts_with(' ')
-                    && (prev_was_enumerator || super::has_horizontal_gap(&prev.span, &span.span));
+                    && (prev_was_enumerator
+                        || super::has_horizontal_gap(&prev.span, &span.span)
+                        // A footnote marker sits at the base word's advance
+                        // edge, so the gap rule declines it; the base being a
+                        // prose word rather than a subscript host is what
+                        // separates it from `H2O`.
+                        || super::is_reference_marker_boundary(&prev.span, &span.span));
                 if need_space_same_line || need_space_between_lines {
                     current_content.push(' ');
                 }

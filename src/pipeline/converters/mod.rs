@@ -266,6 +266,76 @@ fn is_rtl_char(c: char) -> bool {
     )
 }
 
+/// A footnote or citation marker set immediately after a prose word.
+///
+/// ISO 32000-1:2008 §9.4.4 makes the glyph advance the only thing that moves
+/// the text position, so a marker typeset at the base word's advance edge is
+/// not separated by geometry at all — `has_horizontal_gap` correctly reports no
+/// gap, and the two run together as `phosphorylation55`.
+///
+/// Gap size cannot settle it, and the measurements are inverted from the
+/// intuition: the footnote markers sit at 0.10 em from their word while genuine
+/// maths subscripts (`W2`, `CP3`, `H1`) sit at 0.14 em and larger. Any
+/// threshold that splits the first fuses on the second.
+///
+/// What does separate them is the same distinction `merge_sub_superscript_spans`
+/// already draws for the text path: a sub/superscript *host* is a symbol, not a
+/// prose word. `H`, `x`, `ADP` and `SO` are hosts; `phosphorylation` is not. So
+/// this fires only where the base is a word, the marker is a bare numeral, and
+/// the run is set smaller in a different font — the shape a reference callout
+/// has and a subscript does not.
+///
+/// Deliberately kept out of `has_horizontal_gap`: that function also serves
+/// `render_cell_html` and `cell_plain_text`, and table rendering must not move.
+pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) -> bool {
+    // Only in the band the gap rule already declines; never override a real gap.
+    if (prev.rotation_degrees - current.rotation_degrees).abs() > 0.5
+        || has_horizontal_gap(prev, current)
+    {
+        return false;
+    }
+    // An italic base is a mathematical expression, not prose.
+    if prev.is_italic || current.is_italic {
+        return false;
+    }
+    // The marker is a distinctly smaller run in a different font resource.
+    if prev.font_name == current.font_name
+        || current.font_size >= prev.font_size * 0.85
+        || current.font_size <= 0.0
+    {
+        return false;
+    }
+    let em = prev.font_size.max(current.font_size).max(1.0);
+    let gap = current.bbox.x - (prev.bbox.x + prev.bbox.width);
+    if gap <= 0.5 || gap >= em * 3.0 {
+        return false;
+    }
+    // The base ends in a prose word: three or more letters, ending lowercase.
+    // That excludes every sub/superscript host — a lone symbol, an element pair
+    // or a trailing acronym.
+    let base = prev.text.trim_end();
+    let tail: String = base
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphabetic())
+        .collect();
+    if tail.chars().count() < 3
+        || !base.ends_with(|c: char| c.is_ascii_lowercase())
+    {
+        return false;
+    }
+    // The marker is a bare numeral, optionally a list or range of them.
+    let head: String = current
+        .text
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '\u{2013}' | '\u{2014}' | '\u{2212}'))
+        .collect();
+    !head.is_empty()
+        && head.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && head.chars().any(|c| c.is_ascii_digit())
+}
+
 pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // Runs on different writing axes are not comparable along page-x at all.
     // ISO 32000-1:2008 9.4.4: a glyph's displacement is interpreted in text
@@ -932,5 +1002,81 @@ mod tests {
         let table = make_table_with_cell((10.0, 50.0, 200.0, 100.0), (40.0, 60.0, 100.0, 20.0));
         let span = make_ordered_span(500.0, 500.0);
         assert_eq!(span_in_table(&span, &[table]), None);
+    }
+
+    // ========================================================================
+    // reference-marker boundary
+    // ========================================================================
+
+    /// A span at an explicit x/width/size/font, for the marker geometry below.
+    fn marker_span(x: f32, w: f32, fs: f32, font: &str, text: &str) -> crate::layout::TextSpan {
+        crate::layout::TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect::new(x, 0.0, w, fs),
+            font_size: fs,
+            font_name: font.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The measured geometry from a real paper: the marker sits 0.99 pt after
+    /// the word at 9.96 pt body size, i.e. 0.10 em — well inside the 0.15 em
+    /// bar, so `has_horizontal_gap` declines and the two glue as
+    /// `phosphorylation55`.
+    #[test]
+    fn a_footnote_marker_after_a_word_is_a_boundary() {
+        let word = marker_span(124.60, 189.36, 9.96, "TWJDIY+SFRM1000", "phosphorylation");
+        let marker = marker_span(314.95, 6.0, 6.97, "MIOKXQ+SFRM0700", "55.");
+        assert!(
+            !has_horizontal_gap(&word, &marker),
+            "precondition: the gap rule must decline this, or the test proves nothing"
+        );
+        assert!(
+            is_reference_marker_boundary(&word, &marker),
+            "a numeral set smaller after a prose word is a reference callout"
+        );
+    }
+
+    /// The counter-case, and the reason gap size cannot be the discriminator:
+    /// a maths subscript sits *further* from its base (0.14 em) than the
+    /// footnote marker does (0.10 em), so any threshold that splits the marker
+    /// fuses this. The base being a symbol rather than a prose word is what
+    /// separates them — the same rule `merge_sub_superscript_spans` uses.
+    #[test]
+    fn a_maths_subscript_is_not_a_boundary() {
+        for (base, sub) in [("W", "2"), ("H", "2"), ("ADP", "3"), ("SO", "4"), ("x", "2")] {
+            let b = marker_span(100.0, 8.0, 11.96, "BODY+Font", base);
+            let s = marker_span(109.63, 4.0, 6.97, "SUB+Font", sub);
+            assert!(
+                !is_reference_marker_boundary(&b, &s),
+                "{base}+{sub} is a subscript on a symbol host and must stay joined"
+            );
+        }
+    }
+
+    /// An italic base is a mathematical expression, not prose.
+    #[test]
+    fn an_italic_base_is_not_a_prose_word() {
+        let mut base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "alpha");
+        base.is_italic = true;
+        let marker = marker_span(131.0, 5.0, 6.5, "SUB+Font", "2");
+        assert!(!is_reference_marker_boundary(&base, &marker));
+    }
+
+    /// The marker must be a numeral. A letter following a word at the advance
+    /// edge is a glyph-split word, not a callout, and must stay joined.
+    #[test]
+    fn a_letter_continuation_is_not_a_marker() {
+        let base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "ultrasonographi");
+        let cont = marker_span(131.0, 20.0, 10.0, "BODY+Font", "cally");
+        assert!(!is_reference_marker_boundary(&base, &cont));
+    }
+
+    /// Same font means one run, whatever the size — no callout.
+    #[test]
+    fn the_same_font_resource_is_not_a_boundary() {
+        let base = marker_span(100.0, 30.0, 10.0, "SAME+Font", "phosphorylation");
+        let marker = marker_span(131.0, 5.0, 6.5, "SAME+Font", "55");
+        assert!(!is_reference_marker_boundary(&base, &marker));
     }
 }
