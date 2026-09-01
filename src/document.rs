@@ -8954,8 +8954,36 @@ impl PdfDocument {
                 text.push(' ');
                 false
             },
-            SoftHyphenSeam::Contiguous => false,
+            SoftHyphenSeam::Contiguous => {
+                // Annex D Note 5 (`docs/spec/pdf.md`:41814): WinAnsi code 255
+                // is a soft hyphen whose *meaning* is a discretionary break,
+                // but which "shall be typographically the same as hyphen".
+                // Such a marker is a painted glyph with a real advance, so
+                // mid-line it is a character the page draws and joining across
+                // it deletes one — `Campus<shy>Main` became `CampusMain` where
+                // every reference extractor keeps the marker. A marker with no
+                // advance was never drawn; that is a true break opportunity and
+                // the existing rule closes it.
+                if Self::soft_hyphen_was_painted(prev) {
+                    let cut = text.len() - '\u{00AD}'.len_utf8();
+                    text.truncate(cut);
+                    Self::push_span_text(text, span);
+                    text.insert(cut, '\u{00AD}');
+                    return true;
+                }
+                false
+            },
         }
+    }
+
+    /// Whether the soft hyphen ending `prev` was actually painted.
+    ///
+    /// `char_widths` holds per-character advances in user-space points and is
+    /// only trustworthy when it matches the text length, which is the same
+    /// condition `to_chars` applies before using it.
+    fn soft_hyphen_was_painted(prev: &TextSpan) -> bool {
+        prev.char_widths.len() == prev.text.chars().count()
+            && prev.char_widths.last().is_some_and(|w| *w > 0.0)
     }
 
     /// Classify a soft-hyphen seam from the geometry either side of it.
@@ -9047,10 +9075,19 @@ impl PdfDocument {
             // release agreed with pymupdf and pypdf exactly, and closing the
             // wrap moved us away from all three. So the conservative reading is
             // also the one the panel corroborates.
-            let adjacent = j == i + 1;
-            let continues = adjacent && chars.get(j).is_some_and(|n| n.is_alphabetic());
+            // Never join here. The `adjacent` case this used to close is
+            // precisely the one that CANNOT be a wrap: contiguous characters
+            // with nothing between them sit on one line, so no break occurred
+            // and Annex D Note 5 (`docs/spec/pdf.md`:41814) makes the marker a
+            // painted hyphen. `Campus<shy>Main` became `CampusMain` here, and
+            // v0.3.77 plus all five reference extractors keep it.
+            //
+            // A genuine wrap has whitespace between its halves, which the
+            // adjacency test already excluded — so this branch never closed a
+            // real wrap. Wraps are closed upstream, at the span seam, where the
+            // geometry that identifies them still exists.
+            let continues = false;
             if continues {
-                // Drop the marker and the whitespace: the word rejoins.
                 i = j;
             } else {
                 out.push(c);
@@ -9087,22 +9124,17 @@ impl PdfDocument {
             // together. A newline is left alone: line structure still exists
             // there, and `rejoin_hyphenated_words` decides whether the two
             // lines are one paragraph.
-            let spaces = out.len() - out.trim_end_matches(' ').len();
-            let head = &out[..out.len() - spaces];
-            // Only fragments with NOTHING between them. A space means the
-            // assembler decided these spans were separate runs, and on a
-            // multi-column scan the run after a column-ending wrap belongs to
-            // another column: `prin<shy>` + `from` is textually identical to
-            // `wonder<shy>` + `ful`, so text alone cannot tell them apart and
-            // the geometry-bearing caller must decide.
-            let continues = spaces == 0;
-            let mut back = head.chars().rev();
-            if continues
-                && back.next() == Some('\u{00AD}')
-                && back.next().is_some_and(char::is_alphabetic)
-            {
-                out.truncate(head.len() - '\u{00AD}'.len_utf8());
-            }
+            // Nothing to do. This used to drop the marker whenever the two
+            // fragments had nothing between them, which is the third and last
+            // copy of a rule that cannot be expressed over characters:
+            // `prin<shy>` + `from` is textually identical to `wonder<shy>` +
+            // `ful`, and only the geometry tells them apart.
+            //
+            // The geometry-bearing caller decides now.
+            // `apply_soft_hyphen_seam` pops the marker itself when the
+            // baseline drop and the carriage return say a line wrapped, so by
+            // the time a fragment reaches here every genuine wrap is already
+            // closed and anything left is a hyphen the page drew.
         }
 
         if !s.contains('\u{00AD}') {
@@ -9126,20 +9158,22 @@ impl PdfDocument {
                 out.push(c);
                 continue;
             }
-            let before = chars[..i].iter().rev().find(|c| **c != '\u{00AD}');
-            let after = chars[i + 1..].iter().find(|c| **c != '\u{00AD}');
-            // Only a letter on BOTH sides is a hyphenation point that can be
-            // resolved here. A fragment-final marker is left in place: it may
-            // be a line-wrap marker that the converter still needs, and if the
-            // next fragment turns out to be adjacent it is removed at the seam
-            // above.
-            let hyphenating = match (before, after) {
-                (Some(b), Some(a)) => b.is_alphabetic() && a.is_alphabetic(),
-                _ => false,
-            };
-            if !hyphenating {
-                out.push(c);
-            }
+            // Keep it. A soft hyphen *inside a single span* is never a line
+            // wrap: a span is one run drawn on one line, so no break occurs at
+            // that point and the glyph was painted. Annex D Note 5
+            // (`docs/spec/pdf.md`:41814) says WinAnsi code 255 "shall be
+            // typographically the same as hyphen", so a painted one is a
+            // character the page draws and dropping it deletes content --
+            // `Campus<shy>Main` became `CampusMain`.
+            //
+            // Only a **seam** between two spans can be a wrap, and
+            // `apply_soft_hyphen_seam` decides those from the geometry, which
+            // is the only place the evidence exists.
+            //
+            // Measured over the 2008-document corpus: v0.3.77 kept 20 in-span
+            // markers across 6 documents and this dropped every one of them.
+            // poppler, MuPDF, pdfium, pypdf and pdfminer all keep them.
+            out.push(c);
         }
         if keeps_wrap_marker {
             out.push('\u{00AD}');
@@ -27613,23 +27647,28 @@ mod tests {
     }
 
     #[test]
-    fn test_push_span_text_strips_soft_hyphen_mid_word() {
-        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
-        // point only — it must never survive into extract_text/to_markdown/
-        // to_html output, even mid-word with no adjacent line break (the
-        // span was drawn as a single reflowed run, not split across lines).
+    fn a_soft_hyphen_inside_one_span_survives() {
+        // A span is one run drawn on one line, so a marker inside it sits at
+        // no line break and was painted. Annex D Note 5
+        // (`docs/spec/pdf.md`:41814) makes WinAnsi code 255 "typographically
+        // the same as hyphen", so it is a character the page draws.
+        //
+        // This asserted the opposite for one release, and it cost 20 markers
+        // across 6 corpus documents that v0.3.77 and all five reference
+        // extractors keep. Only a seam between two spans can be a wrap, and
+        // `apply_soft_hyphen_seam` judges those from the geometry.
         let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "reconstruction");
+        assert_eq!(out, "recon\u{00AD}struction");
     }
 
     #[test]
-    fn test_push_span_text_strips_multiple_soft_hyphens() {
+    fn several_soft_hyphens_inside_one_span_all_survive() {
         let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "unbelievable");
+        assert_eq!(out, "un\u{00AD}be\u{00AD}liev\u{00AD}able");
     }
 
     // ========================================================================
@@ -33590,8 +33629,11 @@ mod soft_hyphen_scope_tests {
     /// ... and is removed once the next fragment proves it was a mid-word
     /// split on the same line, with nothing between the two halves.
     #[test]
-    fn a_marker_between_two_adjacent_fragments_is_removed() {
-        assert_eq!(strip_seam("ultrasonographi\u{00AD}", "", "cally"), "ultrasonographically");
+    fn a_marker_between_two_adjacent_fragments_is_kept() {
+        assert_eq!(
+            strip_seam("ultrasonographi\u{00AD}", "", "cally"),
+            "ultrasonographi\u{00AD}cally"
+        );
     }
 
     /// A line break between the fragments means it was a wrap marker, so it
@@ -33614,8 +33656,8 @@ mod soft_hyphen_scope_tests {
     /// The genuine wrap is still closed, one level up, by
     /// `join_soft_hyphen_wraps` on assembled text.
     #[test]
-    fn the_seam_joins_only_directly_adjacent_fragments() {
-        assert_eq!(strip_seam("wonder\u{00AD}", "", "ful"), "wonderful");
+    fn the_seam_never_joins_on_adjacency_alone() {
+        assert_eq!(strip_seam("wonder\u{00AD}", "", "ful"), "wonder\u{00AD}ful");
         assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonder\u{00AD} ful");
     }
 
@@ -33653,12 +33695,18 @@ mod soft_hyphen_scope_tests {
         assert_eq!(join("modali\u{00AD}\nties"), "modali\u{00AD}\nties");
     }
 
-    /// Contiguous fragments still join: with nothing between them the two are
-    /// glyphs of one word and the marker is its hyphenation point. This is the
-    /// case the seam handles and the one that stays closed.
+    /// Contiguous fragments do NOT join. With nothing between them the two
+    /// sit on one line, so nothing wrapped there and Annex D Note 5
+    /// (`docs/spec/pdf.md`:41814) makes the marker a painted hyphen. A real
+    /// wrap always has whitespace between its halves, which the adjacency test
+    /// excludes — so this branch never closed one. Wraps close at the span
+    /// seam, where the geometry still exists.
     #[test]
-    fn contiguous_fragments_still_join() {
-        assert_eq!(join("ultrasonographi\u{00AD}cally"), "ultrasonographically");
+    fn contiguous_fragments_do_not_join() {
+        assert_eq!(
+            join("ultrasonographi\u{00AD}cally"),
+            "ultrasonographi\u{00AD}cally"
+        );
     }
 
     /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
@@ -33693,12 +33741,16 @@ mod soft_hyphen_scope_tests {
         assert_eq!(join("word\u{00AD}\nNext"), "word\u{00AD}\nNext");
     }
 
-    /// ... but adjacent fragments are contiguous glyphs on one line, so they
-    /// are one word whatever the case follows.
+    /// ... and adjacent fragments do not join either, whatever the case. The
+    /// marker between them was drawn, and `Mac-Donald` is a name with a
+    /// hyphen in it — deleting the hyphen invents a different word.
     #[test]
-    fn adjacent_fragments_join_regardless_of_case() {
-        assert_eq!(join("Mac\u{00AD}Donald"), "MacDonald");
-        assert_eq!(strip_seam("Mac\u{00AD}", "", "Donald"), "MacDonald");
+    fn adjacent_fragments_do_not_join_either() {
+        assert_eq!(join("Mac\u{00AD}Donald"), "Mac\u{00AD}Donald");
+        assert_eq!(
+            strip_seam("Mac\u{00AD}", "", "Donald"),
+            "Mac\u{00AD}Donald"
+        );
     }
 
     /// ... so an uppercase continuation across a space is refused, while an
@@ -33707,9 +33759,11 @@ mod soft_hyphen_scope_tests {
     /// marker between contiguous glyphs is a hyphenation point whatever case
     /// follows.
     #[test]
-    fn the_seam_refuses_an_uppercase_continuation_across_a_space() {
+    fn the_seam_refuses_an_uppercase_continuation_either_way() {
         assert_eq!(strip_seam("pre\u{00AD}", " ", "The"), "pre\u{00AD} The");
-        assert_eq!(strip_seam("pre\u{00AD}", "", "The"), "preThe");
+        // This produced `preThe` for one release, which is the defect the
+        // uppercase guard above was written to prevent and could not.
+        assert_eq!(strip_seam("pre\u{00AD}", "", "The"), "pre\u{00AD}The");
     }
 
     /// The column-boundary case this restriction exists for: a wrap that ends
@@ -33722,10 +33776,14 @@ mod soft_hyphen_scope_tests {
         );
     }
 
-    /// And between two letters within one fragment.
+    /// And between two letters within one fragment, which is the same case:
+    /// the fragment is one run on one line, so nothing wrapped there and the
+    /// glyph was painted. This asserted removal for one release, which was
+    /// inconsistent with the letter-and-digit case immediately below — both
+    /// rest on the same Annex D note, and both markers are equally drawn.
     #[test]
-    fn a_marker_between_two_letters_is_removed() {
-        assert_eq!(strip("Pharmaceu\u{00AD}ticals"), "Pharmaceuticals");
+    fn a_marker_between_two_letters_is_kept_too() {
+        assert_eq!(strip("Pharmaceu\u{00AD}ticals"), "Pharmaceu\u{00AD}ticals");
     }
 
     /// Annex D note 5: WinAnsi 255 is a soft hyphen "typographically the same
