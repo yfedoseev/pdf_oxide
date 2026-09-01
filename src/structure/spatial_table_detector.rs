@@ -4129,20 +4129,22 @@ fn extract_cell_text(cell_span_indices: &[usize], spans: &[TextSpan]) -> String 
     if span_entries.len() == 1 {
         return span_entries.remove(0).2;
     }
-    // Order the cell's members the way the markdown and HTML renderers
-    // already do — by row band, then left to right — so all three surfaces
-    // agree by construction.
+    // Sort by the member's vertical centre, descending.
     //
-    // The previous key was `bbox.center().y` descending with no x tiebreak.
-    // A centre moves with font size, so a raised marker in a smaller font
-    // (`*` at 4.98 pt beside body text at 7.98 pt) sorted to the FRONT of the
-    // cell while staying inside the 2.0 pt line group, and the backward gap to
-    // the member now behind it produced no separator: `142.56 ± 59.19*^`
-    // became `59.19*^142.56 ±`. Keying on the baseline instead of the centre
-    // is the same correction the row comparator already carries.
-    span_entries.sort_by(|a, b| {
-        crate::utils::row_aware_span_cmp(a.1.bbox.y, a.1.bbox.x, b.1.bbox.y, b.1.bbox.x)
-    });
+    // This key is known to be imperfect: a centre moves with font size, so a
+    // raised marker in a smaller font can sort ahead of the text it annotates
+    // (`142.56 ± 59.19*^` read back as `59.19*^142.56 ±` on three rows of one
+    // corpus document). Keying on the baseline instead fixes those three, and
+    // was tried — but the line grouping below consumes this order, and a
+    // superscript whose baseline is genuinely raised then falls into its own
+    // group: `August 9th` came apart into `August 9` and `th` on separate
+    // lines, and the cell's lines reordered around it. That cost more than it
+    // fixed, across all three reference extractors.
+    //
+    // Sorting and grouping have to move together, and the grouping needs a
+    // font-relative tolerance before the key can change. Left as it is until
+    // then.
+    span_entries.sort_by(|a, b| crate::utils::safe_float_cmp(b.0, a.0));
 
     // Group into rows by y proximity, then within a row decide separator per
     // pair of spans using the same gap/CJK rules as inline text assembly.
