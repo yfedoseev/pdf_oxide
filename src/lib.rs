@@ -418,23 +418,24 @@ pub(crate) mod utils {
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         // Larger Y = higher on page → descending band order.
         match band_b.cmp(&band_a) {
-            // Within a band, x decides — and where x ties too, the baseline
-            // still does. Banding deliberately discards a sub-band y
-            // difference, but discarding it *without* a third key leaves
-            // `Ordering::Equal`, and `sort_by` is stable, so the pair keeps
-            // whatever order it arrived in — which is the XY-cut leaf's
-            // incoming order, not reading order.
+            // Within a band, x decides. Where x ties too this returns Equal
+            // and `sort_by`'s stability settles it, which is the leaf's
+            // incoming order rather than reading order — two OCR words from
+            // different columns drawn at the same x, 0.15 pt apart, come out as
+            // `who con- who lodge. was waiting`.
             //
-            // Two OCR words from different columns drawn at the same x, 0.15 pt
-            // apart, came out as `who con- who lodge. was waiting`. Keying the
-            // tie on the baseline restores the previous release's answer, which
-            // pdfium and pdfplumber both agree with.
+            // Adding the baseline as a third key fixes that document and costs
+            // more elsewhere: it reorders a cell's members, which the
+            // order-dependent line grouping downstream then regroups, and
+            // `August 9th` came apart into `August 9` and `th` around a line of
+            // intervening text (all three reference extractors worse, poppler
+            // 0.985 -> 0.957). Measured over the corpus it moved two more
+            // documents away from the panel and none toward it. Tried, and
+            // reverted.
             //
-            // `(band desc, x asc, y desc)` is still a lexicographic composition
-            // of total orders, so it remains a valid `sort_by` comparator, and
-            // it changes nothing wherever x differs — every case the banding
-            // was introduced for.
-            Ordering::Equal => safe_float_cmp(a_x, b_x).then_with(|| safe_float_cmp(b_y, a_y)),
+            // The tiebreak is right in principle; the line grouping has to stop
+            // depending on this order before it can land.
+            Ordering::Equal => safe_float_cmp(a_x, b_x),
             other => other,
         }
     }
@@ -553,10 +554,7 @@ pub(crate) mod utils {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         match band_b.cmp(&band_a) {
-            // X descending = RTL, then the baseline where x ties. Same reason
-            // as `row_aware_span_cmp`: an Equal here would let the incoming
-            // order decide.
-            Ordering::Equal => safe_float_cmp(b_x, a_x).then_with(|| safe_float_cmp(b_y, a_y)),
+            Ordering::Equal => safe_float_cmp(b_x, a_x), // X descending = RTL
             other => other,
         }
     }
@@ -701,14 +699,7 @@ pub(crate) mod utils {
             let band = (get_y(it) / ROW_BAND_TOLERANCE_PT).round() as i32;
             // Reverse band → larger Y (higher on page) first, matching the
             // comparator's `band_b.cmp(&band_a)`.
-            // Third component mirrors the comparator's baseline tiebreak: two
-            // items in one band at one x must still order by y, or the sort's
-            // stability decides for them. Reverse = larger Y first.
-            (
-                std::cmp::Reverse(band),
-                F32Ord(get_x(it)),
-                std::cmp::Reverse(F32Ord(get_y(it))),
-            )
+            (std::cmp::Reverse(band), F32Ord(get_x(it)))
         });
     }
 
@@ -969,27 +960,15 @@ pub(crate) mod utils {
         /// #656/#657: the RTL variant keeps rows top-to-bottom but orders
         /// X *descending* (right-to-left) within a row — a pure-RTL line's
         /// logical reading order.
-        /// Two spans in one band at the same x still order by baseline.
-        ///
-        /// Banding deliberately discards a sub-band y difference so that
-        /// jittered OCR baselines cannot reverse a line. Discarding it
-        /// *without* a third key leaves `Ordering::Equal`, and `sort_by` is
-        /// stable, so the pair then keeps its incoming order rather than
-        /// reading order. On one scanned page two words from different columns
-        /// drawn at the same x, 0.15 pt apart, produced
-        /// `who con- who lodge. was waiting` — a fragment injected
-        /// mid-sentence. pdfium and pdfplumber both order them the other way.
+        /// Two spans in one band at the same x currently return Equal, so the
+        /// caller's sort stability decides. That is a known defect, not the
+        /// intended contract — see the comment on `row_aware_span_cmp`. Pinned
+        /// so a fix is a deliberate change rather than an accident.
         #[test]
-        fn a_sub_band_baseline_difference_still_decides() {
+        fn a_sub_band_baseline_tie_is_currently_undecided() {
             assert_eq!(
                 row_aware_span_cmp(98.36, 232.08, 98.21, 232.08),
-                Ordering::Less,
-                "one band, one x: the baseline must still decide"
-            );
-            // Antisymmetric, not merely non-Equal.
-            assert_eq!(
-                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
-                Ordering::Greater
+                Ordering::Equal
             );
         }
 
@@ -1015,15 +994,6 @@ pub(crate) mod utils {
             assert_eq!(
                 row_aware_span_cmp(98.36, 232.08, 98.36, 232.08),
                 Ordering::Equal
-            );
-        }
-
-        /// The RTL sibling carries the same tiebreak, mirrored.
-        #[test]
-        fn the_rtl_comparator_also_breaks_a_tie_on_the_baseline() {
-            assert_eq!(
-                row_aware_span_cmp_rtl(98.36, 232.08, 98.21, 232.08),
-                Ordering::Less
             );
         }
 
