@@ -337,15 +337,35 @@ impl TextSpan {
                 .enumerate()
                 .map(|(i, c)| {
                     let char_x = offsets[i];
-                    // Width preference: nominal char_widths (unchanged model)
-                    // when present, else the gap to the next offset, else the
-                    // remainder of the span bbox for the final glyph.
-                    let w = if has_widths {
-                        self.char_widths[i]
-                    } else if i + 1 < char_count {
-                        (offsets[i + 1] - char_x).max(0.0)
+                    // Width preference: the gap to the next offset, then
+                    // nominal `char_widths`, then the remainder of the span
+                    // bbox for the final glyph.
+                    //
+                    // The offsets are measured glyph origins, so the distance
+                    // between two of them *is* the first one's advance.
+                    // `char_widths` is meant to be the same quantity, and when
+                    // the two disagree it is the bookkeeping that has drifted:
+                    // on a table-of-contents line containing an em dash the
+                    // widths ran two entries out of step with the text, pairing
+                    // `C` with a 2.67 pt advance where its own is 5.83 while
+                    // its offset was exactly right. Those phantom gaps are what
+                    // the word-gap clusterer splits on, and
+                    // `Coast Guard, Department` came out as
+                    // `C|o|ast G|u|ard, D|e|partm|ent`.
+                    //
+                    // A non-increasing pair is not an advance — visually-stored
+                    // RTL and mirrored runs backtrack — so those fall through to
+                    // the nominal width unchanged.
+                    let next_gap = if i + 1 < char_count {
+                        let d = offsets[i + 1] - char_x;
+                        (d.is_finite() && d > 0.0).then_some(d)
                     } else {
-                        (self.bbox.x + self.bbox.width - char_x).max(0.0)
+                        None
+                    };
+                    let w = match (next_gap, has_widths) {
+                        (Some(d), _) => d,
+                        (None, true) => self.char_widths[i],
+                        (None, false) => (self.bbox.x + self.bbox.width - char_x).max(0.0),
                     };
                     TextChar {
                         char: c,
