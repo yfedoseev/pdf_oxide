@@ -1208,9 +1208,15 @@ mod tests {
     #[test]
     fn test_to_chars_prefers_char_x_offsets_over_widths() {
         // char_x_offsets carry positions that DIVERGE from a prefix-sum of
-        // char_widths (simulating TJ-kerning drift). to_chars must honor the
-        // offsets for origin_x / bbox.x while still taking widths from
-        // char_widths (the unchanged Indic-guarded model).
+        // char_widths (simulating TJ-kerning drift). to_chars honours the
+        // offsets for origin_x / bbox.x — and now for the width too.
+        //
+        // This asserted that widths still came from `char_widths`. The
+        // divergence in this very fixture is the argument against it: the
+        // glyph at 10.0 is followed by one at 25.0, so it advances 15, whatever
+        // `char_widths` records. Trusting the bookkeeping over the measurement
+        // shifted widths off their glyphs wherever the two drifted, opening
+        // phantom gaps that the word-gap clusterer split on.
         let span = TextSpan {
             text: "AB".to_string(),
             bbox: Rect::new(10.0, 20.0, 30.0, 12.0),
@@ -1225,8 +1231,9 @@ mod tests {
         assert!((chars[0].bbox.x - 10.0).abs() < 0.001);
         assert!((chars[1].origin_x - 25.0).abs() < 0.001);
         assert!((chars[1].bbox.x - 25.0).abs() < 0.001);
-        // Widths remain sourced from char_widths (unchanged model).
-        assert!((chars[0].bbox.width - 10.0).abs() < 0.001);
+        // The first glyph's width is the measured distance to the next origin.
+        assert!((chars[0].bbox.width - 15.0).abs() < 0.001);
+        // The last has no next origin, so it keeps its nominal width.
         assert!((chars[1].bbox.width - 20.0).abs() < 0.001);
     }
 
@@ -1296,6 +1303,90 @@ mod tests {
         assert_eq!(chars.len(), 1);
         assert!((chars[0].origin_x - 216.0).abs() < 0.001);
         assert!((chars[0].bbox.width - 4.0).abs() < 0.001);
+    }
+
+    /// A glyph's width comes from the distance to the next measured origin,
+    /// not from `char_widths` — because the two can drift apart and the
+    /// offsets are the measurement.
+    ///
+    /// On a table-of-contents line containing an em dash the widths ran two
+    /// entries out of step with the text, so `C` was paired with a 2.67 pt
+    /// advance where its own is 5.83 while its offset was exactly right. The
+    /// phantom gaps that opens are what the word-gap clusterer splits on:
+    /// `Coast Guard, Department` came out as `C|o|ast G|u|ard, D|e|partm|ent`.
+    #[test]
+    fn a_char_takes_its_width_from_the_next_offset() {
+        // Offsets are correct and evenly 6 pt apart; the widths are nonsense.
+        let span = TextSpan {
+            text: "Cat".to_string(),
+            bbox: Rect::new(100.0, 200.0, 18.0, 8.0),
+            char_widths: vec![2.0, 2.0, 2.0],
+            char_x_offsets: vec![100.0, 106.0, 112.0],
+            font_size: 8.0,
+            ..TextSpan::default()
+        };
+
+        let chars = span.to_chars();
+
+        assert_eq!(chars.len(), 3);
+        assert!(
+            (chars[0].bbox.width - 6.0).abs() < 0.001,
+            "expected the measured 6.0 pt advance, got {}",
+            chars[0].bbox.width
+        );
+        assert!((chars[1].bbox.width - 6.0).abs() < 0.001);
+        // The final glyph has no next offset, so it keeps its nominal width.
+        assert!((chars[2].bbox.width - 2.0).abs() < 0.001);
+    }
+
+    /// A zero-length step is not an advance either. A combining mark shares
+    /// its base glyph's origin — the case the previous comment called the
+    /// "Indic-guarded model" — so those keep the nominal width rather than
+    /// collapsing to zero.
+    #[test]
+    fn a_zero_offset_step_keeps_the_nominal_width() {
+        let span = TextSpan {
+            text: "ka".to_string(),
+            bbox: Rect::new(100.0, 200.0, 6.0, 8.0),
+            char_widths: vec![6.0, 0.0],
+            char_x_offsets: vec![100.0, 100.0],
+            font_size: 8.0,
+            ..TextSpan::default()
+        };
+
+        let chars = span.to_chars();
+
+        assert_eq!(chars.len(), 2);
+        assert!(
+            (chars[0].bbox.width - 6.0).abs() < 0.001,
+            "a combining mark at the base glyph's origin must not zero its \
+             width, got {}",
+            chars[0].bbox.width
+        );
+    }
+
+    /// A backward step is not an advance. Visually-stored RTL and mirrored
+    /// runs place successive glyphs at decreasing x, and subtracting there
+    /// would give a negative width — those keep the nominal value.
+    #[test]
+    fn a_backward_offset_step_keeps_the_nominal_width() {
+        let span = TextSpan {
+            text: "ab".to_string(),
+            bbox: Rect::new(100.0, 200.0, 12.0, 8.0),
+            char_widths: vec![5.0, 5.0],
+            char_x_offsets: vec![106.0, 100.0],
+            font_size: 8.0,
+            ..TextSpan::default()
+        };
+
+        let chars = span.to_chars();
+
+        assert_eq!(chars.len(), 2);
+        assert!(
+            (chars[0].bbox.width - 5.0).abs() < 0.001,
+            "a decreasing offset pair must fall back to char_widths, got {}",
+            chars[0].bbox.width
+        );
     }
 
     #[test]
