@@ -883,8 +883,13 @@ impl WasmPdfDocument {
 
     /// Extract span-level data from a page.
     ///
-    /// Returns an array of objects with: text, bbox, font_name, font_size,
-    /// font_weight, is_italic, color, sequence, etc.
+    /// Returns an array of objects with: text, bbox, **page_bbox**, font_name,
+    /// font_size, font_weight, is_italic, color, sequence, etc.
+    ///
+    /// `page_bbox` is the run's box in the displayed page frame. It differs
+    /// from `bbox` on a rotated page or a mirrored run, and it cannot be
+    /// derived from the other serialized fields because `mirrored` and
+    /// `page_rotation_applied` are runtime-only.
     ///
     /// Optional `reading_order`: `"column_aware"` for XY-Cut column detection,
     /// `"structure"` to follow the tagged structure tree (table cells), or
@@ -927,7 +932,32 @@ impl WasmPdfDocument {
 
         let spans = spans_result
             .map_err(|e| JsValue::from_str(&format!("Failed to extract spans: {}", e)))?;
-        serde_wasm_bindgen::to_value(&spans)
+
+        // Carry `page_bbox` alongside `bbox`. It is a derived accessor rather
+        // than a field, and the two inputs it needs — `mirrored` and
+        // `page_rotation_applied` — are `#[serde(skip)]` runtime metadata, so a
+        // JavaScript consumer could neither read it nor reconstruct it. On a
+        // rotated page `bbox` is already in the displayed frame while
+        // `rotation_degrees` keeps the raw content angle, so anything trying to
+        // derive the run frame from the serialized fields alone double-counts
+        // the rotation.
+        let enriched: Vec<serde_json::Value> = spans
+            .iter()
+            .map(|s| {
+                let mut v = serde_json::to_value(s).unwrap_or(serde_json::Value::Null);
+                if let Some(obj) = v.as_object_mut() {
+                    let pb = s.page_bbox();
+                    obj.insert(
+                        "page_bbox".to_string(),
+                        serde_json::json!({
+                            "x": pb.x, "y": pb.y, "width": pb.width, "height": pb.height
+                        }),
+                    );
+                }
+                v
+            })
+            .collect();
+        serde_wasm_bindgen::to_value(&enriched)
             .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
     }
 
