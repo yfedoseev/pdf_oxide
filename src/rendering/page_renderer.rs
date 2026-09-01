@@ -3832,6 +3832,13 @@ impl PageRenderer {
     /// or when a mask cannot be allocated — in each case the caller keeps the
     /// clip it already had, because failing to allocate must never paint
     /// *less* than the file asked for.
+    ///
+    /// A box that cannot be rasterized is the one case where that reasoning
+    /// inverts. If it lies wholly off-page it excludes everything, so keeping
+    /// the old clip paints a shading the file asked to be hidden — §8.5.4 says
+    /// content outside the clipping path shall not be painted. That case
+    /// returns an empty mask; a merely enormous box that still reaches the page
+    /// restricts nothing visible and still returns `None`.
     fn shading_bbox_mask(
         shading: &std::collections::HashMap<String, Object>,
         pixmap: &Pixmap,
@@ -3858,6 +3865,25 @@ impl PageRenderer {
         pb.push_rect(rect);
         let path = pb.finish()?;
         if !device_bounds_rasterizable(&path, transform) {
+            // Two very different unrasterizable boxes, and they must not be
+            // conflated — the same distinction the `W`/`W*` clip path already
+            // draws.
+            //
+            // A `/BBox` placed wholly off-page excludes everything, so
+            // discarding it paints the whole shading the file asked to be
+            // hidden. §8.5.4: content outside the clipping path shall not be
+            // painted, and Annex C.1 licenses *having* an arithmetic limit but
+            // not resolving past one in the direction that paints more.
+            if super::device_bounds_miss_pixmap(&path, transform, pixmap.width(), pixmap.height()) {
+                log::debug!(
+                    "shading /BBox lies wholly off-pixmap and cannot be rasterized;                      clipping the shading away: {:?}",
+                    path.bounds()
+                );
+                return tiny_skia::Mask::new(pixmap.width(), pixmap.height());
+            }
+            // Merely enormous but still reaching the page: it restricts nothing
+            // visible, so keeping the caller's existing clip is harmless and an
+            // empty mask here would wrongly erase the shading.
             return None;
         }
 
