@@ -418,7 +418,23 @@ pub(crate) mod utils {
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         // Larger Y = higher on page → descending band order.
         match band_b.cmp(&band_a) {
-            Ordering::Equal => safe_float_cmp(a_x, b_x),
+            // Within a band, x decides — and where x ties too, the baseline
+            // still does. Banding deliberately discards a sub-band y
+            // difference, but discarding it *without* a third key leaves
+            // `Ordering::Equal`, and `sort_by` is stable, so the pair keeps
+            // whatever order it arrived in — which is the XY-cut leaf's
+            // incoming order, not reading order.
+            //
+            // Two OCR words from different columns drawn at the same x, 0.15 pt
+            // apart, came out as `who con- who lodge. was waiting`. Keying the
+            // tie on the baseline restores the previous release's answer, which
+            // pdfium and pdfplumber both agree with.
+            //
+            // `(band desc, x asc, y desc)` is still a lexicographic composition
+            // of total orders, so it remains a valid `sort_by` comparator, and
+            // it changes nothing wherever x differs — every case the banding
+            // was introduced for.
+            Ordering::Equal => safe_float_cmp(a_x, b_x).then_with(|| safe_float_cmp(b_y, a_y)),
             other => other,
         }
     }
@@ -537,7 +553,10 @@ pub(crate) mod utils {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         match band_b.cmp(&band_a) {
-            Ordering::Equal => safe_float_cmp(b_x, a_x), // X descending = RTL
+            // X descending = RTL, then the baseline where x ties. Same reason
+            // as `row_aware_span_cmp`: an Equal here would let the incoming
+            // order decide.
+            Ordering::Equal => safe_float_cmp(b_x, a_x).then_with(|| safe_float_cmp(b_y, a_y)),
             other => other,
         }
     }
@@ -682,7 +701,14 @@ pub(crate) mod utils {
             let band = (get_y(it) / ROW_BAND_TOLERANCE_PT).round() as i32;
             // Reverse band → larger Y (higher on page) first, matching the
             // comparator's `band_b.cmp(&band_a)`.
-            (std::cmp::Reverse(band), F32Ord(get_x(it)))
+            // Third component mirrors the comparator's baseline tiebreak: two
+            // items in one band at one x must still order by y, or the sort's
+            // stability decides for them. Reverse = larger Y first.
+            (
+                std::cmp::Reverse(band),
+                F32Ord(get_x(it)),
+                std::cmp::Reverse(F32Ord(get_y(it))),
+            )
         });
     }
 
@@ -943,6 +969,76 @@ pub(crate) mod utils {
         /// #656/#657: the RTL variant keeps rows top-to-bottom but orders
         /// X *descending* (right-to-left) within a row — a pure-RTL line's
         /// logical reading order.
+        /// Two spans in one band at the same x still order by baseline.
+        ///
+        /// Banding deliberately discards a sub-band y difference so that
+        /// jittered OCR baselines cannot reverse a line. Discarding it
+        /// *without* a third key leaves `Ordering::Equal`, and `sort_by` is
+        /// stable, so the pair then keeps its incoming order rather than
+        /// reading order. On one scanned page two words from different columns
+        /// drawn at the same x, 0.15 pt apart, produced
+        /// `who con- who lodge. was waiting` — a fragment injected
+        /// mid-sentence. pdfium and pdfplumber both order them the other way.
+        #[test]
+        fn a_sub_band_baseline_difference_still_decides() {
+            assert_eq!(
+                row_aware_span_cmp(98.36, 232.08, 98.21, 232.08),
+                Ordering::Less,
+                "one band, one x: the baseline must still decide"
+            );
+            // Antisymmetric, not merely non-Equal.
+            assert_eq!(
+                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
+                Ordering::Greater
+            );
+        }
+
+        /// The banding still does its job: within a band, x decides whatever
+        /// the baselines are doing. This is the case banding exists for and the
+        /// tiebreak must not disturb it.
+        #[test]
+        fn x_still_decides_within_a_band() {
+            assert_eq!(row_aware_span_cmp(98.36, 100.0, 98.21, 200.0), Ordering::Less);
+            assert_eq!(row_aware_span_cmp(98.21, 100.0, 98.36, 200.0), Ordering::Less);
+        }
+
+        /// A different band still wins over x.
+        #[test]
+        fn a_different_band_still_wins_over_x() {
+            assert_eq!(row_aware_span_cmp(120.0, 400.0, 98.0, 50.0), Ordering::Less);
+        }
+
+        /// Identical geometry is genuinely equal — the comparator must not
+        /// invent an order where there is no evidence for one.
+        #[test]
+        fn identical_geometry_is_equal() {
+            assert_eq!(
+                row_aware_span_cmp(98.36, 232.08, 98.36, 232.08),
+                Ordering::Equal
+            );
+        }
+
+        /// The RTL sibling carries the same tiebreak, mirrored.
+        #[test]
+        fn the_rtl_comparator_also_breaks_a_tie_on_the_baseline() {
+            assert_eq!(
+                row_aware_span_cmp_rtl(98.36, 232.08, 98.21, 232.08),
+                Ordering::Less
+            );
+        }
+
+        /// And the cached-key sort must agree with the comparator, or the two
+        /// orderings diverge wherever both are used on the same data.
+        #[test]
+        fn the_cached_key_sort_agrees_with_the_comparator() {
+            let data = [(98.21_f32, 232.08_f32), (98.36, 232.08), (98.30, 100.0)];
+            let mut by_key = data.to_vec();
+            sort_by_row_band(&mut by_key, |it| it.0, |it| it.1);
+            let mut by_cmp = data.to_vec();
+            by_cmp.sort_by(|a, b| row_aware_span_cmp(a.0, a.1, b.0, b.1));
+            assert_eq!(by_key, by_cmp);
+        }
+
         #[test]
         fn test_row_aware_span_cmp_rtl_within_row_is_descending() {
             // Same row (Y within band), laid out left-to-right by X.
