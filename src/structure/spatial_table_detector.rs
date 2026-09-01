@@ -4129,7 +4129,20 @@ fn extract_cell_text(cell_span_indices: &[usize], spans: &[TextSpan]) -> String 
     if span_entries.len() == 1 {
         return span_entries.remove(0).2;
     }
-    span_entries.sort_by(|a, b| crate::utils::safe_float_cmp(b.0, a.0));
+    // Order the cell's members the way the markdown and HTML renderers
+    // already do — by row band, then left to right — so all three surfaces
+    // agree by construction.
+    //
+    // The previous key was `bbox.center().y` descending with no x tiebreak.
+    // A centre moves with font size, so a raised marker in a smaller font
+    // (`*` at 4.98 pt beside body text at 7.98 pt) sorted to the FRONT of the
+    // cell while staying inside the 2.0 pt line group, and the backward gap to
+    // the member now behind it produced no separator: `142.56 ± 59.19*^`
+    // became `59.19*^142.56 ±`. Keying on the baseline instead of the centre
+    // is the same correction the row comparator already carries.
+    span_entries.sort_by(|a, b| {
+        crate::utils::row_aware_span_cmp(a.1.bbox.y, a.1.bbox.x, b.1.bbox.y, b.1.bbox.x)
+    });
 
     // Group into rows by y proximity, then within a row decide separator per
     // pair of spans using the same gap/CJK rules as inline text assembly.
