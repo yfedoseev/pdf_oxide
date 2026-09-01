@@ -435,7 +435,22 @@ pub(crate) mod utils {
             //
             // The tiebreak is right in principle; the line grouping has to stop
             // depending on this order before it can land.
-            Ordering::Equal => safe_float_cmp(a_x, b_x),
+            // Where x ties too, the baseline still decides. Without a third
+            // key this returns `Equal` and `sort_by`'s stability settles it —
+            // the XY-cut leaf's incoming order, not reading order — and two OCR
+            // words from different columns drawn at the same x, 0.15 pt apart,
+            // come out as `who con- who lodge. was waiting`.
+            //
+            // `(band desc, x asc, y desc)` is still a lexicographic composition
+            // of total orders, and it changes nothing wherever x differs.
+            //
+            // This was tried once before the glyph-width fix and appeared to
+            // cost two documents; with widths taken from the measured offsets
+            // it changes exactly one file in the 2008-document corpus —
+            // `war_peace.pdf`, which it repairs — and that file's agreement
+            // with poppler is unchanged at 0.9349, because word-multiset
+            // Jaccard cannot see word ORDER at all.
+            Ordering::Equal => safe_float_cmp(a_x, b_x).then_with(|| safe_float_cmp(b_y, a_y)),
             other => other,
         }
     }
@@ -554,7 +569,7 @@ pub(crate) mod utils {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         match band_b.cmp(&band_a) {
-            Ordering::Equal => safe_float_cmp(b_x, a_x), // X descending = RTL
+            Ordering::Equal => safe_float_cmp(b_x, a_x).then_with(|| safe_float_cmp(b_y, a_y)),
             other => other,
         }
     }
@@ -699,7 +714,11 @@ pub(crate) mod utils {
             let band = (get_y(it) / ROW_BAND_TOLERANCE_PT).round() as i32;
             // Reverse band → larger Y (higher on page) first, matching the
             // comparator's `band_b.cmp(&band_a)`.
-            (std::cmp::Reverse(band), F32Ord(get_x(it)))
+            (
+                std::cmp::Reverse(band),
+                F32Ord(get_x(it)),
+                std::cmp::Reverse(F32Ord(get_y(it))),
+            )
         });
     }
 
@@ -960,15 +979,17 @@ pub(crate) mod utils {
         /// #656/#657: the RTL variant keeps rows top-to-bottom but orders
         /// X *descending* (right-to-left) within a row — a pure-RTL line's
         /// logical reading order.
-        /// Two spans in one band at the same x currently return Equal, so the
-        /// caller's sort stability decides. That is a known defect, not the
-        /// intended contract — see the comment on `row_aware_span_cmp`. Pinned
-        /// so a fix is a deliberate change rather than an accident.
+        /// Two spans in one band at the same x still order by baseline.
         #[test]
-        fn a_sub_band_baseline_tie_is_currently_undecided() {
+        fn a_sub_band_baseline_difference_still_decides() {
             assert_eq!(
                 row_aware_span_cmp(98.36, 232.08, 98.21, 232.08),
-                Ordering::Equal
+                Ordering::Less,
+                "one band, one x: the baseline must decide, or sort stability does"
+            );
+            assert_eq!(
+                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
+                Ordering::Greater
             );
         }
 
