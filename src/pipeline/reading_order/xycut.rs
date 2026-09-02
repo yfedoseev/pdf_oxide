@@ -1741,9 +1741,30 @@ impl XYCutStrategy {
             max_font = max_font.max(all_spans[i].bbox.height.abs());
         }
         let overlap_tol = max_font.max(10.0);
+        // A row that blankets the right column is only evidence of a TABLE if
+        // the right column has something on that row. A table row does — its
+        // right-hand cells are their own spans at the same y. A full-measure
+        // BAND does not: a title, heading, abstract or caption spanning the
+        // measure is alone on its row, and the spans bucketed into `right` sit
+        // above or below it.
+        //
+        // Without this the guard mistakes ordinary two-column furniture for a
+        // table. A journal page's title, authors, abstract, running head and
+        // captions all blanket the right column, three of them are enough to
+        // refuse the cut, and the body then reads as one leaf spanning the
+        // page — every physical row emitted as one line, splicing the columns
+        // into each other.
+        let shares_a_row_with_right = |i: usize| -> bool {
+            let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
+            let a = band(all_spans[i].bbox.y);
+            right.iter().any(|&j| band(all_spans[j].bbox.y) == a)
+        };
         let full_width_left_rows = left
             .iter()
             .filter(|&&i| {
+                if !shares_a_row_with_right(i) {
+                    return false;
+                }
                 let s = &all_spans[i];
                 // Count EVERY character, not just the non-whitespace ones. An
                 // inter-word space consumes an advance exactly as a glyph does,
