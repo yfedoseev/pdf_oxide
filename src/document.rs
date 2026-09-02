@@ -8267,7 +8267,25 @@ impl PdfDocument {
     /// `true` if a space should be inserted between the spans
     fn should_insert_space(prev: &TextSpan, current: &TextSpan) -> bool {
         // Get font size (use the larger of the two)
-        let font_size = prev.font_size.max(current.font_size).max(1.0);
+        // Scale the space threshold by the SMALLER of the two runs.
+        //
+        // A space between two runs is set in one of their two fonts, and the
+        // failure modes are not symmetric: too large a threshold fuses two
+        // words into one the page never draws, while too small a one merely
+        // separates what was already separate. On an OCR'd scan whose words
+        // carry independently estimated sizes — `And` at 13.12 pt beside
+        // `welcomes` at 8.97 — the larger size raised the threshold above the
+        // real gap and produced `Andwelcomes`; likewise `little` (6.28) and
+        // `fishes` (8.08) became `littlefishes`.
+        //
+        // Fall back to the larger when either size is missing, so a span with
+        // no font size cannot drive the threshold to the floor and split
+        // everything.
+        let font_size = if prev.font_size > 0.0 && current.font_size > 0.0 {
+            prev.font_size.min(current.font_size).max(1.0)
+        } else {
+            prev.font_size.max(current.font_size).max(1.0)
+        };
 
         // Same-line gate. Uses the shared threshold so the assembly
         // loop's same-line decision and the space-insertion decision
