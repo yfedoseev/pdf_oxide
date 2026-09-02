@@ -228,7 +228,7 @@ impl ReadingOrderStrategy for GeometricStrategy {
             let row_baseline = crate::utils::snap_baselines_to_rows(&spans, &all);
             let mut indexed: Vec<(usize, TextSpan)> = spans.into_iter().enumerate().collect();
             indexed.sort_by(|(ia, a), (ib, b)| {
-                crate::utils::row_aware_span_cmp_axis(
+                crate::utils::row_band_then_x_axis(
                     a.rotation_degrees,
                     row_baseline[*ia],
                     a.bbox.x,
@@ -236,6 +236,7 @@ impl ReadingOrderStrategy for GeometricStrategy {
                     row_baseline[*ib],
                     b.bbox.x,
                 )
+                .then_with(|| crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y))
             });
             return Ok(indexed
                 .into_iter()
@@ -281,7 +282,7 @@ impl ReadingOrderStrategy for GeometricStrategy {
             let row_of: std::collections::HashMap<usize, f32> =
                 sorted.iter().copied().zip(row_baseline).collect();
             sorted.sort_by(|&a, &b| {
-                crate::utils::row_aware_span_cmp_axis(
+                crate::utils::row_band_then_x_axis(
                     spans[a].rotation_degrees,
                     row_of[&a],
                     spans[a].bbox.x,
@@ -289,6 +290,7 @@ impl ReadingOrderStrategy for GeometricStrategy {
                     row_of[&b],
                     spans[b].bbox.x,
                 )
+                .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
             });
 
             if sorted.len() == 1 {

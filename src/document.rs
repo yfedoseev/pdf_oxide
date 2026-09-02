@@ -3054,12 +3054,13 @@ impl PdfDocument {
         let row_baseline = crate::utils::snap_baselines_to_rows(spans, &all);
         let mut order: Vec<usize> = all;
         order.sort_by(|&a, &b| {
-            crate::utils::row_aware_span_cmp(
+            crate::utils::row_band_then_x(
                 row_baseline[a],
                 spans[a].bbox.x,
                 row_baseline[b],
                 spans[b].bbox.x,
             )
+            .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
         });
         let reordered: Vec<crate::layout::TextSpan> =
             order.into_iter().map(|i| spans[i].clone()).collect();

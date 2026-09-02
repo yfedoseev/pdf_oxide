@@ -2132,7 +2132,11 @@ impl XYCutStrategy {
         // to `indices` rather than to `all_spans`.
         let mut order: Vec<usize> = (0..indices.len()).collect();
         order.sort_by(|&a, &b| {
-            crate::utils::row_aware_span_cmp_axis(
+            // Band and x from the row key; the last word goes to the baseline
+            // the page draws. Two spans sharing a row key compare equal on any
+            // tiebreak taken from that key, which would leave their order to
+            // the sequence they arrived in.
+            crate::utils::row_band_then_x_axis(
                 all_spans[indices[a]].rotation_degrees,
                 row_baseline[a],
                 all_spans[indices[a]].bbox.left(),
@@ -2140,6 +2144,12 @@ impl XYCutStrategy {
                 row_baseline[b],
                 all_spans[indices[b]].bbox.left(),
             )
+            .then_with(|| {
+                crate::utils::safe_float_cmp(
+                    all_spans[indices[b]].bbox.y,
+                    all_spans[indices[a]].bbox.y,
+                )
+            })
         });
         order.into_iter().map(|k| indices[k]).collect()
     }
