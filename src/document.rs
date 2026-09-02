@@ -3326,7 +3326,17 @@ impl PdfDocument {
         order.sort_by(|&a, &b| {
             let ya = promoted.get(&a).copied().unwrap_or(row_baseline[a]);
             let yb = promoted.get(&b).copied().unwrap_or(row_baseline[b]);
-            crate::utils::row_aware_span_cmp(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
+            // Band and x come from the promoted key — that is what lifts a
+            // label to the head of its row block. The final baseline tiebreak
+            // must come from the baseline the page actually draws: a promoted
+            // key is `anchor + 1.0`, an offset chosen to land inside the
+            // anchor's band, and it is bookkeeping rather than a position. Let
+            // it break the tie and it outranks a real baseline — a wrapped
+            // table cell's continuation line, promoted to `anchor + 1.0` and
+            // sharing its column's x exactly, sorted ahead of the line it
+            // continues and split that row apart.
+            crate::utils::row_band_then_x(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
+                .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
         });
         let reordered: Vec<crate::layout::TextSpan> =
             order.into_iter().map(|i| spans[i].clone()).collect();

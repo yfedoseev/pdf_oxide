@@ -405,7 +405,13 @@ pub(crate) mod utils {
     /// comparing raw Y values with tolerance is non-transitive and would
     /// break `sort_by`.
     #[inline]
-    pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
+    /// Row band descending, then `x` ascending. No baseline tiebreak.
+    ///
+    /// Callers that sort on a *synthetic* key — one derived from a span's
+    /// position rather than read from it — want this rather than
+    /// `row_aware_span_cmp`, because a baseline tiebreak applied to a made-up
+    /// value decides an order from bookkeeping instead of from the page.
+    pub fn row_band_then_x(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
         // Non-finite Y (NaN/±Inf) cannot be quantized into an i32 band —
         // `as i32` saturates, collapsing distinct non-finite values into
         // the same band and reordering them unpredictably against finite
@@ -417,42 +423,31 @@ pub(crate) mod utils {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         // Larger Y = higher on page → descending band order.
-        match band_b.cmp(&band_a) {
-            // Within a band, x decides. Where x ties too this returns Equal
-            // and `sort_by`'s stability settles it, which is the leaf's
-            // incoming order rather than reading order — two OCR words from
-            // different columns drawn at the same x, 0.15 pt apart, come out as
-            // `who con- who lodge. was waiting`.
-            //
-            // Adding the baseline as a third key fixes that document and costs
-            // more elsewhere: it reorders a cell's members, which the
-            // order-dependent line grouping downstream then regroups, and
-            // `August 9th` came apart into `August 9` and `th` around a line of
-            // intervening text (all three reference extractors worse, poppler
-            // 0.985 -> 0.957). Measured over the corpus it moved two more
-            // documents away from the panel and none toward it. Tried, and
-            // reverted.
-            //
-            // The tiebreak is right in principle; the line grouping has to stop
-            // depending on this order before it can land.
-            // Where x ties too, the baseline still decides. Without a third
-            // key this returns `Equal` and `sort_by`'s stability settles it —
-            // the XY-cut leaf's incoming order, not reading order — and two OCR
-            // words from different columns drawn at the same x, 0.15 pt apart,
-            // come out as `who con- who lodge. was waiting`.
-            //
-            // `(band desc, x asc, y desc)` is still a lexicographic composition
-            // of total orders, and it changes nothing wherever x differs.
-            //
-            // This was tried once before the glyph-width fix and appeared to
-            // cost two documents; with widths taken from the measured offsets
-            // it changes exactly one file in the 2008-document corpus —
-            // `war_peace.pdf`, which it repairs — and that file's agreement
-            // with poppler is unchanged at 0.9349, because word-multiset
-            // Jaccard cannot see word ORDER at all.
-            Ordering::Equal => safe_float_cmp(a_x, b_x).then_with(|| safe_float_cmp(b_y, a_y)),
-            other => other,
-        }
+        band_b
+            .cmp(&band_a)
+            .then_with(|| safe_float_cmp(a_x, b_x))
+    }
+
+    /// Reading order for two spans: row band descending, then `x` ascending,
+    /// then the baseline descending.
+    ///
+    /// Without the third key, two spans sharing a band and an `x` compare
+    /// `Equal` and `sort_by`'s stability settles them — which is the XY-cut
+    /// leaf's incoming order, not reading order. Two OCR words from different
+    /// columns drawn at the same x, 0.15 pt apart, came out as
+    /// `who con- who lodge. was waiting`, a fragment injected mid-sentence.
+    ///
+    /// `(band desc, x asc, y desc)` is a lexicographic composition of total
+    /// orders and changes nothing wherever `x` differs.
+    ///
+    /// The baseline key is only meaningful when `a_y`/`b_y` are baselines the
+    /// page actually draws. A caller passing a synthetic key must use
+    /// `row_band_then_x` and apply its own tiebreak on the real geometry:
+    /// feeding a promoted label's `anchor + 1.0` in here let a bookkeeping
+    /// offset outrank a real baseline and put a wrapped table cell's
+    /// continuation line ahead of the line it continues.
+    pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
+        row_band_then_x(a_y, a_x, b_y, b_x).then_with(|| safe_float_cmp(b_y, a_y))
     }
 
     /// `row_aware_span_cmp` with the run's writing axis as the primary key.
@@ -1130,6 +1125,25 @@ pub(crate) mod utils {
         fn x_still_decides_within_a_band() {
             assert_eq!(row_aware_span_cmp(98.36, 100.0, 98.21, 200.0), Ordering::Less);
             assert_eq!(row_aware_span_cmp(98.21, 100.0, 98.36, 200.0), Ordering::Less);
+        }
+
+        /// `row_band_then_x` deliberately stops before the baseline, so a
+        /// caller sorting on a synthetic key can apply its own tiebreak on the
+        /// real geometry. The two comparators must differ in exactly this way,
+        /// or the split has no effect and the hazard comes back.
+        #[test]
+        fn the_band_and_x_comparator_leaves_a_same_x_tie_open() {
+            assert_eq!(row_band_then_x(98.21, 232.08, 98.36, 232.08), Ordering::Equal);
+            assert_eq!(
+                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
+                Ordering::Greater
+            );
+            // Wherever x differs the two agree, so swapping one for the other
+            // moves nothing except the tie.
+            assert_eq!(
+                row_band_then_x(98.36, 100.0, 98.21, 200.0),
+                row_aware_span_cmp(98.36, 100.0, 98.21, 200.0)
+            );
         }
 
         /// A different band still wins over x.
