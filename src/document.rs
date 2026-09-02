@@ -9233,31 +9233,23 @@ impl PdfDocument {
         } else {
             s
         };
-        // Drop a soft hyphen only between two alphabetic characters; anything
-        // else is a visible hyphen, a delimiter glyph, or a misdecoded byte.
-        let chars: Vec<char> = body.chars().collect();
-        for (i, &c) in chars.iter().enumerate() {
-            if c != '\u{00AD}' {
-                out.push(c);
-                continue;
-            }
-            // Keep it. A soft hyphen *inside a single span* is never a line
-            // wrap: a span is one run drawn on one line, so no break occurs at
-            // that point and the glyph was painted. Annex D Note 5
-            // (`docs/spec/pdf.md`:41814) says WinAnsi code 255 "shall be
-            // typographically the same as hyphen", so a painted one is a
-            // character the page draws and dropping it deletes content --
-            // `Campus<shy>Main` became `CampusMain`.
-            //
-            // Only a **seam** between two spans can be a wrap, and
-            // `apply_soft_hyphen_seam` decides those from the geometry, which
-            // is the only place the evidence exists.
-            //
-            // Measured over the 2008-document corpus: v0.3.77 kept 20 in-span
-            // markers across 6 documents and this dropped every one of them.
-            // poppler, MuPDF, pdfium, pypdf and pdfminer all keep them.
-            out.push(c);
-        }
+        // Every soft hyphen still in the body is kept: one *inside a single
+        // span* is never a line
+        // wrap: a span is one run drawn on one line, so no break occurs at
+        // that point and the glyph was painted. Annex D Note 5
+        // (`docs/spec/pdf.md`:41814) says WinAnsi code 255 "shall be
+        // typographically the same as hyphen", so a painted one is a
+        // character the page draws and dropping it deletes content --
+        // `Campus<shy>Main` became `CampusMain`.
+        //
+        // Only a **seam** between two spans can be a wrap, and
+        // `apply_soft_hyphen_seam` decides those from the geometry, which
+        // is the only place the evidence exists.
+        //
+        // Measured over the 2008-document corpus: v0.3.77 kept 20 in-span
+        // markers across 6 documents and this dropped every one of them.
+        // poppler, MuPDF, pdfium, pypdf and pdfminer all keep them.
+        out.push_str(body);
         if keeps_wrap_marker {
             out.push('\u{00AD}');
         }
