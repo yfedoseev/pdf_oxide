@@ -777,11 +777,35 @@ pub(crate) mod utils {
             }
             (r / 90.0).round().rem_euclid(4.0) as i32
         };
-        // How far apart two runs are, taking the better-agreeing edge.
+        // How far apart two runs are, taking the better-agreeing edge — but
+        // only between runs of comparable height.
+        //
+        // Reading the better-agreeing edge is what lets a superscript, a drop
+        // capital or a run whose box carries a descender join the line it
+        // belongs to: at similar heights, agreement on either edge implies
+        // agreement on the other. That implication fails once one run is much
+        // taller than the other. A 19 pt centred title spanning three lines of
+        // an 8 pt stamp beside it had a top edge 0.4 pt from the stamp's first
+        // line and a baseline 11 pt away, so the better-agreeing edge put the
+        // title *inside* the stamp's opening phrase and pushed the phrase's
+        // second half onto the following line: `Prescribed by Treasury` /
+        // title / `Department Treasury Dept. Cir. 1076`.
+        //
+        // Sharing a row means sharing a baseline. Above twice the height the
+        // top edge stops being evidence of that and only the baseline counts.
+        const COMPARABLE_HEIGHT_RATIO: f32 = 2.0;
         let distance = |a: usize, b: usize| -> f32 {
             let (a_base, a_top) = edges(a);
             let (b_base, b_top) = edges(b);
-            (a_base - b_base).abs().min((a_top - b_top).abs())
+            let by_baseline = (a_base - b_base).abs();
+            let (short, tall) = {
+                let (ha, hb) = (a_top - a_base, b_top - b_base);
+                (ha.min(hb), ha.max(hb))
+            };
+            if short > 0.0 && tall > short * COMPARABLE_HEIGHT_RATIO {
+                return by_baseline;
+            }
+            by_baseline.min((a_top - b_top).abs())
         };
 
         let mut snapped: Vec<f32> = indices.iter().map(|&i| all_spans[i].bbox.y).collect();
@@ -875,6 +899,58 @@ pub(crate) mod utils {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Build a span at an explicit baseline/height for the row-snapping
+        /// tests below.
+        fn row_span(y: f32, height: f32, text: &str) -> crate::layout::TextSpan {
+            crate::layout::TextSpan {
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(0.0, y, 10.0, height),
+                font_size: height,
+                ..Default::default()
+            }
+        }
+
+        /// A government form's masthead, at the geometry the file draws. A
+        /// 19 pt centred title spans all three lines of an 8 pt stamp beside
+        /// it, so its top edge lands 0.4 pt from the stamp's first line while
+        /// its baseline sits 11.5 pt away.
+        ///
+        /// Taking the better-agreeing edge put the title on the stamp's
+        /// opening row, which sorted it between `Prescribed by Treasury` and
+        /// `Department` — splitting one phrase and gluing its second half to
+        /// the line below.
+        #[test]
+        fn a_tall_centred_run_does_not_join_a_short_row_beside_it() {
+            let spans = vec![
+                row_span(723.0, 8.2, "Prescribed by Treasury"),
+                row_span(716.0, 8.3, "Department"),
+                row_span(709.1, 8.2, "Treasury Dept. Cir. 1076"),
+                row_span(711.5, 19.3, "DIRECT DEPOSIT SIGN-UP FORM"),
+            ];
+            let idx: Vec<usize> = (0..spans.len()).collect();
+            let rows = snap_baselines_to_rows(&spans, &idx);
+            assert_ne!(
+                rows[3], rows[0],
+                "a run 2.4x the height of the line beside it does not share its row"
+            );
+        }
+
+        /// The counter-case that keeps the narrowing honest. Two runs of
+        /// comparable height whose tops agree exactly and whose baselines do
+        /// not — a superscript, a drop capital, a box carrying a descender —
+        /// must still snap together. This is the case the better-agreeing-edge
+        /// rule exists for, and it passes with or without the height guard.
+        #[test]
+        fn comparable_runs_still_snap_on_their_better_edge() {
+            let spans = vec![row_span(700.0, 10.0, "body"), row_span(703.0, 7.0, "sup")];
+            let idx: Vec<usize> = (0..spans.len()).collect();
+            let rows = snap_baselines_to_rows(&spans, &idx);
+            assert_eq!(
+                rows[0], rows[1],
+                "runs of similar height still join on whichever edge agrees"
+            );
+        }
 
         /// The cached-key sort must produce the identical permutation to
         /// `sort_by(row_aware_span_cmp)` on finite inputs.
