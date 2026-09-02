@@ -336,6 +336,24 @@ pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) 
         && head.chars().any(|c| c.is_ascii_digit())
 }
 
+/// True for a character that establishes left-to-right reading on its own.
+///
+/// Unicode Standard Annex #9 sorts characters into strong, weak and neutral
+/// types, and only the strong ones carry a direction. A Latin, Greek, Cyrillic
+/// or Han letter is strong; digits and `/`, `%`, `-`, `#` are weak or neutral
+/// and take their direction from whatever surrounds them. ISO 32000-1:2008
+/// Table 344 defers to that annex by name — a writing mode's
+/// inline-progression direction "is subject to local override within the text
+/// being laid out, as described in Unicode Standard Annex #9, The
+/// Bidirectional Algorithm".
+///
+/// So a run of digits is evidence of nothing. It reads left-to-right in a Latin
+/// paragraph and right-to-left in an Arabic one, and its geometry alone cannot
+/// say which.
+fn is_strong_ltr_char(c: char) -> bool {
+    c.is_alphabetic() && !is_rtl_char(c)
+}
+
 pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // Runs on different writing axes are not comparable along page-x at all.
     // ISO 32000-1:2008 9.4.4: a glyph's displacement is interpreted in text
@@ -385,10 +403,24 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // the same judgement (twenty ems), which is far outside the range of the
     // glyph overlap this rule exists to tolerate.
     let backward_em = prev.font_size.max(current.font_size).max(6.0) * 20.0;
+    //
+    // Carrying no right-to-left character does not establish that a run is
+    // left-to-right, because digits and their separators establish no direction
+    // at all. A Persian form's `1403/09/19` is drawn right-to-left like the
+    // words around it, but `19`, `/` and `09` hold no strong character of
+    // either script, so a guard keyed on right-to-left characters never sees
+    // them and the rule split every date, percentage and section number it met:
+    // `19 / 09 /1403`, `50 %`, `5 2`.
+    //
+    // The test needs positive evidence rather than the absence of contrary
+    // evidence, so it applies only where some strong left-to-right character is
+    // present and no right-to-left one is.
     let steps_backward = (current.bbox.x + current.bbox.width <= prev.bbox.x
         || gap < -backward_em)
         && !prev.text.chars().any(is_rtl_char)
-        && !current.text.chars().any(is_rtl_char);
+        && !current.text.chars().any(is_rtl_char)
+        && (prev.text.chars().any(is_strong_ltr_char)
+            || current.text.chars().any(is_strong_ltr_char));
     if gap <= threshold && !steps_backward {
         return false;
     }
@@ -913,6 +945,65 @@ mod tests {
         assert!(
             !has_horizontal_gap(&prev, &curr),
             "a sub-em gap is inter-glyph kerning"
+        );
+    }
+
+    /// The four span pairs of a Persian form's issue date, at the geometry the
+    /// file actually draws. The digits are laid down left-to-right —
+    /// `1403` `/` `09` `/` `19` at ascending x — and the bidi pass reverses
+    /// them into reading order, so each consecutive pair in the flow steps
+    /// leftward. Nothing here carries an Arabic character, so a guard keyed on
+    /// right-to-left characters cannot see that this is a right-to-left run.
+    ///
+    /// The last pair is the tell: `/`→`1403` ends at 160.32 against a previous
+    /// start of 160.22, missing the backward-step test by a tenth of a point
+    /// where the other three met it. That is why the damage was asymmetric —
+    /// `19 / 09 /1403`, a space before every separator but not after the last.
+    #[test]
+    fn a_date_in_a_right_to_left_run_is_not_split_at_its_separators() {
+        let date = [
+            (176.54, 11.28, "19"),
+            (174.02, 2.48, "/"),
+            (162.74, 11.28, "09"),
+            (160.22, 2.48, "/"),
+            (137.90, 22.42, "1403"),
+        ];
+        for pair in date.windows(2) {
+            let (px, pw, pt) = pair[0];
+            let (cx, cw, ct) = pair[1];
+            let prev = rtl_span(px, pw, 12.0, pt);
+            let curr = rtl_span(cx, cw, 12.0, ct);
+            assert!(
+                !has_horizontal_gap(&prev, &curr),
+                "a date must not gain a break between {pt:?} and {ct:?}"
+            );
+        }
+    }
+
+    /// A percentage from the same page. `%` is a bidi terminator and the digits
+    /// are European numbers; neither establishes a direction, so neither can
+    /// justify reading a leftward step as a discontinuity.
+    #[test]
+    fn a_percentage_in_a_right_to_left_run_keeps_its_sign() {
+        let prev = rtl_span(202.49, 5.63, 12.0, "5");
+        let curr = rtl_span(197.21, 5.24, 12.0, "%");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "a percent sign must not be separated from its number"
+        );
+    }
+
+    /// The counter-case that keeps the narrowing honest. Identical leftward
+    /// geometry, but with strong left-to-right letters on both sides this is a
+    /// genuine reading discontinuity and must still separate — it is what stops
+    /// a re-ordered OCR layer emitting `It is the` as `theisIt`.
+    #[test]
+    fn a_latin_backward_step_with_letters_still_separates() {
+        let prev = rtl_span(176.54, 11.28, 12.0, "is");
+        let curr = rtl_span(160.22, 11.28, 12.0, "the");
+        assert!(
+            has_horizontal_gap(&prev, &curr),
+            "a backward step between Latin words is still a discontinuity"
         );
     }
 
