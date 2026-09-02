@@ -103,6 +103,10 @@ fn order_of(text: &str, needles: &[&str]) -> Vec<usize> {
 /// the font size, the *tops* span 4.3 pt — wider than the baselines — in an
 /// order unrelated to the reading order: sorting on them descending gives
 /// Alpha, Echo, Charlie, Foxtrot, Bravo, Delta.
+// The font sizes here are measurements in points, not mathematical
+// constants; `6.28` is a glyph height, and the lint that reads it as an
+// approximation of tau has no bearing on what the fixture is for.
+#[allow(clippy::approx_constant)]
 fn jittered_line() -> Vec<u8> {
     make_page(&[
         ("Alpha", 18.0, 531.0, 7.90),

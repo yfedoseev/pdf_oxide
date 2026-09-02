@@ -1619,7 +1619,7 @@ impl XYCutStrategy {
         // keeps a one-glyph overhang from counting as a crossing.
         const STRADDLE_TOL: f32 = 10.0;
         let region_width = (left_x_max.max(right_x_max) - left_x_min.min(right_x_min)).max(1.0);
-        let corridor_is_crossed = indices.iter().any(|&i| {
+        let crossing_count = indices.iter().filter(|&&i| {
             let s = &all_spans[i];
             let (l, r) = (s.bbox.left(), s.bbox.right());
             // Only spans the projection skipped can hide ink from it.
@@ -1629,18 +1629,27 @@ impl XYCutStrategy {
             let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
             let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
             l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
-        });
-        // A crossing span alone is not enough to refuse the cut. A banner
+        }).count();
+        // A crossing run alone is not enough to refuse the cut. A banner
         // headline sitting *above* two real columns crosses every candidate
         // corridor between them, and refusing there costs the column split on
         // ordinary two-column prose — which then reads row-major and glues a
-        // hyphenated word to its neighbour column's continuation.
+        // hyphenated word to the facing column's continuation.
         //
-        // What separates the two is what lies on each side. A genuine column
-        // runs most of the region's height; the masthead band that this guard
-        // exists for does not — its side holds a nameplate and a dateline and
-        // nothing else, a short band rather than a column. Refuse only when a
-        // crossing span is paired with a side too short to be a column.
+        // Exactly one benign shape exists: a single banner over two columns
+        // that run together down the page. Both halves of that matter.
+        //
+        // A corridor crossed again and again is not a corridor. A contents
+        // page whose every subchapter title spans the measure crossed one
+        // candidate 22 times; two columns of prose under one heading crossed
+        // theirs once.
+        //
+        // And a real column runs most of the region's height, so two of them
+        // are near-coextensive: the prose page's halves spanned 18..635 and
+        // 20..635 of a 617 pt region. The bands this guard exists for do not —
+        // a newspaper masthead's side holds a nameplate and a dateline over
+        // 28% of the region, and a contents page's page-number column is a
+        // short band nested inside the full-measure titles beside it.
         let mut left_lo = f32::MAX;
         let mut left_hi = f32::MIN;
         let mut right_lo = f32::MAX;
@@ -1658,9 +1667,11 @@ impl XYCutStrategy {
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
         let shorter_side = (left_hi - left_lo).min(right_hi - right_lo);
-        const COLUMN_HEIGHT_FRACTION: f32 = 0.5;
-        let a_side_is_a_short_band = shorter_side < region_height * COLUMN_HEIGHT_FRACTION;
-        if corridor_is_crossed && a_side_is_a_short_band {
+        /// Two columns of running text end within a fifth of the region's
+        /// height of each other; a band that stops far short is not a column.
+        const COLUMN_HEIGHT_FRACTION: f32 = 0.8;
+        let sides_are_columns = shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
+        if crossing_count > 0 && !(crossing_count == 1 && sides_are_columns) {
             return None;
         }
 
