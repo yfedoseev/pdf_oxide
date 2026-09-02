@@ -147,6 +147,13 @@ impl HtmlOutputConverter {
             return true;
         }
 
+        // A run that reads as a piece of a sentence rather than a title: one
+        // ending on a function word, or opening lowercase and closing on a full
+        // stop. Shared with the markdown predicate so the two formats agree.
+        if super::reads_as_a_sentence_fragment(trimmed) {
+            return true;
+        }
+
         // Currency amounts: $1,234.56 or 1,234.56$ or similar
         if trimmed.contains('$')
             || trimmed.contains('\u{20AC}') // euro
@@ -1002,6 +1009,25 @@ impl HtmlOutputConverter {
 
 #[cfg(test)]
 mod tests {
+    /// The HTML converter gates heading promotion through its own predicate,
+    /// so the sentence-fragment rule has to be asserted there too — the two
+    /// formats must agree on what is a heading.
+    #[test]
+    fn a_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+        for fragment in ["Furthermore, one reads in the", "palaces league."] {
+            assert!(
+                HtmlOutputConverter::looks_like_non_heading(fragment),
+                "{fragment:?} is a sentence fragment, not a heading"
+            );
+        }
+        for heading in ["Spring Equinox Gathering", "Materials and Methods", "Doctor Who"] {
+            assert!(
+                !HtmlOutputConverter::looks_like_non_heading(heading),
+                "{heading:?} is a heading and must still promote"
+            );
+        }
+    }
+
     use super::*;
     use crate::geometry::Rect;
     use crate::layout::{Color, TextSpan};
