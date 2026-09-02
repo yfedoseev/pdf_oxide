@@ -6838,7 +6838,31 @@ impl PdfDocument {
                         // `pipeline/converters/mod.rs`already guards this for the
                         // converter path; the shared assembly behind `.text`
                         // and the extractors never consulted `rotation_degrees`.
+                        //
+                        // One newline is not enough when the line ends on a
+                        // wrap hyphen. `dehyphenate_line_breaks` rejoins
+                        // `<lowercase>-` across a *single* line break, so the
+                        // break this guard inserts was itself the seam it was
+                        // rejoined over: a body line ending `Soekarno-` was
+                        // de-hyphenated onto the rotated left-margin stamp that
+                        // followed it, deleting the hyphen, destroying the
+                        // proper noun `Soekarno-Hatta`, and inventing the token
+                        // `Soekarnojbell`.
+                        //
+                        // A run on another writing axis is never the
+                        // continuation of a hyphenated word, so end the
+                        // paragraph rather than the line. A blank line is not a
+                        // seam that pass will cross.
+                        let ends_on_a_wrap_hyphen = {
+                            let t = text.trim_end_matches([' ', '\t']);
+                            let mut back = t.chars().rev();
+                            back.next() == Some('-')
+                                && back.next().is_some_and(|c| c.is_ascii_lowercase())
+                        };
                         if !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        if ends_on_a_wrap_hyphen && !text.ends_with("\n\n") {
                             text.push('\n');
                         }
                     } else if y_diff > Self::same_line_threshold(prev, span) {
