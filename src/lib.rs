@@ -485,6 +485,29 @@ pub(crate) mod utils {
             .then_with(|| row_aware_span_cmp(a_y, a_x, b_y, b_x))
     }
 
+    /// [`row_aware_span_cmp_axis`] without the baseline tiebreak: writing-axis
+    /// quadrant, then row band, then `x`.
+    ///
+    /// For callers ordering on a row key rather than on each span's own
+    /// baseline. Giving two spans the same row key is the point of such a key,
+    /// but it also makes them compare equal on any tiebreak read from that key,
+    /// which silently hands the order back to whatever sequence the spans
+    /// arrived in — a space-only run drawn 0.2 pt under a heading then came out
+    /// ahead of the heading and broke it in two. Pair this with a tiebreak on
+    /// the baseline the page actually draws.
+    pub fn row_band_then_x_axis(
+        a_rot: f32,
+        a_y: f32,
+        a_x: f32,
+        b_rot: f32,
+        b_y: f32,
+        b_x: f32,
+    ) -> Ordering {
+        quadrant_key(a_rot)
+            .cmp(&quadrant_key(b_rot))
+            .then_with(|| row_band_then_x(a_y, a_x, b_y, b_x))
+    }
+
     /// Writing-axis bucket for a run's rotation: 0/90/180/270, or a distinct
     /// bucket for anything that is not within half a degree of a right angle.
     #[inline]
@@ -1143,6 +1166,48 @@ pub(crate) mod utils {
             assert_eq!(
                 row_band_then_x(98.36, 100.0, 98.21, 200.0),
                 row_aware_span_cmp(98.36, 100.0, 98.21, 200.0)
+            );
+        }
+
+        /// Two spans in one row share a row key — that is what the key is
+        /// for — so any tiebreak read back from it compares them equal and
+        /// hands their order to the sequence they arrived in. A space-only run
+        /// drawn a fifth of a point under a heading, at the same left edge and
+        /// emitted first, then sorted ahead of the heading's own text and broke
+        /// a two-line section title into body text plus its last word.
+        ///
+        /// The row key settles the band and `x`; the baseline the page draws
+        /// settles what is left.
+        #[test]
+        fn a_shared_row_key_leaves_the_baseline_to_decide() {
+            use crate::layout::TextSpan;
+            let span = |y: f32, text: &str| TextSpan {
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(36.0, y, 100.0, 12.0),
+                font_size: 12.0,
+                ..Default::default()
+            };
+            // Emitted in the order a producer drew them: the space first.
+            let spans = vec![span(745.73, " "), span(745.93, "Section Title")];
+            let idx: Vec<usize> = (0..spans.len()).collect();
+            let key = snap_baselines_to_rows(&spans, &idx);
+            assert_eq!(
+                key[0], key[1],
+                "the two runs are one row, so the hazard this guards is real"
+            );
+
+            // Ordering on the key alone cannot separate them.
+            assert_eq!(
+                row_band_then_x_axis(0.0, key[0], 36.0, 0.0, key[1], 36.0),
+                Ordering::Equal
+            );
+            // Adding the drawn baseline does, and puts the heading first.
+            let ordered = row_band_then_x_axis(0.0, key[0], 36.0, 0.0, key[1], 36.0)
+                .then_with(|| safe_float_cmp(spans[1].bbox.y, spans[0].bbox.y));
+            assert_eq!(
+                ordered,
+                Ordering::Greater,
+                "the run drawn higher on the page must be read first"
             );
         }
 
