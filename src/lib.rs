@@ -722,6 +722,136 @@ pub(crate) mod utils {
         });
     }
 
+
+    /// Give every span the baseline of the row it is printed on, so a row-band
+    /// comparator sees one row per printed line.
+    ///
+    /// Quantizing each baseline onto a fixed grid decides row membership by
+    /// which side of an arbitrary boundary a baseline lands on, and that is
+    /// wrong wherever a row mixes font sizes. A timetable sets its times at
+    /// 5 pt and its band names at 8 pt on the same rows; the name's baseline
+    /// sits 3.3 pt below its own time's and only 2.0 pt above the next one's,
+    /// so the name bands with the row *below* the one it is printed on.
+    ///
+    /// Neither edge of the box settles it alone. Producers align mixed sizes
+    /// sometimes on the baseline and sometimes on the cap top — this very page
+    /// does both — so two runs are taken to be aligned when *either* their
+    /// baselines or their tops agree, whichever agrees better. ISO 32000-1:2008
+    /// §9.4.4 computes the glyph displacement along the writing axis and sets
+    /// the component for the other axis to 0: a horizontal run does not move
+    /// vertically as it is painted, so both edges are fixed by the font and
+    /// either may be the one the producer aligned on.
+    ///
+    /// The page's dominant text size defines the row grid. Rows are seeded
+    /// from spans at that size, in descending baseline order; every remaining
+    /// span then joins the row it aligns with *best*, rather than the first
+    /// row within tolerance — a name centred between two rows is close to
+    /// both, and only the better match is the row it is printed on. A span
+    /// that aligns with no row seeds one of its own.
+    ///
+    /// Rows are formed per writing-axis quadrant, so a rotated run never joins
+    /// a horizontal row.
+    pub fn snap_baselines_to_rows(
+        all_spans: &[crate::layout::TextSpan],
+        indices: &[usize],
+    ) -> Vec<f32> {
+        // Baseline and top of a span. A degenerate box falls back to the font
+        // size so it still gets a row rather than becoming one.
+        let edges = |i: usize| -> (f32, f32) {
+            let b = &all_spans[i].bbox;
+            let h = if b.height.is_finite() && b.height > 0.0 {
+                b.height
+            } else {
+                all_spans[i].font_size.max(1.0)
+            };
+            (b.y, b.y + h)
+        };
+        let quadrant = |i: usize| -> i32 {
+            let r = all_spans[i].rotation_degrees;
+            if !r.is_finite() {
+                return 0;
+            }
+            (r / 90.0).round().rem_euclid(4.0) as i32
+        };
+        // How far apart two runs are, taking the better-agreeing edge.
+        let distance = |a: usize, b: usize| -> f32 {
+            let (a_base, a_top) = edges(a);
+            let (b_base, b_top) = edges(b);
+            (a_base - b_base).abs().min((a_top - b_top).abs())
+        };
+
+        let mut snapped: Vec<f32> = indices.iter().map(|&i| all_spans[i].bbox.y).collect();
+        if indices.is_empty() {
+            return snapped;
+        }
+
+        // The dominant text size, to 0.5 pt. Seeding rows from one size keeps
+        // the grid regular; mixing every size in would let a run centred
+        // between two rows define a row of its own between them.
+        let mut tally: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+        for &i in indices {
+            let fs = all_spans[i].font_size;
+            if fs.is_finite() && fs > 0.0 {
+                *tally.entry((fs * 2.0).round() as i32).or_insert(0) += 1;
+            }
+        }
+        let modal = tally
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+            .map(|(k, _)| k);
+
+        // Positions within `indices`, topmost baseline first, so a row is
+        // always seeded by its upper edge.
+        let mut order: Vec<usize> = (0..indices.len()).collect();
+        order.sort_by(|&a, &b| {
+            safe_float_cmp(all_spans[indices[b]].bbox.y, all_spans[indices[a]].bbox.y)
+        });
+
+        // A row is remembered by the span that seeded it.
+        let mut rows: Vec<usize> = Vec::new();
+        let mut row_of: Vec<Option<usize>> = vec![None; indices.len()];
+        let is_modal = |i: usize| -> bool {
+            modal.is_some_and(|m| ((all_spans[i].font_size * 2.0).round() as i32) == m)
+        };
+
+        // Two passes over the same order: the dominant size lays down the
+        // grid, then everything else attaches to it.
+        for modal_pass in [true, false] {
+            for &pos in &order {
+                let i = indices[pos];
+                if row_of[pos].is_some() || is_modal(i) != modal_pass {
+                    continue;
+                }
+                if !all_spans[i].bbox.y.is_finite() {
+                    continue;
+                }
+                let q = quadrant(i);
+                let best = rows
+                    .iter()
+                    .copied()
+                    .filter(|&seed| quadrant(seed) == q)
+                    .map(|seed| (distance(i, seed), seed))
+                    .min_by(|a, b| safe_float_cmp(a.0, b.0));
+                match best {
+                    Some((d, seed)) if d <= ROW_BAND_TOLERANCE_PT => {
+                        row_of[pos] = Some(seed);
+                    },
+                    _ => {
+                        rows.push(i);
+                        row_of[pos] = Some(i);
+                    },
+                }
+            }
+        }
+
+        for (pos, seed) in row_of.iter().enumerate() {
+            if let Some(seed) = seed {
+                snapped[pos] = all_spans[*seed].bbox.y;
+            }
+        }
+        snapped
+    }
+
     /// Total-order wrapper over `f32` for use as a sort key. For finite values
     /// `total_cmp` is identical to `safe_float_cmp` / `partial_cmp`.
     #[derive(Clone, Copy, PartialEq)]

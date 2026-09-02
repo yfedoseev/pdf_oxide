@@ -3044,6 +3044,28 @@ impl PdfDocument {
         out
     }
 
+    /// Sort spans top-to-bottom then left-to-right, with each span keyed to
+    /// the row it is printed on rather than to its own baseline.
+    ///
+    /// See `crate::utils::snap_baselines_to_rows` for why the baseline alone
+    /// is not a row key on a line that mixes font sizes.
+    fn sort_spans_by_snapped_rows(spans: &mut [crate::layout::TextSpan]) {
+        let all: Vec<usize> = (0..spans.len()).collect();
+        let row_baseline = crate::utils::snap_baselines_to_rows(spans, &all);
+        let mut order: Vec<usize> = all;
+        order.sort_by(|&a, &b| {
+            crate::utils::row_aware_span_cmp(
+                row_baseline[a],
+                spans[a].bbox.x,
+                row_baseline[b],
+                spans[b].bbox.x,
+            )
+        });
+        let reordered: Vec<crate::layout::TextSpan> =
+            order.into_iter().map(|i| spans[i].clone()).collect();
+        spans.clone_from_slice(&reordered);
+    }
+
     pub(crate) fn reorder_rowspan_labels(spans: &mut Vec<crate::layout::TextSpan>) {
         use std::collections::HashMap;
 
@@ -3289,13 +3311,21 @@ impl PdfDocument {
             return;
         }
 
-        // Re-sort spans using the promoted Ys for labels and actual Ys
-        // for everything else. Keep the row-aware comparator so the
-        // ordering stays consistent with the rest of the pipeline.
-        let mut order: Vec<usize> = (0..spans.len()).collect();
+        // Re-sort spans using the promoted Ys for labels and, for everything
+        // else, the baseline of the row the span is printed on. Keep the
+        // row-aware comparator so the ordering stays consistent with the rest
+        // of the pipeline.
+        //
+        // The unpromoted spans take their key from `snap_baselines_to_rows`
+        // rather than `bbox.y`: this re-sort covers the whole page, so reading
+        // the raw baseline here would undo the row grouping the caller just
+        // established and split a mixed-size row apart again.
+        let all: Vec<usize> = (0..spans.len()).collect();
+        let row_baseline = crate::utils::snap_baselines_to_rows(spans, &all);
+        let mut order: Vec<usize> = all;
         order.sort_by(|&a, &b| {
-            let ya = promoted.get(&a).copied().unwrap_or(spans[a].bbox.y);
-            let yb = promoted.get(&b).copied().unwrap_or(spans[b].bbox.y);
+            let ya = promoted.get(&a).copied().unwrap_or(row_baseline[a]);
+            let yb = promoted.get(&b).copied().unwrap_or(row_baseline[b]);
             crate::utils::row_aware_span_cmp(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
         });
         let reordered: Vec<crate::layout::TextSpan> =
@@ -12834,18 +12864,22 @@ impl PdfDocument {
                         "XY-cut reading order failed on page {page_index} ({e}), \
                          falling back to row-aware sort"
                     );
-                    spans.sort_by(|a, b| {
-                        crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
-                    });
+                    Self::sort_spans_by_snapped_rows(&mut spans);
                     Self::reorder_rowspan_labels(&mut spans);
                 },
             }
         } else {
             // Row-aware sort: Y-band descending (top→bottom), X ascending
             // within a row.
-            spans.sort_by(|a, b| {
-                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
-            });
+            //
+            // The row key is `snap_baselines_to_rows`, not each span's own
+            // baseline. Banding a baseline on its own puts a row that mixes
+            // font sizes into two rows: the larger run's baseline sits below
+            // the smaller run's by the difference in their descent, which on a
+            // 5 pt label beside an 8 pt name is 3.3 pt — further than the row
+            // spacing itself, so the name banded with the row below the one it
+            // is printed on.
+            Self::sort_spans_by_snapped_rows(&mut spans);
             // Lift multi-row-spanning labels to the top of their block.
             Self::reorder_rowspan_labels(&mut spans);
         }

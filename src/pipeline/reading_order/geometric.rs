@@ -220,14 +220,20 @@ impl ReadingOrderStrategy for GeometricStrategy {
         // sort by x within the band. Matches pdfplumber's default and
         // resolves the form-style false-column-detection bug.
         if !is_likely_columnar(&spans) {
+            // Row keys come from `snap_baselines_to_rows` rather than each
+            // span's own baseline: a row that mixes font sizes puts the larger
+            // run's baseline below the smaller run's, near enough to the next
+            // row to band with it.
+            let all: Vec<usize> = (0..spans.len()).collect();
+            let row_baseline = crate::utils::snap_baselines_to_rows(&spans, &all);
             let mut indexed: Vec<(usize, TextSpan)> = spans.into_iter().enumerate().collect();
-            indexed.sort_by(|(_, a), (_, b)| {
+            indexed.sort_by(|(ia, a), (ib, b)| {
                 crate::utils::row_aware_span_cmp_axis(
                     a.rotation_degrees,
-                    a.bbox.y,
+                    row_baseline[*ia],
                     a.bbox.x,
                     b.rotation_degrees,
-                    b.bbox.y,
+                    row_baseline[*ib],
                     b.bbox.x,
                 )
             });
@@ -271,13 +277,16 @@ impl ReadingOrderStrategy for GeometricStrategy {
             // amount — the single-column path above already uses this
             // comparator for exactly that reason.
             let mut sorted = column.clone();
+            let row_baseline = crate::utils::snap_baselines_to_rows(&spans, &sorted);
+            let row_of: std::collections::HashMap<usize, f32> =
+                sorted.iter().copied().zip(row_baseline).collect();
             sorted.sort_by(|&a, &b| {
                 crate::utils::row_aware_span_cmp_axis(
                     spans[a].rotation_degrees,
-                    spans[a].bbox.y,
+                    row_of[&a],
                     spans[a].bbox.x,
                     spans[b].rotation_degrees,
-                    spans[b].bbox.y,
+                    row_of[&b],
                     spans[b].bbox.x,
                 )
             });

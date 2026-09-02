@@ -2127,18 +2127,21 @@ impl XYCutStrategy {
     /// path already uses, and its `i32` band key keeps the ordering a valid
     /// total order.
     fn sort_indices(&self, all_spans: &[TextSpan], indices: &[usize]) -> Vec<usize> {
-        let mut sorted: Vec<usize> = indices.to_vec();
-        sorted.sort_by(|&a, &b| {
+        let row_baseline = crate::utils::snap_baselines_to_rows(all_spans, indices);
+        // Sort positions within `indices`, because `row_baseline` is parallel
+        // to `indices` rather than to `all_spans`.
+        let mut order: Vec<usize> = (0..indices.len()).collect();
+        order.sort_by(|&a, &b| {
             crate::utils::row_aware_span_cmp_axis(
-                all_spans[a].rotation_degrees,
-                all_spans[a].bbox.y,
-                all_spans[a].bbox.left(),
-                all_spans[b].rotation_degrees,
-                all_spans[b].bbox.y,
-                all_spans[b].bbox.left(),
+                all_spans[indices[a]].rotation_degrees,
+                row_baseline[a],
+                all_spans[indices[a]].bbox.left(),
+                all_spans[indices[b]].rotation_degrees,
+                row_baseline[b],
+                all_spans[indices[b]].bbox.left(),
             )
         });
-        sorted
+        order.into_iter().map(|k| indices[k]).collect()
     }
 
 }
