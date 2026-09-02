@@ -1619,17 +1619,20 @@ impl XYCutStrategy {
         // keeps a one-glyph overhang from counting as a crossing.
         const STRADDLE_TOL: f32 = 10.0;
         let region_width = (left_x_max.max(right_x_max) - left_x_min.min(right_x_min)).max(1.0);
-        let crossing_count = indices.iter().filter(|&&i| {
-            let s = &all_spans[i];
-            let (l, r) = (s.bbox.left(), s.bbox.right());
-            // Only spans the projection skipped can hide ink from it.
-            if r - l <= region_width * 0.55 {
-                return false;
-            }
-            let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
-            let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
-            l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
-        }).count();
+        let crossing_count = indices
+            .iter()
+            .filter(|&&i| {
+                let s = &all_spans[i];
+                let (l, r) = (s.bbox.left(), s.bbox.right());
+                // Only spans the projection skipped can hide ink from it.
+                if r - l <= region_width * 0.55 {
+                    return false;
+                }
+                let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+                let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
+                l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
+            })
+            .count();
         // A crossing run alone is not enough to refuse the cut. A banner
         // headline sitting *above* two real columns crosses every candidate
         // corridor between them, and refusing there costs the column split on
@@ -1667,11 +1670,11 @@ impl XYCutStrategy {
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
         let shorter_side = (left_hi - left_lo).min(right_hi - right_lo);
-        /// Two columns of running text end within a fifth of the region's
-        /// height of each other; a band that stops far short is not a column.
+        // Two columns of running text end within a fifth of the region's
+        // height of each other; a band that stops far short is not a column.
         const COLUMN_HEIGHT_FRACTION: f32 = 0.8;
         let sides_are_columns = shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
-        if crossing_count > 0 && !(crossing_count == 1 && sides_are_columns) {
+        if crossing_count > 0 && !sides_are_columns {
             return None;
         }
 
@@ -1753,8 +1756,7 @@ impl XYCutStrategy {
                 // above is really about.
                 let chars = s.text.chars().count().max(1) as f32;
                 let approx_char_width = (s.font_size * 0.45).max(2.5);
-                let core_right =
-                    (s.bbox.left() + chars * approx_char_width).min(s.bbox.right());
+                let core_right = (s.bbox.left() + chars * approx_char_width).min(s.bbox.right());
                 core_right >= right_x_max - overlap_tol
             })
             .count();
@@ -2194,7 +2196,6 @@ impl XYCutStrategy {
         });
         order.into_iter().map(|k| indices[k]).collect()
     }
-
 }
 
 /// Internal projection profile representation.
@@ -2489,7 +2490,9 @@ mod tests {
         let indices: Vec<usize> = (0..spans.len()).collect();
 
         assert!(
-            strategy.find_horizontal_split_indexed(&spans, &indices).is_none(),
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
             "eleven body lines span the whole measure, so no column cut is legal"
         );
     }
