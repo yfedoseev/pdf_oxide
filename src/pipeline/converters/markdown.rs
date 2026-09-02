@@ -25,6 +25,23 @@ fn squash_whitespace(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// Put `out` at the start of a line before a block-level marker is written
+/// into it.
+///
+/// A heading prefix only opens a heading at the start of a line. Written after
+/// text it is three literal `#` characters welded to the preceding word, and
+/// the heading it was meant to open is lost as well as the word boundary — a
+/// form's reset-button label came out as `au Luxembourg### Réinitialiser`.
+///
+/// This is only ever additive: it inserts a newline that CommonMark requires
+/// and never removes one, so a caller that already ended its line is
+/// unaffected.
+fn begin_block(out: &mut String) {
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
 /// Detect markdown table separator rows like `|---|---|` or
 /// `| :--- | ---: |`. A line qualifies if every `|`-delimited cell is
 /// a sequence of `-` (with optional surrounding `:` for alignment) and
@@ -1576,6 +1593,7 @@ impl MarkdownOutputConverter {
             if span_starts_list && !current_line.trim().is_empty() {
                 if let Some(level) = current_heading_level {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
+                    begin_block(&mut result);
                     let prefix = "#".repeat(level as usize);
                     result.push_str(&format!(
                         "{} {}\n\n",
@@ -1763,6 +1781,7 @@ impl MarkdownOutputConverter {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
                         if let Some(level) = current_heading_level {
+                            begin_block(&mut result);
                             let prefix = "#".repeat(level as usize);
                             result.push_str(&format!(
                                 "{} {}\n\n",
@@ -1817,6 +1836,7 @@ impl MarkdownOutputConverter {
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
                             if let Some(level) = current_heading_level {
+                                begin_block(&mut result);
                                 let prefix = "#".repeat(level as usize);
                                 result.push_str(&format!(
                                     "{} {}\n\n",
@@ -2113,6 +2133,7 @@ impl MarkdownOutputConverter {
             if !tables_rendered[i] && !table.is_empty() {
                 if !current_line.is_empty() {
                     if let Some(level) = current_heading_level {
+                        begin_block(&mut result);
                         let prefix = "#".repeat(level as usize);
                         result.push_str(&format!(
                             "{} {}\n\n",
@@ -2136,6 +2157,7 @@ impl MarkdownOutputConverter {
         // Flush remaining content
         if !current_line.is_empty() {
             if let Some(level) = current_heading_level {
+                begin_block(&mut result);
                 let prefix = "#".repeat(level as usize);
                 result.push_str(&format!("{} {}\n", prefix, strip_emphasis(current_line.trim())));
             } else if current_line_all_mono {
