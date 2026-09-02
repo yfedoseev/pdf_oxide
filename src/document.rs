@@ -21147,17 +21147,25 @@ impl PdfDocument {
         // Extract vector paths (lines/rects) for visual detection
         let paths = self.extract_paths(page_index).unwrap_or_default();
 
-        // Filter to table-relevant paths (lines and rectangles only).
-        // Chart/plot pages often have hundreds of curves and fills that
-        // extract_edges ignores anyway — passing them through the full
-        // detection pipeline wastes O(n²) time.
-        const LINE_TOL: f32 = 2.0;
-        let table_paths: Vec<_> = paths
-            .into_iter()
-            .filter(|p| {
-                p.is_horizontal_line(LINE_TOL) || p.is_vertical_line(LINE_TOL) || p.is_rectangle()
-            })
-            .collect();
+        // Filter to table-relevant paths. Chart/plot pages often carry
+        // hundreds of curves and fills that `extract_edges` ignores anyway —
+        // passing them through the full detection pipeline wastes O(n²) time.
+        //
+        // Use the same predicate the public `extract_tables` uses. The looser
+        // `is_horizontal_line || is_vertical_line || is_rectangle` test here
+        // accepted any small filled box as ruling, so a figure's artwork could
+        // seed a table on a page that has none: the arrowhead slabs of a TikZ
+        // axis — 4.5 x 2.5 pt, filled *and* stroked — fabricated a 2x4 table
+        // over a sub-figure caption row, and the caption was then emitted twice,
+        // once by the table and once by the flow.
+        //
+        // `is_table_primitive` encodes the elongation and thinness a ruling
+        // has and a slab does not, so it rejects the artwork while keeping
+        // every real rule. The two paths agreed on nothing before this: the
+        // same page yields a table through this filter and none through
+        // `extract_tables`.
+        let table_paths: Vec<_> =
+            paths.into_iter().filter(|p| p.is_table_primitive()).collect();
 
         // A page with thousands of line/rect paths is a drawing or chart, not a
         // ruled table; skip the O(E²) collinear-join + intersection sweep. Real
