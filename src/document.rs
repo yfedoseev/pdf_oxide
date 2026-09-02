@@ -21211,6 +21211,40 @@ impl PdfDocument {
             spans
         };
 
+        // Decline spatial detection on a predominantly-RTL page that has no
+        // grid to bound it. Arabic and Hebrew align horizontally in patterns
+        // the column clustering reads as columns, and with too little ruling
+        // there is nothing to contradict it.
+        //
+        // This has to be decided BEFORE detection runs. The guard further down
+        // only ever reached the *retry*: by the time it was consulted this call
+        // had already produced a table, and `return tables` handed it straight
+        // back. An Urdu verse page with 25 words — eleven of them zero-width
+        // diacritics at aligned x positions — became a 6x4 table that way, and
+        // its runs were then emitted twice, once as the table and once as a
+        // paragraph.
+        //
+        // Bounding one cell takes two rules on each axis, so fewer than four
+        // primitives cannot describe a grid however they are arranged. A
+        // genuinely ruled RTL table clears that easily and is unaffected.
+        const MIN_PRIMITIVES_FOR_A_GRID: usize = 4;
+        if config.text_fallback && paths.len() < MIN_PRIMITIVES_FOR_A_GRID {
+            let rtl = spans
+                .iter()
+                .filter(|s| crate::text::bidi::looks_rtl(&s.text))
+                .count() as f32
+                / spans.len().max(1) as f32;
+            if rtl > 0.30 {
+                log::debug!(
+                    "Declining spatial table detection on page {} — {:.0}% RTL spans and                      only {} table primitives",
+                    page_index,
+                    rtl * 100.0,
+                    paths.len()
+                );
+                return Vec::new();
+            }
+        }
+
         let raw_tables = crate::structure::spatial_table_detector::detect_tables_with_lines(
             input_spans,
             &paths,
