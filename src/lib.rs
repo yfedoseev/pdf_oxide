@@ -450,7 +450,9 @@ pub(crate) mod utils {
         row_band_then_x(a_y, a_x, b_y, b_x).then_with(|| safe_float_cmp(b_y, a_y))
     }
 
-    /// `row_aware_span_cmp` with the run's writing axis as the primary key.
+
+    /// Writing-axis quadrant, then row band, then `x`, with no baseline
+    /// tiebreak.
     ///
     /// Row banding compares baselines along page-y and orders within a band
     /// along page-x. Both only mean something for runs that share a writing
@@ -471,22 +473,6 @@ pub(crate) mod utils {
     /// rewritten into their reading frame upstream, which zeroes
     /// `rotation_degrees`; there this key is constant and changes nothing. It
     /// separates only a minority run that disagrees with its neighbours.
-    #[inline]
-    pub fn row_aware_span_cmp_axis(
-        a_rot: f32,
-        a_y: f32,
-        a_x: f32,
-        b_rot: f32,
-        b_y: f32,
-        b_x: f32,
-    ) -> Ordering {
-        quadrant_key(a_rot)
-            .cmp(&quadrant_key(b_rot))
-            .then_with(|| row_aware_span_cmp(a_y, a_x, b_y, b_x))
-    }
-
-    /// [`row_aware_span_cmp_axis`] without the baseline tiebreak: writing-axis
-    /// quadrant, then row band, then `x`.
     ///
     /// For callers ordering on a row key rather than on each span's own
     /// baseline. Giving two spans the same row key is the point of such a key,
