@@ -336,6 +336,93 @@ pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) 
         && head.chars().any(|c| c.is_ascii_digit())
 }
 
+/// True when a run reads as a piece of a sentence rather than a title.
+///
+/// The heading predicates are built from typography — font size, weight, word
+/// count, capitalisation. On a page whose text layer is garbled those signals
+/// survive intact while the words themselves stop forming titles, and a body
+/// fragment carrying a large font gets promoted. A 1919 broadsheet produced
+/// `## Furthermore, one reads in the` and `### palaces league.` that way: both
+/// clear every existing test, because the first leads with a capital and is
+/// only five words, and the second is two words, below the five-word floor the
+/// lowercase-initial rule uses.
+///
+/// Two shapes settle it without appealing to layout:
+///
+/// A title does not end on a function word. `in`, `the`, `of` and their kin
+/// exist to attach what follows them, so a run ending in one has had its
+/// continuation cut away. The check needs three words before it applies, which
+/// keeps `About`, `Contact Us` and titles that genuinely end in such a word
+/// out of its reach.
+///
+/// A run that opens lowercase and closes on a full stop is a sentence with its
+/// head removed. Headings that legitimately begin lowercase — a product name,
+/// a stylised mark — do not also terminate in a period.
+///
+/// Both tests are English-shaped and both only ever *reject*, so a heading in
+/// another language is untouched: its words match no entry in the list, and
+/// scripts without case report `is_lowercase() == false`.
+pub(crate) fn reads_as_a_sentence_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+
+    // Opens lowercase, closes on a full stop.
+    if trimmed.ends_with('.') {
+        if let Some(first) = trimmed.chars().find(|c| c.is_alphabetic()) {
+            if first.is_lowercase() {
+                return true;
+            }
+        }
+    }
+
+    // Ends on a function word, with enough words for that to mean anything.
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() < 3 {
+        return false;
+    }
+    let last: String = words[words.len() - 1]
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    // Articles, prepositions, the coordinating conjunctions and the two
+    // complementisers. Deliberately no auxiliaries or pronouns: `Let It Be`,
+    // `Yes We Can` and `Doctor Who` are titles that end exactly that way.
+    matches!(
+        last.as_str(),
+        "a" | "an"
+            | "the"
+            | "of"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "with"
+            | "from"
+            | "by"
+            | "into"
+            | "onto"
+            | "upon"
+            | "over"
+            | "under"
+            | "between"
+            | "among"
+            | "through"
+            | "during"
+            | "against"
+            | "about"
+            | "than"
+            | "without"
+            | "within"
+            | "and"
+            | "or"
+            | "but"
+            | "nor"
+            | "that"
+            | "which"
+    )
+}
+
 /// True for a character that establishes left-to-right reading on its own.
 ///
 /// Unicode Standard Annex #9 sorts characters into strong, weak and neutral
@@ -883,6 +970,29 @@ mod tests {
             bbox: crate::geometry::Rect::new(x, 0.0, w, 10.0),
             font_size: 10.0,
             ..Default::default()
+        }
+    }
+
+    // ========================================================================
+    // sentence-fragment rejection for heading promotion
+    // ========================================================================
+
+    /// The guard is English-shaped and must only ever reject, so a heading in a
+    /// language it knows nothing about has to pass untouched — including
+    /// scripts with no case, where `is_lowercase()` is false for every
+    /// character.
+    #[test]
+    fn a_heading_in_another_script_is_untouched() {
+        for heading in [
+            "\u{7b2c}\u{4e00}\u{7ae0}",
+            "\u{627}\u{644}\u{645}\u{642}\u{62f}\u{645}\u{629}",
+            "\u{41f}\u{440}\u{435}\u{434}\u{438}\u{441}\u{43b}\u{43e}\u{432}\u{438}\u{435}",
+            "\u{7d50}\u{8ad6}\u{3068}\u{8003}\u{5bdf}",
+        ] {
+            assert!(
+                !reads_as_a_sentence_fragment(heading),
+                "{heading:?} must not be rejected by an English-shaped rule"
+            );
         }
     }
 

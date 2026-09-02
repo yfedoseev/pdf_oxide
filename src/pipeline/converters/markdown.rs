@@ -907,6 +907,13 @@ impl MarkdownOutputConverter {
             }
         }
 
+        // Reject a run that reads as a piece of a sentence rather than a
+        // title — one ending on a function word, or opening lowercase and
+        // closing on a full stop. See `reads_as_a_sentence_fragment`.
+        if super::reads_as_a_sentence_fragment(trimmed) {
+            return false;
+        }
+
         // Reject a line ending in a hyphen: that is a mid-word line break
         // ("...three categories: com-"), i.e. a wrapped body line, not a heading.
         if trimmed.ends_with('-') {
@@ -3081,6 +3088,43 @@ mod tests {
             "  plain",
         ] {
             assert!(!is_md_list_item_line(no), "{no:?} should NOT be a list item");
+        }
+    }
+
+    /// The two fragments a garbled 1919 broadsheet had promoted to headings.
+    /// Both clear every other test the predicate applies: the first leads with
+    /// a capital and runs to five words, the second is two words, under the
+    /// five-word floor the lowercase-initial rule uses.
+    ///
+    /// Asserted through `is_valid_heading_text` rather than the helper it calls,
+    /// so that disabling the call site fails this test.
+    #[test]
+    fn a_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+        for fragment in ["Furthermore, one reads in the", "palaces league."] {
+            assert!(
+                !MarkdownOutputConverter::is_valid_heading_text(fragment),
+                "{fragment:?} is a sentence fragment, not a heading"
+            );
+        }
+    }
+
+    /// Real headings must still promote, including ones that end on a word the
+    /// guard could plausibly over-reach on.
+    #[test]
+    fn real_headings_still_promote() {
+        for heading in [
+            "Spring Equinox Gathering",
+            "Introduction",
+            "Contact Us",
+            "Let It Be",
+            "Doctor Who",
+            "Materials and Methods",
+            "Terms of Service",
+        ] {
+            assert!(
+                MarkdownOutputConverter::is_valid_heading_text(heading),
+                "{heading:?} is a heading and must still promote"
+            );
         }
     }
 
