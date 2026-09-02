@@ -1595,6 +1595,45 @@ impl XYCutStrategy {
             return None;
         }
 
+        // A span the projection never counted leaves no ink in the density
+        // array, so a "valley" can be an artefact of the exclusion rather
+        // than a real corridor. `horizontal_projection_indexed` drops every
+        // span wider than 55% of the region so that a banner headline does
+        // not hide the columns beneath it. That is right — but only when the
+        // banner is peeled off first. Cutting straight through a run that
+        // physically crosses the corridor splits one printed line between two
+        // groups and emits its halves far apart.
+        //
+        // ISO 32000-1:2008 §9.4.4 computes the glyph displacement along the
+        // writing axis and sets the other axis's component to 0, so a
+        // horizontal run occupies one unbroken interval in X. If that
+        // interval covers the candidate corridor on both sides, the corridor
+        // is not empty and there is no column boundary here. Refuse the cut;
+        // the recursion falls back to a row split, which is what peels a
+        // banner off the columns underneath it.
+        //
+        // The measurement uses the same core-width estimate as the
+        // projection (character count x ~0.45 em, clamped to `bbox.right()`)
+        // rather than the raw bbox, because extractor bboxes overreach to the
+        // right on trailing whitespace and stretched advances. `STRADDLE_TOL`
+        // keeps a one-glyph overhang from counting as a crossing.
+        const STRADDLE_TOL: f32 = 10.0;
+        let region_width = (left_x_max.max(right_x_max) - left_x_min.min(right_x_min)).max(1.0);
+        let corridor_is_crossed = indices.iter().any(|&i| {
+            let s = &all_spans[i];
+            let (l, r) = (s.bbox.left(), s.bbox.right());
+            // Only spans the projection skipped can hide ink from it.
+            if r - l <= region_width * 0.55 {
+                return false;
+            }
+            let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+            let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
+            l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
+        });
+        if corridor_is_crossed {
+            return None;
+        }
+
         // Partition by span LEFT EDGE (where the glyphs actually start),
         // not bbox.right() and not center. Extractor bboxes overreach to
         // the right (trailing whitespace / stretched advance widths), and
@@ -2101,6 +2140,7 @@ impl XYCutStrategy {
         });
         sorted
     }
+
 }
 
 /// Internal projection profile representation.
