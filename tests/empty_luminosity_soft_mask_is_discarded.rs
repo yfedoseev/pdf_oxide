@@ -37,7 +37,7 @@ fn page_with_luminosity_mask(group_content: &str) -> Vec<u8> {
     let group = group_content.as_bytes().to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 9];
+    let mut off = [0usize; 9];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

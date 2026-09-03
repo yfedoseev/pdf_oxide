@@ -13734,6 +13734,12 @@ impl PdfDocument {
         }
     }
 
+    /// Every diagnostic this document has recorded, without draining them.
+    ///
+    /// Extraction reports what it could not do — an unreadable font, a page
+    /// with no text layer, a dropped glyph — rather than writing it into the
+    /// content. Reading is non-destructive, so calling this twice returns the
+    /// same warnings; use the taking form to drain them.
     pub fn structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
         let global = crate::extractors::warnings::drain_global_warnings();
         if !global.is_empty() {

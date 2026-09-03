@@ -124,7 +124,7 @@ fn ink(pdf: &[u8]) -> usize {
     opts.format = ImageFormat::RawRgba8;
     let img = render_page(&doc, 0, &opts).expect("render");
     img.data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
         .count()
 }

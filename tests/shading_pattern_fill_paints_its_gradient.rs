@@ -33,7 +33,7 @@ fn shading_pattern_page() -> Vec<u8> {
     let content = b"/Pattern cs /P0 scn 0 0 200 100 re f\n".to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 8];
+    let mut off = [0usize; 8];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

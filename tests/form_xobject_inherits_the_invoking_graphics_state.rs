@@ -26,11 +26,11 @@ use pdf_oxide::PdfDocument;
 /// fills the whole page with black. With inheritance the result is grey; with
 /// a fresh state it is solid black.
 fn page_with_alpha_then_form(alpha: f32) -> Vec<u8> {
-    let content = format!("/GA gs /Fm0 Do\n").into_bytes();
+    let content = "/GA gs /Fm0 Do\n".to_string().into_bytes();
     let form = b"0 0 0 rg 0 0 100 100 re f\n".to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 8];
+    let mut off = [0usize; 8];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

@@ -32,7 +32,7 @@ const GRAY_ALPHA_JP2: &[u8] = include_bytes!("fixtures/jpx/gray_with_alpha.jp2")
 fn page_with_jpx(color_space: &str) -> Vec<u8> {
     let content = b"q 100 0 0 100 0 0 cm /Im0 Do Q\n".to_vec();
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 7];
+    let mut off = [0usize; 7];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

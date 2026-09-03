@@ -25,7 +25,7 @@ fn calrgb_page(gamma: &str, comps: &str) -> Vec<u8> {
     let content = format!("/Cs1 cs {comps} sc 0 0 100 100 re f\n").into_bytes();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 7];
+    let mut off = [0usize; 7];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

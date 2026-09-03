@@ -42,7 +42,7 @@ fn ccitt_pdf(by_reference: bool) -> Vec<u8> {
     let n = if extra_obj { 7 } else { 6 };
 
     let mut pdf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 8];
+    let mut off = [0usize; 8];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

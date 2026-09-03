@@ -81,9 +81,11 @@ fn pdf_with_an_oversized_image() -> Vec<u8> {
 }
 
 fn markdown_with_images(doc: &PdfDocument) -> String {
-    let mut opts = ConversionOptions::default();
-    opts.include_images = true;
-    opts.embed_images = true;
+    let opts = ConversionOptions {
+        include_images: true,
+        embed_images: true,
+        ..Default::default()
+    };
     doc.to_markdown(0, &opts).expect("markdown")
 }
 

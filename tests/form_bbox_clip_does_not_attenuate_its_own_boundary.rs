@@ -27,7 +27,7 @@ fn page_with_form(bbox: &str) -> Vec<u8> {
     let form = b"0 0 0 rg 0 0 40 40 re f\n".to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 7];
+    let mut off = [0usize; 7];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

@@ -36,7 +36,7 @@ fn indexed_page(operands: &[&str]) -> Vec<u8> {
     let palette: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 7];
+    let mut off = [0usize; 7];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

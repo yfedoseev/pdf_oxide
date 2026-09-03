@@ -85,7 +85,7 @@ fn ink_fraction(pdf: &[u8]) -> f64 {
     let total = img.data.len() / 4;
     let inked = img
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
         .count();
     inked as f64 / total as f64

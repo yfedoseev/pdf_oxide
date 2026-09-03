@@ -552,7 +552,7 @@ impl PageRenderer {
             if want > budget as f64 {
                 let shrunk = scale * (budget as f64 / want).sqrt() as f32;
                 // Keep a scale that still yields at least one pixel per axis.
-                let floor = (1.0 / page_w.max(page_h).max(1.0)) as f32;
+                let floor = 1.0 / page_w.max(page_h).max(1.0);
                 let shrunk = shrunk.max(floor);
                 log::warn!(
                     "page raster {:.0}x{:.0} ({want:.0} px) exceeds the {budget} px budget; \
@@ -5326,11 +5326,10 @@ impl PageRenderer {
         let Some(mut mask) = tiny_skia::Mask::new(pixmap.width(), pixmap.height()) else {
             return Ok(None);
         };
-        for (m, px) in mask
-            .data_mut()
-            .iter_mut()
-            .zip(coverage.data().chunks_exact(4))
-        {
+        // The coverage buffer is RGBA, so it divides exactly into pixels and
+        // the remainder `as_chunks` returns is empty by construction.
+        let (pixels, _) = coverage.data().as_chunks::<4>();
+        for (m, px) in mask.data_mut().iter_mut().zip(pixels) {
             *m = px[3];
         }
 
