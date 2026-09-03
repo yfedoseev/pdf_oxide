@@ -6589,9 +6589,31 @@ impl PdfDocument {
                 // plain-text path. Tightly gated (≥30 spans, narrow sidebar with
                 // ≥2 furniture labels), so it is a no-op (None) on ordinary pages.
                 spans = ordered;
-            } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans)
-                .or_else(|| Self::classifier_column_gutter(&spans))
-            {
+            } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans).or_else(|| {
+                // The fallback detector is not consulted when the page's only
+                // multi-column signal is a table. A data grid's own inter-column
+                // gap is a real empty vertical corridor: the corridor sweep finds
+                // it, and neither half of a numeric grid classifies Table/Form (a
+                // column of short numerals reads Reference, a labelled half reads
+                // Prose), so the class gate admits it. `reorder_column_major_with_bands`
+                // then cuts every row of the grid at that x and each row's
+                // right-hand cells surface a whole column-run below the label they
+                // belong to. ISO 32000-1:2008 §14.8.4.3.4 makes a row (TR) the
+                // element that holds its data cells (TD): a grid row is one
+                // reading unit and must not be split across a page gutter.
+                //
+                // `multicol_signal_is_tabular` measures the left edges of the lines
+                // OUTSIDE the detected tables — a single dominant cluster means
+                // single-column prose with a grid on it, which the row-aware band
+                // branch below linearises correctly. It is the same predicate that
+                // branch already consults; it simply has to be consulted before the
+                // corridor sweep as well. Only the fallback detector is gated:
+                // `prose_two_column_gutter` is content-balance gated and keeps
+                // deciding genuine two-column bodies on its own, table or no table.
+                (tables.is_empty() || !Self::multicol_signal_is_tabular(&spans, &tables))
+                    .then(|| Self::classifier_column_gutter(&spans))
+                    .flatten()
+            }) {
                 // Genuine two-column prose (content-balance gated — forms /
                 // TOC / tables / figures are rejected), OR a ragged
                 // reference list / dense results body that the clean corridor
