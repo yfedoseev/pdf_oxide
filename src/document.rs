@@ -6668,7 +6668,20 @@ impl PdfDocument {
                 // Promote multi-row-spanning labels (sparse-column spans
                 // vertically centred across several dense-column data rows)
                 // to sort at the top of their row block.
-                Self::reorder_rowspan_labels(&mut spans);
+                //
+                // Only where the page actually has a table. The promotion
+                // reasons in table terms — a sparse stub column against dense
+                // data columns — and clusters spans by their left edge to find
+                // them. On prose it finds clusters anyway: a mathematics page
+                // whose lines are cut into many runs by inline symbols gave a
+                // densest cluster starting mid-measure, and three glyphs of a
+                // display equation were promoted to the head of their block.
+                // That reordered the paragraph around them, and a trailing
+                // line came out ahead of the line it continues —
+                // `criterionThe ridge regression ...`.
+                if !tables.is_empty() {
+                    Self::reorder_rowspan_labels(&mut spans);
+                }
 
                 // Restore intra-line reading order after the row-aware band sort.
                 // Off-baseline glyphs (e.g. superscripts/subscripts) can land in
