@@ -14617,13 +14617,27 @@ impl PdfDocument {
         let step = (content_w / 400.0).clamp(0.5, 3.0);
         // "Empty" tolerates a few stray straddlers (noise / a rare long token).
         let empty_max = (0.01 * col_idx.len() as f32).ceil() as usize;
+        // A run straddles `x` when it opens left of it and closes right of
+        // it. Counting that by rescanning every run at every step of the scan
+        // costs the scan's width times the page's run count; the same answer
+        // reads off two sorted lists. For an interval whose open precedes its
+        // close, `open < x AND close > x` is exactly `#{open < x} - #{close <= x}`,
+        // so drop the runs that close where they open (they straddle nothing)
+        // and binary-search the two lists.
+        let (mut opens, mut closes): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+        for &i in &col_idx {
+            let (o, c) = (spans[i].bbox.x + 2.0, spans[i].bbox.x + spans[i].bbox.width - 2.0);
+            if o < c {
+                opens.push(o);
+                closes.push(c);
+            }
+        }
+        opens.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        closes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let straddle_at = |x: f32| -> usize {
-            col_idx
-                .iter()
-                .filter(|&&i| {
-                    spans[i].bbox.x + 2.0 < x && spans[i].bbox.x + spans[i].bbox.width - 2.0 > x
-                })
-                .count()
+            let started = opens.partition_point(|&o| o < x);
+            let ended = closes.partition_point(|&c| c <= x);
+            started.saturating_sub(ended)
         };
         let (mut best_lo, mut best_hi) = (f32::NAN, f32::NAN);
         let (mut run_start, mut in_run, mut best_w) = (lo, false, 0.0f32);
