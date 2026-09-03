@@ -4073,7 +4073,17 @@ impl<'doc> TextExtractor<'doc> {
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
         let mut prev_text: Option<String> = None;
-        let mut seen_content: std::collections::HashMap<String, (f32, f32)> =
+        // Every place a given string has been kept, not merely the last one.
+        //
+        // One slot per string cannot see an overprint. A page that draws each
+        // glyph twice — a grey pass and a black pass a fraction of a point
+        // apart, the usual way of faking a bold — yields single-glyph spans, so
+        // a title like `SICHERHEITS` stores `S` at its first position and then
+        // overwrites it with the `S` at the end of the same word. The second
+        // pass then compares its `S` against the wrong one and finds no
+        // duplicate.
+        const MAX_TRACKED_POSITIONS: usize = 32;
+        let mut seen_content: std::collections::HashMap<String, Vec<(f32, f32)>> =
             std::collections::HashMap::new();
 
         let mut geometric_skips = 0;
@@ -4100,22 +4110,36 @@ impl<'doc> TextExtractor<'doc> {
             };
 
             // PHASE 2: Content-based deduplication — require positions to OVERLAP
-            let content_duplicate = if span.text.len() >= 5 {
-                if let Some((prev_x_val, prev_y_val)) = seen_content.get(&span.text) {
-                    let y_diff = (span.bbox.y - prev_y_val).abs();
-                    let x_diff = (span.bbox.x - prev_x_val).abs();
-
-                    // Only dedup when spans overlap geometrically (X within 5pt)
-                    // NOT when they're at different positions on the same line
-                    let same_line = y_diff < 2.0;
-                    let overlapping_position = x_diff < 5.0;
-
-                    same_line && overlapping_position
+            //
+            // Short runs are included. They were excluded because a five-byte
+            // floor is a cheap stand-in for "this string is distinctive enough
+            // that repeating it at one position means a duplicate", but it also
+            // exempts every overprinted glyph, and PHASE 1 cannot cover them:
+            // it compares against the immediately preceding span only, and the
+            // sort that decides adjacency uses the same integer-rounded row key
+            // that the overprint's sub-point offset straddles, so the two
+            // copies are never neighbours — a page's whole grey pass is emitted
+            // before its black pass begins.
+            //
+            // What replaces the floor for a short run is a tighter bar on
+            // position: the same per-glyph advance PHASE 1 uses, so two
+            // legitimate repeats of one letter — the `ll` in `callibrator`, an
+            // `SS` — stand a full advance apart and are never confused with a
+            // pair that differs by a fraction of one.
+            let content_duplicate = {
+                let char_count = span.text.chars().count().max(1) as f32;
+                let per_glyph_width = (span.bbox.width / char_count).max(0.1);
+                let x_bar = if span.text.len() >= 5 {
+                    5.0
                 } else {
-                    false
-                }
-            } else {
-                false
+                    (per_glyph_width * Self::DEDUP_OVERLAP_RATIO).min(Self::DEDUP_OVERLAP_CAP_PT)
+                };
+                seen_content.get(&span.text).is_some_and(|seen| {
+                    seen.iter().any(|(prev_x_val, prev_y_val)| {
+                        (span.bbox.y - prev_y_val).abs() < 2.0
+                            && (span.bbox.x - prev_x_val).abs() < x_bar
+                    })
+                })
             };
 
             if geometric_duplicate {
@@ -4127,9 +4151,13 @@ impl<'doc> TextExtractor<'doc> {
                 prev_x = Some(x);
                 prev_text = Some(span.text.clone());
 
-                // Track content for duplicate detection
-                if span.text.len() >= 5 {
-                    seen_content.insert(span.text.clone(), (span.bbox.x, span.bbox.y));
+                // Track content for duplicate detection. Bounded, so a page
+                // repeating one string thousands of times cannot grow this
+                // without limit; the positions that matter for an overprint are
+                // the recent ones.
+                let at = seen_content.entry(span.text.clone()).or_default();
+                if at.len() < MAX_TRACKED_POSITIONS {
+                    at.push((span.bbox.x, span.bbox.y));
                 }
                 // Move span instead of cloning
                 deduplicated.push(span);
