@@ -912,13 +912,20 @@ pub(crate) mod utils {
                     .iter()
                     .enumerate()
                     .filter(|(_, &seed)| quadrant(seed) == q)
-                    .filter(|(r, _)| {
-                        !members[*r].iter().any(|&m| occupies_the_same_space(i, m))
-                    })
                     .map(|(r, &seed)| (distance(i, seed), r, seed))
                     .min_by(|a, b| safe_float_cmp(a.0, b.0));
+                // The space test is applied to the row that wins on distance,
+                // not to every row that might have. Scanning each candidate's
+                // members for every span is quadratic in the spans on a page
+                // and doubled the time to convert a 725-page book; a run is
+                // only ever placed on its nearest row, so that is the only one
+                // whose space it can be competing for. A run vetoed there opens
+                // a row of its own, which is what it needs.
                 match best {
-                    Some((d, r, seed)) if d <= ROW_BAND_TOLERANCE_PT => {
+                    Some((d, r, seed))
+                        if d <= ROW_BAND_TOLERANCE_PT
+                            && !members[r].iter().any(|&m| occupies_the_same_space(i, m)) =>
+                    {
                         row_of[pos] = Some(seed);
                         members[r].push(i);
                     },
