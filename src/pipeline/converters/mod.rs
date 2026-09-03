@@ -1374,11 +1374,12 @@ mod span_ownership_tests {
     use crate::structure::table_extractor::{Table, TableCell, TableRow};
 
     fn span_at(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
-        let mut s = TextSpan::default();
-        s.text = text.to_string();
-        s.bbox = crate::geometry::Rect { x, y, width, height: 10.0 };
-        s.font_size = 10.0;
-        s
+        TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect { x, y, width, height: 10.0 },
+            font_size: 10.0,
+            ..Default::default()
+        }
     }
 
     /// A table whose single populated cell renders one run, plus an empty

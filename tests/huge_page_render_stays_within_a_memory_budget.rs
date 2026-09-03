@@ -41,7 +41,7 @@ use pdf_oxide::PdfDocument;
 fn page_sized(w: u32, h: u32) -> Vec<u8> {
     let content = format!("0 0 0 rg {} {} {} {} re f\n", w / 3, h / 3, w / 3, h / 3).into_bytes();
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 6];
+    let mut off = [0usize; 6];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())
@@ -62,7 +62,7 @@ fn page_sized(w: u32, h: u32) -> Vec<u8> {
     pdf.extend_from_slice(&content);
     push!("endstream\nendobj\n");
     let xref = pdf.len();
-    push!(format!("xref\n0 5\n0000000000 65535 f \r\n"));
+    push!("xref\n0 5\n0000000000 65535 f \r\n".to_string());
     for id in 1..=4 {
         push!(format!("{:010} 00000 n \r\n", off[id]));
     }

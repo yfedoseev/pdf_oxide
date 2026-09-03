@@ -82,7 +82,7 @@ fn text_of(pdf: &[u8]) -> String {
 fn two_labels_drawn_at_one_origin_do_not_concatenate() {
     let pdf = page_of_runs(
         &[
-            ("maximum", 253.198, 285.37729),
+            ("maximum", 253.198, 285.377_3),
             ("minimum", 254.10146, 285.37643),
         ],
         9.35073,

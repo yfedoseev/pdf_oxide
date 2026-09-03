@@ -41,7 +41,7 @@ fn page_with_cid_keyed_cff() -> Vec<u8> {
     let content = b"BT /F1 36 Tf 20 40 Td <0001000200030004> Tj ET\n".to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 10];
+    let mut off = [0usize; 10];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

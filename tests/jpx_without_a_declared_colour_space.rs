@@ -55,7 +55,7 @@ fn jpx_page(color_space: &str) -> Vec<u8> {
     );
 
     let mut pdf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 6];
+    let mut off = [0usize; 6];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

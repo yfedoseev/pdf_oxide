@@ -67,7 +67,7 @@ fn striped_soft_mask_page(page: u32) -> Vec<u8> {
     let mut mask = Vec::with_capacity((SRC * SRC) as usize);
     for y in 0..SRC {
         let a = if y % 2 == 0 { 255u8 } else { 0u8 };
-        mask.extend(std::iter::repeat(a).take(SRC as usize));
+        mask.extend(std::iter::repeat_n(a, SRC as usize));
     }
     let objects = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),

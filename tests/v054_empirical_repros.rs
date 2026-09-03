@@ -183,7 +183,7 @@ fn cmap_miss_pdf() -> Vec<u8> {
         .to_vec();
 
     let mut pdf = Vec::new();
-    let mut off = vec![0usize; 9];
+    let mut off = [0usize; 9];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

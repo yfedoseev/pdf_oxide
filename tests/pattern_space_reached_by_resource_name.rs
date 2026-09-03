@@ -24,7 +24,7 @@ fn pattern_by_resource_name_pdf() -> Vec<u8> {
     let tile = b"1 0 0 rg 0 0 10 10 re f";
 
     let mut pdf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 7];
+    let mut off = [0usize; 7];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())

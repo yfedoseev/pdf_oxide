@@ -317,11 +317,11 @@ pub enum Operator {
     Fill,
     /// Fill path (even-odd) (f*)
     FillEvenOdd,
-    /// Close, fill and stroke (b)
     /// Close and stroke path (s). ISO 32000-1:2008 Table 60: "the same effect
     /// as the sequence h S". Distinct from `Stroke` because an open subpath
     /// must be closed first, or its final segment is not painted.
     CloseAndStroke,
+    /// Close, fill and stroke using the nonzero winding rule (b).
     CloseFillStroke,
     /// Fill and stroke using nonzero winding rule (B)
     FillStroke,

@@ -36,7 +36,7 @@ impl Bits {
 
     fn push(&mut self, code: &str) {
         for c in code.chars() {
-            if self.n % 8 == 0 {
+            if self.n.is_multiple_of(8) {
                 self.out.push(0);
             }
             if c == '1' {

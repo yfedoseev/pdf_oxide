@@ -39,7 +39,7 @@ fn separation_overprint_pdf(with_overprint: bool) -> Vec<u8> {
                 /Range [0 1 0 1 0 1] >>";
 
     let mut pdf: Vec<u8> = Vec::new();
-    let mut off = vec![0usize; 8];
+    let mut off = [0usize; 8];
     macro_rules! push {
         ($s:expr) => {
             pdf.extend_from_slice($s.as_bytes())
