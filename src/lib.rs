@@ -835,8 +835,62 @@ pub(crate) mod utils {
             safe_float_cmp(all_spans[indices[b]].bbox.y, all_spans[indices[a]].bbox.y)
         });
 
-        // A row is remembered by the span that seeded it.
+        // Two runs cannot share a line and also share the space on it.
+        //
+        // Row membership is decided from vertical evidence alone, which is
+        // right for runs printed side by side and wrong for runs printed on
+        // top of each other. A page footer stamped over an earlier footer sits
+        // within a fraction of a point of it — 0.145 pt between the cap tops of
+        // a 7 pt and a 9 pt run — so every vertical test accepts the pair, the
+        // row is then ordered by left edge, and the two footers come back
+        // shuffled into one another: `The Molecular Probes The Molecular
+        // Probes(R) Handbook: (TM) Handbook: A Guide to ...`.
+        //
+        // Horizontal extent settles it, and nothing else does. ISO 32000-1:2008
+        // §9.4.4 advances the text position along the writing axis by each
+        // glyph's displacement, so a run occupies one unbroken interval on that
+        // axis; two runs whose intervals overlap substantially cannot both be
+        // reading matter on one line, and one is drawn over the other.
+        //
+        // Substantially, because extractor boxes overreach to the right on
+        // trailing whitespace and stretched advances, and adjacent runs on a
+        // real line touch or overlap slightly through kerning. The bar is a
+        // quarter of the shorter run and at least two points; the stamped
+        // footers above overlap by 69.7 pt, which is 95% of the shorter one.
+        const MIN_OVERLAP_PT: f32 = 2.0;
+        const OVERLAP_FRACTION: f32 = 0.25;
+        let x_extent = |i: usize| -> (f32, f32) {
+            let b = &all_spans[i].bbox;
+            let w = if b.width.is_finite() && b.width > 0.0 { b.width } else { 0.0 };
+            (b.x, b.x + w)
+        };
+        let occupies_the_same_space = |i: usize, j: usize| -> bool {
+            // A blank run competes for no reading space. Producers emit
+            // space-only runs freely, and one drawn a fraction of a point under
+            // a heading at the same left edge belongs to that heading's row —
+            // separating it there would undo the rule that keeps a two-line
+            // section title whole.
+            if all_spans[i].text.trim().is_empty() || all_spans[j].text.trim().is_empty() {
+                return false;
+            }
+            let ((li, ri), (lj, rj)) = (x_extent(i), x_extent(j));
+            if !(li.is_finite() && ri.is_finite() && lj.is_finite() && rj.is_finite()) {
+                return false;
+            }
+            let overlap = ri.min(rj) - li.max(lj);
+            if overlap <= 0.0 {
+                return false;
+            }
+            let shorter = (ri - li).min(rj - lj).max(0.0);
+            overlap > MIN_OVERLAP_PT.max(shorter * OVERLAP_FRACTION)
+        };
+
+        // A row is remembered by the span that seeded it, and by everything
+        // assigned to it — a candidate has to clear the space of every member,
+        // not just the seed's, because the run it collides with may have joined
+        // the row later.
         let mut rows: Vec<usize> = Vec::new();
+        let mut members: Vec<Vec<usize>> = Vec::new();
         let mut row_of: Vec<Option<usize>> = vec![None; indices.len()];
         let is_modal = |i: usize| -> bool {
             modal.is_some_and(|m| ((all_spans[i].font_size * 2.0).round() as i32) == m)
@@ -856,16 +910,21 @@ pub(crate) mod utils {
                 let q = quadrant(i);
                 let best = rows
                     .iter()
-                    .copied()
-                    .filter(|&seed| quadrant(seed) == q)
-                    .map(|seed| (distance(i, seed), seed))
+                    .enumerate()
+                    .filter(|(_, &seed)| quadrant(seed) == q)
+                    .filter(|(r, _)| {
+                        !members[*r].iter().any(|&m| occupies_the_same_space(i, m))
+                    })
+                    .map(|(r, &seed)| (distance(i, seed), r, seed))
                     .min_by(|a, b| safe_float_cmp(a.0, b.0));
                 match best {
-                    Some((d, seed)) if d <= ROW_BAND_TOLERANCE_PT => {
+                    Some((d, r, seed)) if d <= ROW_BAND_TOLERANCE_PT => {
                         row_of[pos] = Some(seed);
+                        members[r].push(i);
                     },
                     _ => {
                         rows.push(i);
+                        members.push(vec![i]);
                         row_of[pos] = Some(i);
                     },
                 }
@@ -903,9 +962,15 @@ pub(crate) mod utils {
         /// Build a span at an explicit baseline/height for the row-snapping
         /// tests below.
         fn row_span(y: f32, height: f32, text: &str) -> crate::layout::TextSpan {
+            row_span_at(0.0, y, height, text)
+        }
+
+        /// As [`row_span`], at an explicit left edge — for cases where the
+        /// horizontal extents matter and must not overlap.
+        fn row_span_at(x: f32, y: f32, height: f32, text: &str) -> crate::layout::TextSpan {
             crate::layout::TextSpan {
                 text: text.to_string(),
-                bbox: crate::geometry::Rect::new(0.0, y, 10.0, height),
+                bbox: crate::geometry::Rect::new(x, y, 10.0, height),
                 font_size: height,
                 ..Default::default()
             }
@@ -943,7 +1008,12 @@ pub(crate) mod utils {
         /// rule exists for, and it passes with or without the height guard.
         #[test]
         fn comparable_runs_still_snap_on_their_better_edge() {
-            let spans = vec![row_span(700.0, 10.0, "body"), row_span(703.0, 7.0, "sup")];
+            // Side by side, as a superscript actually sits: sharing a line
+            // means sharing neither ink nor the space it occupies.
+            let spans = vec![
+                row_span_at(0.0, 700.0, 10.0, "body"),
+                row_span_at(12.0, 703.0, 7.0, "sup"),
+            ];
             let idx: Vec<usize> = (0..spans.len()).collect();
             let rows = snap_baselines_to_rows(&spans, &idx);
             assert_eq!(
