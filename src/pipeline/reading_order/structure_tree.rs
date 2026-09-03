@@ -183,6 +183,25 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
             .map(|(order, key)| (key.clone(), order))
             .collect();
 
+        // The spans' own keys, collected before the loop below consumes them.
+        let span_keys: Vec<McidKey> = spans
+            .iter()
+            .filter_map(|s| s.mcid.map(|m| span_mcid_key(s, m, context.page_number)))
+            .collect();
+
+        // A span and the reference that names it can disagree about scope
+        // without colliding. §14.7.4.3 lets a marked-content reference name its
+        // stream with /Stm; a structure element whose kid is a bare integer
+        // carries none and so resolves against the page's own stream — while a
+        // producer that draws part of the page through a Form XObject numbers
+        // one continuous id space across both. Every such run then failed to
+        // find its slot and was demoted to "untagged", which appends it after
+        // the whole tagged page: a callout label printed between two paragraphs
+        // came out at the end. Match across scopes, but only where the bare id
+        // is numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(span_keys.iter());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_to_order.keys());
+
         // Separate spans with and without MCIDs
         let mut with_mcid: Vec<(TextSpan, usize)> = Vec::new();
         let mut without_mcid: Vec<TextSpan> = Vec::new();
@@ -190,7 +209,13 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
         for span in spans {
             if let Some(mcid) = span.mcid {
                 let key = span_mcid_key(&span, mcid, context.page_number);
-                if let Some(&order) = mcid_to_order.get(&key) {
+                let slot = if drawn_once.contains_key(&mcid) {
+                    crate::structure::resolve_mcid_key(&mcid_to_order, &referenced_once, &key)
+                        .and_then(|k| mcid_to_order.get(&k).copied())
+                } else {
+                    mcid_to_order.get(&key).copied()
+                };
+                if let Some(order) = slot {
                     with_mcid.push((span, order));
                 } else {
                     // MCID not in structure tree - treat as untagged
