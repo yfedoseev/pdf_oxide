@@ -892,6 +892,24 @@ pub(crate) mod utils {
         let mut rows: Vec<usize> = Vec::new();
         let mut members: Vec<Vec<usize>> = Vec::new();
         let mut row_of: Vec<Option<usize>> = vec![None; indices.len()];
+        // Seeded rows indexed by their seed's baseline, ascending, so the
+        // nearest-row search reads a window instead of every row on the page.
+        //
+        // `distance` is the smaller of the baseline gap and the top-edge gap,
+        // and a top-edge gap differs from the baseline gap by at most the two
+        // runs' heights, so `d <= ROW_BAND_TOLERANCE_PT` implies
+        // `|baseline_i - baseline_seed| <= ROW_BAND_TOLERANCE_PT + h_i + h_max`.
+        // Every row that could win is inside that window; the ones outside it
+        // could only lose, and a loss and an absence take the same branch.
+        let mut rows_by_baseline: Vec<(f32, usize)> = Vec::new();
+        let h_max = indices
+            .iter()
+            .map(|&i| {
+                let (b, t) = edges(i);
+                (t - b).abs()
+            })
+            .filter(|h| h.is_finite())
+            .fold(0.0f32, f32::max);
         let is_modal = |i: usize| -> bool {
             modal.is_some_and(|m| ((all_spans[i].font_size * 2.0).round() as i32) == m)
         };
@@ -908,11 +926,19 @@ pub(crate) mod utils {
                     continue;
                 }
                 let q = quadrant(i);
-                let best = rows
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, &seed)| quadrant(seed) == q)
-                    .map(|(r, &seed)| (distance(i, seed), r, seed))
+                let (base_i, top_i) = edges(i);
+                let window = ROW_BAND_TOLERANCE_PT + (top_i - base_i).abs() + h_max;
+                let (lo_b, hi_b) = (base_i - window, base_i + window);
+                let from = rows_by_baseline.partition_point(|&(b, _)| b < lo_b);
+                let to = rows_by_baseline.partition_point(|&(b, _)| b <= hi_b);
+                let mut candidates: Vec<usize> =
+                    rows_by_baseline[from..to].iter().map(|&(_, r)| r).collect();
+                // Row order, so a tie still resolves to the row seeded first.
+                candidates.sort_unstable();
+                let best = candidates
+                    .into_iter()
+                    .filter(|&r| quadrant(rows[r]) == q)
+                    .map(|r| (distance(i, rows[r]), r, rows[r]))
                     .min_by(|a, b| safe_float_cmp(a.0, b.0));
                 // The space test is applied to the row that wins on distance,
                 // not to every row that might have. Scanning each candidate's
@@ -930,6 +956,8 @@ pub(crate) mod utils {
                         members[r].push(i);
                     },
                     _ => {
+                        let at = rows_by_baseline.partition_point(|&(b, _)| b <= base_i);
+                        rows_by_baseline.insert(at, (base_i, rows.len()));
                         rows.push(i);
                         members.push(vec![i]);
                         row_of[pos] = Some(i);
