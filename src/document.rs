@@ -6841,7 +6841,35 @@ impl PdfDocument {
                     // y-line break OR (when the two halves share a baseline band) as a
                     // large backward X jump, so it is gated at each break site below.
                     let hangul_midword_wrap = Self::hangul_midword_line_wrap(&text, prev, span);
-                    if (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5 {
+                    // A blank run is on no axis at all. It has no glyphs, so
+                    // there is no displacement for §9.4.4 to interpret and
+                    // nothing to say which direction it ran in — its
+                    // `rotation_degrees` records the matrix that happened to be
+                    // in force, not evidence about the page.
+                    //
+                    // Producers emit them freely, and a rotated watermark
+                    // scatters them across the rows it crosses. A table row read
+                    // `R-+  t/tdr }/Wr t/rt`; two blank 90-degree spans from the
+                    // watermark sat between the label and its first cell, and
+                    // the axis test fired twice — once entering them, once
+                    // leaving — leaving the label alone on its line and its
+                    // cells on the next.
+                    //
+                    // So an axis change is only a line break between two runs
+                    // that both carry ink.
+                    //
+                    // Exempt from THIS test only. Making a blank cross-axis run
+                    // transparent to line breaking altogether was tried and is
+                    // worse: the run then bridges the two inked runs on either
+                    // side of it, and a rotated page stamp joined the body text
+                    // that followed it — `Downloaded from ... 2019` acquired
+                    // `<! f (2 %d/t %d/d`. The vertical test below still gets to
+                    // decide, which is what keeps them apart.
+                    let both_carry_ink =
+                        !prev.text.trim().is_empty() && !span.text.trim().is_empty();
+                    if both_carry_ink
+                        && (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5
+                    {
                         // Two runs on different writing axes are not one line.
                         // §9.4.4 puts the glyph displacement along the writing
                         // direction the text matrix sets, so a matrix that
