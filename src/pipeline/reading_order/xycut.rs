@@ -1619,9 +1619,9 @@ impl XYCutStrategy {
         // keeps a one-glyph overhang from counting as a crossing.
         const STRADDLE_TOL: f32 = 10.0;
         let region_width = (left_x_max.max(right_x_max) - left_x_min.min(right_x_min)).max(1.0);
-        let crossing_count = indices
+        let crosses: Vec<bool> = indices
             .iter()
-            .filter(|&&i| {
+            .map(|&i| {
                 let s = &all_spans[i];
                 let (l, r) = (s.bbox.left(), s.bbox.right());
                 // Only spans the projection skipped can hide ink from it.
@@ -1632,7 +1632,8 @@ impl XYCutStrategy {
                 let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
                 l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
             })
-            .count();
+            .collect();
+        let crossing_count = crosses.iter().filter(|c| **c).count();
         // A crossing run alone is not enough to refuse the cut. A banner
         // headline sitting *above* two real columns crosses every candidate
         // corridor between them, and refusing there costs the column split on
@@ -1653,19 +1654,41 @@ impl XYCutStrategy {
         // a newspaper masthead's side holds a nameplate and a dateline over
         // 28% of the region, and a contents page's page-number column is a
         // short band nested inside the full-measure titles beside it.
+        //
+        // A single banner is measured as furniture, not as a member of the
+        // column its left edge happens to land in. It is bucketed by that
+        // edge like everything else, so its own height counted as that
+        // column's and stretched the region both sides are scored against —
+        // backwards for the one shape this allowance exists for. A banner
+        // printed 35 pt above two 112 pt columns of equal height put the left
+        // side at 152 pt of a 159 pt region and the right at 112, and the two
+        // columns scored 70 % against each other when they are the same
+        // height. The columns are what has to be near-coextensive.
+        //
+        // Only for a single crossing. Where a corridor is crossed again and
+        // again the crossing runs ARE the page's content — a contents page's
+        // full-measure titles are its column — so those keep their height.
+        // A side that is nothing but the banner is not a column either.
+        let banner_is_furniture = crossing_count == 1;
         let mut left_lo = f32::MAX;
         let mut left_hi = f32::MIN;
         let mut right_lo = f32::MAX;
         let mut right_hi = f32::MIN;
-        for &i in indices {
+        let (mut left_n, mut right_n) = (0usize, 0usize);
+        for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
+            if banner_is_furniture && crossing {
+                continue;
+            }
             let b = &all_spans[i].bbox;
             let (lo, hi) = (b.y, b.y + b.height.abs());
             if b.left() < split_x {
                 left_lo = left_lo.min(lo);
                 left_hi = left_hi.max(hi);
+                left_n += 1;
             } else {
                 right_lo = right_lo.min(lo);
                 right_hi = right_hi.max(hi);
+                right_n += 1;
             }
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
@@ -1673,7 +1696,8 @@ impl XYCutStrategy {
         // Two columns of running text end within a fifth of the region's
         // height of each other; a band that stops far short is not a column.
         const COLUMN_HEIGHT_FRACTION: f32 = 0.8;
-        let sides_are_columns = shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
+        let sides_are_columns =
+            left_n > 0 && right_n > 0 && shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
         if crossing_count > 0 && !sides_are_columns {
             return None;
         }
