@@ -27,6 +27,8 @@
 //! reducing the scale to fit rather than failing: the caller wants an image of
 //! the page, and a smaller one beats a dead process.
 
+#![cfg(feature = "rendering")]
+
 use pdf_oxide::rendering::{render_page, RenderOptions, DEFAULT_MAX_OUTPUT_PIXELS};
 use pdf_oxide::PdfDocument;
 

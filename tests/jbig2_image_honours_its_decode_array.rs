@@ -19,6 +19,8 @@
 //! stencil -- the stencil path reads `/Decode` separately and is covered by
 //! its own test.
 
+#![cfg(feature = "rendering")]
+
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page, RenderOptions};
 
