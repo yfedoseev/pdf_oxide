@@ -11066,10 +11066,24 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // A reference and the glyphs it names can disagree about scope without
+        // colliding: a producer that draws part of a page through a Form
+        // XObject numbers one continuous id space across both and references it
+        // with bare integers, which resolve to the page's own stream. Match
+        // such a reference to the run it names, but only where the bare id is
+        // numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(mcid_map.keys());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_order.iter());
+        let bucket_for = |key: &(crate::structure::McidScope, u32)| {
+            if !referenced_once.contains_key(&key.1) {
+                return mcid_map.contains_key(key).then(|| key.clone());
+            }
+            crate::structure::resolve_mcid_key(&mcid_map, &drawn_once, key)
+        };
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(&(scope.clone(), *m)) {
+            if let Some(sp) = bucket_for(&(scope.clone(), *m)).and_then(|k| mcid_map.get(&k)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -11080,7 +11094,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |scope, m| mcid_map.contains_key(&(scope.clone(), m)),
+            |scope, m| bucket_for(&(scope.clone(), m)).is_some(),
             &mc_wins,
             &glyph_text,
         );
@@ -11120,6 +11134,8 @@ impl PdfDocument {
             if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
+            // The bucket this reference names, which is not always its own key.
+            let bucket_key = bucket_for(&content_key);
 
             // ActualText action dispatch. `EmitAndSuppress` is set only
             // on the first visible covered MCID of a consecutive-same-
@@ -11129,7 +11145,9 @@ impl PdfDocument {
             // the extractor's in-stream replacement reaches output.
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(content_key.clone());
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -11137,14 +11155,18 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(content_key.clone());
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&content_key) {
-                consumed_mcids.insert(content_key.clone());
+            if let Some(spans) = bucket_key.as_ref().and_then(|k| mcid_map.get(k)) {
+                if let Some(k) = bucket_key.clone() {
+                    consumed_mcids.insert(k);
+                }
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
@@ -12251,10 +12273,24 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // A reference and the glyphs it names can disagree about scope without
+        // colliding: a producer that draws part of a page through a Form
+        // XObject numbers one continuous id space across both and references it
+        // with bare integers, which resolve to the page's own stream. Match
+        // such a reference to the run it names, but only where the bare id is
+        // numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(mcid_map.keys());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_order.iter());
+        let bucket_for = |key: &(crate::structure::McidScope, u32)| {
+            if !referenced_once.contains_key(&key.1) {
+                return mcid_map.contains_key(key).then(|| key.clone());
+            }
+            crate::structure::resolve_mcid_key(&mcid_map, &drawn_once, key)
+        };
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(&(scope.clone(), *m)) {
+            if let Some(sp) = bucket_for(&(scope.clone(), *m)).and_then(|k| mcid_map.get(&k)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -12265,7 +12301,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |scope, m| mcid_map.contains_key(&(scope.clone(), m)),
+            |scope, m| bucket_for(&(scope.clone(), m)).is_some(),
             &mc_wins,
             &glyph_text,
         );
@@ -12308,10 +12344,14 @@ impl PdfDocument {
             if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
+            // The bucket this reference names, which is not always its own key.
+            let bucket_key = bucket_for(&content_key);
 
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(content_key.clone());
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -12319,14 +12359,18 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(content_key.clone());
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&content_key) {
-                consumed_mcids.insert(content_key.clone());
+            if let Some(spans) = bucket_key.as_ref().and_then(|k| mcid_map.get(k)) {
+                if let Some(k) = bucket_key.clone() {
+                    consumed_mcids.insert(k);
+                }
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.

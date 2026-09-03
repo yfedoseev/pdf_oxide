@@ -53,6 +53,61 @@ impl McidScope {
     }
 }
 
+/// Bare marked-content ids that exactly one content stream numbers.
+///
+/// ISO 32000-1:2008 §14.7.4.2 scopes an `/MCID` to its content stream, and
+/// §14.7.4.3 gives a marked-content reference an `/Stm` entry naming that
+/// stream. A structure element whose kid is a bare integer carries no `/Stm`,
+/// so it resolves against the page's own stream — yet a producer that draws
+/// part of a page through a Form XObject routinely numbers one continuous id
+/// space across the page stream and the form and references all of it that
+/// way. The reference's scope and the glyphs' scope then disagree although
+/// nothing collides.
+///
+/// An id that only one stream numbers has exactly one possible referent, so
+/// matching it across scopes cannot pick the wrong marked content. An id two
+/// streams both number is a real collision: there the scope is the only thing
+/// that tells them apart and it must be honoured.
+pub(crate) fn unambiguous_mcid_scopes<'k>(
+    keys: impl Iterator<Item = &'k (McidScope, u32)>,
+) -> HashMap<u32, McidScope> {
+    let mut sole: HashMap<u32, Option<McidScope>> = HashMap::new();
+    for (scope, mcid) in keys {
+        match sole.get(mcid) {
+            None => {
+                sole.insert(*mcid, Some(scope.clone()));
+            },
+            Some(Some(seen)) if seen != scope => {
+                sole.insert(*mcid, None);
+            },
+            _ => {},
+        }
+    }
+    sole.into_iter()
+        .filter_map(|(mcid, scope)| scope.map(|s| (mcid, s)))
+        .collect()
+}
+
+/// The key under which `map` holds what `key` names: `key` itself when the map
+/// has it, otherwise the sole holder of the same bare id.
+///
+/// The fallback fires only when the id is unambiguous on **both** sides of the
+/// match — `unambiguous` describes the map, and the caller must have
+/// established that its own side numbers the id once too. See
+/// [`unambiguous_mcid_scopes`].
+pub(crate) fn resolve_mcid_key<V>(
+    map: &HashMap<(McidScope, u32), V>,
+    unambiguous: &HashMap<u32, McidScope>,
+    key: &(McidScope, u32),
+) -> Option<(McidScope, u32)> {
+    if map.contains_key(key) {
+        return Some(key.clone());
+    }
+    let scope = unambiguous.get(&key.1)?;
+    let alt = (scope.clone(), key.1);
+    map.contains_key(&alt).then_some(alt)
+}
+
 /// The root of a PDF structure tree (StructTreeRoot dictionary).
 ///
 /// This is the entry point for accessing a document's logical structure.
