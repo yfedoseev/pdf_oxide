@@ -15,6 +15,8 @@
 //!
 //! Hand-built synthetic PDF; no third-party fixture.
 
+#![cfg(feature = "rendering")]
+
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page, RenderOptions};
 

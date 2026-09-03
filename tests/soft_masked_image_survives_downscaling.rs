@@ -16,6 +16,8 @@
 //! transparent rows, which is what a real soft mask looks like and what makes
 //! the two resamples disagree.
 
+#![cfg(feature = "rendering")]
+
 use pdf_oxide::document::PdfDocument;
 use pdf_oxide::rendering::{render_page, RenderOptions};
 
