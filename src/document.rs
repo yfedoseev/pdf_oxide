@@ -14885,7 +14885,25 @@ impl PdfDocument {
     /// applied (the caller can then suppress geometric block re-ordering that
     /// would otherwise re-derive row-major order from positions).
     fn reorder_two_column_prose(spans: &mut Vec<crate::layout::TextSpan>) -> bool {
-        match Self::prose_two_column_gutter(spans) {
+        // Both gutter detectors, in the order the text path tries them.
+        //
+        // Asking only the first one is what broke the promise above. The
+        // geometric detector demands a corridor wider than a fixed bar, which a
+        // dense journal page does not give it, and the classifier exists
+        // precisely to catch the pages it misses. Over a multi-column corpus the
+        // text path took a column branch on 91 pages of 149 where the converters
+        // could take one on 5, so on 86 of them the partition used for
+        // `extract_text` was never even computed for markdown and HTML.
+        //
+        // What the converters did instead was worse than doing nothing: a
+        // `false` here also tells the pipeline the caller has no opinion, and
+        // the geometric strategy then re-derives a row-major order and joins
+        // consecutive same-baseline spans into one line. That is what splices a
+        // right column into the middle of a left column's sentence —
+        // `is a less toxic properties against several RNA viruses`.
+        match Self::prose_two_column_gutter(spans)
+            .or_else(|| Self::classifier_column_gutter(spans))
+        {
             Some(gutter_x) => {
                 Self::reorder_column_major_with_bands(spans, gutter_x);
                 true
