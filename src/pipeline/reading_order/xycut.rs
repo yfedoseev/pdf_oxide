@@ -1778,15 +1778,38 @@ impl XYCutStrategy {
         // refuse the cut, and the body then reads as one leaf spanning the
         // page — every physical row emitted as one line, splicing the columns
         // into each other.
+        //
+        // A row's other cells need not land in `right` to exist. Where the
+        // split falls to the RIGHT of a row's first cell boundary — a contents
+        // page's section numbers, a schedule's label column — the row's own
+        // stub is bucketed into `left` beside the full-measure run it labels,
+        // and the run is the rest of the row. Reading only `right` for company
+        // makes the guard blind to exactly the rows it exists to protect: a
+        // contents page's `10.3.1` rail was cut away from its titles and the
+        // titles re-emitted a column-run later with no numbers on them.
+        //
+        // So a blanketing run is furniture only when it is ALONE on its row:
+        // nothing in `right` shares its band, AND nothing on that band is
+        // printed to its left. A title, abstract or caption spanning the
+        // measure satisfies both — it is the first and only thing on its row.
+        // A labelled row satisfies neither.
+        let band_of = |i: usize| {
+            (all_spans[i].bbox.y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32
+        };
         let shares_a_row_with_right = |i: usize| -> bool {
-            let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
-            let a = band(all_spans[i].bbox.y);
-            right.iter().any(|&j| band(all_spans[j].bbox.y) == a)
+            let a = band_of(i);
+            right.iter().any(|&j| band_of(j) == a)
+        };
+        let is_labelled_from_the_left = |i: usize| -> bool {
+            let a = band_of(i);
+            let x = all_spans[i].bbox.left();
+            left.iter()
+                .any(|&j| j != i && band_of(j) == a && all_spans[j].bbox.left() < x)
         };
         let full_width_left_rows = left
             .iter()
             .filter(|&&i| {
-                if !shares_a_row_with_right(i) {
+                if !shares_a_row_with_right(i) && !is_labelled_from_the_left(i) {
                     return false;
                 }
                 let s = &all_spans[i];
