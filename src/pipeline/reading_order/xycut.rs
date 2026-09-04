@@ -1855,18 +1855,28 @@ impl XYCutStrategy {
                 core_right >= right_x_max - overlap_tol
             })
             .count();
-        // A table's full-width rows are most of it — the header and every data
-        // row run the whole measure — so the count has to be read against the
-        // side it came from and not on its own. Three such rows out of a
-        // hundred is a page with a heading, a footnote and a caption over two
-        // columns of prose, and vetoing there costs those columns their cut and
-        // leaves them to be read across the page. Measured on one such page:
-        // 3 of 100 left rows, 3% of the side.
+        // The count has to be read against the side it came from, not on its
+        // own: three rows out of a hundred is a heading, a footnote and a
+        // caption over two columns of prose, and vetoing there costs those
+        // columns their cut and leaves them read across the page.
+        //
+        // The threshold is bounded on both sides by measurement, and the window
+        // is narrow:
+        //
+        //   3 of 100 left rows (0.03) — a two-column page carrying a heading,
+        //     a footnote and a caption. Must NOT veto.
+        //   6 of 49 left rows (0.122) — a contents page whose shallower entries
+        //     run from title through dot leader to page number, reaching across
+        //     the channel the deeper entries' indentation opens. Must veto, or
+        //     the page reads as a rail of bare section numbers followed by
+        //     titles with no numbers on them.
+        //
+        // A tenth sits between them. Nothing observed falls in the gap.
         //
         // The count still has to clear 3 in absolute terms, so a short region
         // whose two or three lines happen to be wide cannot veto on a fraction
         // alone.
-        const TABLE_ROW_SHARE: f32 = 0.25;
+        const TABLE_ROW_SHARE: f32 = 0.10;
         let table_shaped =
             full_width_left_rows as f32 >= left.len() as f32 * TABLE_ROW_SHARE;
         if full_width_left_rows >= 3 && table_shaped {
