@@ -60,8 +60,9 @@ fn shading_page(function_ref: &str, extra: &[(usize, &str)], samples: &[u8]) -> 
     off[6] = pdf.len();
     pdf.extend_from_slice(
         format!(
-            "6 0 obj\n<< /FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2] \
+            "6 0 obj\n<< /FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [{}] \
              /BitsPerSample 8 /Length {} >>\nstream\n",
+            samples.len() / 3,
             samples.len()
         )
         .as_bytes(),
@@ -85,6 +86,10 @@ fn shading_page(function_ref: &str, extra: &[(usize, &str)], samples: &[u8]) -> 
 }
 
 const RED_THEN_BLUE: &[u8] = &[0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF];
+
+/// White, black, white. A ramp whose two ends agree and whose middle does
+/// not — the shape that two endpoint colours cannot describe.
+const WHITE_BLACK_WHITE: &[u8] = &[0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF];
 
 fn ends(pdf: Vec<u8>) -> ([u8; 3], [u8; 3]) {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
@@ -136,4 +141,41 @@ fn an_exponential_function_still_supplies_its_endpoints() {
     let (left, right) = ends(shading_page("8 0 R", &[(8, exp)], RED_THEN_BLUE));
     assert!(left[0] > 180 && left[2] < 80, "left should be red, got {left:?}");
     assert!(right[2] > 180 && right[0] < 80, "right should be blue, got {right:?}");
+}
+
+/// The colour at the middle of the painted band.
+fn middle(pdf: Vec<u8>) -> [u8; 3] {
+    let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
+    let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
+    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let p = px.get_pixel(px.width() / 2, px.height() / 2);
+    [p[0], p[1], p[2]]
+}
+
+/// A gradient is only its two endpoints when the function between them is
+/// monotonic. A sampled function need not be: one axial shading in the corpus
+/// ramps white to near-black and back to white across 5120 samples, so reading
+/// its two ends gives white at both and the gradient paints a flat white page
+/// — the entire ramp discarded, and the page rendered blank where poppler and
+/// PyMuPDF both paint a gradient.
+///
+/// ISO 32000-1:2008 §8.7.4.5.3 defines the colour at parametric distance t by
+/// the shading's function, so the middle of the band is the function's value
+/// there and not a blend of its ends.
+#[test]
+fn a_ramp_that_returns_to_its_starting_colour_still_paints_its_middle() {
+    let ends_of = ends(shading_page("6 0 R", &[], WHITE_BLACK_WHITE));
+    assert!(
+        ends_of.0[0] > 180 && ends_of.1[0] > 180,
+        "both ends of this ramp are white by construction, got {:?} and {:?}",
+        ends_of.0,
+        ends_of.1
+    );
+    let mid = middle(shading_page("6 0 R", &[], WHITE_BLACK_WHITE));
+    assert!(
+        mid[0] < 100 && mid[1] < 100 && mid[2] < 100,
+        "the middle of the ramp is black in the function and must be painted \
+         dark; got {mid:?}. Sampling only the two ends makes this gradient \
+         white-to-white and the band vanishes"
+    );
 }

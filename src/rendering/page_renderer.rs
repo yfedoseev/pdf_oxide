@@ -4019,8 +4019,8 @@ impl PageRenderer {
         }
     }
 
-    /// Resolve a Type 2 / Type 3 shading dictionary's `/C0` and `/C1`
-    /// endpoint colours through the resolution pipeline. The shading
+    /// Resolve a Type 2 / Type 3 shading dictionary's colour ramp through
+    /// the resolution pipeline, sampled across `/Domain`. The shading
     /// dict's `/ColorSpace` selects the colour space; `/Function` (a
     /// Type 2 exponential or a Type 3 stitching wrapper) carries the
     /// endpoint component arrays. Returns `None` when either endpoint
@@ -4037,7 +4037,7 @@ impl PageRenderer {
         shading: &std::collections::HashMap<String, Object>,
         gs: &GraphicsState,
         doc: &PdfDocument,
-    ) -> Option<((f32, f32, f32, f32), (f32, f32, f32, f32))> {
+    ) -> Option<Vec<(f32, (f32, f32, f32, f32))>> {
         // The shading dict's `/ColorSpace` can be a Name (DeviceRGB,
         // CS1, ...) or an inline Array ([/Separation ... funcRef]).
         // Resolve indirect references so the helper sees the final
@@ -4084,27 +4084,35 @@ impl PageRenderer {
         // are not the endpoints at all.
         let func_obj = shading.get("Function")?;
         let resolved_func = doc.resolve_object(func_obj).ok()?;
-        let c0_comps = evaluate_pdf_function_at(doc, &resolved_func, domain0, 0)?;
-        let c1_comps = evaluate_pdf_function_at(doc, &resolved_func, domain1, 0)?;
 
-        // Fold in `gs.fill_alpha` here — it's the alpha the inline
-        // code path multiplies into each gradient stop's RGBA when
-        // building the tiny-skia LinearGradient / RadialGradient.
-        let c0 = self.pipeline_resolve_components(
-            doc,
-            &self.color_spaces,
-            &resolved_cs,
-            &c0_comps,
-            gs.fill_alpha,
-        )?;
-        let c1 = self.pipeline_resolve_components(
-            doc,
-            &self.color_spaces,
-            &resolved_cs,
-            &c1_comps,
-            gs.fill_alpha,
-        )?;
-        Some((c0, c1))
+        // §8.7.4.5.3 defines the colour at parametric distance t by the
+        // shading's function, not by two endpoint colours. A gradient is
+        // only its endpoints when the function between them is monotonic,
+        // and a sampled (type 0) function need not be: one axial shading
+        // ramps white to near-black and back to white across 5120 samples,
+        // so reading its two ends gives white at both and the gradient
+        // paints the page a flat white — the whole ramp thrown away.
+        //
+        // Sample the ramp instead. `STOPS` points at 1/32 of the domain
+        // resolve the shape of any ramp an authoring tool exports while
+        // staying far below the cost of the per-pixel evaluation a fully
+        // faithful renderer would do.
+        const STOPS: usize = 33;
+        let mut stops: Vec<(f32, (f32, f32, f32, f32))> = Vec::with_capacity(STOPS);
+        for i in 0..STOPS {
+            let t = i as f32 / (STOPS - 1) as f32;
+            let x = domain0 + (domain1 - domain0) * t;
+            let comps = evaluate_pdf_function_at(doc, &resolved_func, x, 0)?;
+            let rgba = self.pipeline_resolve_components(
+                doc,
+                &self.color_spaces,
+                &resolved_cs,
+                &comps,
+                gs.fill_alpha,
+            )?;
+            stops.push((t, rgba));
+        }
+        Some(stops)
     }
 
     /// Render axial (linear) gradient shading (Type 2).
@@ -4123,7 +4131,7 @@ impl PageRenderer {
         transform: Transform,
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
-        resolved_endpoints: Option<((f32, f32, f32, f32), (f32, f32, f32, f32))>,
+        resolved_endpoints: Option<Vec<(f32, (f32, f32, f32, f32))>>,
     ) -> Result<()> {
         // Parse Coords [x0 y0 x1 y1]
         let coords = shading.get("Coords").and_then(|o| o.as_array());
@@ -4163,10 +4171,7 @@ impl PageRenderer {
         // black-to-white default that matches the legacy renderer's
         // safety net — render with sensible defaults rather than
         // panicking or rendering nothing.
-        let (stop0, stop1) = match resolved_endpoints {
-            Some(((r0, g0, b0, a0), (r1, g1, b1, a1))) => ((r0, g0, b0, a0), (r1, g1, b1, a1)),
-            None => ((0.0, 0.0, 0.0, gs.fill_alpha), (1.0, 1.0, 1.0, gs.fill_alpha)),
-        };
+        let ramp = shading_gradient_stops(resolved_endpoints, gs.fill_alpha);
 
         // Transform gradient endpoints
         let mut p0 = tiny_skia::Point { x: x0, y: y0 };
@@ -4195,18 +4200,7 @@ impl PageRenderer {
         let gradient = tiny_skia::LinearGradient::new(
             tiny_skia::Point { x: p0.x, y: p0.y },
             tiny_skia::Point { x: p1.x, y: p1.y },
-            vec![
-                tiny_skia::GradientStop::new(
-                    0.0,
-                    tiny_skia::Color::from_rgba(stop0.0, stop0.1, stop0.2, stop0.3)
-                        .unwrap_or(tiny_skia::Color::BLACK),
-                ),
-                tiny_skia::GradientStop::new(
-                    1.0,
-                    tiny_skia::Color::from_rgba(stop1.0, stop1.1, stop1.2, stop1.3)
-                        .unwrap_or(tiny_skia::Color::BLACK),
-                ),
-            ],
+            ramp,
             spread,
             Transform::identity(),
         );
@@ -4256,7 +4250,7 @@ impl PageRenderer {
         transform: Transform,
         gs: &GraphicsState,
         clip_mask: Option<&tiny_skia::Mask>,
-        resolved_endpoints: Option<((f32, f32, f32, f32), (f32, f32, f32, f32))>,
+        resolved_endpoints: Option<Vec<(f32, (f32, f32, f32, f32))>>,
     ) -> Result<()> {
         // Parse Coords [x0 y0 r0 x1 y1 r1]
         let coords = shading.get("Coords").and_then(|o| o.as_array());
@@ -4291,10 +4285,7 @@ impl PageRenderer {
 
         // Same pipeline-or-fallback dispatch as `render_axial_shading`
         // — see its docs for the rationale.
-        let (stop0, stop1) = match resolved_endpoints {
-            Some(((r0c, g0, b0, a0), (r1c, g1, b1, a1))) => ((r0c, g0, b0, a0), (r1c, g1, b1, a1)),
-            None => ((0.0, 0.0, 0.0, gs.fill_alpha), (1.0, 1.0, 1.0, gs.fill_alpha)),
-        };
+        let ramp = shading_gradient_stops(resolved_endpoints, gs.fill_alpha);
 
         // Per ISO 32000-1 §8.7.4.5.4, the radial gradient interpolates
         // between two circles `(x0, y0, r0)` (the inner / start circle,
@@ -4343,18 +4334,7 @@ impl PageRenderer {
                 y: center1.y,
             },
             radius1, // end_radius (outer circle, in device space)
-            vec![
-                tiny_skia::GradientStop::new(
-                    0.0,
-                    tiny_skia::Color::from_rgba(stop0.0, stop0.1, stop0.2, stop0.3)
-                        .unwrap_or(tiny_skia::Color::BLACK),
-                ),
-                tiny_skia::GradientStop::new(
-                    1.0,
-                    tiny_skia::Color::from_rgba(stop1.0, stop1.1, stop1.2, stop1.3)
-                        .unwrap_or(tiny_skia::Color::BLACK),
-                ),
-            ],
+            ramp,
             tiny_skia::SpreadMode::Pad,
             Transform::identity(),
         );
@@ -10178,6 +10158,35 @@ fn evaluate_pdf_function_at(
 /// (other depths are spec-legal but rare for tint transforms; rejecting
 /// the call lets the caller report unsupported), input arity mismatch,
 /// stream too short, or any malformed array.
+/// Build the gradient's stop list from a shading's sampled colour ramp.
+///
+/// `resolved` is the ramp produced by the resolution pipeline: parametric
+/// positions across `/Domain` paired with their RGBA. `None` means the ramp
+/// could not be resolved at all — a missing or unsupported `/Function` — and
+/// the caller falls back to the black-to-white safety net the inline path
+/// has always used as its outermost default, so an unreadable shading still
+/// paints something rather than nothing.
+fn shading_gradient_stops(
+    resolved: Option<Vec<(f32, (f32, f32, f32, f32))>>,
+    fill_alpha: f32,
+) -> Vec<tiny_skia::GradientStop> {
+    let ramp = match resolved {
+        Some(r) if r.len() >= 2 => r,
+        _ => vec![
+            (0.0, (0.0, 0.0, 0.0, fill_alpha)),
+            (1.0, (1.0, 1.0, 1.0, fill_alpha)),
+        ],
+    };
+    ramp.into_iter()
+        .map(|(t, (r, g, b, a))| {
+            tiny_skia::GradientStop::new(
+                t,
+                tiny_skia::Color::from_rgba(r, g, b, a).unwrap_or(tiny_skia::Color::BLACK),
+            )
+        })
+        .collect()
+}
+
 fn evaluate_type0_multi(
     obj: &Object,
     dict: &std::collections::HashMap<String, Object>,
