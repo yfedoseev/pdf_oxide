@@ -356,9 +356,26 @@ impl TextSpan {
                     // A non-increasing pair is not an advance — visually-stored
                     // RTL and mirrored runs backtrack — so those fall through to
                     // the nominal width unchanged.
+                    //
+                    // The distance to the next origin is the first glyph's
+                    // advance only while the two glyphs are consecutive on one
+                    // run. A `Tm` that repositions inside the text object puts
+                    // the next origin an arbitrary distance away, and taking
+                    // that as an advance makes the glyph before it as wide as
+                    // the jump — which closes the gap the word clusterer splits
+                    // on. Two footer words set 40 pt apart came out as one word.
+                    //
+                    // ISO 32000-1:2008 §9.4.4 makes the advance the glyph's own
+                    // displacement, and a glyph's displacement is bounded by its
+                    // design width: an em is the widest ordinary advance, and
+                    // even a stretched inter-word space on justified text stays
+                    // well inside `MAX_ADVANCE_EM`. Beyond it the distance is
+                    // not an advance, so the nominal width stands.
+                    const MAX_ADVANCE_EM: f32 = 1.5;
+                    let advance_ceiling = self.font_size * MAX_ADVANCE_EM;
                     let next_gap = if i + 1 < char_count {
                         let d = offsets[i + 1] - char_x;
-                        (d.is_finite() && d > 0.0).then_some(d)
+                        (d.is_finite() && d > 0.0 && d <= advance_ceiling).then_some(d)
                     } else {
                         None
                     };
