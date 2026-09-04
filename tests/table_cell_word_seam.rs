@@ -65,27 +65,35 @@ fn fragmented_cell_pdf() -> Vec<u8> {
 /// extracted geometry and assert the inversion, so that a future change to
 /// the fixture (or to how widths become advances) cannot quietly turn these
 /// tests into something a threshold tweak would satisfy.
+///
+/// Measured over characters, not words. The seam used to surface as a word
+/// boundary — `Cre` and `dit` came out as separate words — and reading the
+/// gap between those words was the obvious way to measure it. That boundary
+/// is gone now that a glyph's advance is taken from its measured offset, so
+/// there is no `Cre` to look up; the geometry it was measuring is unchanged
+/// and still sits between the same two glyphs. Character origins are where
+/// it lived all along, and they do not depend on the defect still appearing.
 #[test]
 fn seam_is_wider_than_the_word_space_it_must_be_told_apart_from() {
     let doc = PdfDocument::from_bytes(fragmented_cell_pdf()).expect("open");
-    let words = doc.extract_words(0).expect("words");
-    let gap_after = |text: &str| -> f32 {
-        let i = words
-            .iter()
-            .position(|w| w.text == text)
-            .unwrap_or_else(|| {
-                panic!(
-                    "no word {text:?} in {:?}",
-                    words.iter().map(|w| &w.text).collect::<Vec<_>>()
-                )
-            });
-        words[i + 1].bbox.x - (words[i].bbox.x + words[i].bbox.width)
+    let chars = doc.extract_chars(0).expect("chars");
+    let text: String = chars.iter().map(|c| c.char).collect();
+    let gap_between = |from: usize, to: usize| -> f32 {
+        chars[to].bbox.x - (chars[from].bbox.x + chars[from].bbox.width)
+    };
+    let at = |needle: &str| -> usize {
+        text.find(needle)
+            .map(|b| text[..b].chars().count())
+            .unwrap_or_else(|| panic!("no {needle:?} in extracted characters {text:?}"))
     };
 
     // "Cre" -> "d": pure repositioning between consecutive glyphs.
-    let seam = gap_after("Cre");
-    // "it" -> "<": a real space glyph sits between them in the source.
-    let space = gap_after("it");
+    let credit = at("Credit");
+    let seam = gap_between(credit + 2, credit + 3);
+    // "it" -> "<": a real space glyph sits between them in the source, so the
+    // gap is measured across it, from the "t" to the "<".
+    let before_lt = at("it <");
+    let space = gap_between(before_lt + 1, before_lt + 3);
 
     assert!(
         (seam - 1.75).abs() < 0.05,
