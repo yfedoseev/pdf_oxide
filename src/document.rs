@@ -15211,85 +15211,41 @@ impl PdfDocument {
             // linearises it correctly, so treat the signal as tabular.
             return true;
         }
-        // Every left edge a line starts at, not one per Y band.
-        //
-        // A Y band crosses the whole page, so on a two-column page both columns
-        // fall in the same band and the band's *minimum* left edge is the left
-        // column's margin on every line. The second column is invisible to that
-        // measurement, and the page reads as one dominant left edge — the shape
-        // this predicate takes as proof of single-column prose. Measured on a
-        // two-column journal: 55 bands, 42 sharing one left edge, 0.76 of the
-        // page, and the gutter suppressed on a page that plainly has one.
-        //
-        // Walk each band left to right instead, starting a new left edge
-        // wherever a gap wider than a column gutter opens.
-        const COLUMN_GAP_PT: f32 = 10.0;
-        let mut by_band: std::collections::BTreeMap<i32, Vec<&crate::layout::TextSpan>> =
-            std::collections::BTreeMap::new();
+        // Per-line (Y-band) minimum left edge.
+        let mut by_band: std::collections::BTreeMap<i32, f32> = std::collections::BTreeMap::new();
         for s in &outside {
             let band = (s.bbox.y / 2.0).round() as i32;
-            by_band.entry(band).or_default().push(s);
+            let e = by_band.entry(band).or_insert(f32::INFINITY);
+            *e = e.min(s.bbox.x);
         }
-        let mut lefts: Vec<f32> = Vec::new();
-        for band in by_band.values() {
-            let mut row: Vec<&&crate::layout::TextSpan> = band.iter().collect();
-            row.sort_by(|a, b| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x));
-            let mut prev_right = f32::NEG_INFINITY;
-            for s in row {
-                if s.bbox.x - prev_right > COLUMN_GAP_PT {
-                    lefts.push(s.bbox.x);
-                }
-                prev_right = prev_right.max(s.bbox.x + s.bbox.width);
-            }
-        }
-        lefts.retain(|v| v.is_finite());
+        let mut lefts: Vec<f32> = by_band
+            .values()
+            .copied()
+            .filter(|v| v.is_finite())
+            .collect();
         if lefts.len() < 6 {
             return true;
         }
         lefts.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         // Cluster left edges with a 12pt gap (≈ one indent); the largest cluster
         // is the body's left margin.
-        let mut clusters: Vec<(usize, f32, f32)> = Vec::new();
+        let mut clusters: Vec<usize> = Vec::new();
         let mut run = 1usize;
         let mut prev = lefts[0];
-        let mut cluster_start = lefts[0];
         for &v in &lefts[1..] {
             if v - prev > 12.0 {
-                clusters.push((run, cluster_start, prev));
+                clusters.push(run);
                 run = 0;
-                cluster_start = v;
             }
             run += 1;
             prev = v;
         }
-        clusters.push((run, cluster_start, prev));
+        clusters.push(run);
         let total = lefts.len();
-        let top = clusters.iter().map(|c| c.0).max().unwrap_or(0);
+        let top = *clusters.iter().max().unwrap_or(&0);
         // Strong single dominant left edge ⇒ single-column prose ⇒ the
         // multi-column signal came from the table.
-        if top as f32 >= 0.70 * total as f32 {
-            return true;
-        }
-
-        // Two or more column starts. How many is what separates a page's
-        // columns from a grid's: a two-column body has exactly two, and an
-        // unruled numeric grid has one per cell column. That is the rule
-        // `prose_two_column_gutter` already applies to the same question —
-        // exactly two significant starts, anything else (single column, a
-        // grid, an N-up spread) is not a two-column body.
-        //
-        // Classifying each side instead does not work here and the call site
-        // says why: a column of short numerals reads Reference and a labelled
-        // half reads Prose, so both halves of a numeric grid pass a class gate.
-        //
-        // A "significant" start carries at least a sixth of the starts
-        // measured, which keeps a stray indent or a centred caption from
-        // counting as a column.
-        let significant = clusters
-            .iter()
-            .filter(|c| c.0 as f32 >= total as f32 / 6.0)
-            .count();
-        significant != 2
+        top as f32 >= 0.70 * total as f32
     }
 
     fn is_multi_column_page(spans: &[crate::layout::TextSpan]) -> bool {
@@ -32909,97 +32865,6 @@ mod tests {
     /// across N data rows) must be placed at the top of its row block in
     /// reading-order output, not interleaved mid-group by Y.
     ///
-    /// A page whose columns this predicate has to tell apart from a grid's.
-    ///
-    /// The guard exists so a data grid's own inter-column gap is not taken for
-    /// a page gutter, and it answers by asking whether the content outside the
-    /// detected tables is single-column. Both shapes below put text at
-    /// consistent left edges down the page, so nothing about *where* the
-    /// columns start separates them — only how many there are.
-    fn tabular_probe_span(x: f32, y: f32, width: f32, text: &str) -> crate::layout::TextSpan {
-        use crate::layout::{Color, FontWeight, TextSpan};
-        TextSpan {
-            provenance: None,
-            text_rise: 0.0,
-            artifact_type: None,
-            text: text.to_string(),
-            bbox: crate::geometry::Rect::new(x, y, width, 9.0),
-            font_size: 9.0,
-            font_name: "Arial".into(),
-            font_weight: FontWeight::Normal,
-            is_italic: false,
-            is_monospace: false,
-            color: Color::black(),
-            mcid: None,
-            mcid_scope: None,
-            sequence: 0,
-            split_boundary_before: false,
-            offset_semantic: false,
-            char_spacing: 0.0,
-            word_spacing: 0.0,
-            horizontal_scaling: 100.0,
-            primary_detected: false,
-            char_widths: vec![],
-            char_x_offsets: Vec::new(),
-            heading_level: None,
-            rotation_degrees: 0.0,
-            wmode: 0,
-            rtl_draw_logical: false,
-            mirrored: false,
-            page_rotation_applied: 0,
-        }
-    }
-
-    /// A table somewhere on the page, so the predicate is consulted at all.
-    /// Its box sits clear of the content under test, exactly as the small
-    /// ruled table on the grid fixture sits clear of the grid.
-    fn tabular_probe_table() -> crate::structure::table_extractor::Table {
-        let mut t = crate::structure::table_extractor::Table::default();
-        t.bbox = Some(crate::geometry::Rect::new(90.0, 300.0, 170.0, 64.0));
-        t
-    }
-
-    /// Two columns of running prose. The measurement must not read this as
-    /// tabular, or the page's gutter is suppressed and the two columns are
-    /// read straight across — splicing each line to the one beside it.
-    #[test]
-    fn two_columns_of_prose_are_not_a_tabular_signal() {
-        let body = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
-        let mut spans = Vec::new();
-        let mut y = 700.0_f32;
-        while y > 420.0 {
-            spans.push(tabular_probe_span(72.0, y, 200.0, body));
-            spans.push(tabular_probe_span(320.0, y, 200.0, body));
-            y -= 12.0;
-        }
-        assert!(
-            !PdfDocument::multicol_signal_is_tabular(&spans, &[tabular_probe_table()]),
-            "two columns of prose are the page's own columns, not a table's"
-        );
-    }
-
-    /// An unruled numeric grid: a label column and seven short cell columns.
-    /// The measurement must still read this as tabular, or the corridor
-    /// between two of its cell columns is taken for a page gutter and every
-    /// row is cut in half.
-    #[test]
-    fn an_unruled_numeric_grid_is_still_a_tabular_signal() {
-        const COLS: [f32; 7] = [225.0, 265.0, 305.0, 365.0, 405.0, 445.0, 485.0];
-        let mut spans = Vec::new();
-        let mut y = 690.0_f32;
-        for r in 0..12 {
-            spans.push(tabular_probe_span(72.0, y, 140.0, "Baseline configuration"));
-            for (i, x) in COLS.iter().enumerate() {
-                spans.push(tabular_probe_span(*x, y, 30.0, &format!("{}{}.{:03}", i + 1, r + 1, r)));
-            }
-            y -= 24.0;
-        }
-        assert!(
-            PdfDocument::multicol_signal_is_tabular(&spans, &[tabular_probe_table()]),
-            "a grid's cell columns must not be mistaken for a page's two columns"
-        );
-    }
-
     /// Simulates a simplified 2-column table:
     /// - Column A (sparse, "labels"): 2 labels, each centered in its
     ///   block of 6 data rows.
