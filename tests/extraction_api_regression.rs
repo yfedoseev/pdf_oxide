@@ -760,9 +760,15 @@ fn global_warning_sink_wired_into_log_warn_sites() {
         "src/parser.rs SPEC VIOLATION sites must push to global sink",
     );
     let fonts_src = include_str!("../src/fonts/font_dict.rs");
+    // Font warnings are raised against the document that produced them rather
+    // than the process-wide sink: two documents read at once on one thread
+    // otherwise take each other's warnings. Either wiring satisfies what this
+    // test is for — that the Type 3 site reports at all.
     assert!(
-        fonts_src.contains("push_global_warning") && fonts_src.contains("Type3Font"),
-        "src/fonts/font_dict.rs Type3 site must push to global sink",
+        (fonts_src.contains("push_structured_warning")
+            || fonts_src.contains("push_global_warning"))
+            && fonts_src.contains("Type3Font"),
+        "src/fonts/font_dict.rs Type3 site must push a structured warning",
     );
     assert!(
         fonts_src.contains("ToUnicodeMissing"),
