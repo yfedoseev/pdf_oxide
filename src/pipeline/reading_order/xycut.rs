@@ -1693,9 +1693,36 @@ impl XYCutStrategy {
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
         let shorter_side = (left_hi - left_lo).min(right_hi - right_lo);
-        // Two columns of running text end within a fifth of the region's
-        // height of each other; a band that stops far short is not a column.
-        const COLUMN_HEIGHT_FRACTION: f32 = 0.8;
+        // A band that stops far short of the region is not a column. What
+        // counts as "far short" cannot be a fifth, though: columns of running
+        // text are only near-coextensive when nothing interrupts them. On a
+        // news page a photograph, an advertisement or the end of the story
+        // stops one column well above the other, and the two sides are then
+        // genuinely uneven — one measured pair ran 749.6 pt against 597.6 pt
+        // of a 755.6 pt region, a 0.79 ratio, while a second page's columns
+        // sat at the same 0.79. Both are ordinary three-column news pages
+        // whose columns this guard refused, taking no cut at all and leaving
+        // the columns to be read across the page.
+        //
+        // The shapes the guard exists to refuse are far shorter than that: a
+        // masthead's side, holding only a nameplate and a dateline, covers
+        // 28% of the region, and a contents page's page-number column is a
+        // short band nested inside the full-measure titles beside it.
+        //
+        // Nothing observed falls between those and a real column, and the
+        // observed columns spread wider than any near-coextensive reading
+        // admits — 0.746 and 0.480 on a two-column typescript, 0.79 on two
+        // news pages. So the line is what separates a column from a band
+        // rather than what separates a column from its neighbour: a column
+        // covers at least half the region it is a column of; a run of
+        // furniture beside one does not.
+        //
+        // Excluding the crossing runs from the two sides' extents was tried
+        // instead, on the theory that several banners over real columns are
+        // still furniture. It moves the run counts and not the extents — the
+        // crossing runs are not what reaches furthest on either side — and
+        // left every affected page exactly where it was.
+        const COLUMN_HEIGHT_FRACTION: f32 = 0.5;
         let sides_are_columns =
             left_n > 0 && right_n > 0 && shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
         if crossing_count > 0 && !sides_are_columns {
@@ -3500,5 +3527,77 @@ mod tests {
         let groups = strategy.partition_region(&spans);
         let total: usize = groups.iter().map(|g| g.len()).sum();
         assert_eq!(total, spans.len(), "depth guard must not drop spans");
+    }
+
+    /// A news page's columns are not coextensive: a photograph, an
+    /// advertisement or the end of a story stops one column well above its
+    /// neighbour. Asking the two sides to end within a fifth of each other
+    /// refuses the cut on ordinary three-column news pages, and the columns
+    /// are then read straight across — splicing unrelated sentences and
+    /// breaking any word hyphenated at the seam.
+    ///
+    /// The banner is wider than the region's 55% bound, so the density
+    /// profile leaves it out and the corridor between the columns reads as
+    /// empty; it still crosses that corridor, which is what brings the guard
+    /// into play. The two sides here sit at a 0.60 height ratio — inside the
+    /// span the corpus actually shows for real columns (0.48 to 0.79) and
+    /// below every near-coextensive reading of them.
+    #[test]
+    fn uneven_columns_under_a_banner_still_take_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
+        let mut spans = vec![make_span_text(55.0, 730.0, 470.0, 16.0, &"W".repeat(40), 16.0)];
+
+        let mut y = 100.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(55.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+        // The right-hand column stops early, as it would above a photograph.
+        let mut y = 343.0;
+        while y <= 694.0 {
+            spans.push(make_span_text(325.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_some(),
+            "two columns of prose at a 0.60 height ratio are still two \
+             columns; refusing the cut leaves them to be read across the page"
+        );
+    }
+
+    /// The counter-direction, and the shape the guard exists for: a masthead
+    /// side carrying only a nameplate and a dateline covers a fraction of the
+    /// region and is not a column. That cut must still be refused, or the
+    /// nameplate is emitted after the whole body instead of at the top of the
+    /// page where it is printed.
+    #[test]
+    fn a_masthead_side_under_a_banner_is_still_refused() {
+        let strategy = XYCutStrategy::new();
+        let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
+        let mut spans = vec![make_span_text(55.0, 730.0, 470.0, 16.0, &"W".repeat(40), 16.0)];
+
+        let mut y = 100.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(55.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+        // Nameplate and dateline only: about 28% of the region's height.
+        let mut y = 530.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(325.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_none(),
+            "a side holding only a nameplate and a dateline is not a column, \
+             and the gap beside it is not a gutter"
+        );
     }
 }
