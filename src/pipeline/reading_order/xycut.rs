@@ -1855,11 +1855,25 @@ impl XYCutStrategy {
                 core_right >= right_x_max - overlap_tol
             })
             .count();
-        if full_width_left_rows >= 3 {
-            // ≥ 3 left rows each blanket the right column ⇒ this is a table-row
-            // slice, not a column gutter. Don't take the column cut; the
-            // recursion falls back to a row (horizontal) split and reads the
-            // table row-major.
+        // A table's full-width rows are most of it — the header and every data
+        // row run the whole measure — so the count has to be read against the
+        // side it came from and not on its own. Three such rows out of a
+        // hundred is a page with a heading, a footnote and a caption over two
+        // columns of prose, and vetoing there costs those columns their cut and
+        // leaves them to be read across the page. Measured on one such page:
+        // 3 of 100 left rows, 3% of the side.
+        //
+        // The count still has to clear 3 in absolute terms, so a short region
+        // whose two or three lines happen to be wide cannot veto on a fraction
+        // alone.
+        const TABLE_ROW_SHARE: f32 = 0.25;
+        let table_shaped =
+            full_width_left_rows as f32 >= left.len() as f32 * TABLE_ROW_SHARE;
+        if full_width_left_rows >= 3 && table_shaped {
+            // Several left rows, and a real share of them, each blanket the
+            // right column ⇒ this is a table-row slice, not a column gutter.
+            // Don't take the column cut; the recursion falls back to a row
+            // (horizontal) split and reads the table row-major.
             return None;
         }
 
@@ -3598,6 +3612,67 @@ mod tests {
             split.is_none(),
             "a side holding only a nameplate and a dateline is not a column, \
              and the gap beside it is not a gutter"
+        );
+    }
+
+    /// Build a two-column region whose left side carries `full_width` lines
+    /// that reach across the right column, and `plain` that stop at the
+    /// gutter. The right column always gets a line on every row, so the
+    /// full-measure lines genuinely share a row with it.
+    ///
+    /// Left column 72..272, right column 320..520, so the corridor is 48 pt
+    /// wide and `right_x_max` is 520. A full-measure line is 100% of the
+    /// region's width, over the 55% bound, so the density profile leaves it
+    /// out and the corridor is still found.
+    fn two_columns_with_full_measure_lines(full_width: usize, plain: usize) -> Vec<TextSpan> {
+        // 0.45 em per char at 8 pt is 3.6 pt: 56 chars spans 202 pt (the
+        // column), 125 chars spans 450 pt (the whole region).
+        let short = "a".repeat(56);
+        let wide = "a".repeat(125);
+        let mut spans = Vec::new();
+        let mut y = 700.0_f32;
+        for row in 0..(full_width + plain) {
+            if row < full_width {
+                spans.push(make_span_text(72.0, y, 448.0, 8.0, &wide, 8.0));
+            } else {
+                spans.push(make_span_text(72.0, y, 200.0, 8.0, &short, 8.0));
+            }
+            spans.push(make_span_text(320.0, y, 200.0, 8.0, &short, 8.0));
+            y -= 12.0;
+        }
+        spans
+    }
+
+    /// A heading, a footnote and a caption running the full measure over two
+    /// columns of prose are three full-width rows, and three is what the
+    /// table-row veto counted. A data table's rows are most of it, so the
+    /// count only means anything against the side it came from — measured on
+    /// a real page, 3 of 100 left rows vetoed the cut and the two columns
+    /// were then read straight across.
+    #[test]
+    fn three_full_measure_lines_over_a_prose_page_do_not_veto_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = two_columns_with_full_measure_lines(3, 97);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy.find_horizontal_split_indexed(&spans, &indices).is_some(),
+            "three full-measure lines among a hundred are a heading and a \
+             caption, not a table; the columns must still be cut apart"
+        );
+    }
+
+    /// The counter-direction, and the shape the veto exists for: when the
+    /// rows that blanket the right column are most of the side, the region is
+    /// a table and cutting it vertically shreds its rows.
+    #[test]
+    fn a_page_whose_rows_are_mostly_full_measure_still_vetoes_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = two_columns_with_full_measure_lines(30, 6);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy.find_horizontal_split_indexed(&spans, &indices).is_none(),
+            "rows that blanket the right column and are most of the side are \
+             a table's rows; a vertical cut through them shreds every row"
         );
     }
 }
