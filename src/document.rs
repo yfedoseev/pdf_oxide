@@ -1009,6 +1009,16 @@ impl ReadingFrame {
                 if let Some(ref b) = cell.bbox {
                     cell.bbox = Some(self.map_rect(b));
                 }
+                // The runs a cell draws travel with it. Ownership is decided by
+                // measuring a page span against the spans a cell renders, so
+                // leaving these in page space puts the two sides of that
+                // comparison in different frames: no cell claims the spans it
+                // draws, and every one is emitted by the table and again as
+                // prose beside it. Mapping the boxes alone was enough only
+                // while ownership was a question about boxes.
+                for span in &mut cell.spans {
+                    self.map_span_origin(span);
+                }
             }
         }
     }
