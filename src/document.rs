@@ -3258,6 +3258,26 @@ impl PdfDocument {
         if labels.is_empty() {
             return;
         }
+
+        // A stub label is a word. The clustering reasons in table terms — a
+        // sparse column against a dense one — and on prose it finds that shape
+        // anyway: a mathematics page whose lines are cut into many runs by
+        // inline symbols offered three single glyphs of a display equation as
+        // its sparse column, and promoting them to the head of their block
+        // reordered the paragraph around them, so a trailing line came out
+        // ahead of the line it continues (`criterionThe ridge regression ...`).
+        //
+        // ISO 32000-1:2008 §14.8.4.3.4 makes a table's row (TR) the element
+        // that holds its cells (TD), and a stub cell carries the row's name —
+        // text, not a lone glyph. Requiring most candidates to be more than one
+        // character keeps the promotion on the shape it was written for.
+        let multi_char = labels
+            .iter()
+            .filter(|&&i| spans[i].text.trim().chars().count() > 1)
+            .count();
+        if multi_char * 2 <= labels.len() {
+            return;
+        }
         labels.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
 
         // Labels that sit at near-identical Y values almost always
@@ -6708,9 +6728,7 @@ impl PdfDocument {
                 // That reordered the paragraph around them, and a trailing
                 // line came out ahead of the line it continues —
                 // `criterionThe ridge regression ...`.
-                if !tables.is_empty() {
-                    Self::reorder_rowspan_labels(&mut spans);
-                }
+                Self::reorder_rowspan_labels(&mut spans);
 
                 // Restore intra-line reading order after the row-aware band sort.
                 // Off-baseline glyphs (e.g. superscripts/subscripts) can land in
@@ -32990,6 +33008,76 @@ mod tests {
     /// across N data rows) must be placed at the top of its row block in
     /// reading-order output, not interleaved mid-group by Y.
     ///
+    /// The counter-case to `test_rowspan_label_promoted_to_top_of_block`.
+    ///
+    /// The promotion reasons in table terms — a sparse column of labels beside
+    /// a dense column of data — and finds that shape on prose too. A
+    /// mathematics page whose lines are cut into many runs by inline symbols
+    /// offers single glyphs of a display equation as its sparse column, and
+    /// hoisting them to the head of their block reorders the paragraph around
+    /// them: a trailing line comes out ahead of the line it continues.
+    ///
+    /// ISO 32000-1:2008 §14.8.4.3.4 makes a row (TR) the element that holds its
+    /// cells (TD), and a stub cell carries the row's name — text, not one
+    /// glyph. The fixture is the promoted fixture with its labels cut down to a
+    /// single character each, so it differs in exactly the thing under test.
+    #[test]
+    fn single_glyph_columns_are_not_promoted_as_rowspan_labels() {
+        use crate::layout::TextSpan;
+
+        fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(x, y, w, 10.0),
+                font_size: 12.0,
+                font_name: "Arial".into(),
+                font_weight: crate::layout::FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: crate::layout::Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
+            }
+        }
+
+        // Same geometry as the promoted case: a sparse column at x=50 sitting
+        // between blocks of a dense column at x=200 — but each sparse entry is
+        // one glyph, as a display equation's fragments are.
+        let mut spans = vec![mk("x", 50.0, 75.0, 8.0), mk("y", 50.0, 45.0, 8.0)];
+        for i in 0..12 {
+            let y = 100.0 - (i as f32) * 10.0;
+            spans.push(mk(&format!("d{:02}", i), 200.0, y, 20.0));
+        }
+        let before: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+
+        PdfDocument::reorder_rowspan_labels(&mut spans);
+
+        let after: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(
+            after, before,
+            "a sparse column of single glyphs is a fragmented line, not a stub \
+             column of labels, and must not be hoisted"
+        );
+    }
+
     /// Simulates a simplified 2-column table:
     /// - Column A (sparse, "labels"): 2 labels, each centered in its
     ///   block of 6 data rows.
