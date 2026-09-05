@@ -55,8 +55,8 @@ pub use spatial_table_detector::{
 };
 pub use table_extractor::{
     extract_table, extract_table_from_spans, extract_table_from_spans_on_page,
-    extract_table_on_page, find_table_elements, find_table_elements_all_pages,
-    Table, TableCell, TableRow,
+    extract_table_on_page, find_table_elements, find_table_elements_all_pages, Table, TableCell,
+    TableRow,
 };
 pub use traversal::{
     extract_reading_order, traverse_structure_tree, traverse_structure_tree_all_pages, ListRole,

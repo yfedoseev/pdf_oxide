@@ -74,7 +74,8 @@ fn html_of(pdf: &[u8]) -> String {
 
 fn markdown_of(pdf: &[u8]) -> String {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("open");
-    doc.to_markdown(0, &ConversionOptions::default()).expect("md")
+    doc.to_markdown(0, &ConversionOptions::default())
+        .expect("md")
 }
 
 /// Helvetica `phosphorylation` at 10pt is 70.59pt wide by Adobe's metrics

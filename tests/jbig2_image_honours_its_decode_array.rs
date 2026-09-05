@@ -31,7 +31,10 @@ struct Bits {
 
 impl Bits {
     fn new() -> Self {
-        Bits { out: Vec::new(), n: 0 }
+        Bits {
+            out: Vec::new(),
+            n: 0,
+        }
     }
 
     fn push(&mut self, code: &str) {
@@ -113,7 +116,6 @@ fn jbig2_8x8(black_rows: usize) -> Vec<u8> {
     out
 }
 
-
 fn build_pdf(objects: &[Vec<u8>]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(b"%PDF-1.4\n");
@@ -188,7 +190,9 @@ fn jbig2_smask_page(decode: Option<&str>) -> Vec<u8> {
 fn bands(pdf: &[u8]) -> (f64, f64) {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let (w, h) = px.dimensions();
     let band = (h * 2) / 5;
     let (mut top, mut bot) = (0u64, 0u64);

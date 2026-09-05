@@ -1632,8 +1632,7 @@ impl MarkdownOutputConverter {
             if let Some(prev) = prev_span {
                 let em = prev.span.font_size.max(span.span.font_size).max(6.0);
                 let drop = prev.span.bbox.y - span.span.bbox.y;
-                let seam_gap =
-                    span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
+                let seam_gap = span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
                 if current_line
                     .strip_suffix('\u{00AD}')
                     .is_some_and(|t| t.ends_with(char::is_alphabetic))

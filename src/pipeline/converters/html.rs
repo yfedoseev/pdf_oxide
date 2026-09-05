@@ -792,8 +792,7 @@ impl HtmlOutputConverter {
                         // string. The row is what resolves it: cells of one row
                         // ARE adjacent on the page, so matching across them is
                         // right, and matching across the whole table is not.
-                        let want: String =
-                            trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+                        let want: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
                         return !row_glyphs.iter().any(|r| r.contains(&want));
                     }
                     // Single token: the only spacing disagreement possible is
@@ -870,8 +869,8 @@ impl HtmlOutputConverter {
             if i > 0 {
                 let prev = &cell.spans[i - 1];
                 let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
-                let needs_break = super::has_horizontal_gap(prev, span)
-                    || super::spans_are_stacked(prev, span);
+                let needs_break =
+                    super::has_horizontal_gap(prev, span) || super::spans_are_stacked(prev, span);
                 if needs_break && !already_has_space {
                     out.push(' ');
                 }
@@ -912,8 +911,8 @@ impl HtmlOutputConverter {
             // and the span-gap logic in render_table_markdown).
             if i > 0 {
                 let prev = &cell.spans[i - 1];
-                let has_gap = super::has_horizontal_gap(prev, span)
-                    || super::spans_are_stacked(prev, span);
+                let has_gap =
+                    super::has_horizontal_gap(prev, span) || super::spans_are_stacked(prev, span);
                 let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
                 if has_gap && !already_has_space {
                     out.push(' ');
@@ -1020,7 +1019,11 @@ mod tests {
                 "{fragment:?} is a sentence fragment, not a heading"
             );
         }
-        for heading in ["Spring Equinox Gathering", "Materials and Methods", "Doctor Who"] {
+        for heading in [
+            "Spring Equinox Gathering",
+            "Materials and Methods",
+            "Doctor Who",
+        ] {
             assert!(
                 !HtmlOutputConverter::looks_like_non_heading(heading),
                 "{heading:?} is a heading and must still promote"

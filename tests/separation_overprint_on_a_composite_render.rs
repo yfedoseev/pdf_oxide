@@ -27,11 +27,7 @@ use pdf_oxide::rendering::{render_page, RenderOptions};
 /// with overprint enabled in nonzero mode. No `/OutputIntents`, so no CMYK
 /// sidecar exists and the render is a plain composite.
 fn separation_overprint_pdf(with_overprint: bool) -> Vec<u8> {
-    let gs = if with_overprint {
-        "/GS0 gs "
-    } else {
-        ""
-    };
+    let gs = if with_overprint { "/GS0 gs " } else { "" };
     let content = format!("{gs}/CS0 cs 1 scn 10 10 80 80 re f");
     // Tint 1.0 -> black. A type-2 exponential function from one input to three
     // DeviceRGB outputs: C0 white, C1 black.
@@ -78,7 +74,9 @@ fn separation_overprint_pdf(with_overprint: bool) -> Vec<u8> {
 fn coverage(pdf: Vec<u8>) -> f64 {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let n = px.pixels().len() as f64;
     let inked = px
         .pixels()

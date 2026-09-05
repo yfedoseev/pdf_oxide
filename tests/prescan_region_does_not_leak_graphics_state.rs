@@ -96,8 +96,12 @@ fn a_regions_own_save_does_not_swallow_the_injected_one() {
         spans
             .iter()
             .find(|s| s.text.contains(needle))
-            .unwrap_or_else(|| panic!("{needle:?} missing; got {:?}",
-                spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{needle:?} missing; got {:?}",
+                    spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>()
+                )
+            })
     };
     let first = find("FIRST");
     let second = find("SECOND");
@@ -112,11 +116,13 @@ fn a_regions_own_save_does_not_swallow_the_injected_one() {
         "the second run must be 12pt too. Getting ~{:.3} means the region's \
          own `q` swallowed the injected save and the 0.12 CTM was applied \
          twice (0.12 x 0.12 = 0.0144, so 100pt -> 1.44pt); got {}",
-        second.font_size, second.font_size
+        second.font_size,
+        second.font_size
     );
     assert!(
         (first.font_size - second.font_size).abs() < 0.01,
         "both runs share one scale; got {} and {}",
-        first.font_size, second.font_size
+        first.font_size,
+        second.font_size
     );
 }

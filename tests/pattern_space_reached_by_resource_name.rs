@@ -67,7 +67,9 @@ fn pattern_by_resource_name_pdf() -> Vec<u8> {
 fn mean_rgb(pdf: Vec<u8>) -> (f64, f64, f64) {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let n = px.pixels().len() as f64;
     let (mut r, mut g, mut b) = (0f64, 0f64, 0f64);
     for p in px.pixels() {

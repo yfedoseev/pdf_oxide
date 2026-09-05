@@ -76,7 +76,9 @@ fn shading_with_bbox(bbox: &str) -> Vec<u8> {
 fn inked(bbox: &str) -> f64 {
     let doc = PdfDocument::from_bytes(shading_with_bbox(bbox)).expect("fixture parses");
     let img = render_page(&doc, 0, &RenderOptions::with_dpi(72)).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let total = px.pixels().len() as f64;
     let ink = px
         .pixels()

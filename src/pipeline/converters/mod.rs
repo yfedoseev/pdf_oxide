@@ -319,9 +319,7 @@ pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) 
         .rev()
         .take_while(|c| c.is_alphabetic())
         .collect();
-    if tail.chars().count() < 3
-        || !base.ends_with(|c: char| c.is_ascii_lowercase())
-    {
+    if tail.chars().count() < 3 || !base.ends_with(|c: char| c.is_ascii_lowercase()) {
         return false;
     }
     // The marker is a bare numeral, optionally a list or range of them.
@@ -329,7 +327,9 @@ pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) 
         .text
         .trim_start()
         .chars()
-        .take_while(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '\u{2013}' | '\u{2014}' | '\u{2212}'))
+        .take_while(|c| {
+            c.is_ascii_digit() || matches!(c, ',' | '-' | '\u{2013}' | '\u{2014}' | '\u{2212}')
+        })
         .collect();
     !head.is_empty()
         && head.chars().next().is_some_and(|c| c.is_ascii_digit())
@@ -502,8 +502,7 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // The test needs positive evidence rather than the absence of contrary
     // evidence, so it applies only where some strong left-to-right character is
     // present and no right-to-left one is.
-    let steps_backward = (current.bbox.x + current.bbox.width <= prev.bbox.x
-        || gap < -backward_em)
+    let steps_backward = (current.bbox.x + current.bbox.width <= prev.bbox.x || gap < -backward_em)
         && !prev.text.chars().any(is_rtl_char)
         && !current.text.chars().any(is_rtl_char)
         && (prev.text.chars().any(is_strong_ltr_char)
@@ -1028,10 +1027,7 @@ mod tests {
     fn hebrew_glyphs_stepping_leftward_are_not_separated() {
         let prev = rtl_span(300.0, 0.0, 12.0, "\u{5e9}");
         let curr = rtl_span(288.0, 0.0, 12.0, "\u{5dc}");
-        assert!(
-            !has_horizontal_gap(&prev, &curr),
-            "Hebrew advances right-to-left too"
-        );
+        assert!(!has_horizontal_gap(&prev, &curr), "Hebrew advances right-to-left too");
     }
 
     #[test]
@@ -1052,10 +1048,7 @@ mod tests {
     fn adjacent_latin_kerning_is_still_not_a_gap() {
         let prev = rtl_span(100.0, 18.0, 12.0, "Effi");
         let curr = rtl_span(118.1, 26.0, 12.0, "ciency");
-        assert!(
-            !has_horizontal_gap(&prev, &curr),
-            "a sub-em gap is inter-glyph kerning"
-        );
+        assert!(!has_horizontal_gap(&prev, &curr), "a sub-em gap is inter-glyph kerning");
     }
 
     /// The four span pairs of a Persian form's issue date, at the geometry the
@@ -1329,7 +1322,13 @@ mod tests {
     /// separates them — the same rule `merge_sub_superscript_spans` uses.
     #[test]
     fn a_maths_subscript_is_not_a_boundary() {
-        for (base, sub) in [("W", "2"), ("H", "2"), ("ADP", "3"), ("SO", "4"), ("x", "2")] {
+        for (base, sub) in [
+            ("W", "2"),
+            ("H", "2"),
+            ("ADP", "3"),
+            ("SO", "4"),
+            ("x", "2"),
+        ] {
             let b = marker_span(100.0, 8.0, 11.96, "BODY+Font", base);
             let s = marker_span(109.63, 4.0, 6.97, "SUB+Font", sub);
             assert!(
@@ -1376,7 +1375,12 @@ mod span_ownership_tests {
     fn span_at(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
         TextSpan {
             text: text.to_string(),
-            bbox: crate::geometry::Rect { x, y, width, height: 10.0 },
+            bbox: crate::geometry::Rect {
+                x,
+                y,
+                width,
+                height: 10.0,
+            },
             font_size: 10.0,
             ..Default::default()
         }
@@ -1503,9 +1507,6 @@ mod span_ownership_tests {
             height: 12.0,
         });
         let inside = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
-        assert_eq!(
-            span_in_table(&inside, std::slice::from_ref(&table)),
-            Some(0)
-        );
+        assert_eq!(span_in_table(&inside, std::slice::from_ref(&table)), Some(0));
     }
 }

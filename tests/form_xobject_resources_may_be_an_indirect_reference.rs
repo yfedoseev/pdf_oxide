@@ -50,11 +50,9 @@ fn form_with_type3_font(indirect: bool) -> Vec<u8> {
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
     // The page itself declares no /Font at all — exactly the shape of the
     // documents that exposed this: the fonts live only inside the form.
-    obj!(
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]\n\
+    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100]\n\
              /Contents 4 0 R /Resources << /XObject << /Fm0 5 0 R >> >> >>\nendobj\n"
-            .as_ref()
-    );
+        .as_ref());
 
     let content = b"/Fm0 Do";
     obj!(format!(
@@ -124,7 +122,9 @@ fn ink(pdf: &[u8]) -> usize {
     opts.format = ImageFormat::RawRgba8;
     let img = render_page(&doc, 0, &opts).expect("render");
     img.data
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
         .count()
 }

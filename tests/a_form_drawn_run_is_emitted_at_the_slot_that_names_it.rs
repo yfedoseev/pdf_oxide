@@ -96,7 +96,11 @@ fn colliding_numbering_across_a_form() -> Vec<u8> {
 
 /// Objects 1-6 are fixed (catalog, pages, page, page stream, font, form); the
 /// caller supplies the structure tree as objects 7 and up.
-fn build(page_content: &[u8], form_content: &[u8], struct_objects: Vec<(usize, String)>) -> Vec<u8> {
+fn build(
+    page_content: &[u8],
+    form_content: &[u8],
+    struct_objects: Vec<(usize, String)>,
+) -> Vec<u8> {
     let last = struct_objects.iter().map(|(id, _)| *id).max().unwrap_or(6);
     let mut buf: Vec<u8> = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut off = vec![0usize; last + 1];
@@ -161,7 +165,10 @@ fn build(page_content: &[u8], form_content: &[u8], struct_objects: Vec<(usize, S
 }
 
 fn text_of(pdf: Vec<u8>) -> String {
-    PdfDocument::from_bytes(pdf).expect("open").extract_text(0).expect("text")
+    PdfDocument::from_bytes(pdf)
+        .expect("open")
+        .extract_text(0)
+        .expect("text")
 }
 
 /// The label must be emitted at the slot that names it — between the two body

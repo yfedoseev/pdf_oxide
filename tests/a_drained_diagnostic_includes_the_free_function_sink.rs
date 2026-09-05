@@ -36,8 +36,10 @@ fn pdf_with_a_bare_cr_after_stream() -> Vec<u8> {
     pdf.extend_from_slice(b"%PDF-1.7\n");
     obj!(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
-           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+    obj!(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+    );
 
     offsets.push(pdf.len());
     pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream", content.len()).as_bytes());
@@ -72,7 +74,9 @@ fn the_draining_accessor_sees_a_parser_diagnostic() {
     let taken = doc.take_structured_warnings();
 
     assert!(
-        taken.iter().any(|w| w.category == WarningCategory::SpecViolation),
+        taken
+            .iter()
+            .any(|w| w.category == WarningCategory::SpecViolation),
         "the draining accessor must report the parser's spec violation; got {:?}",
         taken.iter().map(|w| w.category).collect::<Vec<_>>()
     );
@@ -82,7 +86,11 @@ fn the_draining_accessor_sees_a_parser_diagnostic() {
 fn both_accessors_agree_on_what_they_can_see() {
     let a = PdfDocument::from_bytes(pdf_with_a_bare_cr_after_stream()).expect("open");
     let _ = a.extract_text(0);
-    let via_take: Vec<_> = a.take_structured_warnings().iter().map(|w| w.category).collect();
+    let via_take: Vec<_> = a
+        .take_structured_warnings()
+        .iter()
+        .map(|w| w.category)
+        .collect();
 
     let b = PdfDocument::from_bytes(pdf_with_a_bare_cr_after_stream()).expect("open");
     let _ = b.extract_text(0);

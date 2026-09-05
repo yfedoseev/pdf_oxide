@@ -106,10 +106,7 @@ fn a_kerned_overlap_within_one_em_stays_one_word() {
     let pdf = page_of_runs(&[("Effi", 100.0, 700.0), ("ciency", 118.0, 700.0)], 10.0);
     let text = text_of(&pdf);
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    assert!(
-        compact.contains("Efficiency"),
-        "a kerned run must stay one word; got {text:?}"
-    );
+    assert!(compact.contains("Efficiency"), "a kerned run must stay one word; got {text:?}");
 }
 
 /// A fraction denominator sits about two em back from the relation sign —

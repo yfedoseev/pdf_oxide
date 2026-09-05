@@ -162,9 +162,8 @@ fn broken_subset_font() -> Vec<u8> {
 /// failure unambiguous.
 fn pattern_filled_text(render_mode: u8) -> Vec<u8> {
     let font = broken_subset_font();
-    let content = format!(
-        "BT /F1 96 Tf {render_mode} Tr /Pattern cs /P0 scn 1 0 0 1 10 20 Tm (A) Tj ET\n"
-    );
+    let content =
+        format!("BT /F1 96 Tf {render_mode} Tr /Pattern cs /P0 scn 1 0 0 1 10 20 Tm (A) Tj ET\n");
     let content = content.into_bytes();
 
     let mut pdf: Vec<u8> = Vec::new();
@@ -222,12 +221,8 @@ fn pattern_filled_text(render_mode: u8) -> Vec<u8> {
     );
     off[9] = pdf.len();
     pdf.extend_from_slice(
-        format!(
-            "9 0 obj\n<< /Length {} /Length1 {} >>\nstream\n",
-            font.len(),
-            font.len()
-        )
-        .as_bytes(),
+        format!("9 0 obj\n<< /Length {} /Length1 {} >>\nstream\n", font.len(), font.len())
+            .as_bytes(),
     );
     pdf.extend_from_slice(&font);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");

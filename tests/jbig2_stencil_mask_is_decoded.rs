@@ -31,7 +31,10 @@ struct Bits {
 
 impl Bits {
     fn new() -> Self {
-        Bits { out: Vec::new(), n: 0 }
+        Bits {
+            out: Vec::new(),
+            n: 0,
+        }
     }
 
     fn push(&mut self, code: &str) {
@@ -157,10 +160,8 @@ fn masked_page(black_rows: Option<usize>) -> Vec<u8> {
     let mut objects = vec![
         obj("<< /Type /Catalog /Pages 2 0 R >>"),
         obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        obj(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R \
-               /Resources << /XObject << /Im 5 0 R >> >> >>",
-        ),
+        obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R \
+               /Resources << /XObject << /Im 5 0 R >> >> >>"),
         stream_obj("", b"q 100 0 0 100 0 0 cm /Im Do Q"),
         stream_obj(
             &format!(
@@ -194,7 +195,9 @@ fn obj(s: &str) -> Vec<u8> {
 fn coverage(pdf: &[u8]) -> (f64, f64, f64) {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let (w, h) = px.dimensions();
     let (mut all, mut top, mut bot) = (0u64, 0u64, 0u64);
     let band = (h * 2) / 5;

@@ -63,10 +63,8 @@ fn stamp_pdf(matrix: &str) -> Vec<u8> {
     let objects = vec![
         obj("<< /Type /Catalog /Pages 2 0 R >>"),
         obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        obj(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
-               /Contents 4 0 R /Annots [5 0 R] >>",
-        ),
+        obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+               /Contents 4 0 R /Annots [5 0 R] >>"),
         stream_obj("", b""),
         obj("<< /Type /Annot /Subtype /Stamp /Rect [0 0 20 20] /F 4 /AP << /N 6 0 R >> >>"),
         ap,
@@ -80,7 +78,9 @@ fn stamp_pdf(matrix: &str) -> Vec<u8> {
 fn ink(pdf: &[u8]) -> (f64, (f64, f64, f64, f64)) {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let decoded = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let decoded = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let (w, h) = decoded.dimensions();
     let (mut n, mut x0, mut y0, mut x1, mut y1) = (0u64, u32::MAX, u32::MAX, 0u32, 0u32);
     for (x, y, p) in decoded.enumerate_pixels() {

@@ -88,7 +88,9 @@ fn masked_image(decode: &str) -> Vec<u8> {
 fn halves(pdf: Vec<u8>) -> (f64, f64) {
     let doc = PdfDocument::from_bytes(pdf).expect("fixture parses");
     let img = render_page(&doc, 0, &RenderOptions::with_dpi(72)).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let (w, h) = (px.width(), px.height());
     let mean = |lo: u32, hi: u32| -> f64 {
         let mut sum = 0.0_f64;

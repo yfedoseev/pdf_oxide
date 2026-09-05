@@ -100,7 +100,9 @@ fn striped_soft_mask_page(page: u32) -> Vec<u8> {
 fn mean_tone(pdf: &[u8]) -> f64 {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let mut sum = 0u64;
     for p in px.pixels() {
         sum += u64::from(p[0]) + u64::from(p[1]) + u64::from(p[2]);

@@ -69,7 +69,9 @@ fn page_with(content: &str) -> Vec<u8> {
 fn dark_pixels(pdf: &[u8]) -> usize {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     px.pixels()
         .filter(|p| p[3] > 0 && (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 < 128)
         .count()

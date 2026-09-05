@@ -68,19 +68,20 @@ fn page_with(content: &str) -> Vec<u8> {
 fn coverage(pdf: &[u8]) -> f64 {
     let doc = PdfDocument::from_bytes(pdf.to_vec()).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
-    let n = px.pixels().filter(|p| {
-        p[3] > 0 && (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 < 250
-    }).count();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
+    let n = px
+        .pixels()
+        .filter(|p| p[3] > 0 && (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 < 250)
+        .count();
     n as f64 / px.pixels().len() as f64
 }
 
 /// A page-sized black fill under a lone-move-to clip must paint nothing.
 #[test]
 fn a_lone_move_to_clip_suppresses_everything_after_it() {
-    let cov = coverage(&page_with(
-        "q 0 0 200 200 re W n 50 50 m W n 0 0 0 rg 0 0 200 200 re f Q",
-    ));
+    let cov = coverage(&page_with("q 0 0 200 200 re W n 50 50 m W n 0 0 0 rg 0 0 200 200 re f Q"));
     assert!(
         cov < 0.01,
         "a clip whose path is a single move-to encloses no area, so the fill \
@@ -93,10 +94,7 @@ fn a_lone_move_to_clip_suppresses_everything_after_it() {
 #[test]
 fn the_same_fill_without_the_degenerate_clip_still_paints() {
     let cov = coverage(&page_with("q 0 0 200 200 re W n 0 0 0 rg 0 0 200 200 re f Q"));
-    assert!(
-        cov > 0.9,
-        "the unclipped fill must still cover the page; got {cov:.5}"
-    );
+    assert!(cov > 0.9, "the unclipped fill must still cover the page; got {cov:.5}");
 }
 
 /// A two-verb zero-area clip already worked and must keep working — it is the
@@ -106,8 +104,5 @@ fn a_zero_area_two_verb_clip_also_suppresses_painting() {
     let cov = coverage(&page_with(
         "q 0 0 200 200 re W n 50 50 m 50 50 l W n 0 0 0 rg 0 0 200 200 re f Q",
     ));
-    assert!(
-        cov < 0.01,
-        "a zero-area clip encloses nothing; got coverage {cov:.5}"
-    );
+    assert!(cov < 0.01, "a zero-area clip encloses nothing; got coverage {cov:.5}");
 }

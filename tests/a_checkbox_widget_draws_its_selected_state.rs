@@ -84,7 +84,9 @@ fn checkbox_page() -> Vec<u8> {
 fn counts() -> (usize, usize, usize) {
     let doc = PdfDocument::from_bytes(checkbox_page()).expect("fixture parses");
     let img = render_page(&doc, 0, &RenderOptions::with_dpi(72)).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let mut blue = 0;
     let mut green = 0;
     let mut red = 0;
@@ -112,10 +114,7 @@ fn the_state_named_by_as_is_drawn() {
          /AP /N is a sub-dictionary of states, /AS names the one to use — \
          accepting /N only as a stream skips every checkbox and radio button."
     );
-    assert_eq!(
-        green, 0,
-        "the /Off appearance was drawn ({green} green pixels); /AS names /Yes"
-    );
+    assert_eq!(green, 0, "the /Off appearance was drawn ({green} green pixels); /AS names /Yes");
 }
 
 /// A Hidden annotation is not painted. Asserted on the same page as a visible

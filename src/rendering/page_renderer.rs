@@ -2917,7 +2917,8 @@ impl PageRenderer {
                                 false
                             };
                             let adv = if pattern_painted {
-                                self.text_rasterizer.measure_tj_array(array, gs, &self.fonts)
+                                self.text_rasterizer
+                                    .measure_tj_array(array, gs, &self.fonts)
                             } else {
                                 self.text_rasterizer.render_tj_array(
                                     pixmap,
@@ -4512,10 +4513,9 @@ impl PageRenderer {
                                         // fonts can be found: an independent form XObject's
                                         // resources "shall not be promoted to the outer content
                                         // stream's resource dictionary".
-                                        let resolved_form_resources =
-                                            dict.get("Resources").and_then(|r| {
-                                                doc.resolve_object(r).ok()
-                                            });
+                                        let resolved_form_resources = dict
+                                            .get("Resources")
+                                            .and_then(|r| doc.resolve_object(r).ok());
                                         let form_resources =
                                             resolved_form_resources.as_ref().unwrap_or(resources);
 
@@ -5864,10 +5864,7 @@ impl PageRenderer {
         let mut scratch = Pixmap::new(width, height)?;
         let cov_gs = Self::coverage_only_gs(gs);
         draw(&self.text_rasterizer, &mut scratch, &cov_gs, &self.fonts);
-        Some(tiny_skia::Mask::from_pixmap(
-            scratch.as_ref(),
-            tiny_skia::MaskType::Alpha,
-        ))
+        Some(tiny_skia::Mask::from_pixmap(scratch.as_ref(), tiny_skia::MaskType::Alpha))
     }
 
     /// Resolve the current fill pattern from `resources` and paint it through

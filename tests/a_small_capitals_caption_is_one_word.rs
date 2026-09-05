@@ -152,4 +152,3 @@ fn build_page(content: &str) -> Vec<u8> {
     );
     pdf
 }
-

@@ -2756,11 +2756,7 @@ mod tests {
     fn a_cid_keyed_charset_maps_cid_to_gid() {
         let map = parse_cff_cid_to_gid(CFF_CID_KEYED)
             .expect("the Top DICT carries ROS, so this font is CID-keyed");
-        assert_eq!(
-            map.get(&100),
-            Some(&1),
-            "CID 100 is GID 1 in this charset; got {map:?}"
-        );
+        assert_eq!(map.get(&100), Some(&1), "CID 100 is GID 1 in this charset; got {map:?}");
     }
 
     /// A CFF with no ROS is not CID-keyed, and the same clause (:18649-18650)
