@@ -4607,6 +4607,53 @@ impl PdfDocument {
         Ok((x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
     }
 
+    /// The region of a page a reader can see: its CropBox reduced to the
+    /// MediaBox, as absolute normalised corners `(llx, lly, urx, ury)`.
+    ///
+    /// ISO 32000-1:2008 Table 30 (`docs/spec/pdf.md:5761`): the CropBox "shall
+    /// define the visible region of default user space. When the page is
+    /// displayed or printed, its contents shall be clipped (cropped) to this
+    /// rectangle"; its default is the MediaBox. §14.11.2 (`:40128`): a crop box
+    /// that extends beyond the medium is "effectively reduced to [its]
+    /// intersection with the media box".
+    ///
+    /// A CropBox that misses the medium entirely, or is written as a
+    /// degenerate rectangle, describes nothing to show; the MediaBox stands in
+    /// so a malformed entry never blanks a page. The renderer draws the same
+    /// region (`page_render_box`), which is what keeps the text a document
+    /// yields in step with the page it shows.
+    pub fn get_page_visible_box(&self, page_index: usize) -> Result<(f32, f32, f32, f32)> {
+        let (mx0, my0, mx1, my1) = self.get_page_media_box(page_index)?;
+        let page = self.get_page(page_index)?;
+        let Some(crop) = page
+            .as_dict()
+            .and_then(|d| d.get("CropBox"))
+            .map(|o| self.resolve_obj_ref(o))
+            .as_ref()
+            .and_then(|o| o.as_array().map(|a| a.to_owned()))
+            .filter(|a| a.len() >= 4)
+        else {
+            return Ok((mx0, my0, mx1, my1));
+        };
+        let coord = |o: &Object| match self.resolve_obj_ref(o) {
+            Object::Integer(v) => Some(v as f32),
+            Object::Real(v) => Some(v as f32),
+            _ => None,
+        };
+        let (Some(a), Some(b), Some(c), Some(d)) =
+            (coord(&crop[0]), coord(&crop[1]), coord(&crop[2]), coord(&crop[3]))
+        else {
+            return Ok((mx0, my0, mx1, my1));
+        };
+        // §7.9.5: either diagonal may be given, so normalise the corners.
+        let (cx0, cy0, cx1, cy1) = (a.min(c), b.min(d), a.max(c), b.max(d));
+        let (x0, y0, x1, y1) = (cx0.max(mx0), cy0.max(my0), cx1.min(mx1), cy1.min(my1));
+        if x1 <= x0 || y1 <= y0 {
+            return Ok((mx0, my0, mx1, my1));
+        }
+        Ok((x0, y0, x1, y1))
+    }
+
     /// Page `/Rotate` normalised to one of `{0, 90, 180, 270}`
     /// (ISO 32000-1 §7.7.3.3); `0` when absent or invalid.
     ///
@@ -12898,20 +12945,30 @@ impl PdfDocument {
         out
     }
 
-    /// Drop spans whose bbox lies ENTIRELY outside the page's MediaBox.
+    /// Drop spans whose bbox lies ENTIRELY outside the page's visible region —
+    /// the CropBox reduced to the MediaBox (`get_page_visible_box`).
     ///
     /// PDFs that reuse one big Form XObject across pages (ExpertPdf and similar
     /// tools - see issue B1 / nougat_005.pdf) rely on the content stream's `W n`
     /// clip rectangle to hide the off-page portion. The text extractor does not
     /// honour `W n` yet, so without this filter a page emits every page's worth of
-    /// spans at distinct but out-of-bounds Y coordinates. Spans that even
-    /// PARTIALLY overlap the MediaBox are kept, so legitimate bleed / trim-mark
-    /// content is never dropped.
+    /// spans at distinct but out-of-bounds Y coordinates.
     ///
-    /// `get_page_media_box` returns `(llx, lly, urx, ury)` - absolute corner
+    /// The CropBox matters for the same reason. A book made from a print
+    /// master keeps the compositor's slug line and the proof's marginal line
+    /// numbers in the content stream and crops them off with the CropBox
+    /// (Table 30, `docs/spec/pdf.md:5761`: contents "shall be clipped" to it
+    /// when displayed). No reader sees them, the renderer here does not paint
+    /// them, and left in the text they land between a wrap hyphen and its line
+    /// break, where they stop the halves of the word from being rejoined.
+    ///
+    /// Spans that even PARTIALLY overlap the box are kept, so legitimate
+    /// bleed / trim-mark content is never dropped.
+    ///
+    /// `get_page_visible_box` returns `(llx, lly, urx, ury)` - absolute corner
     /// coordinates per ISO 32000-1 s7.7.3.3, NOT `(x, y, width, height)`.
     fn drop_offpage_spans(&self, page_index: usize, spans: &mut Vec<crate::layout::TextSpan>) {
-        if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
+        if let Ok((llx, lly, urx, ury)) = self.get_page_visible_box(page_index) {
             const EDGE_TOLERANCE_PT: f32 = 2.0;
             // Normalise corners: some producers write the MediaBox with swapped
             // corners (e.g. `[0 792 612 0]`, ury < lly). Taking min/max makes the
