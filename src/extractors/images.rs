@@ -1194,7 +1194,22 @@ pub fn extract_image_from_xobject_at(
             decoded
         }
     } else if is_jpx {
-        let (data, dec_w, dec_h) = decode_jpx_image(xobject, obj_ref, doc, &color_space, target)?;
+        // Palette lookup replaces index samples with RGB, as it does on the
+        // raw-sample path below; the buffer then no longer holds the values
+        // the dictionary's entries describe.
+        let indexed_transform = indexed_resolution.as_ref().and_then(|ir| {
+            ir.base_profile
+                .clone()
+                .map(|p| crate::color::Transform::new_srgb_target(p, rendering_intent))
+        });
+        let indexed = indexed_resolution
+            .as_ref()
+            .map(|ir| (ir, indexed_transform.as_ref()));
+        if indexed.is_some() {
+            samples_are_raw = false;
+        }
+        let (data, dec_w, dec_h) =
+            decode_jpx_image(xobject, obj_ref, doc, &color_space, indexed, target)?;
         jpx_decoded_dims = Some((dec_w, dec_h));
         data
     } else if is_jpeg_only || is_jpeg_chain {
@@ -2486,6 +2501,7 @@ fn decode_jpx_image(
     obj_ref: Option<ObjectRef>,
     doc: Option<&crate::document::PdfDocument>,
     color_space: &ColorSpace,
+    indexed: Option<(&IndexedResolution, Option<&crate::color::Transform>)>,
     target: Option<(u32, u32)>,
 ) -> Result<(ImageData, u32, u32)> {
     let codestream: Vec<u8> = if let (Some(d), Some(ref_id)) = (doc.as_ref(), obj_ref) {
@@ -2493,6 +2509,36 @@ fn decode_jpx_image(
     } else {
         xobject.decode_stream_data()?
     };
+
+    // An /Indexed dictionary space makes the codestream's one component a
+    // table index, and §7.4.9 (pdf.md:3143) has the dictionary decide how the
+    // samples are read: "the colour space specifications in the JPEG2000 data
+    // shall be ignored". A JP2 file can carry a palette of its own for those
+    // indices; letting the decoder resolve it produced three colour
+    // components for a space that declares one, and the red channel was then
+    // taken as a grey level. The indices come back unscaled, one byte each,
+    // so the dictionary's table is read at 8 bits per index whatever
+    // /BitsPerComponent says the codestream packed them at.
+    if let Some((ir, transform)) = indexed {
+        let img = crate::decoders::jpx::decode_jpx_indices_at(&codestream, target)?;
+        let expanded = expand_indexed_to_rgb_with_transform(
+            &img.samples,
+            &ir.palette,
+            ir.base_fmt,
+            img.width,
+            img.height,
+            8,
+            transform,
+        )?;
+        return Ok((
+            ImageData::Raw {
+                pixels: expanded,
+                format: PixelFormat::RGB,
+            },
+            img.width,
+            img.height,
+        ));
+    }
 
     let img = crate::decoders::jpx::decode_jpx_at(&codestream, target)?;
 
@@ -2569,6 +2615,7 @@ fn decode_jpx_image(
     _obj_ref: Option<ObjectRef>,
     _doc: Option<&crate::document::PdfDocument>,
     _color_space: &ColorSpace,
+    _indexed: Option<(&IndexedResolution, Option<&crate::color::Transform>)>,
     _target: Option<(u32, u32)>,
 ) -> Result<(ImageData, u32, u32)> {
     Err(Error::UnsupportedFilter(
