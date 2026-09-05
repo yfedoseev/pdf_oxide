@@ -8237,7 +8237,22 @@ impl<'doc> TextExtractor<'doc> {
                     }
                     w_sum += w;
                     // Track per-character advance widths
-                    let chars_added = buffer.unicode.len() - len_before;
+                    // Count the characters this code produced, not the bytes.
+                    // `unicode` is a `String`, so its `len()` is a byte count:
+                    // one em dash is three bytes and used to push three widths
+                    // for one character, leaving `char_widths` two entries
+                    // ahead of the text for the rest of the run. Every glyph
+                    // after it then carried a neighbour's advance — on one
+                    // regulatory caption the closing `C` of `66.01–11(5)—C`
+                    // was given 2.664 pt, a bracket's width, where its own is
+                    // 5.776 pt, so the span ended 3.648 pt short of its ink and
+                    // a gap appeared where the page has none.
+                    //
+                    // ISO 32000-1:2008 §9.4.4 gives each glyph one displacement
+                    // along the writing axis, so this array carries one entry
+                    // per character and must be indexed the same way the text
+                    // is.
+                    let chars_added = buffer.unicode[len_before..].chars().count();
                     if chars_added == 1 {
                         buffer.char_widths.push(w);
                     } else if chars_added > 1 {
@@ -8442,7 +8457,22 @@ impl<'doc> TextExtractor<'doc> {
                         w += ws_hs;
                     }
                     w_sum += w;
-                    let chars_added = buffer.unicode.len() - len_before;
+                    // Count the characters this code produced, not the bytes.
+                    // `unicode` is a `String`, so its `len()` is a byte count:
+                    // one em dash is three bytes and used to push three widths
+                    // for one character, leaving `char_widths` two entries
+                    // ahead of the text for the rest of the run. Every glyph
+                    // after it then carried a neighbour's advance — on one
+                    // regulatory caption the closing `C` of `66.01–11(5)—C`
+                    // was given 2.664 pt, a bracket's width, where its own is
+                    // 5.776 pt, so the span ended 3.648 pt short of its ink and
+                    // a gap appeared where the page has none.
+                    //
+                    // ISO 32000-1:2008 §9.4.4 gives each glyph one displacement
+                    // along the writing axis, so this array carries one entry
+                    // per character and must be indexed the same way the text
+                    // is.
+                    let chars_added = buffer.unicode[len_before..].chars().count();
                     if chars_added == 1 {
                         buffer.char_widths.push(w);
                     } else if chars_added > 1 {
