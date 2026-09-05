@@ -6734,7 +6734,9 @@ impl PdfDocument {
                 // (bibliography interleave) or shattering wrapped hyphenated
                 // lines in dense two-column bodies.
             } else if !Self::is_multi_column_page(&spans)
-                || (!tables.is_empty() && Self::multicol_signal_is_tabular(&spans, &tables))
+                || (!tables.is_empty()
+                    && Self::multicol_signal_is_tabular(&spans, &tables)
+                    && !Self::two_column_starts_outside_tables(&spans, &tables))
             {
                 // Either a genuine single-column page, OR a single-column page
                 // whose only multi-column geometric signal comes from a TABLE
@@ -6752,6 +6754,29 @@ impl PdfDocument {
                 // signal (`multicol_signal_is_tabular`), so genuine two-column
                 // pages — which the column branches catch first, and which carry
                 // no page-dominating table — are unaffected.
+                //
+                // `multicol_signal_is_tabular` cannot see a right column that
+                // shares its bands with the left one (it keeps each band's
+                // MINIMUM left edge), so on a two-column body with a
+                // full-measure ruled table across it — a regulation page whose
+                // columns run above and below a resistance table — it reports
+                // the signal as tabular even though the prose around the table
+                // plainly starts at two column positions. The column branches
+                // above decline such a page because the table's rows and its
+                // centred caption straddle the gutter, and the row-aware sort
+                // then reads the two columns straight across, cutting a wrapped
+                // word at every line (`must be config-` / `ured`). Reading
+                // across a gutter is never right for a two-column body: ISO
+                // 32000-1:2008 §14.8.2.3 Page Content Order (`docs/spec/pdf.md`
+                // lines 37221-37234) makes the writer responsible for a
+                // content-stream order that "should normally ... proceed from
+                // top to bottom (and, in a multiple-column layout, from column
+                // to column)", and this page's stream is column-major, which is
+                // why that order is kept below when this branch declines. So
+                // the tabular override is withheld whenever the content outside
+                // the tables starts at exactly two column positions
+                // (`two_column_starts_outside_tables` — the same corrective the
+                // classifier gate above applies).
                 spans.sort_by(|a, b| {
                     let cmp =
                         crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
