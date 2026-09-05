@@ -32,8 +32,10 @@ fn pdf_with_a_tounicode_gap() -> Vec<u8> {
     pdf.extend_from_slice(b"%PDF-1.7\n");
     obj!(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
-           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+    obj!(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+    );
 
     let content = b"BT /F1 12 Tf 10 100 Td <0041> Tj ET";
     offsets.push(pdf.len());
@@ -41,14 +43,20 @@ fn pdf_with_a_tounicode_gap() -> Vec<u8> {
     pdf.extend_from_slice(content);
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
 
-    obj!(b"5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /Test-Identity \
-           /Encoding /Identity-H /DescendantFonts [6 0 R] >>\nendobj\n");
-    obj!(b"6 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Test \
+    obj!(
+        b"5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /Test-Identity \
+           /Encoding /Identity-H /DescendantFonts [6 0 R] >>\nendobj\n"
+    );
+    obj!(
+        b"6 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Test \
            /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
-           /FontDescriptor 7 0 R /DW 1000 >>\nendobj\n");
-    obj!(b"7 0 obj\n<< /Type /FontDescriptor /FontName /Test /Flags 4 \
+           /FontDescriptor 7 0 R /DW 1000 >>\nendobj\n"
+    );
+    obj!(
+        b"7 0 obj\n<< /Type /FontDescriptor /FontName /Test /Flags 4 \
            /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 \
-           /CapHeight 700 /StemV 80 >>\nendobj\n");
+           /CapHeight 700 /StemV 80 >>\nendobj\n"
+    );
 
     let xref_offset = pdf.len();
     let n = offsets.len() + 1;
@@ -77,8 +85,10 @@ fn pdf_with_a_plain_font() -> Vec<u8> {
     pdf.extend_from_slice(b"%PDF-1.7\n");
     obj!(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
-           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+    obj!(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+    );
 
     let content = b"BT /F1 12 Tf 10 100 Td (hi) Tj ET";
     offsets.push(pdf.len());

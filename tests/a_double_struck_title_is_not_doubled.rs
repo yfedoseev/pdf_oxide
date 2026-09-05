@@ -116,16 +116,19 @@ fn title_run(word: &str, size: f32, x0: f32, baseline: f32, double_struck: bool)
 /// Two lines of body text below the title, so the page is a document rather
 /// than a lone heading and the converters take their ordinary flow path.
 fn body_text(top_baseline: f32) -> String {
-    ["The first line of body text under the heading.", "The second line of body text under the heading."]
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            format!(
-                "BT /F1 10 Tf 1 0 0 1 72 {:.2} Tm 0 g ({line}) Tj ET\n",
-                top_baseline - 14.0 * i as f32
-            )
-        })
-        .collect()
+    [
+        "The first line of body text under the heading.",
+        "The second line of body text under the heading.",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, line)| {
+        format!(
+            "BT /F1 10 Tf 1 0 0 1 72 {:.2} Tm 0 g ({line}) Tj ET\n",
+            top_baseline - 14.0 * i as f32
+        )
+    })
+    .collect()
 }
 
 fn surfaces(pdf: &[u8]) -> Vec<(&'static str, String)> {

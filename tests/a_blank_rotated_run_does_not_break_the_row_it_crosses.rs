@@ -73,7 +73,10 @@ fn build(content: Vec<u8>) -> Vec<u8> {
 }
 
 fn text_of(pdf: Vec<u8>) -> String {
-    PdfDocument::from_bytes(pdf).expect("open").extract_text(0).expect("text")
+    PdfDocument::from_bytes(pdf)
+        .expect("open")
+        .extract_text(0)
+        .expect("text")
 }
 
 #[test]

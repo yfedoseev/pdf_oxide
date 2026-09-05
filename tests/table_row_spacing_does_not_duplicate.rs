@@ -133,10 +133,8 @@ fn a_row_straddling_span_is_not_emitted_twice_in_html() {
 fn a_span_outside_every_row_is_still_recovered() {
     // The same table, plus a line of text below the ruled area that no cell
     // covers.
-    let doc = PdfDocument::from_bytes(straddling_row_pdf(
-        "1 0 0 1 60 30 Tm (Standalone) Tj\n",
-    ))
-    .expect("parse");
+    let doc = PdfDocument::from_bytes(straddling_row_pdf("1 0 0 1 60 30 Tm (Standalone) Tj\n"))
+        .expect("parse");
     let opts = ConversionOptions {
         extract_tables: true,
         ..Default::default()

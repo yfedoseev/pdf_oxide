@@ -623,14 +623,12 @@ impl FontInfo {
             // already holds `doc`, so no signature has to change — and it must
             // not, because this is a `pub fn` and the crate ships bindings for
             // fourteen languages.
-            doc.push_structured_warning(
-                crate::extractors::warnings::Warning {
-                    category: crate::extractors::warnings::WarningCategory::Type3Font,
-                    page: None,
-                    message: msg,
-                    spec_section: Some("9.6.4"),
-                },
-            );
+            doc.push_structured_warning(crate::extractors::warnings::Warning {
+                category: crate::extractors::warnings::WarningCategory::Type3Font,
+                page: None,
+                message: msg,
+                spec_section: Some("9.6.4"),
+            });
         }
 
         // Parse FontMatrix [a] for Type 3 fonts.
@@ -1098,14 +1096,12 @@ impl FontInfo {
                 // Same reasoning as the Type 3 site above: the document is
                 // already in scope, so the warning is attributed to it rather
                 // than to whichever thread happened to parse it.
-                doc.push_structured_warning(
-                    crate::extractors::warnings::Warning {
-                        category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
-                        page: None,
-                        message: msg,
-                        spec_section: Some("9.10.2"),
-                    },
-                );
+                doc.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("9.10.2"),
+                });
             }
             None
         };
@@ -3122,7 +3118,11 @@ impl FontInfo {
         // both: WinAnsi has the em dash at 151, StandardEncoding at 208.
         let is_italic = std14.is_italic || std14.is_bold_italic;
         let endash = if is_times { 500.0 } else { 556.0 };
-        let emdash = if is_times && is_italic && !is_bold { 889.0 } else { 1000.0 };
+        let emdash = if is_times && is_italic && !is_bold {
+            889.0
+        } else {
+            1000.0
+        };
         let ellipsis = emdash;
         let quotedbl = match (is_times, is_bold, is_italic) {
             (true, false, true) => 556.0,

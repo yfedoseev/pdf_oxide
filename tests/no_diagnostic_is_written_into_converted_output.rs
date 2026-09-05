@@ -45,8 +45,10 @@ fn pdf_with_an_oversized_image() -> Vec<u8> {
     pdf.extend_from_slice(b"%PDF-1.7\n");
     obj!(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
-           /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >>\nendobj\n");
+    obj!(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+           /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >>\nendobj\n"
+    );
 
     let content = b"q 200 0 0 200 0 0 cm /Im0 Do Q";
     offsets.push(pdf.len());
@@ -111,7 +113,10 @@ fn an_oversized_image_is_reported_not_narrated() {
             .iter()
             .any(|w| w.category == WarningCategory::ImageSuppressed && w.page == Some(0)),
         "the suppression must be reported out-of-band against page 0; got {:?}",
-        warnings.iter().map(|w| (w.category, w.page)).collect::<Vec<_>>()
+        warnings
+            .iter()
+            .map(|w| (w.category, w.page))
+            .collect::<Vec<_>>()
     );
 }
 

@@ -763,12 +763,8 @@ pub fn detect_tables_from_spans(spans: &[TextSpan], config: &TableDetectionConfi
     // directions, so the gains were not evidence the rule was right.
     let columns_uncapped =
         detect_columns(spans, config.column_tolerance, config.column_merge_threshold, None);
-    let columns_capped = detect_columns(
-        spans,
-        config.column_tolerance,
-        config.column_merge_threshold,
-        Some(config),
-    );
+    let columns_capped =
+        detect_columns(spans, config.column_tolerance, config.column_merge_threshold, Some(config));
     let mut columns = if columns_capped.len() == columns_uncapped.len() {
         columns_capped
     } else {
@@ -5126,8 +5122,12 @@ mod tests {
             create_test_span("$100", 600.0, 60.0, 50.0, 10.0),
         ];
         let config = TableDetectionConfig::default();
-        let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let columns = detect_columns(
+            &spans,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         assert_eq!(
             columns.len(),
             4,
@@ -5148,8 +5148,12 @@ mod tests {
             create_test_span("F", 140.0, 60.0, 30.0, 10.0),
         ];
         let config = TableDetectionConfig::default();
-        let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let columns = detect_columns(
+            &spans,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         assert_eq!(
             columns.len(),
             2,
@@ -5188,8 +5192,12 @@ mod tests {
             spans.push(create_test_span("1", 90.0 + w + 3.0, y, 6.0, 10.0));
         }
         let config = TableDetectionConfig::default();
-        let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let columns = detect_columns(
+            &spans,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         assert!(
             columns.len() <= 2,
             "an irregular label/number layout has no pitch to scale to, so the \
@@ -5218,8 +5226,12 @@ mod tests {
             }
         }
         let config = TableDetectionConfig::default();
-        let columns =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let columns = detect_columns(
+            &spans,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         assert_eq!(
             columns.len(),
             6,
@@ -5249,10 +5261,18 @@ mod tests {
             create_test_span("A", 50.0, 100.0, 30.0, 10.0),
         ];
         let config = TableDetectionConfig::default();
-        let cols_ordered =
-            detect_columns(&spans_ordered, config.column_tolerance, config.column_merge_threshold, Some(&config));
-        let cols_reversed =
-            detect_columns(&spans_reversed, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let cols_ordered = detect_columns(
+            &spans_ordered,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
+        let cols_reversed = detect_columns(
+            &spans_reversed,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         assert_eq!(
             cols_ordered.len(),
             cols_reversed.len(),
@@ -6308,8 +6328,12 @@ mod tests {
             ..TableDetectionConfig::default()
         };
 
-        let greedy_cols =
-            detect_columns(&spans, config.column_tolerance, config.column_merge_threshold, Some(&config));
+        let greedy_cols = detect_columns(
+            &spans,
+            config.column_tolerance,
+            config.column_merge_threshold,
+            Some(&config),
+        );
         // With tight tolerance + scattered spans, greedy should exceed 6.
         assert!(
             greedy_cols.len() > 6,

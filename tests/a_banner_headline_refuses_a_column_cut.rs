@@ -105,8 +105,12 @@ fn a_nameplate_is_read_at_the_top_of_the_page_it_is_printed_on() {
     let doc = PdfDocument::from_bytes(front_page()).expect("open");
     let text = doc.extract_text(0).expect("text");
 
-    let nameplate = text.find("Gazette").unwrap_or_else(|| panic!("nameplate missing:\n{text}"));
-    let body = text.find("aaaa").unwrap_or_else(|| panic!("body missing:\n{text}"));
+    let nameplate = text
+        .find("Gazette")
+        .unwrap_or_else(|| panic!("nameplate missing:\n{text}"));
+    let body = text
+        .find("aaaa")
+        .unwrap_or_else(|| panic!("body missing:\n{text}"));
     assert!(
         nameplate < body,
         "the nameplate is printed at the top of the page and must be read \
@@ -122,8 +126,12 @@ fn a_nameplate_is_read_at_the_top_of_the_page_it_is_printed_on() {
 fn a_dateline_is_read_at_the_top_of_the_page_it_is_printed_on() {
     let doc = PdfDocument::from_bytes(front_page()).expect("open");
     let text = doc.extract_text(0).expect("text");
-    let dateline = text.find("WEDNESDAY").unwrap_or_else(|| panic!("dateline missing:\n{text}"));
-    let body = text.find("aaaa").unwrap_or_else(|| panic!("body missing:\n{text}"));
+    let dateline = text
+        .find("WEDNESDAY")
+        .unwrap_or_else(|| panic!("dateline missing:\n{text}"));
+    let body = text
+        .find("aaaa")
+        .unwrap_or_else(|| panic!("body missing:\n{text}"));
     assert!(
         dateline < body,
         "the dateline must be read with the masthead, not after the body \

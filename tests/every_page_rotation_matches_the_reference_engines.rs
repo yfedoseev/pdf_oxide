@@ -62,7 +62,9 @@ fn rotated_page(rotate: i32) -> Vec<u8> {
 fn arm_centroids(rotate: i32) -> ((f32, f32), (f32, f32)) {
     let doc = PdfDocument::from_bytes(rotated_page(rotate)).expect("fixture parses");
     let img = render_page(&doc, 0, &RenderOptions::with_dpi(72)).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let (w, h) = (px.width() as f32, px.height() as f32);
     let centroid = |pick: &dyn Fn(&image::Rgba<u8>) -> bool| -> (f32, f32) {
         let (mut sx, mut sy, mut n) = (0.0f32, 0.0f32, 0.0f32);
@@ -78,10 +80,7 @@ fn arm_centroids(rotate: i32) -> ((f32, f32), (f32, f32)) {
         }
         (sx / n / w, sy / n / h)
     };
-    (
-        centroid(&|p| p[2] > 150 && p[0] < 100),
-        centroid(&|p| p[0] > 150 && p[2] < 100),
-    )
+    (centroid(&|p| p[2] > 150 && p[0] < 100), centroid(&|p| p[0] > 150 && p[2] < 100))
 }
 
 /// All four rotations, against the positions MuPDF and pdfium agree on.
@@ -122,11 +121,17 @@ fn negative_ninety_matches_two_seventy() {
     assert!(
         (blue_neg.0 - blue_270.0).abs() < 0.01 && (blue_neg.1 - blue_270.1).abs() < 0.01,
         "/Rotate -90 blue arm at ({:.2}, {:.2}) but /Rotate 270 at ({:.2}, {:.2})",
-        blue_neg.0, blue_neg.1, blue_270.0, blue_270.1
+        blue_neg.0,
+        blue_neg.1,
+        blue_270.0,
+        blue_270.1
     );
     assert!(
         (red_neg.0 - red_270.0).abs() < 0.01 && (red_neg.1 - red_270.1).abs() < 0.01,
         "/Rotate -90 red arm at ({:.2}, {:.2}) but /Rotate 270 at ({:.2}, {:.2})",
-        red_neg.0, red_neg.1, red_270.0, red_270.1
+        red_neg.0,
+        red_neg.1,
+        red_270.0,
+        red_270.1
     );
 }

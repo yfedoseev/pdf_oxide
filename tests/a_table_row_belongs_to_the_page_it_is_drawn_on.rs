@@ -41,7 +41,9 @@ fn paginated_table_pdf() -> Vec<u8> {
     };
     let stream = |buf: &mut Vec<u8>, off: &mut Vec<usize>, id: usize, data: &[u8]| {
         off[id] = buf.len();
-        buf.extend_from_slice(format!("{id} 0 obj\n<< /Length {} >>\nstream\n", data.len()).as_bytes());
+        buf.extend_from_slice(
+            format!("{id} 0 obj\n<< /Length {} >>\nstream\n", data.len()).as_bytes(),
+        );
         buf.extend_from_slice(data);
         buf.extend_from_slice(b"\nendstream\nendobj\n");
     };
@@ -132,14 +134,17 @@ fn paginated_table_pdf() -> Vec<u8> {
     for id in 1..=last {
         buf.extend_from_slice(format!("{:010} 00000 n \n", off[id]).as_bytes());
     }
-    buf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n", last + 1).as_bytes());
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n", last + 1).as_bytes(),
+    );
     buf.extend_from_slice(format!("{xref}\n%%EOF\n").as_bytes());
     buf
 }
 
 fn html_of(page: usize) -> String {
     let doc = PdfDocument::from_bytes(paginated_table_pdf()).expect("parse");
-    doc.to_html(page, &ConversionOptions::default()).expect("html")
+    doc.to_html(page, &ConversionOptions::default())
+        .expect("html")
 }
 
 /// A page renders its own rows and no others. Without the page qualifier each
@@ -160,11 +165,7 @@ fn a_page_renders_only_the_rows_drawn_on_it() {
     );
 
     let page1 = html_of(1);
-    assert_eq!(
-        page1.matches("East").count(),
-        1,
-        "page 1 repeated a row it owns:\n{page1}"
-    );
+    assert_eq!(page1.matches("East").count(), 1, "page 1 repeated a row it owns:\n{page1}");
     assert_eq!(
         page1.matches("<tr").count(),
         2,

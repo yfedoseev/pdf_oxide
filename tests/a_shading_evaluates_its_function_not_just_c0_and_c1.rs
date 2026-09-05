@@ -94,7 +94,9 @@ const WHITE_BLACK_WHITE: &[u8] = &[0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0xF
 fn ends(pdf: Vec<u8>) -> ([u8; 3], [u8; 3]) {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let y = px.height() / 2;
     let l = px.get_pixel(3, y);
     let r = px.get_pixel(px.width() - 4, y);
@@ -110,10 +112,7 @@ fn a_sampled_function_supplies_the_gradient_colours() {
         "left end should be red, got {left:?} — the shading fell back to its \
          black-to-white default instead of evaluating /Function"
     );
-    assert!(
-        right[2] > 180 && right[0] < 80,
-        "right end should be blue, got {right:?}"
-    );
+    assert!(right[2] > 180 && right[0] < 80, "right end should be blue, got {right:?}");
 }
 
 /// A stitching function wrapping that sampled one, with `/Encode [1 0]`, which
@@ -128,10 +127,7 @@ fn a_stitching_encode_reverses_the_sub_domain() {
         "/Encode [1 0] reverses the sub-domain, so the left end should be blue, \
          got {left:?}"
     );
-    assert!(
-        right[0] > 180 && right[2] < 80,
-        "right end should be red, got {right:?}"
-    );
+    assert!(right[0] > 180 && right[2] < 80, "right end should be red, got {right:?}");
 }
 
 /// The type 2 case that always worked must keep working.
@@ -147,7 +143,9 @@ fn an_exponential_function_still_supplies_its_endpoints() {
 fn middle(pdf: Vec<u8>) -> [u8; 3] {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let p = px.get_pixel(px.width() / 2, px.height() / 2);
     [p[0], p[1], p[2]]
 }

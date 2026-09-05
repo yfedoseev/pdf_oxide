@@ -26,7 +26,7 @@ use pdf_oxide::rendering::{render_page, RenderOptions};
 /// extracted. A codestream cannot be written by hand and this repository does
 /// not carry binary image fixtures.
 const G4: &[u8] = &[
-    0x23, 0x60, 0xD5, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 0x00, 0x80, 0x08
+    0x23, 0x60, 0xD5, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 0x00, 0x80, 0x08,
 ];
 
 /// A 100x100 page filled by the CCITT image. `by_reference` selects whether
@@ -93,7 +93,9 @@ fn ccitt_pdf(by_reference: bool) -> Vec<u8> {
 fn coverage(pdf: Vec<u8>) -> f64 {
     let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF parses");
     let img = render_page(&doc, 0, &RenderOptions::default()).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     let n = px.pixels().len() as f64;
     let inked = px
         .pixels()

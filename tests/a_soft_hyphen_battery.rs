@@ -168,10 +168,7 @@ fn a_seam_closes_only_a_real_line_wrap() {
 fn a_marker_not_between_letters_is_untouched() {
     let out = text_of(one_span_page(&["ends\\255", "\\255starts", "a\\255 b"]));
     for expect in ["ends\u{ad}", "\u{ad}starts"] {
-        assert!(
-            out.contains(expect),
-            "expected {expect:?} to survive; got:\n{out:?}"
-        );
+        assert!(out.contains(expect), "expected {expect:?} to survive; got:\n{out:?}");
     }
 }
 

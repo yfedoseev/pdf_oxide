@@ -79,7 +79,11 @@ const RIGHT_X: f32 = 284.0;
 fn line(x: f32, y: f32, text: &str) -> String {
     let spaces = text.matches(' ').count() as f32;
     let tw = ((MEASURE - width_of(text, SIZE)) / spaces).max(0.0);
-    let text = if text.ends_with('-') { text.to_string() } else { format!("{text} ") };
+    let text = if text.ends_with('-') {
+        text.to_string()
+    } else {
+        format!("{text} ")
+    };
     format!("BT /F1 {SIZE} Tf {tw:.3} Tw 1 0 0 1 {x:.2} {y:.2} Tm ({text}) Tj ET\n")
 }
 
@@ -158,7 +162,10 @@ fn table(top: f32) -> String {
     // The caption and its unit line are centred on the page, so both sit on
     // the gutter; the stubs' dot leaders run to the first column rule, well
     // past it. Four runs straddle the gutter, as the regulation's table has.
-    for (dy, size, caption) in [(15.0, SIZE, "MAXIMUM RESISTANCE"), (6.0, 6.0, "[mm water-column height]")] {
+    for (dy, size, caption) in [
+        (15.0, SIZE, "MAXIMUM RESISTANCE"),
+        (6.0, 6.0, "[mm water-column height]"),
+    ] {
         let cx = (x0 + x3) * 0.5 - width_of(caption, size) * 0.5;
         s += &format!("BT /F1 {size} Tf 1 0 0 1 {cx:.2} {:.2} Tm ({caption}) Tj ET\n", top + dy);
     }
@@ -220,9 +227,8 @@ fn two_column_page() -> Vec<u8> {
 /// column-aligned cells are the page's only multi-column signal.
 fn single_column_page() -> Vec<u8> {
     let mut content = String::new();
-    let wide = |y: f32, t: &str| {
-        format!("BT /F1 {SIZE} Tf 1 0 0 1 {LEFT_X:.2} {y:.2} Tm ({t}) Tj ET\n")
-    };
+    let wide =
+        |y: f32, t: &str| format!("BT /F1 {SIZE} Tf 1 0 0 1 {LEFT_X:.2} {y:.2} Tm ({t}) Tj ET\n");
     let prose = [
         "The blower assembly is tested against the resistance limits in the table below,",
         "measured in millimetres of water column at the rated flow of the respirator,",
@@ -254,7 +260,10 @@ fn single_column_page() -> Vec<u8> {
 fn text_of(pdf: Vec<u8>) -> String {
     let doc = PdfDocument::from_bytes(pdf).expect("open");
     let text = doc.extract_text(0).expect("text");
-    text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -277,7 +286,16 @@ fn a_word_wrapped_in_the_right_column_is_whole_when_a_table_crosses_the_page() {
 #[test]
 fn every_word_of_both_columns_is_still_on_the_page() {
     let text = text_of(two_column_page());
-    for word in ["Containers", "transit", "wearer", "Leakage", "operating", "cycled", "Initial", "Final"] {
+    for word in [
+        "Containers",
+        "transit",
+        "wearer",
+        "Leakage",
+        "operating",
+        "cycled",
+        "Initial",
+        "Final",
+    ] {
         assert!(text.contains(word), "{word:?} is missing from:\n{text}");
     }
 }
@@ -288,8 +306,14 @@ fn every_word_of_both_columns_is_still_on_the_page() {
 #[test]
 fn a_single_column_page_with_the_same_table_still_reads_top_to_bottom() {
     let text = text_of(single_column_page());
-    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s:?} missing from:\n{text}"));
-    assert!(at("not approved") < at("Respirator type"), "prose above the table first:\n{text}");
+    let at = |s: &str| {
+        text.find(s)
+            .unwrap_or_else(|| panic!("{s:?} missing from:\n{text}"))
+    };
+    assert!(
+        at("not approved") < at("Respirator type"),
+        "prose above the table first:\n{text}"
+    );
     assert!(at("Final") < at("more than one blower"), "prose below the table last:\n{text}");
     assert!(
         text.contains("measured in millimetres of water column at the rated flow"),

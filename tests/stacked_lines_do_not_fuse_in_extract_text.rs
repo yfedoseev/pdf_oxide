@@ -81,10 +81,7 @@ fn text_of(pdf: &[u8]) -> String {
 /// 7.97 pt apart, the upper one starting 0.02 pt after the lower one ends.
 #[test]
 fn stacked_labels_a_line_apart_do_not_concatenate() {
-    let pdf = two_run_page(
-        ("Latency", 417.34, 650.76, 7.24),
-        ("Efficiency", 442.31, 658.73, 7.24),
-    );
+    let pdf = two_run_page(("Latency", 417.34, 650.76, 7.24), ("Efficiency", 442.31, 658.73, 7.24));
     let text = text_of(&pdf);
     assert!(
         !text.contains("LatencyEfficiency") && !text.contains("EfficiencyLatency"),

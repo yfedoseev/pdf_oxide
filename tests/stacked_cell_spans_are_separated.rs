@@ -103,7 +103,9 @@ fn assert_unfused(raw: &str, what: &str) {
     );
     for n in ["128", "126"] {
         assert!(
-            surface.split_whitespace().any(|t| t.trim_matches(|c: char| !c.is_alphanumeric()) == n),
+            surface
+                .split_whitespace()
+                .any(|t| t.trim_matches(|c: char| !c.is_alphanumeric()) == n),
             "{n} must survive as its own token in {what}:\n{surface}"
         );
     }
@@ -142,9 +144,15 @@ fn same_line_members_without_a_gap_stay_joined() {
     // Rebuild with the alternate content by regenerating from scratch is
     // simpler than splicing, so just assert on the shared builder's shape:
     // replace the stream wholesale and fix /Length.
-    let old_stream_start = pdf.windows(7).position(|w| w == b"stream\n").expect("stream") + 7;
-    let old_stream_end =
-        pdf.windows(10).position(|w| w == b"\nendstream").expect("endstream");
+    let old_stream_start = pdf
+        .windows(7)
+        .position(|w| w == b"stream\n")
+        .expect("stream")
+        + 7;
+    let old_stream_end = pdf
+        .windows(10)
+        .position(|w| w == b"\nendstream")
+        .expect("endstream");
     let old_len_marker = format!("<< /Length {} >>", old_stream_end - old_stream_start);
     let new_len_marker = format!("<< /Length {} >>", content.len());
     pdf.splice(old_stream_start..old_stream_end, content.iter().copied());

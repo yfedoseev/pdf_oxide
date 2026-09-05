@@ -89,7 +89,10 @@ fn order_of(text: &str, needles: &[&str]) -> Vec<usize> {
     let toks: Vec<&str> = text.split_whitespace().collect();
     needles
         .iter()
-        .filter_map(|n| toks.iter().position(|t| t.trim_matches(|c: char| !c.is_alphanumeric()) == *n))
+        .filter_map(|n| {
+            toks.iter()
+                .position(|t| t.trim_matches(|c: char| !c.is_alphanumeric()) == *n)
+        })
         .collect()
 }
 

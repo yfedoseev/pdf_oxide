@@ -423,9 +423,7 @@ pub(crate) mod utils {
         let band_a = (a_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         let band_b = (b_y / ROW_BAND_TOLERANCE_PT).round() as i32;
         // Larger Y = higher on page → descending band order.
-        band_b
-            .cmp(&band_a)
-            .then_with(|| safe_float_cmp(a_x, b_x))
+        band_b.cmp(&band_a).then_with(|| safe_float_cmp(a_x, b_x))
     }
 
     /// Reading order for two spans: row band descending, then `x` ascending,
@@ -449,7 +447,6 @@ pub(crate) mod utils {
     pub fn row_aware_span_cmp(a_y: f32, a_x: f32, b_y: f32, b_x: f32) -> Ordering {
         row_band_then_x(a_y, a_x, b_y, b_x).then_with(|| safe_float_cmp(b_y, a_y))
     }
-
 
     /// Writing-axis quadrant, then row band, then `x`, with no baseline
     /// tiebreak.
@@ -718,14 +715,9 @@ pub(crate) mod utils {
             let band = (get_y(it) / ROW_BAND_TOLERANCE_PT).round() as i32;
             // Reverse band → larger Y (higher on page) first, matching the
             // comparator's `band_b.cmp(&band_a)`.
-            (
-                std::cmp::Reverse(band),
-                F32Ord(get_x(it)),
-                std::cmp::Reverse(F32Ord(get_y(it))),
-            )
+            (std::cmp::Reverse(band), F32Ord(get_x(it)), std::cmp::Reverse(F32Ord(get_y(it))))
         });
     }
-
 
     /// Give every span the baseline of the row it is printed on, so a row-band
     /// comparator sees one row per printed line.
@@ -861,7 +853,11 @@ pub(crate) mod utils {
         const OVERLAP_FRACTION: f32 = 0.25;
         let x_extent = |i: usize| -> (f32, f32) {
             let b = &all_spans[i].bbox;
-            let w = if b.width.is_finite() && b.width > 0.0 { b.width } else { 0.0 };
+            let w = if b.width.is_finite() && b.width > 0.0 {
+                b.width
+            } else {
+                0.0
+            };
             (b.x, b.x + w)
         };
         let occupies_the_same_space = |i: usize, j: usize| -> bool {
@@ -1302,10 +1298,7 @@ pub(crate) mod utils {
                 Ordering::Less,
                 "one band, one x: the baseline must decide, or sort stability does"
             );
-            assert_eq!(
-                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
-                Ordering::Greater
-            );
+            assert_eq!(row_aware_span_cmp(98.21, 232.08, 98.36, 232.08), Ordering::Greater);
         }
 
         /// The banding still does its job: within a band, x decides whatever
@@ -1324,10 +1317,7 @@ pub(crate) mod utils {
         #[test]
         fn the_band_and_x_comparator_leaves_a_same_x_tie_open() {
             assert_eq!(row_band_then_x(98.21, 232.08, 98.36, 232.08), Ordering::Equal);
-            assert_eq!(
-                row_aware_span_cmp(98.21, 232.08, 98.36, 232.08),
-                Ordering::Greater
-            );
+            assert_eq!(row_aware_span_cmp(98.21, 232.08, 98.36, 232.08), Ordering::Greater);
             // Wherever x differs the two agree, so swapping one for the other
             // moves nothing except the tie.
             assert_eq!(
@@ -1364,10 +1354,7 @@ pub(crate) mod utils {
             );
 
             // Ordering on the key alone cannot separate them.
-            assert_eq!(
-                row_band_then_x_axis(0.0, key[0], 36.0, 0.0, key[1], 36.0),
-                Ordering::Equal
-            );
+            assert_eq!(row_band_then_x_axis(0.0, key[0], 36.0, 0.0, key[1], 36.0), Ordering::Equal);
             // Adding the drawn baseline does, and puts the heading first.
             let ordered = row_band_then_x_axis(0.0, key[0], 36.0, 0.0, key[1], 36.0)
                 .then_with(|| safe_float_cmp(spans[1].bbox.y, spans[0].bbox.y));
@@ -1388,10 +1375,7 @@ pub(crate) mod utils {
         /// invent an order where there is no evidence for one.
         #[test]
         fn identical_geometry_is_equal() {
-            assert_eq!(
-                row_aware_span_cmp(98.36, 232.08, 98.36, 232.08),
-                Ordering::Equal
-            );
+            assert_eq!(row_aware_span_cmp(98.36, 232.08, 98.36, 232.08), Ordering::Equal);
         }
 
         /// And the cached-key sort must agree with the comparator, or the two

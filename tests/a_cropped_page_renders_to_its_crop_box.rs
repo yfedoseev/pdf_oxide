@@ -66,7 +66,9 @@ fn the_pixmap_is_sized_to_the_crop_box() {
 fn content_outside_the_crop_box_is_not_shown() {
     let doc = PdfDocument::from_bytes(cropped_page()).expect("fixture parses");
     let img = render_page(&doc, 0, &RenderOptions::with_dpi(72)).expect("page renders");
-    let px = image::load_from_memory(&img.data).expect("PNG decodes").to_rgba8();
+    let px = image::load_from_memory(&img.data)
+        .expect("PNG decodes")
+        .to_rgba8();
     // The black square sits at media-space (0,0)-(40,40), entirely below-left of
     // the crop origin (72,72), so no pixel of it is inside the rendered region.
     let black = px

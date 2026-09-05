@@ -45,8 +45,10 @@ fn build(bare_cr: bool) -> Vec<u8> {
     pdf.extend_from_slice(b"%PDF-1.7\n");
     obj!(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
     obj!(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-    obj!(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
-           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n");
+    obj!(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+           /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+    );
 
     offsets.push(pdf.len());
     pdf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream", content.len()).as_bytes());
@@ -70,7 +72,10 @@ fn build(bare_cr: bool) -> Vec<u8> {
 }
 
 fn cats(doc: &PdfDocument) -> Vec<WarningCategory> {
-    doc.structured_warnings().iter().map(|w| w.category).collect()
+    doc.structured_warnings()
+        .iter()
+        .map(|w| w.category)
+        .collect()
 }
 
 #[test]

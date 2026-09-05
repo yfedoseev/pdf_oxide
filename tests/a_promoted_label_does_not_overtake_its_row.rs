@@ -65,9 +65,7 @@ fn schedule_pdf() -> Vec<u8> {
 
     let mut content = String::new();
     for (x, y, text) in spans {
-        content.push_str(&format!(
-            "BT /F1 11.04 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n"
-        ));
+        content.push_str(&format!("BT /F1 11.04 Tf 1 0 0 1 {x} {y} Tm ({text}) Tj ET\n"));
     }
     let content = content.into_bytes();
 
@@ -127,8 +125,5 @@ fn a_promoted_label_does_not_overtake_the_row_it_was_promoted_onto() {
 
     // The row must still read label-then-value, on one line.
     let label = text.find("Week of August 7, 2022").expect("label missing");
-    assert!(
-        label < note,
-        "the row's label must precede its value:\n{text}"
-    );
+    assert!(label < note, "the row's label must precede its value:\n{text}");
 }

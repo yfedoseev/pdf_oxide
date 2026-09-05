@@ -23,7 +23,9 @@ use pdf_oxide::PdfDocument;
 
 fn page(media_box: &str, crop_box: Option<&str>, content: &str) -> Vec<u8> {
     let content = content.as_bytes().to_vec();
-    let crop = crop_box.map(|c| format!(" /CropBox [{c}]")).unwrap_or_default();
+    let crop = crop_box
+        .map(|c| format!(" /CropBox [{c}]"))
+        .unwrap_or_default();
     let objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
@@ -77,11 +79,7 @@ const BODY_WITH_A_RAIL: &str = "BT /F1 10.5 Tf\n\
 
 #[test]
 fn a_line_number_cropped_off_the_page_does_not_break_the_word_beside_it() {
-    let text = text_of(page(
-        "0 0 480 678",
-        Some("41.76 41.76 438.24 636.24"),
-        BODY_WITH_A_RAIL,
-    ));
+    let text = text_of(page("0 0 480 678", Some("41.76 41.76 438.24 636.24"), BODY_WITH_A_RAIL));
     assert!(
         text.contains("prove a theorem, you could"),
         "the wrap hyphen must rejoin its word once the cropped margin is gone; got:\n{text}"

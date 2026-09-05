@@ -6999,8 +6999,7 @@ impl PdfDocument {
                     // decide, which is what keeps them apart.
                     let both_carry_ink =
                         !prev.text.trim().is_empty() && !span.text.trim().is_empty();
-                    if both_carry_ink
-                        && (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5
+                    if both_carry_ink && (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5
                     {
                         // Two runs on different writing axes are not one line.
                         // §9.4.4 puts the glyph displacement along the writing
@@ -15157,8 +15156,7 @@ impl PdfDocument {
         // consecutive same-baseline spans into one line. That is what splices a
         // right column into the middle of a left column's sentence —
         // `is a less toxic properties against several RNA viruses`.
-        match Self::prose_two_column_gutter(spans)
-            .or_else(|| Self::classifier_column_gutter(spans))
+        match Self::prose_two_column_gutter(spans).or_else(|| Self::classifier_column_gutter(spans))
         {
             Some(gutter_x) => {
                 Self::reorder_column_major_with_bands(spans, gutter_x);
@@ -15340,7 +15338,10 @@ impl PdfDocument {
         let mut by_band: std::collections::BTreeMap<i32, Vec<&crate::layout::TextSpan>> =
             std::collections::BTreeMap::new();
         for s in &outside {
-            by_band.entry((s.bbox.y / 2.0).round() as i32).or_default().push(s);
+            by_band
+                .entry((s.bbox.y / 2.0).round() as i32)
+                .or_default()
+                .push(s);
         }
         let mut lefts: Vec<f32> = Vec::new();
         for band in by_band.values_mut() {
@@ -21536,8 +21537,10 @@ impl PdfDocument {
         // every real rule. The two paths agreed on nothing before this: the
         // same page yields a table through this filter and none through
         // `extract_tables`.
-        let table_paths: Vec<_> =
-            paths.into_iter().filter(|p| p.is_table_primitive()).collect();
+        let table_paths: Vec<_> = paths
+            .into_iter()
+            .filter(|p| p.is_table_primitive())
+            .collect();
 
         // A page with thousands of line/rect paths is a drawing or chart, not a
         // ruled table; skip the O(E²) collinear-join + intersection sweep. Real
@@ -34274,10 +34277,7 @@ mod soft_hyphen_scope_tests {
     /// seam, where the geometry still exists.
     #[test]
     fn contiguous_fragments_do_not_join() {
-        assert_eq!(
-            join("ultrasonographi\u{00AD}cally"),
-            "ultrasonographi\u{00AD}cally"
-        );
+        assert_eq!(join("ultrasonographi\u{00AD}cally"), "ultrasonographi\u{00AD}cally");
     }
 
     /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
@@ -34318,10 +34318,7 @@ mod soft_hyphen_scope_tests {
     #[test]
     fn adjacent_fragments_do_not_join_either() {
         assert_eq!(join("Mac\u{00AD}Donald"), "Mac\u{00AD}Donald");
-        assert_eq!(
-            strip_seam("Mac\u{00AD}", "", "Donald"),
-            "Mac\u{00AD}Donald"
-        );
+        assert_eq!(strip_seam("Mac\u{00AD}", "", "Donald"), "Mac\u{00AD}Donald");
     }
 
     /// ... so an uppercase continuation across a space is refused, while an
@@ -34397,7 +34394,12 @@ mod soft_hyphen_seam_tests {
             provenance: None,
             text_rise: 0.0,
             text: text.to_string(),
-            bbox: crate::geometry::Rect { x, y, width, height: font_size },
+            bbox: crate::geometry::Rect {
+                x,
+                y,
+                width,
+                height: font_size,
+            },
             font_name: "F1".to_string(),
             font_size,
             font_weight: crate::layout::FontWeight::Normal,
@@ -34457,10 +34459,7 @@ mod soft_hyphen_seam_tests {
         let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
 
         assert!(consumed, "a wrap writes the span itself");
-        assert!(
-            text.contains("administration"),
-            "a genuine wrap was left broken: {text:?}"
-        );
+        assert!(text.contains("administration"), "a genuine wrap was left broken: {text:?}");
     }
 
     /// Contiguous glyphs on one line — a word the file split into two runs.
@@ -34498,26 +34497,14 @@ mod soft_hyphen_seam_tests {
     #[test]
     fn the_classifier_separates_wraps_from_band_jitter() {
         let em = 10.0;
-        assert_eq!(
-            PdfDocument::soft_hyphen_seam(em, 14.0, -30.0),
-            SoftHyphenSeam::Close
-        );
-        assert_eq!(
-            PdfDocument::soft_hyphen_seam(em, 0.41, -39.9),
-            SoftHyphenSeam::Keep
-        );
-        assert_eq!(
-            PdfDocument::soft_hyphen_seam(em, -2.9, -25.0),
-            SoftHyphenSeam::Keep
-        );
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 14.0, -30.0), SoftHyphenSeam::Close);
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 0.41, -39.9), SoftHyphenSeam::Keep);
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, -2.9, -25.0), SoftHyphenSeam::Keep);
         assert_eq!(
             PdfDocument::soft_hyphen_seam(em, 5.9, -30.0),
             SoftHyphenSeam::Keep,
             "0.59 em is band jitter, not a line advance"
         );
-        assert_eq!(
-            PdfDocument::soft_hyphen_seam(em, 0.0, 0.0),
-            SoftHyphenSeam::Contiguous
-        );
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 0.0, 0.0), SoftHyphenSeam::Contiguous);
     }
 }
