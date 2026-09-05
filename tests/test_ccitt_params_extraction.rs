@@ -69,25 +69,25 @@ mod ccitt_extraction_tests {
 
         // Test that CcittParams can be created with default values
         let default_params = CcittParams::default();
-        assert_eq!(default_params.k, -1); // Group 4
+        assert_eq!(default_params.k, 0); // ISO 32000-1 Table 11: pure 1-D Group 3
         assert_eq!(default_params.black_is_1, false); // PDF default
         assert_eq!(default_params.end_of_block, true); // PDF default
         assert!(!default_params.end_of_line); // PDF default
         assert!(!default_params.encoded_byte_align); // PDF default
-        assert!(default_params.is_group_4());
-        assert!(!default_params.is_group_3());
+        assert!(default_params.is_group_3());
+        assert!(!default_params.is_group_4());
 
-        // Test Group 3 params
-        let group3_params = CcittParams {
-            k: 0,
+        // Test Group 4 params
+        let group4_params = CcittParams {
+            k: -1,
             ..Default::default()
         };
-        assert!(group3_params.is_group_3());
-        assert!(!group3_params.is_group_4());
+        assert!(group4_params.is_group_4());
+        assert!(!group4_params.is_group_3());
 
         println!("\n✅ CcittParams structure test passed");
-        println!("   - Default Group 4 parameters verified");
-        println!("   - Group 3 detection works correctly");
+        println!("   - Default Group 3 parameters verified");
+        println!("   - Group 4 detection works correctly");
     }
 
     #[test]
