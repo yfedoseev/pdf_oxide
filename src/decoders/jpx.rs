@@ -72,10 +72,42 @@ pub struct JpxImage {
 /// still covers it, so the result is never smaller than requested and may be
 /// larger.
 pub fn decode_jpx_at(bytes: &[u8], target: Option<(u32, u32)>) -> Result<JpxImage> {
+    decode_jpx_with(bytes, target, true)
+}
+
+/// Decode a JP2/J2K codestream to its palette *indices*, one byte per pixel.
+///
+/// For an image whose dictionary declares an `/Indexed` colour space, the
+/// codestream's single component is an index into the dictionary's lookup
+/// table, and §7.4.9 (`docs/spec/pdf.md`:3143) has the dictionary win: "If
+/// present, it shall determine how the image samples are interpreted, and
+/// the colour space specifications in the JPEG2000 data shall be ignored". A JP2 file may carry a palette box of its own for
+/// the same indices; resolving through it yields three colour components
+/// where the dictionary expects one, and the first of them — the red
+/// channel — then stands in for the whole pixel. That is how a page whose
+/// palette is four shades of blue came out `R = G = B`.
+///
+/// The samples are the raw index values, not rescaled to 8 bits, so they can
+/// be looked up in the dictionary's table directly. Indices wider than a byte
+/// are refused: an `/Indexed` table is indexed by 0..`hival` and "`hival`
+/// shall be no greater than 255" (§8.6.6.3, pdf.md:10992), so a component
+/// deeper than 8 bits cannot be one.
+#[cfg(feature = "jpeg2000")]
+pub fn decode_jpx_indices_at(bytes: &[u8], target: Option<(u32, u32)>) -> Result<JpxImage> {
+    decode_jpx_with(bytes, target, false)
+}
+
+#[cfg(feature = "jpeg2000")]
+fn decode_jpx_with(
+    bytes: &[u8],
+    target: Option<(u32, u32)>,
+    resolve_palette_indices: bool,
+) -> Result<JpxImage> {
     use hayro_jpeg2000::{DecodeSettings, DecoderContext, Image};
 
     let settings = DecodeSettings {
         target_resolution: target,
+        resolve_palette_indices,
         ..DecodeSettings::default()
     };
 
@@ -99,6 +131,36 @@ pub fn decode_jpx_at(bytes: &[u8], target: Option<(u32, u32)>) -> Result<JpxImag
         ));
     }
     let num_components = comps.len();
+
+    // Palette indices are wanted as they are: the decoder's own interleave
+    // would rescale a 4-bit index to the 8-bit range (0..15 → 0..255), and a
+    // lookup table cannot be read with that.
+    if !resolve_palette_indices {
+        let comp = &comps[0];
+        if comp.bit_depth() > 8 {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: a {}-bit component cannot index a colour table",
+                comp.bit_depth()
+            )));
+        }
+        let s = comp.samples();
+        if s.len() != npix {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: index component holds {} samples for a {width}x{height} image",
+                s.len()
+            )));
+        }
+        let samples = s
+            .iter()
+            .map(|&v| v.round().clamp(0.0, 255.0) as u8)
+            .collect();
+        return Ok(JpxImage {
+            samples,
+            num_components: 1,
+            width,
+            height,
+        });
+    }
 
     // Fast path: every component is full-resolution (the common case) → use the
     // decoder's own interleave.
