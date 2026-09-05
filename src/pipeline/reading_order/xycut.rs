@@ -1675,12 +1675,25 @@ impl XYCutStrategy {
         let mut right_lo = f32::MAX;
         let mut right_hi = f32::MIN;
         let (mut left_n, mut right_n) = (0usize, 0usize);
+        // The vertical extent of what each side holds BESIDES the crossing
+        // runs, for the test below.
+        let mut rows_left = (f32::MAX, f32::MIN);
+        let mut rows_right = (f32::MAX, f32::MIN);
         for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
+            let b = &all_spans[i].bbox;
+            let (lo, hi) = (b.y, b.y + b.height.abs());
+            if !crossing {
+                let side = if b.left() < split_x {
+                    &mut rows_left
+                } else {
+                    &mut rows_right
+                };
+                side.0 = side.0.min(lo);
+                side.1 = side.1.max(hi);
+            }
             if banner_is_furniture && crossing {
                 continue;
             }
-            let b = &all_spans[i].bbox;
-            let (lo, hi) = (b.y, b.y + b.height.abs());
             if b.left() < split_x {
                 left_lo = left_lo.min(lo);
                 left_hi = left_hi.max(hi);
@@ -1690,6 +1703,75 @@ impl XYCutStrategy {
                 right_hi = right_hi.max(hi);
                 right_n += 1;
             }
+        }
+        // A banner sits ABOVE the columns it crosses (or below them); the
+        // columns run together beneath it. A run that sits BETWEEN the rows
+        // of both sides — rows of the left side above it and below it, rows
+        // of the right side above it and below it — is a full-measure line
+        // set among those rows. Two real columns carry such lines too: an
+        // introductory paragraph set to the measure between a title and the
+        // columns, a footnote whose URL reaches across the gutter. What tells
+        // those from the defect is how much column there is around each one.
+        //
+        // Measured on the page that exposed it: a paragraph whose lines are
+        // per-word runs (the justifier's word gaps exceed the merge
+        // threshold) above a letter-spaced listing. One word gap at x≈200
+        // aligned down the paragraph, and the full line above it, `When
+        // loaded in Internet Explorer, the browser,`, crossed the corridor
+        // with the halves of `noticing that there is no | file extension,
+        // pro-` beneath it. The right "column" was three rows — that half
+        // line and two fragments of the listing — around one full line. The
+        // sides measured 0.79 of the region, a column by the bar above, and
+        // the cut was taken: `pro-` was emitted with the listing's right-hand
+        // fragments, three lines from `ceeds`, and `proceeds` left the page.
+        //
+        // On the same page's real gutter four runs sit between the rows of
+        // both sides — three lines of the introduction and one footnote —
+        // against some fifty rows of right column. Three rows of column per
+        // full line among them is the bar: a two-column body with a full
+        // line between its rows has many more, and the halves of a paragraph
+        // split at a word gap have that one line and a few rows beside it.
+        // The membership test is strict — the run's centre line lies inside
+        // both sides' row extents by at least half its own height — so a
+        // heading over columns that start on the next line is still a banner
+        // and keeps its cut.
+        let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
+        let (mut bands_left, mut bands_right) = (Vec::new(), Vec::new());
+        for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
+            if crossing {
+                continue;
+            }
+            let b = &all_spans[i].bbox;
+            let side = if b.left() < split_x {
+                &mut bands_left
+            } else {
+                &mut bands_right
+            };
+            let k = band(b.y);
+            if !side.contains(&k) {
+                side.push(k);
+            }
+        }
+        let fewest_rows = bands_left.len().min(bands_right.len());
+        let lines_between_rows = indices
+            .iter()
+            .zip(crosses.iter())
+            .filter(|(&i, &crossing)| {
+                if !crossing {
+                    return false;
+                }
+                let b = &all_spans[i].bbox;
+                let half = b.height.abs() * 0.5;
+                let mid = b.y + half;
+                let inside = |(lo, hi): (f32, f32)| mid > lo + half && mid < hi - half;
+                inside(rows_left) && inside(rows_right)
+            })
+            .count();
+        const ROWS_PER_LINE_BETWEEN: usize = 3;
+        let crossing_sits_between_rows =
+            lines_between_rows > 0 && fewest_rows <= lines_between_rows * ROWS_PER_LINE_BETWEEN;
+        if crossing_sits_between_rows {
+            return None;
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
         let shorter_side = (left_hi - left_lo).min(right_hi - right_lo);
@@ -1820,9 +1902,8 @@ impl XYCutStrategy {
         // printed to its left. A title, abstract or caption spanning the
         // measure satisfies both — it is the first and only thing on its row.
         // A labelled row satisfies neither.
-        let band_of = |i: usize| {
-            (all_spans[i].bbox.y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32
-        };
+        let band_of =
+            |i: usize| (all_spans[i].bbox.y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
         let shares_a_row_with_right = |i: usize| -> bool {
             let a = band_of(i);
             right.iter().any(|&j| band_of(j) == a)
@@ -1877,8 +1958,7 @@ impl XYCutStrategy {
         // whose two or three lines happen to be wide cannot veto on a fraction
         // alone.
         const TABLE_ROW_SHARE: f32 = 0.10;
-        let table_shaped =
-            full_width_left_rows as f32 >= left.len() as f32 * TABLE_ROW_SHARE;
+        let table_shaped = full_width_left_rows as f32 >= left.len() as f32 * TABLE_ROW_SHARE;
         if full_width_left_rows >= 3 && table_shaped {
             // Several left rows, and a real share of them, each blanket the
             // right column ⇒ this is a table-row slice, not a column gutter.
@@ -3570,7 +3650,14 @@ mod tests {
     fn uneven_columns_under_a_banner_still_take_the_cut() {
         let strategy = XYCutStrategy::new();
         let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
-        let mut spans = vec![make_span_text(55.0, 730.0, 470.0, 16.0, &"W".repeat(40), 16.0)];
+        let mut spans = vec![make_span_text(
+            55.0,
+            730.0,
+            470.0,
+            16.0,
+            &"W".repeat(40),
+            16.0,
+        )];
 
         let mut y = 100.0;
         while y <= 700.0 {
@@ -3593,6 +3680,101 @@ mod tests {
         );
     }
 
+    /// The shape of the page that exposed the between-rows defect: a
+    /// letter-spaced listing whose multi-glyph fragments end by x≈180 on the
+    /// left and begin at x=206 on the right, and beneath it a paragraph set
+    /// one run per word whose gap after the fifth word falls at x≈200 on
+    /// every line. The listing's rows make the left mass dense, so every
+    /// column covered by a single paragraph row is under the valley
+    /// threshold and the corridor at 180..205 is found. The paragraph's full
+    /// lines are wider than the 55% bound and cross it.
+    ///
+    /// `full_lines_between`: the paragraph's full lines are interleaved with
+    /// its per-word lines (the defect), or set above the whole block (a
+    /// banner over it — the shape the crossing allowance exists for).
+    fn a_paragraph_split_at_a_word_gap(full_lines_between: bool) -> Vec<TextSpan> {
+        let size = 10.0;
+        let gap = 0.81 * size;
+        let w = |s: &str| s.chars().count() as f32 * 0.5 * size;
+        let mut spans = Vec::new();
+        // Listing rows: a fragment on the left of the corridor on every row,
+        // one on the right of it on two rows.
+        for (i, y) in [310.0, 300.0, 290.0, 280.0, 270.0].iter().enumerate() {
+            let text = "Content-Length: 195034 bytes";
+            spans.push(make_span_text(72.0, *y, w(text) * 0.8, 8.0, text, 8.0));
+            if i % 2 == 1 {
+                spans.push(make_span_text(206.0, *y, 46.0, 8.0, "octet-stream", 8.0));
+            }
+        }
+        let full = "When loaded in Internet Explorer, the browser,";
+        let rows: [(&[&str], &[&str]); 3] = [
+            (&["noticing", "that", "there", "is", "no"], &["file", "extension,", "pro-"]),
+            (&["sniffing", "it,", "and", "then", "a"], &["header", "it", "was", "sent"]),
+            (&["Anything", "that", "looks", "like", "an"], &["image", "at", "all", "is"]),
+        ];
+        let per_word = |spans: &mut Vec<TextSpan>, y: f32, row: usize| {
+            let (before, after) = rows[row];
+            let mut x = 72.0;
+            for word in before {
+                spans.push(make_span_text(x, y, w(word), size, word, size));
+                x += w(word) + gap;
+            }
+            let mut x = 204.8;
+            for word in after {
+                spans.push(make_span_text(x, y, w(word), size, word, size));
+                x += w(word) + gap;
+            }
+        };
+        if full_lines_between {
+            for (i, y) in [260.0, 236.0, 212.0].iter().enumerate() {
+                spans.push(make_span_text(72.0, *y, 224.0, size, full, size));
+                per_word(&mut spans, y - 12.0, i);
+            }
+        } else {
+            spans.push(make_span_text(72.0, 340.0, 224.0, size, full, size));
+            spans.push(make_span_text(72.0, 328.0, 224.0, size, full, size));
+            for (i, y) in [248.0, 224.0, 200.0].iter().enumerate() {
+                per_word(&mut spans, *y, i);
+            }
+        }
+        spans
+    }
+
+    /// The defect: the halves of a paragraph split at a word gap are three
+    /// and five rows around three full lines of the same paragraph. The cut
+    /// must be refused, or `pro-` is emitted apart from `ceeds`.
+    #[test]
+    fn a_full_line_between_the_rows_of_both_sides_refuses_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = a_paragraph_split_at_a_word_gap(true);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
+            "a word gap that aligns down a few lines of one paragraph is not a \
+             gutter: the full lines around it cross the corridor between its rows"
+        );
+    }
+
+    /// The same block with the full lines set ABOVE it is a banner over two
+    /// narrow columns, and the cut stands. This pins that the refusal is
+    /// about the crossing run's position among the rows, not about crossing
+    /// as such — and that the corridor is genuinely found in this geometry.
+    #[test]
+    fn the_same_full_lines_above_the_rows_still_take_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = a_paragraph_split_at_a_word_gap(false);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_some(),
+            "full lines above the block are a banner over it, and the corridor \
+             beneath them is still a corridor"
+        );
+    }
+
     /// The counter-direction, and the shape the guard exists for: a masthead
     /// side carrying only a nameplate and a dateline covers a fraction of the
     /// region and is not a column. That cut must still be refused, or the
@@ -3602,7 +3784,14 @@ mod tests {
     fn a_masthead_side_under_a_banner_is_still_refused() {
         let strategy = XYCutStrategy::new();
         let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
-        let mut spans = vec![make_span_text(55.0, 730.0, 470.0, 16.0, &"W".repeat(40), 16.0)];
+        let mut spans = vec![make_span_text(
+            55.0,
+            730.0,
+            470.0,
+            16.0,
+            &"W".repeat(40),
+            16.0,
+        )];
 
         let mut y = 100.0;
         while y <= 700.0 {
@@ -3665,7 +3854,9 @@ mod tests {
         let spans = two_columns_with_full_measure_lines(3, 97);
         let indices: Vec<usize> = (0..spans.len()).collect();
         assert!(
-            strategy.find_horizontal_split_indexed(&spans, &indices).is_some(),
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_some(),
             "three full-measure lines among a hundred are a heading and a \
              caption, not a table; the columns must still be cut apart"
         );
@@ -3680,7 +3871,9 @@ mod tests {
         let spans = two_columns_with_full_measure_lines(30, 6);
         let indices: Vec<usize> = (0..spans.len()).collect();
         assert!(
-            strategy.find_horizontal_split_indexed(&spans, &indices).is_none(),
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
             "rows that blanket the right column and are most of the side are \
              a table's rows; a vertical cut through them shreds every row"
         );
