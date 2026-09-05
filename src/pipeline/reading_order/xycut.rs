@@ -1749,33 +1749,56 @@ impl XYCutStrategy {
         // run occupies one unbroken interval on the writing axis, so a run
         // of letters whose interval lies inside the corridor is proof there
         // is text there and no column boundary on that row.
+        //
+        // A row is divided by the corridor only when both its sides carry
+        // letters, and the letters inside the corridor count only when they
+        // continue the row's own text — a word space or less after the run
+        // to their left. A chart beside a paragraph shares its rows and puts
+        // an axis title in the corridor, but that title sits three or four
+        // ems from the paragraph's line end; a column of tick numerals is
+        // not the other half of a paragraph's lines at all. The paragraph
+        // that exposed this has `no` five points after `is` and `file` ten
+        // points after `no`: the corridor runs through the middle of a line.
         let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
-        let mut divided_rows: std::collections::BTreeMap<i32, (bool, bool, bool)> =
+        // Per row: (left, ink right, has letters, font size), non-crossing.
+        let mut rows: std::collections::BTreeMap<i32, Vec<(f32, f32, bool, f32)>> =
             std::collections::BTreeMap::new();
         for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
             if crossing {
                 continue;
             }
             let s = &all_spans[i];
-            let row = divided_rows.entry(band(s.bbox.y)).or_default();
-            if s.bbox.left() < split_x {
-                row.0 = true;
-            } else {
-                row.1 = true;
-            }
-            let letters = s.text.chars().filter(|c| c.is_alphabetic()).count();
-            if letters == 0 {
-                continue;
-            }
+            let letters = s.text.chars().any(|c| c.is_alphabetic());
             let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
             let ink_right =
                 (s.bbox.left() + chars * (s.font_size * 0.45).max(2.5)).min(s.bbox.right());
-            if s.bbox.left() >= corridor.0 && ink_right <= corridor.1 {
-                row.2 = true;
+            rows.entry(band(s.bbox.y)).or_default().push((
+                s.bbox.left(),
+                ink_right,
+                letters,
+                s.font_size,
+            ));
+        }
+        let (mut divided, mut divided_with_text) = (0usize, 0usize);
+        for runs in rows.values() {
+            let letters_left = runs.iter().any(|r| r.2 && r.0 < split_x);
+            let letters_right = runs.iter().any(|r| r.2 && r.0 >= split_x);
+            if !(letters_left && letters_right) {
+                continue;
+            }
+            divided += 1;
+            let continues_the_row = runs.iter().any(|r| {
+                if !r.2 || r.0 < corridor.0 || r.1 > corridor.1 {
+                    return false;
+                }
+                let word_space = 1.5 * r.3;
+                runs.iter()
+                    .any(|l| l.1 <= r.0 + 0.5 && r.0 - l.1 <= word_space && l.0 < r.0)
+            });
+            if continues_the_row {
+                divided_with_text += 1;
             }
         }
-        let divided = divided_rows.values().filter(|r| r.0 && r.1).count();
-        let divided_with_text = divided_rows.values().filter(|r| r.0 && r.1 && r.2).count();
         const ROWS_THAT_FILL_A_CORRIDOR: usize = 2;
         let corridor_holds_text =
             divided_with_text >= ROWS_THAT_FILL_A_CORRIDOR && divided_with_text * 2 >= divided;
