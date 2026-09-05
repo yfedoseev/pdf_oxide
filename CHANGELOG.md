@@ -4,7 +4,7 @@ All notable changes to PDFOxide are documented here.
 
 ## [0.3.78] - 2026-09-05
 
-> Correctness under audit: 101 defects across rendering, text, files and colour
+> Correctness under audit: 144 defects across rendering, text, reading order, files and colour
 
 The bulk of this release is an audit of contributions merged since v0.3.77,
 plus what a four-engine reference panel found when the result was measured
