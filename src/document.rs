@@ -6620,9 +6620,28 @@ impl PdfDocument {
                 // corridor sweep as well. Only the fallback detector is gated:
                 // `prose_two_column_gutter` is content-balance gated and keeps
                 // deciding genuine two-column bodies on its own, table or no table.
-                (tables.is_empty() || !Self::multicol_signal_is_tabular(&spans, &tables))
-                    .then(|| Self::classifier_column_gutter(&spans))
-                    .flatten()
+                //
+                // `multicol_signal_is_tabular` measures each Y band's MINIMUM
+                // left edge, and a Y band crosses the whole page: on a
+                // two-column page both columns fall in one band and the minimum
+                // is the left column's margin on every shared line, so the right
+                // column is invisible to it and a genuine two-column body reads
+                // as one dominant left edge. It therefore suppresses the gutter
+                // on exactly the pages this branch exists to serve — a
+                // two-column journal page with a full-measure figure under the
+                // columns, where the figure's cells and the centred folio leave
+                // `prose_two_column_gutter` no page-wide corridor to find, and
+                // the columns are then read straight across, tearing a wrapped
+                // word in half at every line. `two_column_starts_outside_tables`
+                // counts the page's column STARTS instead, and lets a body with
+                // exactly two of them through. It only ever opens the gate: a
+                // page where the classifier still declines falls through to the
+                // row-aware branch below exactly as before.
+                (tables.is_empty()
+                    || !Self::multicol_signal_is_tabular(&spans, &tables)
+                    || Self::two_column_starts_outside_tables(&spans, &tables))
+                .then(|| Self::classifier_column_gutter(&spans))
+                .flatten()
             }) {
                 // Genuine two-column prose (content-balance gated — forms /
                 // TOC / tables / figures are rejected), OR a ragged
@@ -15166,6 +15185,103 @@ impl PdfDocument {
         *spans = out;
     }
 
+    /// Does the content outside the detected tables start at exactly TWO column
+    /// positions — the shape of a two-column body?
+    ///
+    /// `multicol_signal_is_tabular` asks a related question and cannot answer
+    /// this one: it reduces each Y band to the band's MINIMUM left edge, and a Y
+    /// band crosses the whole page, so on a two-column page both columns fall in
+    /// one band and the minimum is the left column's margin on every shared line.
+    /// The right column is recorded only on the bands where the left column
+    /// happens to be empty, so a balanced two-column body measures as one
+    /// dominant left edge — the shape that predicate reads as single-column prose
+    /// with a grid on it. Measured on a two-column journal page: 55 bands, 42
+    /// sharing one left edge, 0.76 against a 0.70 bar.
+    ///
+    /// Walk each band left to right instead and open a new column start wherever
+    /// the horizontal gap since the last ink on that band exceeds a column
+    /// gutter. A horizontal show string occupies one unbroken interval on the X
+    /// axis (ISO 32000-1:2008 §9.4.4, `docs/spec/pdf.md`:17398), so ink and gap
+    /// on a band are exactly measurable this way. Then count the significant
+    /// starts: a two-column body has exactly two, an unruled numeric grid has one
+    /// per cell column, an N-up spread one per page. That is the rule
+    /// `prose_two_column_gutter` already applies to the same question.
+    fn two_column_starts_outside_tables(
+        spans: &[crate::layout::TextSpan],
+        tables: &[crate::structure::table_extractor::Table],
+    ) -> bool {
+        let in_table = |s: &crate::layout::TextSpan| -> bool {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            let cy = s.bbox.y + s.bbox.height * 0.5;
+            tables.iter().any(|t| {
+                t.bbox.is_some_and(|b| {
+                    cx >= b.x - 2.0
+                        && cx <= b.x + b.width + 2.0
+                        && cy >= b.y - 2.0
+                        && cy <= b.y + b.height + 14.0
+                })
+            })
+        };
+        let outside: Vec<&crate::layout::TextSpan> = spans
+            .iter()
+            .filter(|s| {
+                !s.text.trim().is_empty()
+                    && s.bbox.width > 0.0
+                    && s.bbox.x.is_finite()
+                    && s.bbox.width.is_finite()
+                    && s.bbox.y.is_finite()
+                    && !in_table(s)
+            })
+            .collect();
+        if outside.len() < 8 {
+            return false;
+        }
+        const COLUMN_GAP_PT: f32 = 10.0;
+        let mut by_band: std::collections::BTreeMap<i32, Vec<&crate::layout::TextSpan>> =
+            std::collections::BTreeMap::new();
+        for s in &outside {
+            by_band.entry((s.bbox.y / 2.0).round() as i32).or_default().push(s);
+        }
+        let mut lefts: Vec<f32> = Vec::new();
+        for band in by_band.values_mut() {
+            band.sort_by(|a, b| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x));
+            let mut cover = f32::NEG_INFINITY;
+            for s in band.iter() {
+                if s.bbox.x - cover > COLUMN_GAP_PT {
+                    lefts.push(s.bbox.x);
+                }
+                cover = cover.max(s.bbox.x + s.bbox.width);
+            }
+        }
+        if lefts.len() < 6 {
+            return false;
+        }
+        lefts.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        // Same 12pt (≈ one indent) clustering the sibling predicate uses, so a
+        // hanging indent folds into its column's start rather than opening one.
+        let mut clusters: Vec<usize> = Vec::new();
+        let mut run = 1usize;
+        let mut prev = lefts[0];
+        for &v in &lefts[1..] {
+            if v - prev > 12.0 {
+                clusters.push(run);
+                run = 0;
+            }
+            run += 1;
+            prev = v;
+        }
+        clusters.push(run);
+        let total = lefts.len();
+        // A "significant" start carries at least a sixth of the starts measured,
+        // which keeps a stray indent, a centred folio, or a caption from counting
+        // as a column.
+        clusters
+            .iter()
+            .filter(|&&c| c as f32 >= total as f32 / 6.0)
+            .count()
+            == 2
+    }
+
     /// True when the page's multi-column geometric signal is explained by a
     /// detected TABLE rather than a genuine two-column text body.
     ///
@@ -15184,6 +15300,15 @@ impl PdfDocument {
     /// lines), so a two-column page — whose non-table prose still splits into two
     /// left-edge clusters — is rejected. Spans inside the table contribute their
     /// own column-aligned left edges and are deliberately excluded.
+    ///
+    /// CAUTION: that last claim does not hold for a BALANCED two-column body.
+    /// The measurement below is the MINIMUM left edge per Y band, and a Y band
+    /// crosses the whole page, so wherever both columns print on one line the
+    /// band records only the left column's margin. The right column is seen only
+    /// on the bands the left column leaves empty, and a two-column journal page
+    /// measured 42 of 55 bands on one left edge. Callers that need to know
+    /// whether the page has two column STARTS must ask
+    /// `two_column_starts_outside_tables`, not this.
     fn multicol_signal_is_tabular(
         spans: &[crate::layout::TextSpan],
         tables: &[crate::structure::table_extractor::Table],
