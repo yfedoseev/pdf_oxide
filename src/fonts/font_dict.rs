@@ -3083,7 +3083,81 @@ impl FontInfo {
         }
         let is_times = std14.is_times;
         let code = char_code as u8;
+        if let Some(w) = self.winansi_punctuation_width(std14, is_times, is_bold, code) {
+            return Some(w);
+        }
         self.std14_width(std14, is_times, is_bold, code)
+    }
+
+    /// Standard-14 widths for the WinAnsi punctuation above ASCII.
+    ///
+    /// The per-family tables in [`Self::std14_width`] run from 32 to 126 and
+    /// return `None` past that, so an en dash (150) or em dash (151) falls
+    /// through to the generic `default_width` of 550/1000 em. Helvetica advances
+    /// an em dash by a full em, so a caption reading
+    /// `TABLE 66.01-11(5)-COORDINATES` measured 3.648 pt narrower than its ink
+    /// — 3.600 from the em dash, 0.048 from the en dash — and the span ended
+    /// short of the run beside it.
+    ///
+    /// ISO 32000-1:2008 §9.6.2.2 (docs/spec/pdf.md:17706) has the reader supply
+    /// the metrics when a Standard-14 dictionary omits `/Widths`; §9.4.4
+    /// (:17433) then spends them on the text matrix. Annex D.2 gives the code
+    /// for each glyph. Values are the Adobe Core-14 AFM advances — the same
+    /// argument `5d711c2e` made for completing these tables across ASCII.
+    ///
+    /// WinAnsiEncoding names these glyphs at these codes. StandardEncoding is
+    /// admitted because Annex D.2 leaves 128..=159 unused there, so a byte in
+    /// that range against a Standard-14 font is a producer writing CP1252 and
+    /// the decoder already reads it that way. MacRomanEncoding *does* define
+    /// that range and keeps the previous behaviour, as does any `/Differences`.
+    fn winansi_punctuation_width(
+        &self,
+        std14: Std14Flags,
+        is_times: bool,
+        is_bold: bool,
+        code: u8,
+    ) -> Option<f32> {
+        // The two encodings put these glyphs at different codes, so which
+        // encoding is named decides which codes mean what. Annex D.2 lists
+        // both: WinAnsi has the em dash at 151, StandardEncoding at 208.
+        let is_italic = std14.is_italic || std14.is_bold_italic;
+        let endash = if is_times { 500.0 } else { 556.0 };
+        let emdash = if is_times && is_italic && !is_bold { 889.0 } else { 1000.0 };
+        let ellipsis = emdash;
+        let quotedbl = match (is_times, is_bold, is_italic) {
+            (true, false, true) => 556.0,
+            (true, true, true) => 500.0,
+            (true, _, _) => 444.0,
+            (false, true, _) => 500.0,
+            (false, false, _) => 333.0,
+        };
+        let quotesingle = if is_times {
+            333.0
+        } else if is_bold {
+            278.0
+        } else {
+            222.0
+        };
+        let Encoding::Standard(name) = &self.encoding else {
+            return None;
+        };
+        Some(match (name.as_str(), code) {
+            // WinAnsiEncoding: the CP1252 punctuation block.
+            ("WinAnsiEncoding", 150) => endash,
+            ("WinAnsiEncoding", 151) => emdash,
+            ("WinAnsiEncoding", 133) => ellipsis,
+            ("WinAnsiEncoding", 149) => 350.0,
+            ("WinAnsiEncoding", 145 | 146) => quotesingle,
+            ("WinAnsiEncoding", 147 | 148) => quotedbl,
+            // StandardEncoding places the same glyphs elsewhere entirely.
+            ("StandardEncoding", 177) => endash,
+            ("StandardEncoding", 208) => emdash,
+            ("StandardEncoding", 188) => ellipsis,
+            ("StandardEncoding", 183) => 350.0,
+            ("StandardEncoding", 170) => quotedbl,
+            ("StandardEncoding", 186) => quotedbl,
+            _ => return None,
+        })
     }
 
     /// Classify `base_font` against the Standard-14 set (ISO 32000-1 Annex D).

@@ -84,14 +84,20 @@ fn an_em_dash_contributes_one_advance_not_three() {
 /// glyphs after it take the widths of glyphs before them. `C` and `D` are both
 /// 7.22 pt at 10 pt Helvetica; under the defect they were handed a third of the
 /// dash's advance instead.
+///
+/// The dash's own advance is a full em — Helvetica's `emdash` is 1000/1000.
+/// This assertion first read 5.50 pt, which was the generic 550-unit default
+/// the Standard-14 tables fell through to above printable ASCII; that is fixed
+/// separately, and the value here is the metric rather than the fallback.
 #[test]
 fn the_glyphs_after_a_multibyte_character_keep_their_own_advances() {
     let span = span_of("AB\\227CD");
     let widths = &span.char_widths;
     assert_eq!(widths.len(), 5, "expected one per character, got {widths:?}");
     assert!(
-        (widths[2] - 5.50).abs() < 0.05,
-        "the em dash's own advance is 5.50 pt at 10 pt Helvetica, got {:.3} in {widths:?}",
+        (widths[2] - 10.00).abs() < 0.05,
+        "the em dash's own advance is a full em, 10.00 pt at 10 pt Helvetica, \
+         got {:.3} in {widths:?}",
         widths[2]
     );
     for (i, c) in [(3usize, 'C'), (4, 'D')] {
