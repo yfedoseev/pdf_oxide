@@ -1553,13 +1553,19 @@ impl XYCutStrategy {
     ) -> Option<(Vec<usize>, Vec<usize>)> {
         let profile = self.horizontal_projection_indexed(all_spans, indices)?;
 
-        let split_x = if let Some((vs, ve, vw)) = self.find_valley(&profile) {
+        // The corridor the cut is taken through: the profile's valley where
+        // one was found, or a band the width of the valley floor around a
+        // trough between two peaks.
+        let (split_x, corridor) = if let Some((vs, ve, vw)) = self.find_valley(&profile) {
             if vw < self.min_valley_width {
                 return None;
             }
-            profile.x_min + (vs + ve) as f32 / 2.0
+            let (lo, hi) = (profile.x_min + vs as f32, profile.x_min + ve as f32);
+            ((lo + hi) / 2.0, (lo, hi))
         } else {
-            self.find_split_between_peaks(&profile)?
+            let x = self.find_split_between_peaks(&profile)?;
+            let half = self.min_valley_width / 2.0;
+            (x, (x - half, x + half))
         };
 
         // Reject splits where either resulting sub-column would be
@@ -1704,73 +1710,76 @@ impl XYCutStrategy {
                 right_n += 1;
             }
         }
-        // A banner sits ABOVE the columns it crosses (or below them); the
-        // columns run together beneath it. A run that sits BETWEEN the rows
-        // of both sides — rows of the left side above it and below it, rows
-        // of the right side above it and below it — is a full-measure line
-        // set among those rows. Two real columns carry such lines too: an
-        // introductory paragraph set to the measure between a title and the
-        // columns, a footnote whose URL reaches across the gutter. What tells
-        // those from the defect is how much column there is around each one.
+        // A corridor is a gutter only where the rows on either side of it
+        // leave it empty. The profile's valley is where the density falls
+        // under a fraction of the peak, and that is right for finding a
+        // gutter beside a dense column — a stray stub or a folio in the
+        // gutter must not hide it. But where one side of a region is much
+        // denser than the other, a band holding a row or two of ordinary
+        // words scores as a valley too, and the valley reaches into the
+        // ragged line ends of the column beside it.
         //
-        // Measured on the page that exposed it: a paragraph whose lines are
-        // per-word runs (the justifier's word gaps exceed the merge
-        // threshold) above a letter-spaced listing. One word gap at x≈200
-        // aligned down the paragraph, and the full line above it, `When
-        // loaded in Internet Explorer, the browser,`, crossed the corridor
-        // with the halves of `noticing that there is no | file extension,
-        // pro-` beneath it. The right "column" was three rows — that half
-        // line and two fragments of the listing — around one full line. The
-        // sides measured 0.79 of the region, a column by the bar above, and
-        // the cut was taken: `pro-` was emitted with the listing's right-hand
-        // fragments, three lines from `ceeds`, and `proceeds` left the page.
+        // Measured on the page that exposed it: a paragraph set one run per
+        // word (the justifier's word gaps exceed the merge threshold) beneath
+        // a letter-spaced listing and above the page's footnotes. The listing
+        // and footnote rows made the left mass dense, and everything right of
+        // x≈165 fell under the threshold: the valley ran 165..236, seventy
+        // points wide, with `is`, `no` and `file` inside it on the
+        // paragraph's own rows. Its centre landed in the word gap after `no`,
+        // the full lines around it crossed the corridor, the two halves
+        // measured 0.79 of the region — a column by the bar below — and the
+        // cut was taken: `pro-` was emitted three lines from `ceeds`, and
+        // `proceeds` left the page.
         //
-        // On the same page's real gutter four runs sit between the rows of
-        // both sides — three lines of the introduction and one footnote —
-        // against some fifty rows of right column. Three rows of column per
-        // full line among them is the bar: a two-column body with a full
-        // line between its rows has many more, and the halves of a paragraph
-        // split at a word gap have that one line and a few rows beside it.
-        // The membership test is strict — the run's centre line lies inside
-        // both sides' row extents by at least half its own height — so a
-        // heading over columns that start on the next line is still a banner
-        // and keeps its cut.
+        // What tells that corridor from a gutter is the rows. On every row
+        // the corridor divides — a row with runs on both sides of it — the
+        // corridor held letters: the paragraph's short words on its rows,
+        // the listing's spaced glyphs on the rest. On the page's real gutter,
+        // measured the same way, two of forty such rows hold letters in the
+        // valley (a line end the valley's fringe reaches, a listing fragment)
+        // and the rest hold nothing. A title set one run per word across the
+        // head of a two-column paper puts words in its gutter on one row;
+        // the thirty rows of column beneath it put nothing there. So the cut
+        // is refused when the rows the corridor divides hold letters in it
+        // on at least half of them, and on at least two. Digits alone do not
+        // count: a folio or a verse number centred between two columns is
+        // furniture in the gutter, not text across it.
+        //
+        // ISO 32000-1:2008 §9.4.4 (docs/spec/pdf.md:17396): a horizontal
+        // run occupies one unbroken interval on the writing axis, so a run
+        // of letters whose interval lies inside the corridor is proof there
+        // is text there and no column boundary on that row.
         let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
-        let (mut bands_left, mut bands_right) = (Vec::new(), Vec::new());
+        let mut divided_rows: std::collections::BTreeMap<i32, (bool, bool, bool)> =
+            std::collections::BTreeMap::new();
         for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
             if crossing {
                 continue;
             }
-            let b = &all_spans[i].bbox;
-            let side = if b.left() < split_x {
-                &mut bands_left
+            let s = &all_spans[i];
+            let row = divided_rows.entry(band(s.bbox.y)).or_default();
+            if s.bbox.left() < split_x {
+                row.0 = true;
             } else {
-                &mut bands_right
-            };
-            let k = band(b.y);
-            if !side.contains(&k) {
-                side.push(k);
+                row.1 = true;
+            }
+            let letters = s.text.chars().filter(|c| c.is_alphabetic()).count();
+            if letters == 0 {
+                continue;
+            }
+            let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+            let ink_right =
+                (s.bbox.left() + chars * (s.font_size * 0.45).max(2.5)).min(s.bbox.right());
+            if s.bbox.left() >= corridor.0 && ink_right <= corridor.1 {
+                row.2 = true;
             }
         }
-        let fewest_rows = bands_left.len().min(bands_right.len());
-        let lines_between_rows = indices
-            .iter()
-            .zip(crosses.iter())
-            .filter(|(&i, &crossing)| {
-                if !crossing {
-                    return false;
-                }
-                let b = &all_spans[i].bbox;
-                let half = b.height.abs() * 0.5;
-                let mid = b.y + half;
-                let inside = |(lo, hi): (f32, f32)| mid > lo + half && mid < hi - half;
-                inside(rows_left) && inside(rows_right)
-            })
-            .count();
-        const ROWS_PER_LINE_BETWEEN: usize = 3;
-        let crossing_sits_between_rows =
-            lines_between_rows > 0 && fewest_rows <= lines_between_rows * ROWS_PER_LINE_BETWEEN;
-        if crossing_sits_between_rows {
+        let divided = divided_rows.values().filter(|r| r.0 && r.1).count();
+        let divided_with_text = divided_rows.values().filter(|r| r.0 && r.1 && r.2).count();
+        const ROWS_THAT_FILL_A_CORRIDOR: usize = 2;
+        let corridor_holds_text =
+            divided_with_text >= ROWS_THAT_FILL_A_CORRIDOR && divided_with_text * 2 >= divided;
+        if corridor_holds_text {
             return None;
         }
         let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
@@ -3680,30 +3689,36 @@ mod tests {
         );
     }
 
-    /// The shape of the page that exposed the between-rows defect: a
-    /// letter-spaced listing whose multi-glyph fragments end by x≈180 on the
-    /// left and begin at x=206 on the right, and beneath it a paragraph set
-    /// one run per word whose gap after the fifth word falls at x≈200 on
-    /// every line. The listing's rows make the left mass dense, so every
-    /// column covered by a single paragraph row is under the valley
-    /// threshold and the corridor at 180..205 is found. The paragraph's full
-    /// lines are wider than the 55% bound and cross it.
+    /// The shape of the page that exposed the populated-corridor defect: a
+    /// letter-spaced listing whose multi-glyph fragments sit on every row,
+    /// and beneath it a paragraph set one run per word — three full lines
+    /// interleaved with three per-word lines whose words after the gap start
+    /// at x=235. The listing's rows make the left mass dense, so any column
+    /// covered by a single paragraph row is under the valley threshold.
     ///
-    /// `full_lines_between`: the paragraph's full lines are interleaved with
-    /// its per-word lines (the defect), or set above the whole block (a
-    /// banner over it — the shape the crossing allowance exists for).
-    fn a_paragraph_split_at_a_word_gap(full_lines_between: bool) -> Vec<TextSpan> {
+    /// `listing_reaches_the_words`: the listing's left fragments end at
+    /// x≈161, before the paragraph's short words, so the valley runs from
+    /// there to 235 and holds `is`, `no`, `then` and `like` (the defect); or
+    /// they run to x≈212, past those words, so the valley is 212..235 and
+    /// holds nothing — an ordinary corridor beside a dense block.
+    fn a_paragraph_split_at_a_word_gap(listing_reaches_the_words: bool) -> Vec<TextSpan> {
         let size = 10.0;
         let gap = 0.81 * size;
         let w = |s: &str| s.chars().count() as f32 * 0.5 * size;
         let mut spans = Vec::new();
-        // Listing rows: a fragment on the left of the corridor on every row,
-        // one on the right of it on two rows.
+        // The listing's left fragments: 24 glyphs reach x≈161 at the
+        // profile's 0.45 em per glyph; 39 reach x≈205 (clamped to the box),
+        // past the paragraph's short words on all but one row. The boxes
+        // stay under 55% of the region's width, or the profile drops them.
+        let (text, scale) = if listing_reaches_the_words {
+            ("Content-Length: 195034 bytes", 0.8)
+        } else {
+            ("Content-Length: 195034 bytes and more still", 0.62)
+        };
         for (i, y) in [310.0, 300.0, 290.0, 280.0, 270.0].iter().enumerate() {
-            let text = "Content-Length: 195034 bytes";
-            spans.push(make_span_text(72.0, *y, w(text) * 0.8, 8.0, text, 8.0));
+            spans.push(make_span_text(72.0, *y, w(text) * scale, 8.0, text, 8.0));
             if i % 2 == 1 {
-                spans.push(make_span_text(206.0, *y, 46.0, 8.0, "octet-stream", 8.0));
+                spans.push(make_span_text(235.0, *y, 46.0, 8.0, "octet-stream", 8.0));
             }
         }
         let full = "When loaded in Internet Explorer, the browser,";
@@ -3712,39 +3727,29 @@ mod tests {
             (&["sniffing", "it,", "and", "then", "a"], &["header", "it", "was", "sent"]),
             (&["Anything", "that", "looks", "like", "an"], &["image", "at", "all", "is"]),
         ];
-        let per_word = |spans: &mut Vec<TextSpan>, y: f32, row: usize| {
-            let (before, after) = rows[row];
+        for (i, y) in [260.0, 236.0, 212.0].iter().enumerate() {
+            spans.push(make_span_text(72.0, *y, 224.0, size, full, size));
+            let (before, after) = rows[i];
+            let y = y - 12.0;
             let mut x = 72.0;
             for word in before {
                 spans.push(make_span_text(x, y, w(word), size, word, size));
                 x += w(word) + gap;
             }
-            let mut x = 204.8;
+            let mut x = 235.0;
             for word in after {
                 spans.push(make_span_text(x, y, w(word), size, word, size));
                 x += w(word) + gap;
-            }
-        };
-        if full_lines_between {
-            for (i, y) in [260.0, 236.0, 212.0].iter().enumerate() {
-                spans.push(make_span_text(72.0, *y, 224.0, size, full, size));
-                per_word(&mut spans, y - 12.0, i);
-            }
-        } else {
-            spans.push(make_span_text(72.0, 340.0, 224.0, size, full, size));
-            spans.push(make_span_text(72.0, 328.0, 224.0, size, full, size));
-            for (i, y) in [248.0, 224.0, 200.0].iter().enumerate() {
-                per_word(&mut spans, *y, i);
             }
         }
         spans
     }
 
-    /// The defect: the halves of a paragraph split at a word gap are three
-    /// and five rows around three full lines of the same paragraph. The cut
-    /// must be refused, or `pro-` is emitted apart from `ceeds`.
+    /// The defect: the corridor the profile found holds the paragraph's own
+    /// short words on three rows. The cut must be refused, or `pro-` is
+    /// emitted apart from `ceeds`.
     #[test]
-    fn a_full_line_between_the_rows_of_both_sides_refuses_the_cut() {
+    fn a_corridor_that_holds_words_is_not_a_gutter() {
         let strategy = XYCutStrategy::new();
         let spans = a_paragraph_split_at_a_word_gap(true);
         let indices: Vec<usize> = (0..spans.len()).collect();
@@ -3752,17 +3757,18 @@ mod tests {
             strategy
                 .find_horizontal_split_indexed(&spans, &indices)
                 .is_none(),
-            "a word gap that aligns down a few lines of one paragraph is not a \
-             gutter: the full lines around it cross the corridor between its rows"
+            "a valley that holds whole words is a word gap under a dense block, \
+             not a gutter; the full lines around it cross it between its rows"
         );
     }
 
-    /// The same block with the full lines set ABOVE it is a banner over two
-    /// narrow columns, and the cut stands. This pins that the refusal is
-    /// about the crossing run's position among the rows, not about crossing
-    /// as such — and that the corridor is genuinely found in this geometry.
+    /// The same block with the corridor empty — the listing's fragments run
+    /// past the paragraph's short words, so the valley is the bare gap
+    /// before x=235 — is a corridor beside a dense block, and the cut stands.
+    /// This pins that the refusal is about what the corridor holds, not
+    /// about the full lines between the rows, which are here too.
     #[test]
-    fn the_same_full_lines_above_the_rows_still_take_the_cut() {
+    fn the_same_block_with_an_empty_corridor_still_takes_the_cut() {
         let strategy = XYCutStrategy::new();
         let spans = a_paragraph_split_at_a_word_gap(false);
         let indices: Vec<usize> = (0..spans.len()).collect();
@@ -3770,8 +3776,8 @@ mod tests {
             strategy
                 .find_horizontal_split_indexed(&spans, &indices)
                 .is_some(),
-            "full lines above the block are a banner over it, and the corridor \
-             beneath them is still a corridor"
+            "an empty corridor between a dense block and a column is a gutter, \
+             whatever crosses it"
         );
     }
 
