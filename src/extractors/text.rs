@@ -4763,9 +4763,21 @@ impl<'doc> TextExtractor<'doc> {
                 );
                 current.text.push('.');
                 current.text.push_str(&span.text);
-            } else if cross_font_word_glue {
+            } else if cross_font_word_glue || small_caps_glue {
                 // Mid-word font/weight change: concatenate without any space
                 // or space-heuristic — these are same-word character runs.
+                //
+                // `small_caps_glue` belongs here for the same reason, and
+                // reaching the space heuristic instead is what put a space
+                // inside a small-capitals caption: it admitted the merge, then
+                // the heuristic it fell through to inserted a space anyway, so
+                // `TABLE 66.01-11(5)-COORDINATES OF CHROMATICITY` came out as
+                // `...-C OORDINATES...`. The predicate already establishes that
+                // the two runs share a font, a weight, a slant and a baseline
+                // and sit within a point of each other; ISO 32000-1:2008 §9.3.1
+                // makes the size a graphics-state parameter that may change
+                // between show operators, and nothing in §9.4 makes such a
+                // change a word boundary.
                 current.text.push_str(&span.text);
             } else if should_merge {
                 // PHASE 1 FIX: Check if next span is entirely whitespace-only OR marked as offset_semantic space
