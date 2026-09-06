@@ -462,3 +462,6 @@ viewer/dotnet/**/obj/
 viewer/dist-browser/
 viewer/**/node_modules/
 viewer/**/.gradle/
+
+# Erlang/Elixir VM crash dumps (the Elixir binding runs under BEAM)
+erl_crash.dump
