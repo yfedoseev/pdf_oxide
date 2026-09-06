@@ -19,17 +19,8 @@ paths-ignore:
 #  * weak cryptographic algorithm — RC4 / MD5 / SHA-1 are
 #    required by R<=4 PDFs (read path). They are gated off under
 #    the FIPS provider via Error::AlgorithmNotPermitted.
-#  * cleartext logging — the query's taint source for Rust is any value
-#    that arrives through a pyo3 binding call, so every
-#    `log::debug!("... page {}", page_index)` in src/document.rs is
-#    reported as logging sensitive data. Page indices, page counts and
-#    parse-error strings are what those sites log; the encryption paths
-#    log no key material. 30 alerts on the v0.3.78 release PR and 37 on
-#    main were all of this shape.
 query-filters:
   - exclude:
       id: rust/hard-coded-cryptographic-value
   - exclude:
       id: rust/weak-cryptographic-algorithm
-  - exclude:
-      id: rust/cleartext-logging
