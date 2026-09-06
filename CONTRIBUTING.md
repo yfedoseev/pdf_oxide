@@ -547,8 +547,13 @@ cannot be undone at all, which is the asymmetry all of this exists to manage.
 ## Test fixture policy
 
 - **No third-party, copyrighted, or reporter-supplied PDF binaries in the repo.**
-  `tools/benchmark-harness/validate_fixtures.sh --strict` (the `fixture-hygiene`
-  CI job) enforces this.
+  The `fixture-hygiene` CI job enforces this in two steps:
+  `tools/benchmark-harness/validate_fixtures.sh --strict` rejects files that
+  are not PDFs, and `tools/check_tracked_fixtures.sh` fails on any PDF
+  committed under `tests/` that is not listed with its provenance in
+  `tests/fixtures/TRACKED_PDFS.txt`. The list carries a few PDFs committed
+  before it existed, marked GRANDFATHERED with a replacement note; no new
+  entry of that kind is accepted.
 - **Build fixtures as minimal synthetic PDFs in code.** If a defect genuinely
   cannot be reproduced synthetically and needs a real specimen, it must be
   fetched at test time and pinned by hash, and the test must **skip gracefully

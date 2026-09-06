@@ -468,7 +468,13 @@ jobs:
             // Same waiver the has-test gate honours: a maintainer accepts a
             // written justification in the PR description.
             if (body.includes('no-revert-check')) {
-              core.notice('revert-check waived by PR description (no-revert-check).');
+              // A waiver is a decision someone should see, not a footnote:
+              // warn in the checks list and write it into the job summary.
+              core.warning('revert-check WAIVED by the PR description (no-revert-check): this fix ships without proof that its test goes red when the fix is absent.');
+              await core.summary
+                .addHeading('revert-check waived', 3)
+                .addRaw('The PR description contains `no-revert-check`. No test was run against the test commit; the maintainer accepted the written justification.')
+                .write();
               core.setOutput('run', 'false');
               return;
             }
@@ -529,35 +535,75 @@ jobs:
 
       - name: Require each new test to fail at the test commit
         if: steps.scope.outputs.run == 'true' && steps.find.outputs.skip == 'false'
+        env:
+          TEST_COMMIT: ${{ steps.find.outputs.test_commit }}
+          NAMES: ${{ steps.find.outputs.names }}
         run: |
           set -uo pipefail
-          git checkout --quiet "${{ steps.find.outputs.test_commit }}"
+          git checkout --quiet "$TEST_COMMIT"
+
+          # The files the test commit touches; a test's feature tiers are read
+          # from the file that defines it.
+          FILES=$(git show --name-only --pretty=format: "$TEST_COMMIT" -- '*.rs' | sort -u)
 
           PASSED=""
+          NOCOMPILE=""
+          NOTRUN=""
           while IFS= read -r name; do
             [ -z "$name" ] && continue
-            echo "::group::$name"
+
+            # Feature tiers: every `cfg(feature = "...")` in the files that
+            # define this test. 71 of the suites under tests/ are
+            # `#![cfg(feature = "rendering")]`; without the feature they
+            # compile to nothing, print no `test ... ok` line, and this gate
+            # used to pass on them without running anything.
+            FEATS=""
+            for f in $FILES; do
+              [ -f "$f" ] || continue
+              if grep -qE "fn $name\b" "$f"; then
+                FEATS="$FEATS $(grep -oE 'cfg\(feature = "[A-Za-z0-9_-]+"\)' "$f" | grep -oE '"[A-Za-z0-9_-]+"' | tr -d '"')"
+              fi
+            done
+            FEATS=$(echo $FEATS | tr ' ' '\n' | grep -v '^$' | sort -u | paste -sd, -)
+            FEATURE_FLAG=""
+            [ -n "$FEATS" ] && FEATURE_FLAG="--features $FEATS"
+
+            echo "::group::$name (features: ${FEATS:-default})"
             # No `--exact`: libtest matches it against the FULL test path, so an
             # `--exact` filter of a bare fn name silently matches NOTHING for any
             # unit test inside `mod tests` (verified: "running 0 tests, 1 filtered
             # out"). That would make this gate pass every such PR without ever
             # running the test. Filter by substring, then confirm the exact test
             # below by matching its printed line.
-            OUT=$(cargo test --no-fail-fast "$name" 2>&1) || true
+            OUT=$(cargo test --no-fail-fast $FEATURE_FLAG "$name" 2>&1) || true
             echo "$OUT"
             echo "::endgroup::"
 
+            # A test that does not build at the test commit is not a red test.
+            # It is its own outcome, reported and failing: split the change so
+            # the test compiles against the API before the fix, or waive the
+            # gate in writing.
             if echo "$OUT" | grep -qE '^(error(\[E[0-9]+\])?|error: could not compile)'; then
-              echo "::notice::'$name' does not compile at the test commit — its test depends on the fix's API. Treated as a legitimate ordering exception."
+              NOCOMPILE="$NOCOMPILE $name"
               continue
             fi
             # Anchor on the whole printed line and allow an optional module path,
             # so `foo` is not credited when only `foo_bar` ran.
             if echo "$OUT" | grep -qE "^test ([A-Za-z0-9_]+::)*$name \.\.\. ok$"; then
               PASSED="$PASSED $name"
+              continue
             fi
-          done <<< "${{ steps.find.outputs.names }}"
+            # Neither `ok` nor `FAILED` printed for this exact test: it never
+            # ran — a filter that matched nothing, a feature gate this step
+            # did not derive, a suite that compiled to nothing. That is the
+            # failure class this gate was already fixed for once (the
+            # `--exact` filter), and it must not pass silently again.
+            if ! echo "$OUT" | grep -qE "^test ([A-Za-z0-9_]+::)*$name \.\.\. FAILED$"; then
+              NOTRUN="$NOTRUN $name"
+            fi
+          done <<< "$NAMES"
 
+          STATUS=0
           if [ -n "$PASSED" ]; then
             echo "::error::These tests PASS without the fix, so they do not prove it:$PASSED"
             echo ""
@@ -569,10 +615,29 @@ jobs:
             echo "  * the assertion checks a call returned, not the effect a user sees"
             echo "  * the expected value is computed by calling the code under test"
             echo "  * the fixture carries data the code under test never reads"
+            STATUS=1
+          fi
+          if [ -n "$NOCOMPILE" ]; then
+            echo "::error::These tests do not compile at the test commit, so nothing was proved:$NOCOMPILE"
             echo ""
-            echo "If this test genuinely cannot fail without the fix, say why in the PR"
-            echo "description and include 'no-revert-check' for a maintainer to waive."
+            echo "A test that does not build is not a red test. Land the API the test needs"
+            echo "(a signature, a type, a stub returning the old behaviour) in the test commit,"
+            echo "so the test compiles and FAILS before the fix commit changes what it returns."
+            STATUS=1
+          fi
+          if [ -n "$NOTRUN" ]; then
+            echo "::error::These tests never ran at the test commit (no 'ok' or 'FAILED' line for them):$NOTRUN"
+            echo ""
+            echo "Usually a feature gate this step could not derive from the test file, or a"
+            echo "name that libtest's filter did not match. Check the group output above."
+            STATUS=1
+          fi
+          if [ "$STATUS" -ne 0 ]; then
+            echo ""
+            echo "If a test genuinely cannot fail without the fix, say why in the PR"
+            echo "description and include 'no-revert-check' for a maintainer to waive —"
+            echo "the waiver is reported in the job summary."
             exit 1
           fi
 
-          echo "All newly added tests fail at the test commit, as required."
+          echo "All newly added tests ran at the test commit and failed, as required."
