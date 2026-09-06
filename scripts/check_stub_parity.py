@@ -77,11 +77,21 @@ def main() -> int:
     # does not declare is invisible to type checkers and editors, and this
     # check used to pass on it. Names the interpreter puts on every module are
     # not exports.
-    module_boilerplate = {"__builtins__", "__doc__", "__file__", "__loader__",
-                          "__name__", "__package__", "__spec__", "__all__",
-                          "__path__", "__cached__"}
-    extra = {n for n in mod_names - stub_names
-             if not n.startswith("_") and n not in module_boilerplate}
+    module_boilerplate = {
+        "__builtins__",
+        "__doc__",
+        "__file__",
+        "__loader__",
+        "__name__",
+        "__package__",
+        "__spec__",
+        "__all__",
+        "__path__",
+        "__cached__",
+    }
+    extra = {
+        n for n in mod_names - stub_names if not n.startswith("_") and n not in module_boilerplate
+    }
     if extra:
         print("FAIL: module exports missing from the stub:")
         for name in sorted(extra):
@@ -89,8 +99,10 @@ def main() -> int:
         print("\nRegenerate the stub (uvx rylai -o python/pdf_oxide/) and commit it.")
         return 1
 
-    print(f"OK: all {len(stub_names)} stub symbols present in installed module,"
-          " and every module export is declared in the stub.")
+    print(
+        f"OK: all {len(stub_names)} stub symbols present in installed module,"
+        " and every module export is declared in the stub."
+    )
     return 0
 
 
