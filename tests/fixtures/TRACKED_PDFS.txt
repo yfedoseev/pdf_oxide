@@ -1,0 +1,35 @@
+# Every PDF committed under tests/ — path, then its provenance. Read by
+# tools/check_tracked_fixtures.sh (the fixture-hygiene CI job): an unlisted
+# PDF fails the job. The policy is minimal synthetic PDFs built in code;
+# a real specimen is the exception, and says here where it came from.
+#
+# Entries marked GRANDFATHERED predate this list (v0.3.78); each is to be
+# replaced by an in-code fixture, and no new entry of that kind is accepted.
+
+tests/fixtures/1.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/1008.3918v2.pdf  GRANDFATHERED — arXiv preprint (third-party); used by test_extract_text_sort_comparator_stability, test_path_to_points, region_filtered_conversion; replace with in-code fixtures
+tests/fixtures/encrypted_cid_truetype.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/encrypted_needs_password.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/encrypted_objstm.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/hello_structure.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/issue_regressions/alpha_channel/538250-1.pdf  GRANDFATHERED — issue reproducer committed before the policy; replace with an in-code fixture
+tests/fixtures/issue_regressions/issue_395_render_signature_exception.pdf  GRANDFATHERED — issue reproducer committed before the policy; replace with an in-code fixture
+tests/fixtures/jpx/jpx_minimal.pdf  project-generated minimal JPX fixture
+tests/fixtures/multi_column_table.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/ocr/auto_hybrid_text_image_en.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_ar.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_cht.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_en.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_hi.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_ja.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_kn.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_ko.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_lat.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_ru.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_ta.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_te.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/ocr/auto_image_text_zh.pdf  project-generated OCR sample (rendered text image, no third-party content)
+tests/fixtures/outline.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/simple.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/vertical_cjk/jo.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code
+tests/fixtures/vertical_cjk/kampo.pdf  GRANDFATHERED — committed before this list; provenance to be recorded or the fixture rebuilt in code

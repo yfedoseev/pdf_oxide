@@ -18,7 +18,8 @@ The rules there apply to agent-assisted work; the essentials:
    change can't be explained without the AI, it isn't ready.
 4. **Every bug fix ships a regression test that fails before the fix.** Build the
    reproducer as a **minimal synthetic PDF in code** — never commit a
-   third-party/reporter/real-world PDF (the `fixture-hygiene` CI job blocks it).
+   third-party/reporter/real-world PDF (the `fixture-hygiene` CI job fails on any
+   PDF under `tests/` not listed with provenance in `tests/fixtures/TRACKED_PDFS.txt`).
 5. **Prove no corpus regression.** For any extraction/layout/rendering/font
    change, run `corpus_sig` on a corpus **you supply** (the project corpus is
    private, not distributed) and diff against **both `main` and the latest

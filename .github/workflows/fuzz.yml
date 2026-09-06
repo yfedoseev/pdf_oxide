@@ -1,0 +1,54 @@
+name: Fuzz
+
+# The parser and content-stream paths take arbitrary bytes and must never
+# panic, overflow or hang: malformed input surfaces as Err. fuzz/ carries the
+# libFuzzer target (fuzz_parse: PdfDocument::from_bytes, then extract_text on
+# page 0). A short budget on pull requests that touch the parsing paths, a
+# long one nightly.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/parser*'
+      - 'src/parser/**'
+      - 'src/decoders/**'
+      - 'src/fonts/**'
+      - 'src/document.rs'
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ github.event_name == 'pull_request' && '2 min' || '15 min' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: nightly
+          rustflags: ''
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run fuzz_parse
+        env:
+          BUDGET: ${{ github.event_name == 'pull_request' && '120' || '900' }}
+        run: |
+          cargo fuzz run fuzz_parse -- -max_total_time="$BUDGET" -timeout=20
+
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Verify that every public symbol in pdf_oxide's .pyi stub exists in the
-installed module.
+"""Verify that pdf_oxide's .pyi stub and the installed module export the
+same public symbols, in both directions.
 
-Exit 1 if any stub symbol is absent — this catches stubs generated with
-wider Cargo features than the installed wheel (issue #464).
+Exit 1 if any stub symbol is absent from the module — stubs generated with
+wider Cargo features than the installed wheel (issue #464) — or if any public
+module export is absent from the stub.
 
 Usage:
     python scripts/check_stub_parity.py <path-to-pyi>
@@ -72,7 +73,24 @@ def main() -> int:
         )
         return 1
 
-    print(f"OK: all {len(stub_names)} stub symbols present in installed module.")
+    # The other direction: a public symbol the module exports that the stub
+    # does not declare is invisible to type checkers and editors, and this
+    # check used to pass on it. Names the interpreter puts on every module are
+    # not exports.
+    module_boilerplate = {"__builtins__", "__doc__", "__file__", "__loader__",
+                          "__name__", "__package__", "__spec__", "__all__",
+                          "__path__", "__cached__"}
+    extra = {n for n in mod_names - stub_names
+             if not n.startswith("_") and n not in module_boilerplate}
+    if extra:
+        print("FAIL: module exports missing from the stub:")
+        for name in sorted(extra):
+            print(f"  {name}")
+        print("\nRegenerate the stub (uvx rylai -o python/pdf_oxide/) and commit it.")
+        return 1
+
+    print(f"OK: all {len(stub_names)} stub symbols present in installed module,"
+          " and every module export is declared in the stub.")
     return 0
 
 

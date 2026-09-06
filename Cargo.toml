@@ -41,6 +41,12 @@ ignored-paths = [
 # new bin targets don't need their own #![allow] attributes. Mirrors the stance
 # previously declared only in src/lib.rs.
 [workspace.lints.clippy]
+# `iter_over_hash_type` and the cast lints (`cast_possible_truncation`,
+# `cast_sign_loss`, `cast_possible_wrap`) are not set here yet: CI's
+# `-D warnings` makes any `warn` fatal, and there were 64 hash-iteration sites
+# at v0.3.78. The "Advisory lints" step of the clippy CI job counts them on
+# every run; they enter this table at `warn` once the count is one change's
+# worth of fixes.
 type_complexity = "allow"
 too_many_arguments = "allow"
 needless_range_loop = "allow"
