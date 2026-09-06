@@ -3809,9 +3809,7 @@ class PdfDocument implements Finalizable {
     _check();
     final code = calloc<Int32>();
     try {
-      return _takeString(
-          _n.structuredWarnings(_handle, code),
-          code.value,
+      return _takeString(_n.structuredWarnings(_handle, code), code.value,
           'structuredWarnings');
     } finally {
       calloc.free(code);
@@ -3823,9 +3821,7 @@ class PdfDocument implements Finalizable {
     _check();
     final code = calloc<Int32>();
     try {
-      return _takeString(
-          _n.takeStructuredWarnings(_handle, code),
-          code.value,
+      return _takeString(_n.takeStructuredWarnings(_handle, code), code.value,
           'takeStructuredWarnings');
     } finally {
       calloc.free(code);

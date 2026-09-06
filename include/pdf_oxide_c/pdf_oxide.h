@@ -221,6 +221,21 @@
 #define DEFAULT_EDGE_PADDING 0.5
 
 /**
+ * Default output-raster budget: 16 megapixels, i.e. a 64 MB RGBA pixmap.
+ *
+ * Sized to clear any realistic page while still bounding the pathological
+ * ones. A 4K display is 8.3 Mpx and A4 at 300 dpi is 8.7 Mpx, both well
+ * inside it; across a 2007-document corpus the largest page rasterises to
+ * 8.03 Mpx at 72 dpi, so nothing real is touched by this cap.
+ *
+ * It is also the knob for constrained hosts, because it bounds the decode as
+ * well as the raster: on a 12608 x 16806 page carrying a JPEG 2000 image of
+ * the same size, peak RSS falls from 11.0 GB unbounded to 2.8 GB here, and to
+ * 799 MB at 4 Mpx. Lower it on mobile and WASM; raise it for print.
+ */
+#define DEFAULT_MAX_OUTPUT_PIXELS 16000000
+
+/**
  * Y-band tolerance used by `row_aware_span_cmp`.
  *
  * Two spans whose top-Y differs by less than this amount are treated
