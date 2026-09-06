@@ -10078,7 +10078,12 @@ fn evaluate_pdf_function_at(
     match ftype {
         0 => evaluate_type0_multi(func, dict, &[t]),
         2 => {
-            // f(x) = C0 + x^N (C1 - C0), with x the position within /Domain.
+            // Table 40 (docs/spec/pdf.md:7068): y_j = C0_j + x^N (C1_j - C0_j),
+            // with x the input itself, clipped to /Domain above — not its
+            // position within the domain. A stitching sub-function whose
+            // own /Domain is wider than the [0, 1] its /Encode hands it,
+            // say [-2 5], was being evaluated at (x + 2) / 7 and painted
+            // its C0 stop two sevenths of the way along the ramp.
             let c0 = nums("C0").unwrap_or_else(|| vec![0.0]);
             let c1 = nums("C1").unwrap_or_else(|| vec![1.0]);
             let n = dict
@@ -10089,13 +10094,7 @@ fn evaluate_pdf_function_at(
                         .or_else(|| o.as_integer().map(|i| i as f32))
                 })
                 .unwrap_or(1.0);
-            let span = d1 - d0;
-            let x = if span.abs() < f32::EPSILON {
-                0.0
-            } else {
-                (t - d0) / span
-            };
-            let k = x.powf(n);
+            let k = t.powf(n);
             Some(
                 c0.iter()
                     .zip(c1.iter())
