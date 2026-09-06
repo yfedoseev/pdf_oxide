@@ -245,7 +245,7 @@ fn sheet_with_an_undrawn_form(pad: usize, n_drawn: usize) -> Vec<u8> {
 }
 
 #[test]
-fn an_undrawn_form_is_not_collected_at_either_stream_size() {
+fn test_undrawn_form_is_not_collected_at_either_stream_size() {
     // 60 drawn forms against 1 page-level BT puts the Do:BT ratio well past
     // the 10:1 point, so this exercises the fallback this change introduces —
     // which is the broadened path §4 is asking about.
@@ -285,7 +285,7 @@ fn an_undrawn_form_is_not_collected_at_either_stream_size() {
 /// the region replayed a bare `Do` against an empty operand stack, the form
 /// was never invoked, and every glyph it drew was lost.
 #[test]
-fn a_single_drawn_form_survives_a_large_stream() {
+fn test_single_drawn_form_survives_a_large_stream() {
     let small = text_of(sheet_with_an_undrawn_form(2_000, 1));
     let big = text_of(sheet_with_an_undrawn_form(300_000, 1));
 

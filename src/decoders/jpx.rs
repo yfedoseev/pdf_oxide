@@ -276,7 +276,7 @@ mod tests {
     /// 12608 x 16806 JPX in full peaks at 11.0 GB, which no browser tab or
     /// phone survives, for a picture painted into a fraction of that.
     #[test]
-    fn a_target_resolution_decodes_a_smaller_image() {
+    fn test_target_resolution_decodes_a_smaller_image() {
         let full = decode_jpx_at(SAMPLE_JP2, None).expect("decode at full size");
         assert_eq!((full.width, full.height), (816, 1056), "test premise");
 

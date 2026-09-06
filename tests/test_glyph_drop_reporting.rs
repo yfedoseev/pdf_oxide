@@ -242,7 +242,7 @@ fn drain_broken_subset_warnings() -> Vec<String> {
 }
 
 #[test]
-fn a_dropped_glyph_warns_on_every_page_it_paints() {
+fn test_dropped_glyph_warns_on_every_page_it_paints() {
     let doc = PdfDocument::from_bytes(pdf_with_broken_font(2)).expect("parse fixture");
     let mut renderer = PageRenderer::new(RenderOptions::default());
     let _ = drain_broken_subset_warnings();

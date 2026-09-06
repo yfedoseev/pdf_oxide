@@ -981,7 +981,7 @@ mod tests {
     /// scripts with no case, where `is_lowercase()` is false for every
     /// character.
     #[test]
-    fn a_heading_in_another_script_is_untouched() {
+    fn test_heading_in_another_script_is_untouched() {
         for heading in [
             "\u{7b2c}\u{4e00}\u{7ae0}",
             "\u{627}\u{644}\u{645}\u{642}\u{62f}\u{645}\u{629}",
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn a_latin_backward_step_is_still_a_discontinuity() {
+    fn test_latin_backward_step_is_still_a_discontinuity() {
         // The rule the RTL guard narrows must still fire for left-to-right
         // text, where a run beginning left of the previous run's start is a
         // new line or column — this is what stops `It is the` becoming
@@ -1063,7 +1063,7 @@ mod tests {
     /// where the other three met it. That is why the damage was asymmetric —
     /// `19 / 09 /1403`, a space before every separator but not after the last.
     #[test]
-    fn a_date_in_a_right_to_left_run_is_not_split_at_its_separators() {
+    fn test_date_in_a_right_to_left_run_is_not_split_at_its_separators() {
         let date = [
             (176.54, 11.28, "19"),
             (174.02, 2.48, "/"),
@@ -1087,7 +1087,7 @@ mod tests {
     /// are European numbers; neither establishes a direction, so neither can
     /// justify reading a leftward step as a discontinuity.
     #[test]
-    fn a_percentage_in_a_right_to_left_run_keeps_its_sign() {
+    fn test_percentage_in_a_right_to_left_run_keeps_its_sign() {
         let prev = rtl_span(202.49, 5.63, 12.0, "5");
         let curr = rtl_span(197.21, 5.24, 12.0, "%");
         assert!(
@@ -1101,7 +1101,7 @@ mod tests {
     /// genuine reading discontinuity and must still separate — it is what stops
     /// a re-ordered OCR layer emitting `It is the` as `theisIt`.
     #[test]
-    fn a_latin_backward_step_with_letters_still_separates() {
+    fn test_latin_backward_step_with_letters_still_separates() {
         let prev = rtl_span(176.54, 11.28, 12.0, "is");
         let curr = rtl_span(160.22, 11.28, 12.0, "the");
         assert!(
@@ -1302,7 +1302,7 @@ mod tests {
     /// bar, so `has_horizontal_gap` declines and the two glue as
     /// `phosphorylation55`.
     #[test]
-    fn a_footnote_marker_after_a_word_is_a_boundary() {
+    fn test_footnote_marker_after_a_word_is_a_boundary() {
         let word = marker_span(124.60, 189.36, 9.96, "TWJDIY+SFRM1000", "phosphorylation");
         let marker = marker_span(314.95, 6.0, 6.97, "MIOKXQ+SFRM0700", "55.");
         assert!(
@@ -1321,7 +1321,7 @@ mod tests {
     /// fuses this. The base being a symbol rather than a prose word is what
     /// separates them — the same rule `merge_sub_superscript_spans` uses.
     #[test]
-    fn a_maths_subscript_is_not_a_boundary() {
+    fn test_maths_subscript_is_not_a_boundary() {
         for (base, sub) in [
             ("W", "2"),
             ("H", "2"),
@@ -1340,7 +1340,7 @@ mod tests {
 
     /// An italic base is a mathematical expression, not prose.
     #[test]
-    fn an_italic_base_is_not_a_prose_word() {
+    fn test_italic_base_is_not_a_prose_word() {
         let mut base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "alpha");
         base.is_italic = true;
         let marker = marker_span(131.0, 5.0, 6.5, "SUB+Font", "2");
@@ -1350,7 +1350,7 @@ mod tests {
     /// The marker must be a numeral. A letter following a word at the advance
     /// edge is a glyph-split word, not a callout, and must stay joined.
     #[test]
-    fn a_letter_continuation_is_not_a_marker() {
+    fn test_letter_continuation_is_not_a_marker() {
         let base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "ultrasonographi");
         let cont = marker_span(131.0, 20.0, 10.0, "BODY+Font", "cally");
         assert!(!is_reference_marker_boundary(&base, &cont));
@@ -1358,7 +1358,7 @@ mod tests {
 
     /// Same font means one run, whatever the size — no callout.
     #[test]
-    fn the_same_font_resource_is_not_a_boundary() {
+    fn test_same_font_resource_is_not_a_boundary() {
         let base = marker_span(100.0, 30.0, 10.0, "SAME+Font", "phosphorylation");
         let marker = marker_span(131.0, 5.0, 6.5, "SAME+Font", "55");
         assert!(!is_reference_marker_boundary(&base, &marker));
@@ -1427,7 +1427,7 @@ mod span_ownership_tests {
     /// document. The origin test said it belonged to the table; the cell's own
     /// ink says otherwise, and the ink is what gets rendered.
     #[test]
-    fn a_span_no_cell_renders_is_left_to_prose() {
+    fn test_span_no_cell_renders_is_left_to_prose() {
         let table = table_with_a_placeholder_cell();
         let orphan = OrderedTextSpan::new(span_at("footnote", 165.0, 703.0, 40.0), 0);
 
@@ -1443,7 +1443,7 @@ mod span_ownership_tests {
     /// `None`: a span the cell really does render must stay out of prose, or it
     /// appears twice.
     #[test]
-    fn a_span_a_cell_renders_is_claimed_by_it() {
+    fn test_span_a_cell_renders_is_claimed_by_it() {
         let table = table_with_a_placeholder_cell();
         let owned = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
 
@@ -1497,7 +1497,7 @@ mod span_ownership_tests {
     /// A table carrying neither marked content nor cell spans still falls back
     /// to the geometric rule, which is all there is for it.
     #[test]
-    fn a_bare_table_still_uses_the_geometric_rule() {
+    fn test_bare_table_still_uses_the_geometric_rule() {
         let mut table = Table::new();
         table.add_row(TableRow::new(false));
         table.bbox = Some(crate::geometry::Rect {

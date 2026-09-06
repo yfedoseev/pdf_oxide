@@ -2149,7 +2149,7 @@ mod vector_artwork_is_not_a_scan_tests {
     /// page has no glyphs and no images — four drawings score exactly what four
     /// thousand outlined glyphs would. The count is what separates them.
     #[test]
-    fn a_handful_of_paths_is_artwork_not_outlined_text() {
+    fn test_handful_of_paths_is_artwork_not_outlined_text() {
         let mut s = base();
         s.vector_path_density = 1.0;
         s.vector_path_count = 4;
@@ -2188,7 +2188,7 @@ mod vector_artwork_is_not_a_scan_tests {
 
     /// But an image whose placement cannot be measured is still a raster.
     #[test]
-    fn an_unmeasurable_image_is_still_a_scan() {
+    fn test_unmeasurable_image_is_still_a_scan() {
         let mut s = base();
         s.codec = ImageCodecClass::Dct;
         s.image_area_ratio = 0.0;

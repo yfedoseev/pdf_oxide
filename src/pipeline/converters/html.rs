@@ -1012,7 +1012,7 @@ mod tests {
     /// so the sentence-fragment rule has to be asserted there too — the two
     /// formats must agree on what is a heading.
     #[test]
-    fn a_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+    fn test_mid_sentence_fragment_is_not_promoted_to_a_heading() {
         for fragment in ["Furthermore, one reads in the", "palaces league."] {
             assert!(
                 HtmlOutputConverter::looks_like_non_heading(fragment),

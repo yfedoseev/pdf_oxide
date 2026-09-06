@@ -2104,7 +2104,7 @@ pub(crate) fn decode_cmyk_jpeg_to_raw_cmyk(jpeg_data: &[u8]) -> Result<Vec<u8>> 
     // for four components, no marker *is* transform 0, the very case the undo
     // handles. And measurement settles it independently: `jpeg-decoder`
     // returns byte-identical samples for the same image with and without the
-    // marker, pinned by `tests/cmyk_jpeg_without_app14_marker.rs`. A
+    // marker, pinned by `tests/test_cmyk_jpeg_without_app14_marker.rs`. A
     // marker-less 4-component JPEG therefore kept the decoder's inversion and
     // rendered as the complement of its ink.
     //

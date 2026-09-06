@@ -2701,7 +2701,7 @@ mod tests {
     /// scale must come from the font rather than from the 1000-unit
     /// assumption in ISO 32000-1 §9.2.2 ("For **most** types of fonts").
     #[test]
-    fn a_font_matrix_of_one_over_2048_is_read() {
+    fn test_font_matrix_of_one_over_2048_is_read() {
         let sx = parse_cff_font_matrix_scale(CFF_2048)
             .expect("the Top DICT declares a FontMatrix, so a scale must come back");
         assert!(
@@ -2714,7 +2714,7 @@ mod tests {
     /// No `/FontMatrix` means the CFF default, and the caller must keep its own
     /// 1000-unit assumption rather than being handed a value to fold in.
     #[test]
-    fn an_absent_font_matrix_yields_nothing_to_fold_in() {
+    fn test_absent_font_matrix_yields_nothing_to_fold_in() {
         assert_eq!(
             parse_cff_font_matrix_scale(&cff_without_font_matrix()),
             None,
@@ -2753,7 +2753,7 @@ mod tests {
     /// glyph 1, so treating the CID as a GID would ask for glyph 100 of a
     /// two-glyph font and paint nothing.
     #[test]
-    fn a_cid_keyed_charset_maps_cid_to_gid() {
+    fn test_cid_keyed_charset_maps_cid_to_gid() {
         let map = parse_cff_cid_to_gid(CFF_CID_KEYED)
             .expect("the Top DICT carries ROS, so this font is CID-keyed");
         assert_eq!(map.get(&100), Some(&1), "CID 100 is GID 1 in this charset; got {map:?}");
@@ -2763,7 +2763,7 @@ mod tests {
     /// then says "the CIDs shall be used directly as GID values" — so the
     /// caller must get nothing to override that with.
     #[test]
-    fn a_font_without_ros_yields_no_mapping() {
+    fn test_font_without_ros_yields_no_mapping() {
         // CFF_2048 is the FontMatrix fixture above: a plain, non-CID-keyed font.
         assert_eq!(
             parse_cff_cid_to_gid(CFF_2048),

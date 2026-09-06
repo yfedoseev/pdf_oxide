@@ -3098,7 +3098,7 @@ mod tests {
     /// Asserted through `is_valid_heading_text` rather than the helper it calls,
     /// so that disabling the call site fails this test.
     #[test]
-    fn a_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+    fn test_mid_sentence_fragment_is_not_promoted_to_a_heading() {
         for fragment in ["Furthermore, one reads in the", "palaces league."] {
             assert!(
                 !MarkdownOutputConverter::is_valid_heading_text(fragment),
