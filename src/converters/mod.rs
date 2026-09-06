@@ -342,13 +342,28 @@ pub struct ConversionOptions {
     /// Default: `false`.
     pub expand_ligatures: bool,
 
-    /// Emit a visible marker in the markdown/HTML for a page that produced no
-    /// extractable text but is a scanned / image page (rasterised content with
-    /// no usable text layer). Without it, ~half the pages of a scanned corpus
-    /// render as silently-blank, with no indication that content was lost and
-    /// OCR is required. The marker is a block-quote naming the page.
+    /// No longer read. A page with no extractable text now extracts as
+    /// nothing, and the reason is reported as a diagnostic instead.
     ///
-    /// Default: `true`. Set `false` to keep scanned pages blank.
+    /// This emitted an English sentence into the extracted markdown saying the
+    /// page was a scan and OCR would recover it. A consumer cannot tell such a
+    /// sentence from text the page actually contains, so it is indexed,
+    /// embedded and searched as though the document said it. No reference
+    /// extractor behaves that way.
+    ///
+    /// The flag was never a way out of it. Every binding, the CLI and the MCP
+    /// server build [`ConversionOptions`] from [`Default`] and cannot reach
+    /// this field, so for every surface but the Rust API the marker was not a
+    /// default but the only behaviour.
+    ///
+    /// Read the reason from `PdfDocument::structured_warnings()` — category
+    /// `no_text_layer`, carrying the page index — or from
+    /// `classify_document().pages_needing_ocr`.
+    #[deprecated(
+        since = "0.3.78",
+        note = "no longer read; a page with no text extracts as nothing and the reason \
+                is reported via structured_warnings() with category no_text_layer"
+    )]
     pub annotate_skipped_pages: bool,
 
     /// Include spans tagged `/Artifact` (running headers/footers, page
@@ -404,7 +419,8 @@ impl Default for ConversionOptions {
             exclude_regions_mode: crate::layout::RectFilterMode::Intersects,
             include_region: None,
             expand_ligatures: false,
-            annotate_skipped_pages: true,
+            #[allow(deprecated)]
+            annotate_skipped_pages: false,
             include_artifacts: true,
         }
     }

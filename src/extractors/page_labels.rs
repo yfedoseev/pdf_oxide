@@ -13,6 +13,10 @@ use crate::document::PdfDocument;
 use crate::error::{Error, Result};
 use crate::object::Object;
 
+/// Depth cap for the `/Kids` walk of a `/PageLabels` number tree, matching
+/// `MAX_RECURSION_DEPTH` in the document module's colour-space walker.
+const MAX_NUMBER_TREE_DEPTH: u32 = 100;
+
 /// Page numbering style as defined in PDF specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageLabelStyle {
@@ -220,7 +224,42 @@ impl PageLabelExtractor {
     /// Number trees can have:
     /// - /Nums array: direct array of [key, value, key, value, ...]
     /// - /Kids array: array of intermediate nodes
+    ///
+    /// ISO 32000-1:2008 §7.9.7 describes a number tree as a tree, but nothing
+    /// in the file format stops a `/Kids` array from naming an ancestor. The
+    /// walk is therefore bounded the same way the crate's two other tree
+    /// walkers are — a visited set keyed on `ObjectRef` plus a depth cap. A
+    /// malformed tree degrades to the ranges found so far with a warning,
+    /// because page labelling is an extraction feature; without the guards it
+    /// recursed until the stack overflowed, which is a process abort rather
+    /// than a catchable panic.
     fn parse_number_tree(doc: &PdfDocument, tree_obj: &Object) -> Result<Vec<PageLabelRange>> {
+        let mut visited = std::collections::HashSet::new();
+        Self::parse_number_tree_inner(doc, tree_obj, &mut visited, 0)
+    }
+
+    fn parse_number_tree_inner(
+        doc: &PdfDocument,
+        tree_obj: &Object,
+        visited: &mut std::collections::HashSet<crate::object::ObjectRef>,
+        depth: u32,
+    ) -> Result<Vec<PageLabelRange>> {
+        if depth >= MAX_NUMBER_TREE_DEPTH {
+            log::warn!(
+                "PageLabels number tree deeper than {MAX_NUMBER_TREE_DEPTH} levels; \
+                 stopping the walk here"
+            );
+            return Ok(Vec::new());
+        }
+        // A node reached twice is a cycle, not a deeper tree. Only indirect
+        // nodes can form one — a direct dictionary cannot name itself.
+        if let Some(node_ref) = tree_obj.as_reference() {
+            if !visited.insert(node_ref) {
+                log::warn!("PageLabels number tree revisits a node; treating it as a cycle");
+                return Ok(Vec::new());
+            }
+        }
+
         let tree_resolved = Self::resolve_object(doc, tree_obj)?;
         let tree_dict = tree_resolved
             .as_dict()
@@ -256,7 +295,8 @@ impl PageLabelExtractor {
             let kids_resolved = Self::resolve_object(doc, kids_obj)?;
             if let Some(kids_arr) = kids_resolved.as_array() {
                 for kid_obj in kids_arr {
-                    let kid_ranges = Self::parse_number_tree(doc, kid_obj)?;
+                    let kid_ranges =
+                        Self::parse_number_tree_inner(doc, kid_obj, visited, depth + 1)?;
                     ranges.extend(kid_ranges);
                 }
             }

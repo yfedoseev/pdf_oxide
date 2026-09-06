@@ -221,6 +221,21 @@
 #define DEFAULT_EDGE_PADDING 0.5
 
 /**
+ * Default output-raster budget: 16 megapixels, i.e. a 64 MB RGBA pixmap.
+ *
+ * Sized to clear any realistic page while still bounding the pathological
+ * ones. A 4K display is 8.3 Mpx and A4 at 300 dpi is 8.7 Mpx, both well
+ * inside it; across a 2007-document corpus the largest page rasterises to
+ * 8.03 Mpx at 72 dpi, so nothing real is touched by this cap.
+ *
+ * It is also the knob for constrained hosts, because it bounds the decode as
+ * well as the raster: on a 12608 x 16806 page carrying a JPEG 2000 image of
+ * the same size, peak RSS falls from 11.0 GB unbounded to 2.8 GB here, and to
+ * 799 MB at 4 Mpx. Lower it on mobile and WASM; raise it for print.
+ */
+#define DEFAULT_MAX_OUTPUT_PIXELS 16000000
+
+/**
  * Y-band tolerance used by `row_aware_span_cmp`.
  *
  * Two spans whose top-Y differs by less than this amount are treated
@@ -2786,6 +2801,42 @@ char *pdf_document_plan_split_by_bookmarks(PdfDocument *handle,
  * On failure sets `error_code` non-zero and returns null.
  */
 char *pdf_document_classify_page(PdfDocument *handle, int32_t page_index, int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * The document's structured diagnostics as a malloc'd JSON array; free via
+ * the string-free. `"[]"` when there are none.
+ *
+ * Non-destructive: a later call returns the same entries plus any raised
+ * since. Use `pdf_document_take_structured_warnings` to drain.
+ *
+ * ```json
+ * [{"category":"no_text_layer","page":0,
+ *   "message":"page 1 has no extractable text layer…","spec_section":null}]
+ * ```
+ *
+ * `category` is a stable snake_case token. **Consumers must tolerate tokens
+ * they do not know** — categories are added in minor releases, so a binding
+ * that models this as a closed enum turns a routine release into a
+ * deserialisation failure for its users. Keep it a string, or give the enum
+ * an unknown-value arm.
+ *
+ * This is the channel the library reports *about* extraction on. Nothing is
+ * written into the extracted content itself: a page with no text extracts as
+ * nothing and says so here, carrying the page index, so a caller can decide
+ * whether to surface it, where, and in what language.
+ */
+char *pdf_document_structured_warnings(PdfDocument *handle, int32_t *error_code);
+#endif
+
+#if !defined(PDF_OXIDE_TARGET_WASM32)
+/**
+ * As `pdf_document_structured_warnings`, but drains: the returned entries are
+ * removed, so a batch pipeline can read per document without the sink growing
+ * across the run.
+ */
+char *pdf_document_take_structured_warnings(PdfDocument *handle, int32_t *error_code);
 #endif
 
 #if !defined(PDF_OXIDE_TARGET_WASM32)

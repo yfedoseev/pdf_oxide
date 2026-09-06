@@ -38,6 +38,12 @@ pub struct JpxImage {
     /// `width * height * num_components` bytes, component-interleaved (row-major).
     pub samples: Vec<u8>,
     pub num_components: u8,
+    /// Dimensions of the samples actually decoded. When `decode_jpx_at` was
+    /// given a target resolution these may be smaller than the `/Width` and
+    /// `/Height` of the image dictionary, so callers must take the geometry
+    /// from here rather than from the dictionary.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Decode a JP2/J2K codestream to interleaved 8-bit-per-component samples.
@@ -48,10 +54,64 @@ pub struct JpxImage {
 /// the common case for PDF image XObjects; a subsampled component is rejected with a
 /// typed error rather than producing misaligned output.
 #[cfg(feature = "jpeg2000")]
-pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
+/// Decode a JP2/J2K codestream, optionally at no more than `target` resolution.
+///
+/// JPEG 2000 is inherently multi-resolution: the codestream stores successive
+/// resolution levels, so a smaller image can be produced by decoding fewer of
+/// them rather than by decoding everything and shrinking afterwards. When the
+/// caller knows the image will be drawn smaller than its stored size — which
+/// on a page it usually is — this avoids materialising the full-resolution
+/// samples at all.
+///
+/// That difference is not marginal. One page in the wild carries a
+/// 12608 x 16806 JPX image; decoding it at full resolution peaks at 11.3 GB,
+/// which no browser tab or phone will survive, for a picture that is painted
+/// into a fraction of that.
+///
+/// `target` is a hint: the decoder picks the smallest resolution level that
+/// still covers it, so the result is never smaller than requested and may be
+/// larger.
+pub fn decode_jpx_at(bytes: &[u8], target: Option<(u32, u32)>) -> Result<JpxImage> {
+    decode_jpx_with(bytes, target, true)
+}
+
+/// Decode a JP2/J2K codestream to its palette *indices*, one byte per pixel.
+///
+/// For an image whose dictionary declares an `/Indexed` colour space, the
+/// codestream's single component is an index into the dictionary's lookup
+/// table, and §7.4.9 (`docs/spec/pdf.md`:3143) has the dictionary win: "If
+/// present, it shall determine how the image samples are interpreted, and
+/// the colour space specifications in the JPEG2000 data shall be ignored". A JP2 file may carry a palette box of its own for
+/// the same indices; resolving through it yields three colour components
+/// where the dictionary expects one, and the first of them — the red
+/// channel — then stands in for the whole pixel. That is how a page whose
+/// palette is four shades of blue came out `R = G = B`.
+///
+/// The samples are the raw index values, not rescaled to 8 bits, so they can
+/// be looked up in the dictionary's table directly. Indices wider than a byte
+/// are refused: an `/Indexed` table is indexed by 0..`hival` and "`hival`
+/// shall be no greater than 255" (§8.6.6.3, pdf.md:10992), so a component
+/// deeper than 8 bits cannot be one.
+#[cfg(feature = "jpeg2000")]
+pub fn decode_jpx_indices_at(bytes: &[u8], target: Option<(u32, u32)>) -> Result<JpxImage> {
+    decode_jpx_with(bytes, target, false)
+}
+
+#[cfg(feature = "jpeg2000")]
+fn decode_jpx_with(
+    bytes: &[u8],
+    target: Option<(u32, u32)>,
+    resolve_palette_indices: bool,
+) -> Result<JpxImage> {
     use hayro_jpeg2000::{DecodeSettings, DecoderContext, Image};
 
-    let image = Image::new(bytes, &DecodeSettings::default()).map_err(|e| {
+    let settings = DecodeSettings {
+        target_resolution: target,
+        resolve_palette_indices,
+        ..DecodeSettings::default()
+    };
+
+    let image = Image::new(bytes, &settings).map_err(|e| {
         Error::UnsupportedFilter(format!("JPXDecode: JPEG 2000 decode failed: {e:?}"))
     })?;
 
@@ -72,12 +132,44 @@ pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
     }
     let num_components = comps.len();
 
+    // Palette indices are wanted as they are: the decoder's own interleave
+    // would rescale a 4-bit index to the 8-bit range (0..15 → 0..255), and a
+    // lookup table cannot be read with that.
+    if !resolve_palette_indices {
+        let comp = &comps[0];
+        if comp.bit_depth() > 8 {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: a {}-bit component cannot index a colour table",
+                comp.bit_depth()
+            )));
+        }
+        let s = comp.samples();
+        if s.len() != npix {
+            return Err(Error::UnsupportedFilter(format!(
+                "JPXDecode: index component holds {} samples for a {width}x{height} image",
+                s.len()
+            )));
+        }
+        let samples = s
+            .iter()
+            .map(|&v| v.round().clamp(0.0, 255.0) as u8)
+            .collect();
+        return Ok(JpxImage {
+            samples,
+            num_components: 1,
+            width,
+            height,
+        });
+    }
+
     // Fast path: every component is full-resolution (the common case) → use the
     // decoder's own interleave.
     if comps.iter().all(|c| c.samples().len() == npix) {
         return Ok(JpxImage {
             samples: decoded.data_u8(),
             num_components: num_components as u8,
+            width,
+            height,
         });
     }
 
@@ -122,6 +214,8 @@ pub fn decode_jpx(bytes: &[u8]) -> Result<JpxImage> {
     }
     Ok(JpxImage {
         samples,
+        width,
+        height,
         num_components: num_components as u8,
     })
 }
@@ -142,7 +236,7 @@ fn upsample_nearest_u8(sub: &[f32], sw: usize, sh: usize, fw: usize, fh: usize) 
 
 #[cfg(all(test, feature = "jpeg2000"))]
 mod tests {
-    use super::{decode_jpx, upsample_nearest_u8};
+    use super::{decode_jpx_at, upsample_nearest_u8};
 
     /// Grayscale JP2 codestream from the minimal repro (816x1056 DeviceGray).
     const SAMPLE_JP2: &[u8] = include_bytes!("../../tests/fixtures/jpx/sample_gray.jp2");
@@ -175,9 +269,48 @@ mod tests {
         assert_eq!(out[8], 4); // (2,2) → source (1,1)
     }
 
+    /// A target resolution decodes fewer levels, and the reported geometry
+    /// follows the samples rather than the codestream's full size.
+    ///
+    /// This is what keeps an oversized image affordable: decoding a
+    /// 12608 x 16806 JPX in full peaks at 11.0 GB, which no browser tab or
+    /// phone survives, for a picture painted into a fraction of that.
+    #[test]
+    fn test_target_resolution_decodes_a_smaller_image() {
+        let full = decode_jpx_at(SAMPLE_JP2, None).expect("decode at full size");
+        assert_eq!((full.width, full.height), (816, 1056), "test premise");
+
+        let small =
+            decode_jpx_at(SAMPLE_JP2, Some((200, 260))).expect("decode at a reduced resolution");
+
+        // Never smaller than asked for — the decoder picks the smallest level
+        // that still covers the target ...
+        assert!(
+            small.width >= 200 && small.height >= 260,
+            "reduced decode {}x{} is below the requested 200x260",
+            small.width,
+            small.height
+        );
+        // ... but genuinely smaller than the full image, which is the point:
+        // without this the full-resolution samples are always materialised.
+        assert!(
+            small.width < full.width && small.height < full.height,
+            "target resolution had no effect: still {}x{}",
+            small.width,
+            small.height
+        );
+        // The geometry must describe the samples actually returned, or the
+        // caller reads the buffer with the wrong row stride.
+        assert_eq!(
+            small.samples.len(),
+            small.width as usize * small.height as usize * usize::from(small.num_components),
+            "reported geometry does not match the sample count"
+        );
+    }
+
     #[test]
     fn decode_jpx_grayscale() {
-        let img = decode_jpx(SAMPLE_JP2).expect("decode JP2 codestream");
+        let img = decode_jpx_at(SAMPLE_JP2, None).expect("decode JP2 codestream");
 
         assert_eq!(img.num_components, 1);
         assert_eq!(img.samples.len(), 816 * 1056);

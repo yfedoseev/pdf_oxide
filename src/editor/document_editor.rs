@@ -1647,6 +1647,39 @@ impl DocumentEditor {
             write!(writer, "  /Info {} 0 R\n", self.next_object_id)?;
         }
 
+        // ISO 32000-1:2008 §7.5.6 (`docs/spec/pdf.md:3639`): "The added trailer
+        // shall contain all the entries except the Prev entry (if present) from
+        // the previous trailer, whether modified or not."
+        //
+        // Only /Size, /Prev, /Root and /Info were being written, so every other
+        // entry the original trailer carried was dropped — /ID most notably,
+        // whose absence "might prevent the file from functioning in some
+        // workflows that depend on files being uniquely identified" (Table 15
+        // NOTE 2). Carry the rest across verbatim.
+        //
+        // The four handled above are skipped: /Size and /Prev are recomputed
+        // for this update by definition, /Root is written from the source
+        // trailer just above, and /Info is either rewritten here or inherited
+        // through the /Prev chain. /Encrypt cannot appear — an encrypted source
+        // is refused at the top of this function, because appending plaintext
+        // objects under a document key would corrupt them.
+        if let Some(trailer) = self.source.trailer().as_dict() {
+            let mut carried: Vec<&String> = trailer
+                .keys()
+                .filter(|k| !matches!(k.as_str(), "Size" | "Prev" | "Root" | "Info" | "XRefStm"))
+                .collect();
+            // Deterministic output: a HashMap's order is not stable, and two
+            // saves of one document must produce the same bytes.
+            carried.sort();
+            for key in carried {
+                if let Some(value) = trailer.get(key) {
+                    write!(writer, "  /{key} ")?;
+                    writer.write_all(&serializer.serialize(value))?;
+                    write!(writer, "\n")?;
+                }
+            }
+        }
+
         write!(writer, ">>\n")?;
         write!(writer, "startxref\n")?;
         write!(writer, "{}\n", xref_offset)?;
@@ -1944,23 +1977,35 @@ impl DocumentEditor {
                     EncryptionAlgorithm::Aes256 => Algorithm::Aes256,
                 };
 
-                // Build encryption dictionary
-                let encrypt_dict = EncryptDictBuilder::new(algorithm)
+                // Build the encryption dictionary, keeping the file
+                // encryption key it wrapped into /UE and /OE.
+                let (encrypt_dict, file_key) = EncryptDictBuilder::new(algorithm)
                     .user_password(config.user_password.as_bytes())
                     .owner_password(config.owner_password.as_bytes())
                     .permissions(config.permissions.to_bits())
                     .encrypt_metadata(true)
-                    .build(&id1)?;
+                    .build_with_key(&id1)?;
 
-                // Create encryption handler
-                let handler = EncryptionWriteHandler::new(
-                    config.user_password.as_bytes(),
-                    &encrypt_dict.owner_password,
-                    encrypt_dict.permissions,
-                    &id1,
-                    algorithm,
-                    true,
-                )?;
+                // Create encryption handler.
+                //
+                // For AES-256 (R6) the key is the one just wrapped into /UE —
+                // ISO 32000-2 Algorithm 8 generates exactly one, and there is
+                // nothing to re-derive. Deriving separately here produced a
+                // second random key, so the file authenticated and then
+                // decrypted every stream to noise. For R<=4 the key *is* a
+                // derivation from the password, owner hash, permissions and
+                // file id, and the handler recomputes it.
+                let handler = match file_key {
+                    Some(key) => EncryptionWriteHandler::with_file_key(key, algorithm, true),
+                    None => EncryptionWriteHandler::new(
+                        config.user_password.as_bytes(),
+                        &encrypt_dict.owner_password,
+                        encrypt_dict.permissions,
+                        &id1,
+                        algorithm,
+                        true,
+                    )?,
+                };
 
                 (Some((id1, id2)), Some(encrypt_dict), Some(handler))
             } else {

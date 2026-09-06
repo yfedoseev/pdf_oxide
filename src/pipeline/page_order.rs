@@ -320,14 +320,13 @@ pub(crate) fn build_context(doc: &PdfDocument, page_index: usize) -> ReadingOrde
 
     // Use the all-pages traversal cache (O(1) per page) instead of re-walking
     // the whole structure tree here (≈ O(pages²) across a tagged document).
-    // Reading-order strategies only need the bare MCID sequence (for
-    // geometric checks); they don't disambiguate by content-stream
-    // scope. Project the scoped list down to MCID-only here.
-    let mcid_order: Vec<u32> = doc
-        .cached_mcid_order_for_page(&tree, page_index as u32)
-        .into_iter()
-        .map(|(_scope, m)| m)
-        .collect();
+    //
+    // The scope travels with the id. It used to be projected away here, on the
+    // stated grounds that reading-order strategies "don't disambiguate by
+    // content-stream scope" — but that is what they must do: §14.7.4.2 scopes
+    // an /MCID to its content stream, so a form's MCID 0 and the page's MCID 0
+    // are different marked content and were being ordered as if they were one.
+    let mcid_order = doc.cached_mcid_order_for_page(&tree, page_index as u32);
 
     if !mcid_order.is_empty() {
         ctx = ctx.with_mcid_order(mcid_order);

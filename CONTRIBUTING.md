@@ -544,11 +544,26 @@ None of these is a judgement about you or about the underlying diagnosis, and
 none is permanent. Closing a pull request costs nothing to undo; a review cycle
 cannot be undone at all, which is the asymmetry all of this exists to manage.
 
+### 8. Test names follow the existing convention
+
+Nine in ten integration test files are `tests/test_<topic>.rs`, and three in four
+test functions are `test_<what_it_proves>`. Keep to that: prefix new test
+functions with `test_` and new integration test files with `test_`, and say what
+the test proves in the rest of the name rather than what it calls. Do not start a
+test name with an article (`a_`, `an_`, `the_`) — that reads well in prose but
+sorts and greps as a third style next to the other two. Fixture-builder helpers
+are plain descriptive names (`paragraph_split_at_a_word_gap`), not test names.
+
 ## Test fixture policy
 
 - **No third-party, copyrighted, or reporter-supplied PDF binaries in the repo.**
-  `tools/benchmark-harness/validate_fixtures.sh --strict` (the `fixture-hygiene`
-  CI job) enforces this.
+  The `fixture-hygiene` CI job enforces this in two steps:
+  `tools/benchmark-harness/validate_fixtures.sh --strict` rejects files that
+  are not PDFs, and `tools/check_tracked_fixtures.sh` fails on any PDF
+  committed under `tests/` that is not listed with its provenance in
+  `tests/fixtures/TRACKED_PDFS.txt`. The list carries a few PDFs committed
+  before it existed, marked GRANDFATHERED with a replacement note; no new
+  entry of that kind is accepted.
 - **Build fixtures as minimal synthetic PDFs in code.** If a defect genuinely
   cannot be reproduced synthetically and needs a real specimen, it must be
   fetched at test time and pinned by hash, and the test must **skip gracefully

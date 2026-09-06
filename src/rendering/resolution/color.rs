@@ -171,7 +171,8 @@ impl ColorResolver {
 
         match type_name {
             "DeviceGray" | "G" | "CalGray" => Ok(first_as_gray(components, alpha)),
-            "DeviceRGB" | "RGB" | "CalRGB" => Ok(three_as_rgb(components, alpha)),
+            "DeviceRGB" | "RGB" => Ok(three_as_rgb(components, alpha)),
+            "CalRGB" => Ok(resolve_calrgb(arr, components, ctx, alpha)),
             "DeviceCMYK" | "CMYK" => Ok(four_as_cmyk_native(components, alpha)),
             "ICCBased" => self.resolve_iccbased(arr, components, ctx, alpha),
             "Separation" | "DeviceN" => {
@@ -376,10 +377,11 @@ impl ColorResolver {
         // backends still see the channel decomposition, and the
         // composite projection routes through ctx.output_intent_cmyk
         // (which is the spec default when no embedded ICC is available).
+        // Arity is the helpers' own precondition — see `three_as_rgb`.
         match n {
-            1 if !components.is_empty() => Ok(first_as_gray(components, alpha)),
-            3 if components.len() >= 3 => Ok(three_as_rgb(components, alpha)),
-            4 if components.len() >= 4 => Ok(four_as_cmyk_native(components, alpha)),
+            1 => Ok(first_as_gray(components, alpha)),
+            3 => Ok(three_as_rgb(components, alpha)),
+            4 => Ok(four_as_cmyk_native(components, alpha)),
             _ => Ok(first_as_gray(components, alpha)),
         }
     }
@@ -553,16 +555,18 @@ impl ColorResolver {
         &self,
         arr: &[Object],
         components: &[f32],
-        _ctx: &ResolutionContext,
+        ctx: &ResolutionContext,
         alpha: f32,
     ) -> Result<ResolvedColor> {
-        // Indexed: [/Indexed base hival lookup]. The component is the
-        // palette index, scaled 0..255 inside the renderer's existing
-        // inline path. We replicate that fallback (gray = index/255) since
-        // the full lookup path requires palette-stream decoding the pilot
-        // operator doesn't need yet. Image extraction handles indexed
-        // images through a richer path in `src/extractors/images.rs`.
-        let _ = arr;
+        // `[/Indexed base hival lookup]` (§8.6.6.3). The operand is a palette
+        // index, and the colour is whatever the palette holds there,
+        // interpreted in `base`.
+        //
+        // This used to return `index / 255` as a grey level, which is not a
+        // fallback so much as a different picture: index 3 of a palette of
+        // saturated colours painted near-black. The file named for this case
+        // rendered a mean tone of 222.34 where four engines agree on
+        // 231.72-235.49.
         if components.is_empty() {
             return Ok(ResolvedColor::Rgba {
                 r: 0.0,
@@ -571,13 +575,167 @@ impl ColorResolver {
                 a: alpha,
             });
         }
-        let g = (components[0] / 255.0).clamp(0.0, 1.0);
-        Ok(ResolvedColor::Rgba {
-            r: g,
-            g,
-            b: g,
-            a: alpha,
-        })
+        if arr.len() < 4 {
+            return Ok(first_as_gray(components, alpha));
+        }
+
+        let base = ctx
+            .doc
+            .resolve_object(&arr[1])
+            .unwrap_or_else(|_| arr[1].clone());
+        let hival = ctx
+            .doc
+            .resolve_object(&arr[2])
+            .unwrap_or_else(|_| arr[2].clone())
+            .as_integer()
+            .unwrap_or(0)
+            .max(0) as usize;
+
+        // §8.6.6.3 (`docs/spec/pdf.md`:11053-11054): the index "should be an
+        // integer in the range 0 to hival. If the value is a real number, it
+        // shall be rounded to the nearest integer; if it is outside the range
+        // 0 to hival, it shall be adjusted to the nearest value within that
+        // range." Both halves matter here — the test file for this case uses
+        // `-17 sc`, `6.5 sc` and `17 sc` and annotates each with the expected
+        // snap.
+        let idx = (components[0].round().max(0.0) as usize).min(hival);
+
+        let lookup = ctx
+            .doc
+            .resolve_object(&arr[3])
+            .unwrap_or_else(|_| arr[3].clone());
+        let palette: Vec<u8> = match &lookup {
+            Object::String(bytes) => bytes.clone(),
+            Object::Stream { .. } => match lookup.decode_stream_data() {
+                Ok(b) => b,
+                Err(_) => return Ok(first_as_gray(components, alpha)),
+            },
+            _ => return Ok(first_as_gray(components, alpha)),
+        };
+
+        let n = base_component_count(&base, ctx);
+        if n == 0 {
+            return Ok(first_as_gray(components, alpha));
+        }
+        let off = idx * n;
+        if off + n > palette.len() {
+            return Ok(first_as_gray(components, alpha));
+        }
+
+        // Palette entries are bytes; the base space takes components in its
+        // own range, which for every family reachable here is 0..1.
+        let base_components: Vec<f32> = palette[off..off + n]
+            .iter()
+            .map(|b| f32::from(*b) / 255.0)
+            .collect();
+        self.resolve_spaced(&base, &base_components, ctx, alpha)
+    }
+}
+
+/// §8.6.5.3 CalRGB: apply `/Gamma`, then `/Matrix`, then project XYZ to sRGB.
+///
+/// > The transformation defined by the **Gamma** and **Matrix** entries in the
+/// > **CalRGB** colour space dictionary shall be
+/// > `X = X_A x A^G_R + X_B x B^G_G + X_C x C^G_B`
+///
+/// (and likewise for Y and Z, `docs/spec/pdf.md`:10313-10320).
+///
+/// Treating the components as if they were already sRGB — which is what
+/// sharing the `DeviceRGB` arm did — skips the encoding transfer entirely.
+/// With the common `/Gamma [1 1 1]` the components are *linear*, and linear
+/// values read as sRGB render too dark: on the corpus file for this case we
+/// were 31.5 grey levels below two engines that agreed with each other while
+/// coverage matched to 0.0003, which is the signature of a colour-conversion
+/// error rather than a geometry one.
+fn resolve_calrgb(
+    arr: &[Object],
+    components: &[f32],
+    ctx: &ResolutionContext,
+    alpha: f32,
+) -> ResolvedColor {
+    let [a, b, c] = match components {
+        [a, b, c, ..] => [*a, *b, *c],
+        _ => return first_as_gray(components, alpha),
+    };
+
+    let dict = arr
+        .get(1)
+        .map(|o| ctx.doc.resolve_object(o).unwrap_or_else(|_| o.clone()));
+    let dict = dict.as_ref().and_then(|o| o.as_dict());
+
+    let nums = |key: &str, want: usize| -> Option<Vec<f32>> {
+        let v: Vec<f32> = dict?
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter_map(|o| {
+                o.as_real()
+                    .map(|r| r as f32)
+                    .or_else(|| o.as_integer().map(|i| i as f32))
+            })
+            .collect();
+        (v.len() == want).then_some(v)
+    };
+
+    // Table 66 defaults: Gamma [1 1 1], Matrix the identity.
+    let g = nums("Gamma", 3).unwrap_or_else(|| vec![1.0, 1.0, 1.0]);
+    let m = nums("Matrix", 9).unwrap_or_else(|| vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
+    let ag = a.max(0.0).powf(g[0]);
+    let bg = b.max(0.0).powf(g[1]);
+    let cg = c.max(0.0).powf(g[2]);
+
+    // Matrix is [XA YA ZA XB YB ZB XC YC ZC].
+    let x = m[0] * ag + m[3] * bg + m[6] * cg;
+    let y = m[1] * ag + m[4] * bg + m[7] * cg;
+    let z = m[2] * ag + m[5] * bg + m[8] * cg;
+
+    let (r, gg, bb) = crate::rendering::page_renderer::xyz_to_srgb(x, y, z);
+    ResolvedColor::Rgba {
+        r: r.clamp(0.0, 1.0),
+        g: gg.clamp(0.0, 1.0),
+        b: bb.clamp(0.0, 1.0),
+        a: alpha,
+    }
+}
+
+/// Number of colour components the base of an `/Indexed` space takes.
+///
+/// Only the families a palette base may legally be (§8.6.6.3 excludes
+/// `/Pattern` and another `/Indexed`); anything unrecognised answers 0 so the
+/// caller can fall back rather than index a palette with the wrong stride.
+fn base_component_count(base: &Object, ctx: &ResolutionContext) -> usize {
+    if let Some(name) = base.as_name() {
+        return match name {
+            "DeviceGray" | "G" | "CalGray" => 1,
+            "DeviceRGB" | "RGB" | "CalRGB" | "Lab" => 3,
+            "DeviceCMYK" | "CMYK" => 4,
+            _ => 0,
+        };
+    }
+    let Some(arr) = base.as_array() else {
+        return 0;
+    };
+    match arr.first().and_then(|o| o.as_name()) {
+        Some("DeviceGray" | "G" | "CalGray") => 1,
+        Some("DeviceRGB" | "RGB" | "CalRGB" | "Lab") => 3,
+        Some("DeviceCMYK" | "CMYK") => 4,
+        Some("ICCBased") => arr
+            .get(1)
+            .map(|o| ctx.doc.resolve_object(o).unwrap_or_else(|_| o.clone()))
+            .and_then(|st| {
+                st.as_dict()
+                    .and_then(|d| d.get("N").and_then(|n| n.as_integer()))
+            })
+            .map(|n| n.clamp(0, 4) as usize)
+            .unwrap_or(0),
+        Some("Separation") => 1,
+        Some("DeviceN") => arr
+            .get(1)
+            .and_then(|o| o.as_array())
+            .map(|names| names.len())
+            .unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -607,12 +765,11 @@ fn device_to_rgba(dev: DeviceColor, alpha: f32) -> ResolvedColor {
 }
 
 fn resolve_device_alias(name: &str, components: &[f32], alpha: f32) -> ResolvedColor {
+    // Arity is the helpers' own precondition — see `three_as_rgb`.
     match name {
-        "DeviceGray" | "G" | "CalGray" if !components.is_empty() => {
-            first_as_gray(components, alpha)
-        },
-        "DeviceRGB" | "RGB" | "CalRGB" if components.len() >= 3 => three_as_rgb(components, alpha),
-        "DeviceCMYK" | "CMYK" if components.len() >= 4 => four_as_cmyk_native(components, alpha),
+        "DeviceGray" | "G" | "CalGray" => first_as_gray(components, alpha),
+        "DeviceRGB" | "RGB" | "CalRGB" => three_as_rgb(components, alpha),
+        "DeviceCMYK" | "CMYK" => four_as_cmyk_native(components, alpha),
         _ => first_as_gray(components, alpha),
     }
 }
@@ -627,11 +784,25 @@ fn first_as_gray(components: &[f32], alpha: f32) -> ResolvedColor {
     }
 }
 
+/// Project the first three components as RGB, degrading to
+/// [`first_as_gray`] when the operand supplies fewer.
+///
+/// The arity check lives here rather than at the call sites because the
+/// declared family of a colour space and the operand count the content
+/// stream supplies are independent: a page may declare
+/// `/DefaultGray [/DeviceCMYK]` and then paint with a one-operand `g`, so
+/// the DeviceCMYK arm is reached with a single component. Two of the three
+/// dispatch sites guarded for that and one did not, which is a precondition
+/// three callers have to remember. Owning it here means none of them do.
 fn three_as_rgb(components: &[f32], alpha: f32) -> ResolvedColor {
+    let [r, g, b] = match components {
+        [r, g, b, ..] => [*r, *g, *b],
+        _ => return first_as_gray(components, alpha),
+    };
     ResolvedColor::Rgba {
-        r: components[0].clamp(0.0, 1.0),
-        g: components[1].clamp(0.0, 1.0),
-        b: components[2].clamp(0.0, 1.0),
+        r: r.clamp(0.0, 1.0),
+        g: g.clamp(0.0, 1.0),
+        b: b.clamp(0.0, 1.0),
         a: alpha,
     }
 }
@@ -654,12 +825,19 @@ fn four_as_cmyk(components: &[f32], alpha: f32, ctx: &ResolutionContext) -> Reso
 /// router consumes this directly (process-ink routing + OPM=1 zero-
 /// component rule); the composite path projects to RGBA via the
 /// process-ink `cmyk_to_rgb_via_intent` in `run_pipeline_for_logical`.
+/// Emit a native CMYK colour, degrading to [`first_as_gray`] when the
+/// operand supplies fewer than four components. See [`three_as_rgb`] for
+/// why the arity check belongs to the helper and not to its callers.
 fn four_as_cmyk_native(components: &[f32], alpha: f32) -> ResolvedColor {
+    let [c, m, y, k] = match components {
+        [c, m, y, k, ..] => [*c, *m, *y, *k],
+        _ => return first_as_gray(components, alpha),
+    };
     ResolvedColor::Cmyk {
-        c: components[0].clamp(0.0, 1.0),
-        m: components[1].clamp(0.0, 1.0),
-        y: components[2].clamp(0.0, 1.0),
-        k: components[3].clamp(0.0, 1.0),
+        c: c.clamp(0.0, 1.0),
+        m: m.clamp(0.0, 1.0),
+        y: y.clamp(0.0, 1.0),
+        k: k.clamp(0.0, 1.0),
         a: alpha,
     }
 }
@@ -864,6 +1042,46 @@ const MAX_SAMPLED_FUNCTION_DIMS: usize = 8;
 /// malformed `/Domain`/`/Size`, a dimension count that doesn't match the
 /// number of inputs, more dimensions than [`MAX_SAMPLED_FUNCTION_DIMS`], or
 /// a truncated / oversized sample stream).
+/// Largest difference at which two function-dictionary numbers are treated as
+/// the same value. `/Encode` and `/Decode` bounds are small integers or
+/// simple decimals in practice, so an absolute epsilon is adequate and is
+/// easier to reason about than a relative one.
+const DEFAULT_ARRAY_EPSILON: f64 = 1e-9;
+
+/// Whether `/Encode` is absent or holds its Table 39 default,
+/// `[0 (Size_0 − 1) 0 (Size_1 − 1) …]`.
+fn encode_is_default(dict: &std::collections::HashMap<String, Object>, sizes: &[usize]) -> bool {
+    let Some(encode) = dict.get("Encode").and_then(|o| o.as_array()) else {
+        return true;
+    };
+    if encode.len() != sizes.len() * 2 {
+        // Malformed rather than non-default, but either way this evaluator
+        // must not proceed on it.
+        return false;
+    }
+    sizes.iter().enumerate().all(|(i, &size)| {
+        let lo = object_to_f64(&encode[i * 2]);
+        let hi = object_to_f64(&encode[i * 2 + 1]);
+        lo.abs() < DEFAULT_ARRAY_EPSILON && (hi - (size as f64 - 1.0)).abs() < DEFAULT_ARRAY_EPSILON
+    })
+}
+
+/// Whether `/Decode` is absent or holds its Table 39 default, "same as the
+/// value of `Range`".
+fn decode_is_default(dict: &std::collections::HashMap<String, Object>, range: &[[f64; 2]]) -> bool {
+    let Some(decode) = dict.get("Decode").and_then(|o| o.as_array()) else {
+        return true;
+    };
+    if decode.len() != range.len() * 2 {
+        return false;
+    }
+    range.iter().enumerate().all(|(i, pair)| {
+        let lo = object_to_f64(&decode[i * 2]);
+        let hi = object_to_f64(&decode[i * 2 + 1]);
+        (lo - pair[0]).abs() < DEFAULT_ARRAY_EPSILON && (hi - pair[1]).abs() < DEFAULT_ARRAY_EPSILON
+    })
+}
+
 fn evaluate_type0_sampled(func_obj: &Object, inputs: &[f32]) -> Option<Vec<f32>> {
     let Object::Stream { dict, .. } = func_obj else {
         return None;
@@ -884,15 +1102,27 @@ fn evaluate_type0_sampled(func_obj: &Object, inputs: &[f32]) -> Option<Vec<f32>>
     if !(bps == 8 || bps == 16) {
         return None;
     }
-    // Non-default /Encode or /Decode changes the sample mapping; falling back
-    // beats silently evaluating with default semantics.
-    if dict.contains_key("Encode") || dict.contains_key("Decode") {
-        return None;
-    }
     let range = dict.get("Range").and_then(|o| o.as_array())?;
     let range = array_to_pairs(range);
     let n_out = range.len();
     if n_out == 0 {
+        return None;
+    }
+    // A non-default /Encode or /Decode changes the sample mapping, and this
+    // evaluator implements only the default one — so it must decline. But
+    // *present* is not *non-default*: Table 39 (`docs/spec/pdf.md:6903`) gives
+    // /Encode the default `[0 (Size_0 − 1) 0 (Size_1 − 1) …]` and /Decode the
+    // default "same as the value of Range", and a dictionary that writes those
+    // out explicitly means exactly what an absent entry means (§7.3.9 and the
+    // general rule that a default is a value, not an omission).
+    //
+    // Testing for presence therefore refused files this evaluator handles
+    // correctly: measured over a 154-document sample, 11 of 122 sampled
+    // function dictionaries carried both keys and all 11 held exactly the
+    // defaults — including one reachable from a /Separation space in this
+    // repository's own fixtures, which rendered as the `1 - tint` grey
+    // approximation instead of its real colour.
+    if !encode_is_default(dict, &sizes) || !decode_is_default(dict, &range) {
         return None;
     }
     let domain = dict
@@ -1620,5 +1850,40 @@ mod tests {
         assert!((r - 0.75).abs() < 0.01, "got r={r}");
         assert!((g - 0.9196).abs() < 0.01, "got g={g}");
         assert!((b - 0.9843).abs() < 0.01, "got b={b}");
+    }
+
+    // ── operand arity is the helpers' own precondition ──────────────
+    //
+    // A colour space's declared family and the operand count a content
+    // stream supplies are independent, so every projection helper must
+    // be total over the slice it is handed.
+
+    #[test]
+    fn three_as_rgb_degrades_when_operands_are_short() {
+        // One operand against an RGB projection: gray, not a panic.
+        assert_rgba(three_as_rgb(&[0.5], 1.0), 0.5, 0.5, 0.5, 1.0);
+        assert_rgba(three_as_rgb(&[], 1.0), 0.0, 0.0, 0.0, 1.0);
+        assert_rgba(three_as_rgb(&[0.25, 0.5], 1.0), 0.25, 0.25, 0.25, 1.0);
+    }
+
+    #[test]
+    fn four_as_cmyk_native_degrades_when_operands_are_short() {
+        // The `0.5 g` painted under a /DefaultGray [/DeviceCMYK]
+        // override arrives here with a single operand.
+        assert_rgba(four_as_cmyk_native(&[0.5], 1.0), 0.5, 0.5, 0.5, 1.0);
+        assert_rgba(four_as_cmyk_native(&[], 1.0), 0.0, 0.0, 0.0, 1.0);
+        assert_rgba(four_as_cmyk_native(&[0.1, 0.2, 0.3], 1.0), 0.1, 0.1, 0.1, 1.0);
+    }
+
+    #[test]
+    fn projection_helpers_still_use_the_operands_they_have() {
+        // Degrading on short input must not weaken the full-arity path.
+        assert_rgba(three_as_rgb(&[1.0, 0.0, 0.0], 1.0), 1.0, 0.0, 0.0, 1.0);
+        // Extra operands are ignored, not an error.
+        assert_rgba(three_as_rgb(&[1.0, 0.0, 0.0, 0.9], 1.0), 1.0, 0.0, 0.0, 1.0);
+        // Full-arity CMYK still emits the native quadruple, which
+        // `assert_rgba` projects through the process-ink converter.
+        let (r, g, b) = super::cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+        assert_rgba(four_as_cmyk_native(&[0.0, 0.0, 0.0, 1.0], 1.0), r, g, b, 1.0);
     }
 }

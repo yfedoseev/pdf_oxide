@@ -1553,13 +1553,19 @@ impl XYCutStrategy {
     ) -> Option<(Vec<usize>, Vec<usize>)> {
         let profile = self.horizontal_projection_indexed(all_spans, indices)?;
 
-        let split_x = if let Some((vs, ve, vw)) = self.find_valley(&profile) {
+        // The corridor the cut is taken through: the profile's valley where
+        // one was found, or a band the width of the valley floor around a
+        // trough between two peaks.
+        let (split_x, corridor) = if let Some((vs, ve, vw)) = self.find_valley(&profile) {
             if vw < self.min_valley_width {
                 return None;
             }
-            profile.x_min + (vs + ve) as f32 / 2.0
+            let (lo, hi) = (profile.x_min + vs as f32, profile.x_min + ve as f32);
+            ((lo + hi) / 2.0, (lo, hi))
         } else {
-            self.find_split_between_peaks(&profile)?
+            let x = self.find_split_between_peaks(&profile)?;
+            let half = self.min_valley_width / 2.0;
+            (x, (x - half, x + half))
         };
 
         // Reject splits where either resulting sub-column would be
@@ -1592,6 +1598,248 @@ impl XYCutStrategy {
         let left_w = left_x_max - left_x_min;
         let right_w = right_x_max - right_x_min;
         if left_w < MIN_RESULT_WIDTH_PT || right_w < MIN_RESULT_WIDTH_PT {
+            return None;
+        }
+
+        // A span the projection never counted leaves no ink in the density
+        // array, so a "valley" can be an artefact of the exclusion rather
+        // than a real corridor. `horizontal_projection_indexed` drops every
+        // span wider than 55% of the region so that a banner headline does
+        // not hide the columns beneath it. That is right — but only when the
+        // banner is peeled off first. Cutting straight through a run that
+        // physically crosses the corridor splits one printed line between two
+        // groups and emits its halves far apart.
+        //
+        // ISO 32000-1:2008 §9.4.4 computes the glyph displacement along the
+        // writing axis and sets the other axis's component to 0, so a
+        // horizontal run occupies one unbroken interval in X. If that
+        // interval covers the candidate corridor on both sides, the corridor
+        // is not empty and there is no column boundary here. Refuse the cut;
+        // the recursion falls back to a row split, which is what peels a
+        // banner off the columns underneath it.
+        //
+        // The measurement uses the same core-width estimate as the
+        // projection (character count x ~0.45 em, clamped to `bbox.right()`)
+        // rather than the raw bbox, because extractor bboxes overreach to the
+        // right on trailing whitespace and stretched advances. `STRADDLE_TOL`
+        // keeps a one-glyph overhang from counting as a crossing.
+        const STRADDLE_TOL: f32 = 10.0;
+        let region_width = (left_x_max.max(right_x_max) - left_x_min.min(right_x_min)).max(1.0);
+        let crosses: Vec<bool> = indices
+            .iter()
+            .map(|&i| {
+                let s = &all_spans[i];
+                let (l, r) = (s.bbox.left(), s.bbox.right());
+                // Only spans the projection skipped can hide ink from it.
+                if r - l <= region_width * 0.55 {
+                    return false;
+                }
+                let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+                let core_right = (l + chars * (s.font_size * 0.45).max(2.5)).min(r);
+                l < split_x - STRADDLE_TOL && core_right > split_x + STRADDLE_TOL
+            })
+            .collect();
+        let crossing_count = crosses.iter().filter(|c| **c).count();
+        // A crossing run alone is not enough to refuse the cut. A banner
+        // headline sitting *above* two real columns crosses every candidate
+        // corridor between them, and refusing there costs the column split on
+        // ordinary two-column prose — which then reads row-major and glues a
+        // hyphenated word to the facing column's continuation.
+        //
+        // Exactly one benign shape exists: a single banner over two columns
+        // that run together down the page. Both halves of that matter.
+        //
+        // A corridor crossed again and again is not a corridor. A contents
+        // page whose every subchapter title spans the measure crossed one
+        // candidate 22 times; two columns of prose under one heading crossed
+        // theirs once.
+        //
+        // And a real column runs most of the region's height, so two of them
+        // are near-coextensive: the prose page's halves spanned 18..635 and
+        // 20..635 of a 617 pt region. The bands this guard exists for do not —
+        // a newspaper masthead's side holds a nameplate and a dateline over
+        // 28% of the region, and a contents page's page-number column is a
+        // short band nested inside the full-measure titles beside it.
+        //
+        // A single banner is measured as furniture, not as a member of the
+        // column its left edge happens to land in. It is bucketed by that
+        // edge like everything else, so its own height counted as that
+        // column's and stretched the region both sides are scored against —
+        // backwards for the one shape this allowance exists for. A banner
+        // printed 35 pt above two 112 pt columns of equal height put the left
+        // side at 152 pt of a 159 pt region and the right at 112, and the two
+        // columns scored 70 % against each other when they are the same
+        // height. The columns are what has to be near-coextensive.
+        //
+        // Only for a single crossing. Where a corridor is crossed again and
+        // again the crossing runs ARE the page's content — a contents page's
+        // full-measure titles are its column — so those keep their height.
+        // A side that is nothing but the banner is not a column either.
+        let banner_is_furniture = crossing_count == 1;
+        let mut left_lo = f32::MAX;
+        let mut left_hi = f32::MIN;
+        let mut right_lo = f32::MAX;
+        let mut right_hi = f32::MIN;
+        let (mut left_n, mut right_n) = (0usize, 0usize);
+        // The vertical extent of what each side holds BESIDES the crossing
+        // runs, for the test below.
+        let mut rows_left = (f32::MAX, f32::MIN);
+        let mut rows_right = (f32::MAX, f32::MIN);
+        for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
+            let b = &all_spans[i].bbox;
+            let (lo, hi) = (b.y, b.y + b.height.abs());
+            if !crossing {
+                let side = if b.left() < split_x {
+                    &mut rows_left
+                } else {
+                    &mut rows_right
+                };
+                side.0 = side.0.min(lo);
+                side.1 = side.1.max(hi);
+            }
+            if banner_is_furniture && crossing {
+                continue;
+            }
+            if b.left() < split_x {
+                left_lo = left_lo.min(lo);
+                left_hi = left_hi.max(hi);
+                left_n += 1;
+            } else {
+                right_lo = right_lo.min(lo);
+                right_hi = right_hi.max(hi);
+                right_n += 1;
+            }
+        }
+        // A corridor is a gutter only where the rows on either side of it
+        // leave it empty. The profile's valley is where the density falls
+        // under a fraction of the peak, and that is right for finding a
+        // gutter beside a dense column — a stray stub or a folio in the
+        // gutter must not hide it. But where one side of a region is much
+        // denser than the other, a band holding a row or two of ordinary
+        // words scores as a valley too, and the valley reaches into the
+        // ragged line ends of the column beside it.
+        //
+        // Measured on the page that exposed it: a paragraph set one run per
+        // word (the justifier's word gaps exceed the merge threshold) beneath
+        // a letter-spaced listing and above the page's footnotes. The listing
+        // and footnote rows made the left mass dense, and everything right of
+        // x≈165 fell under the threshold: the valley ran 165..236, seventy
+        // points wide, with `is`, `no` and `file` inside it on the
+        // paragraph's own rows. Its centre landed in the word gap after `no`,
+        // the full lines around it crossed the corridor, the two halves
+        // measured 0.79 of the region — a column by the bar below — and the
+        // cut was taken: `pro-` was emitted three lines from `ceeds`, and
+        // `proceeds` left the page.
+        //
+        // What tells that corridor from a gutter is the rows. On every row
+        // the corridor divides — a row with runs on both sides of it — the
+        // corridor held letters: the paragraph's short words on its rows,
+        // the listing's spaced glyphs on the rest. On the page's real gutter,
+        // measured the same way, two of forty such rows hold letters in the
+        // valley (a line end the valley's fringe reaches, a listing fragment)
+        // and the rest hold nothing. A title set one run per word across the
+        // head of a two-column paper puts words in its gutter on one row;
+        // the thirty rows of column beneath it put nothing there. So the cut
+        // is refused when the rows the corridor divides hold letters in it
+        // on at least half of them, and on at least two. Digits alone do not
+        // count: a folio or a verse number centred between two columns is
+        // furniture in the gutter, not text across it.
+        //
+        // ISO 32000-1:2008 §9.4.4 (docs/spec/pdf.md:17396): a horizontal
+        // run occupies one unbroken interval on the writing axis, so a run
+        // of letters whose interval lies inside the corridor is proof there
+        // is text there and no column boundary on that row.
+        //
+        // A row is divided by the corridor only when both its sides carry
+        // letters, and the letters inside the corridor count only when they
+        // continue the row's own text — a word space or less after the run
+        // to their left. A chart beside a paragraph shares its rows and puts
+        // an axis title in the corridor, but that title sits three or four
+        // ems from the paragraph's line end; a column of tick numerals is
+        // not the other half of a paragraph's lines at all. The paragraph
+        // that exposed this has `no` five points after `is` and `file` ten
+        // points after `no`: the corridor runs through the middle of a line.
+        let band = |y: f32| (y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
+        // Per row: (left, ink right, has letters, font size), non-crossing.
+        let mut rows: std::collections::BTreeMap<i32, Vec<(f32, f32, bool, f32)>> =
+            std::collections::BTreeMap::new();
+        for (&i, &crossing) in indices.iter().zip(crosses.iter()) {
+            if crossing {
+                continue;
+            }
+            let s = &all_spans[i];
+            let letters = s.text.chars().any(|c| c.is_alphabetic());
+            let chars = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+            let ink_right =
+                (s.bbox.left() + chars * (s.font_size * 0.45).max(2.5)).min(s.bbox.right());
+            rows.entry(band(s.bbox.y)).or_default().push((
+                s.bbox.left(),
+                ink_right,
+                letters,
+                s.font_size,
+            ));
+        }
+        let (mut divided, mut divided_with_text) = (0usize, 0usize);
+        for runs in rows.values() {
+            let letters_left = runs.iter().any(|r| r.2 && r.0 < split_x);
+            let letters_right = runs.iter().any(|r| r.2 && r.0 >= split_x);
+            if !(letters_left && letters_right) {
+                continue;
+            }
+            divided += 1;
+            let continues_the_row = runs.iter().any(|r| {
+                if !r.2 || r.0 < corridor.0 || r.1 > corridor.1 {
+                    return false;
+                }
+                let word_space = 1.5 * r.3;
+                runs.iter()
+                    .any(|l| l.1 <= r.0 + 0.5 && r.0 - l.1 <= word_space && l.0 < r.0)
+            });
+            if continues_the_row {
+                divided_with_text += 1;
+            }
+        }
+        const ROWS_THAT_FILL_A_CORRIDOR: usize = 2;
+        let corridor_holds_text =
+            divided_with_text >= ROWS_THAT_FILL_A_CORRIDOR && divided_with_text * 2 >= divided;
+        if corridor_holds_text {
+            return None;
+        }
+        let region_height = (left_hi.max(right_hi) - left_lo.min(right_lo)).max(1.0);
+        let shorter_side = (left_hi - left_lo).min(right_hi - right_lo);
+        // A band that stops far short of the region is not a column. What
+        // counts as "far short" cannot be a fifth, though: columns of running
+        // text are only near-coextensive when nothing interrupts them. On a
+        // news page a photograph, an advertisement or the end of the story
+        // stops one column well above the other, and the two sides are then
+        // genuinely uneven — one measured pair ran 749.6 pt against 597.6 pt
+        // of a 755.6 pt region, a 0.79 ratio, while a second page's columns
+        // sat at the same 0.79. Both are ordinary three-column news pages
+        // whose columns this guard refused, taking no cut at all and leaving
+        // the columns to be read across the page.
+        //
+        // The shapes the guard exists to refuse are far shorter than that: a
+        // masthead's side, holding only a nameplate and a dateline, covers
+        // 28% of the region, and a contents page's page-number column is a
+        // short band nested inside the full-measure titles beside it.
+        //
+        // Nothing observed falls between those and a real column, and the
+        // observed columns spread wider than any near-coextensive reading
+        // admits — 0.746 and 0.480 on a two-column typescript, 0.79 on two
+        // news pages. So the line is what separates a column from a band
+        // rather than what separates a column from its neighbour: a column
+        // covers at least half the region it is a column of; a run of
+        // furniture beside one does not.
+        //
+        // Excluding the crossing runs from the two sides' extents was tried
+        // instead, on the theory that several banners over real columns are
+        // still furniture. It moves the run counts and not the extents — the
+        // crossing runs are not what reaches furthest on either side — and
+        // left every affected page exactly where it was.
+        const COLUMN_HEIGHT_FRACTION: f32 = 0.5;
+        let sides_are_columns =
+            left_n > 0 && right_n > 0 && shorter_side >= region_height * COLUMN_HEIGHT_FRACTION;
+        if crossing_count > 0 && !sides_are_columns {
             return None;
         }
 
@@ -1645,11 +1893,12 @@ impl XYCutStrategy {
         // cut that would shred a table (the recursion then falls back to a row
         // cut and reads the table row-major), never adds or reorders anything.
         //
-        // `core_right` (left edge + non-whitespace-char count × ~0.5 em) is
-        // used instead of `bbox.right` so trailing-whitespace / advance-width
-        // bbox inflation on a real left column's last word is not mistaken for
-        // a glyph crossing the gutter. `overlap_tol` (~ one body em) lets a
-        // single straddling glyph slip past.
+        // `core_right` (left edge + char count × ~0.5 em, capped at
+        // `bbox.right`) is used instead of `bbox.right` alone so
+        // trailing-whitespace / advance-width bbox inflation on a real left
+        // column's last word is not mistaken for a glyph crossing the gutter.
+        // `overlap_tol` (~ one body em) lets a single straddling glyph slip
+        // past.
         let mut right_x_max = f32::MIN;
         let mut max_font = 0.0f32;
         for &i in &right {
@@ -1657,20 +1906,96 @@ impl XYCutStrategy {
             max_font = max_font.max(all_spans[i].bbox.height.abs());
         }
         let overlap_tol = max_font.max(10.0);
+        // A row that blankets the right column is only evidence of a TABLE if
+        // the right column has something on that row. A table row does — its
+        // right-hand cells are their own spans at the same y. A full-measure
+        // BAND does not: a title, heading, abstract or caption spanning the
+        // measure is alone on its row, and the spans bucketed into `right` sit
+        // above or below it.
+        //
+        // Without this the guard mistakes ordinary two-column furniture for a
+        // table. A journal page's title, authors, abstract, running head and
+        // captions all blanket the right column, three of them are enough to
+        // refuse the cut, and the body then reads as one leaf spanning the
+        // page — every physical row emitted as one line, splicing the columns
+        // into each other.
+        //
+        // A row's other cells need not land in `right` to exist. Where the
+        // split falls to the RIGHT of a row's first cell boundary — a contents
+        // page's section numbers, a schedule's label column — the row's own
+        // stub is bucketed into `left` beside the full-measure run it labels,
+        // and the run is the rest of the row. Reading only `right` for company
+        // makes the guard blind to exactly the rows it exists to protect: a
+        // contents page's `10.3.1` rail was cut away from its titles and the
+        // titles re-emitted a column-run later with no numbers on them.
+        //
+        // So a blanketing run is furniture only when it is ALONE on its row:
+        // nothing in `right` shares its band, AND nothing on that band is
+        // printed to its left. A title, abstract or caption spanning the
+        // measure satisfies both — it is the first and only thing on its row.
+        // A labelled row satisfies neither.
+        let band_of =
+            |i: usize| (all_spans[i].bbox.y / crate::utils::ROW_BAND_TOLERANCE_PT).round() as i32;
+        let shares_a_row_with_right = |i: usize| -> bool {
+            let a = band_of(i);
+            right.iter().any(|&j| band_of(j) == a)
+        };
+        let is_labelled_from_the_left = |i: usize| -> bool {
+            let a = band_of(i);
+            let x = all_spans[i].bbox.left();
+            left.iter()
+                .any(|&j| j != i && band_of(j) == a && all_spans[j].bbox.left() < x)
+        };
         let full_width_left_rows = left
             .iter()
             .filter(|&&i| {
+                if !shares_a_row_with_right(i) && !is_labelled_from_the_left(i) {
+                    return false;
+                }
                 let s = &all_spans[i];
-                let nonws = s.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32;
+                // Count EVERY character, not just the non-whitespace ones. An
+                // inter-word space consumes an advance exactly as a glyph does,
+                // so excluding spaces under-measures justified prose by about a
+                // ninth of its width — enough that a full-measure body line
+                // reaching the right margin scored short of it and was not
+                // counted. Clamping to `bbox.right()` keeps the estimate from
+                // over-reaching instead: the result is never wider than the ink
+                // actually is, which is what the trailing-whitespace concern
+                // above is really about.
+                let chars = s.text.chars().count().max(1) as f32;
                 let approx_char_width = (s.font_size * 0.45).max(2.5);
-                s.bbox.left() + nonws * approx_char_width >= right_x_max - overlap_tol
+                let core_right = (s.bbox.left() + chars * approx_char_width).min(s.bbox.right());
+                core_right >= right_x_max - overlap_tol
             })
             .count();
-        if full_width_left_rows >= 3 {
-            // ≥ 3 left rows each blanket the right column ⇒ this is a table-row
-            // slice, not a column gutter. Don't take the column cut; the
-            // recursion falls back to a row (horizontal) split and reads the
-            // table row-major.
+        // The count has to be read against the side it came from, not on its
+        // own: three rows out of a hundred is a heading, a footnote and a
+        // caption over two columns of prose, and vetoing there costs those
+        // columns their cut and leaves them read across the page.
+        //
+        // The threshold is bounded on both sides by measurement, and the window
+        // is narrow:
+        //
+        //   3 of 100 left rows (0.03) — a two-column page carrying a heading,
+        //     a footnote and a caption. Must NOT veto.
+        //   6 of 49 left rows (0.122) — a contents page whose shallower entries
+        //     run from title through dot leader to page number, reaching across
+        //     the channel the deeper entries' indentation opens. Must veto, or
+        //     the page reads as a rail of bare section numbers followed by
+        //     titles with no numbers on them.
+        //
+        // A tenth sits between them. Nothing observed falls in the gap.
+        //
+        // The count still has to clear 3 in absolute terms, so a short region
+        // whose two or three lines happen to be wide cannot veto on a fraction
+        // alone.
+        const TABLE_ROW_SHARE: f32 = 0.10;
+        let table_shaped = full_width_left_rows as f32 >= left.len() as f32 * TABLE_ROW_SHARE;
+        if full_width_left_rows >= 3 && table_shaped {
+            // Several left rows, and a real share of them, each blanket the
+            // right column ⇒ this is a table-row slice, not a column gutter.
+            // Don't take the column cut; the recursion falls back to a row
+            // (horizontal) split and reads the table row-major.
             return None;
         }
 
@@ -2058,17 +2383,49 @@ impl XYCutStrategy {
     }
 
     /// Sort indices in reading order (top-to-bottom, left-to-right).
+    ///
+    /// The row key is the baseline, banded, rather than `bbox.top()` compared
+    /// for exact equality. Two things were wrong with the old key. Exact
+    /// equality is not a row test at all — any sub-point difference put two
+    /// glyphs of one line into different "rows", so the `x` tiebreak never
+    /// ran and the order degenerated to a pure descending sort; on an OCR text
+    /// layer, whose per-word baselines jitter by a couple of points, that
+    /// emitted whole lines backwards. And `top()` is the wrong edge: it moves
+    /// with the font size, so on a line mixing a 2 pt punctuation span with an
+    /// 8 pt word the tops differ by more than the line spacing while the
+    /// baselines agree to a fraction of a point. ISO 32000-1:2008 §9.4.4 puts
+    /// the glyph displacement along the writing axis, which makes the baseline
+    /// — not the ascender — what identifies a line.
+    ///
+    /// `row_aware_span_cmp` is the same comparator the single-column geometric
+    /// path already uses, and its `i32` band key keeps the ordering a valid
+    /// total order.
     fn sort_indices(&self, all_spans: &[TextSpan], indices: &[usize]) -> Vec<usize> {
-        let mut sorted: Vec<usize> = indices.to_vec();
-        sorted.sort_by(|&a, &b| {
-            let y_cmp =
-                crate::utils::safe_float_cmp(all_spans[b].bbox.top(), all_spans[a].bbox.top());
-            if y_cmp != std::cmp::Ordering::Equal {
-                return y_cmp;
-            }
-            crate::utils::safe_float_cmp(all_spans[a].bbox.left(), all_spans[b].bbox.left())
+        let row_baseline = crate::utils::snap_baselines_to_rows(all_spans, indices);
+        // Sort positions within `indices`, because `row_baseline` is parallel
+        // to `indices` rather than to `all_spans`.
+        let mut order: Vec<usize> = (0..indices.len()).collect();
+        order.sort_by(|&a, &b| {
+            // Band and x from the row key; the last word goes to the baseline
+            // the page draws. Two spans sharing a row key compare equal on any
+            // tiebreak taken from that key, which would leave their order to
+            // the sequence they arrived in.
+            crate::utils::row_band_then_x_axis(
+                all_spans[indices[a]].rotation_degrees,
+                row_baseline[a],
+                all_spans[indices[a]].bbox.left(),
+                all_spans[indices[b]].rotation_degrees,
+                row_baseline[b],
+                all_spans[indices[b]].bbox.left(),
+            )
+            .then_with(|| {
+                crate::utils::safe_float_cmp(
+                    all_spans[indices[b]].bbox.y,
+                    all_spans[indices[a]].bbox.y,
+                )
+            })
         });
-        sorted
+        order.into_iter().map(|k| indices[k]).collect()
     }
 }
 
@@ -2308,6 +2665,87 @@ mod tests {
         let texts: Vec<&str> = ordered.iter().map(|o| o.span.text.as_str()).collect();
         // First output must be from y=400 (header), not y=180 (body bottom).
         assert!(texts[0].contains("HEADER"), "expected HEADER first, got sequence {:?}", texts);
+    }
+
+    /// Build the span set that exposes the full-measure-line guard.
+    ///
+    /// The region runs x 72..523.28 (451.28 pt wide). `include_body` adds
+    /// eleven justified body lines that span the whole measure; the short
+    /// fragments are present either way and are what create the density
+    /// valley, since the projection discards anything wider than 55% of the
+    /// region — which on a single-column page is every real body line.
+    fn full_measure_page(include_body: bool) -> Vec<TextSpan> {
+        const LEFT: f32 = 72.0;
+        const RIGHT: f32 = 523.28;
+        const FS: f32 = 10.9;
+        let mut spans = Vec::new();
+
+        if include_body {
+            // "word " × 18 + "end" = 93 characters, 18 of them spaces.
+            // At 0.45 em the full count reaches the right margin
+            // (72 + 93 × 4.905 = 528 pt, capped at the bbox) while the
+            // non-whitespace count alone reaches only 440 pt — short of the
+            // 512.38 pt bar. That difference is the whole defect.
+            let prose = format!("{}end", "word ".repeat(18));
+            let mut y = 600.0;
+            for _ in 0..11 {
+                spans.push(make_span_text(LEFT, y, RIGHT - LEFT, FS, &prose, FS));
+                y -= 14.0;
+            }
+        }
+
+        // Two clusters of short fragments with a 108 pt channel between them
+        // at x 222..330. This is the relative density dip the valley test
+        // accepts; it is not an empty corridor on the real page either.
+        let mut y = 440.0;
+        for _ in 0..6 {
+            spans.push(make_span_text(LEFT, y, 150.0, FS, "left frag", FS));
+            spans.push(make_span_text(330.0, y, RIGHT - 330.0, FS, "right frag", FS));
+            y -= 14.0;
+        }
+        spans
+    }
+
+    /// A column gutter is a corridor the lines do not cross. When full-measure
+    /// body lines carry ink across the candidate cut, there is no gutter there
+    /// whatever the projection says, and the cut must be refused.
+    ///
+    /// The guard for this already existed but estimated a span's ink width from
+    /// its *non-whitespace* character count. Inter-word spaces consume an
+    /// advance too, so justified prose measured about a ninth short and lines
+    /// that genuinely reached the right margin went uncounted.
+    #[test]
+    fn test_cut_crossed_by_full_measure_lines_is_refused() {
+        let strategy = XYCutStrategy::new();
+        let spans = full_measure_page(true);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
+            "eleven body lines span the whole measure, so no column cut is legal"
+        );
+    }
+
+    /// Counter-case, and the reason the test above is not vacuous: with the
+    /// full-measure lines removed the fragment geometry is unchanged, the same
+    /// valley is found, and the cut IS taken. So the assertion above turns on
+    /// the guard rather than on the valley never being detected at all.
+    #[test]
+    fn test_same_fragment_geometry_alone_is_still_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = full_measure_page(false);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_some(),
+            "without the body lines this geometry is a genuine two-column split"
+        );
+        let (left, right) = split.unwrap();
+        assert_eq!(left.len(), 6, "six fragments belong to the left column");
+        assert_eq!(right.len(), 6, "six fragments belong to the right column");
     }
 
     /// Single-column page with a tall header band ("Title" or "Chapter
@@ -3225,5 +3663,248 @@ mod tests {
         let groups = strategy.partition_region(&spans);
         let total: usize = groups.iter().map(|g| g.len()).sum();
         assert_eq!(total, spans.len(), "depth guard must not drop spans");
+    }
+
+    /// A news page's columns are not coextensive: a photograph, an
+    /// advertisement or the end of a story stops one column well above its
+    /// neighbour. Asking the two sides to end within a fifth of each other
+    /// refuses the cut on ordinary three-column news pages, and the columns
+    /// are then read straight across — splicing unrelated sentences and
+    /// breaking any word hyphenated at the seam.
+    ///
+    /// The banner is wider than the region's 55% bound, so the density
+    /// profile leaves it out and the corridor between the columns reads as
+    /// empty; it still crosses that corridor, which is what brings the guard
+    /// into play. The two sides here sit at a 0.60 height ratio — inside the
+    /// span the corpus actually shows for real columns (0.48 to 0.79) and
+    /// below every near-coextensive reading of them.
+    #[test]
+    fn uneven_columns_under_a_banner_still_take_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
+        let mut spans = vec![make_span_text(
+            55.0,
+            730.0,
+            470.0,
+            16.0,
+            &"W".repeat(40),
+            16.0,
+        )];
+
+        let mut y = 100.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(55.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+        // The right-hand column stops early, as it would above a photograph.
+        let mut y = 343.0;
+        while y <= 694.0 {
+            spans.push(make_span_text(325.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_some(),
+            "two columns of prose at a 0.60 height ratio are still two \
+             columns; refusing the cut leaves them to be read across the page"
+        );
+    }
+
+    /// The shape of the page that exposed the populated-corridor defect: a
+    /// letter-spaced listing whose multi-glyph fragments sit on every row,
+    /// and beneath it a paragraph set one run per word — three full lines
+    /// interleaved with three per-word lines whose words after the gap start
+    /// at x=235. The listing's rows make the left mass dense, so any column
+    /// covered by a single paragraph row is under the valley threshold.
+    ///
+    /// `listing_reaches_the_words`: the listing's left fragments end at
+    /// x≈161, before the paragraph's short words, so the valley runs from
+    /// there to 235 and holds `is`, `no`, `then` and `like` (the defect); or
+    /// they run to x≈212, past those words, so the valley is 212..235 and
+    /// holds nothing — an ordinary corridor beside a dense block.
+    fn paragraph_split_at_a_word_gap(listing_reaches_the_words: bool) -> Vec<TextSpan> {
+        let size = 10.0;
+        let gap = 0.81 * size;
+        let w = |s: &str| s.chars().count() as f32 * 0.5 * size;
+        let mut spans = Vec::new();
+        // The listing's left fragments: 24 glyphs reach x≈161 at the
+        // profile's 0.45 em per glyph; 39 reach x≈205 (clamped to the box),
+        // past the paragraph's short words on all but one row. The boxes
+        // stay under 55% of the region's width, or the profile drops them.
+        let (text, scale) = if listing_reaches_the_words {
+            ("Content-Length: 195034 bytes", 0.8)
+        } else {
+            ("Content-Length: 195034 bytes and more still", 0.62)
+        };
+        for (i, y) in [310.0, 300.0, 290.0, 280.0, 270.0].iter().enumerate() {
+            spans.push(make_span_text(72.0, *y, w(text) * scale, 8.0, text, 8.0));
+            if i % 2 == 1 {
+                spans.push(make_span_text(235.0, *y, 46.0, 8.0, "octet-stream", 8.0));
+            }
+        }
+        let full = "When loaded in Internet Explorer, the browser,";
+        let rows: [(&[&str], &[&str]); 3] = [
+            (&["noticing", "that", "there", "is", "no"], &["file", "extension,", "pro-"]),
+            (&["sniffing", "it,", "and", "then", "a"], &["header", "it", "was", "sent"]),
+            (&["Anything", "that", "looks", "like", "an"], &["image", "at", "all", "is"]),
+        ];
+        for (i, y) in [260.0, 236.0, 212.0].iter().enumerate() {
+            spans.push(make_span_text(72.0, *y, 224.0, size, full, size));
+            let (before, after) = rows[i];
+            let y = y - 12.0;
+            let mut x = 72.0;
+            for word in before {
+                spans.push(make_span_text(x, y, w(word), size, word, size));
+                x += w(word) + gap;
+            }
+            let mut x = 235.0;
+            for word in after {
+                spans.push(make_span_text(x, y, w(word), size, word, size));
+                x += w(word) + gap;
+            }
+        }
+        spans
+    }
+
+    /// The defect: the corridor the profile found holds the paragraph's own
+    /// short words on three rows. The cut must be refused, or `pro-` is
+    /// emitted apart from `ceeds`.
+    #[test]
+    fn test_corridor_that_holds_words_is_not_a_gutter() {
+        let strategy = XYCutStrategy::new();
+        let spans = paragraph_split_at_a_word_gap(true);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
+            "a valley that holds whole words is a word gap under a dense block, \
+             not a gutter; the full lines around it cross it between its rows"
+        );
+    }
+
+    /// The same block with the corridor empty — the listing's fragments run
+    /// past the paragraph's short words, so the valley is the bare gap
+    /// before x=235 — is a corridor beside a dense block, and the cut stands.
+    /// This pins that the refusal is about what the corridor holds, not
+    /// about the full lines between the rows, which are here too.
+    #[test]
+    fn test_same_block_with_an_empty_corridor_still_takes_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = paragraph_split_at_a_word_gap(false);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_some(),
+            "an empty corridor between a dense block and a column is a gutter, \
+             whatever crosses it"
+        );
+    }
+
+    /// The counter-direction, and the shape the guard exists for: a masthead
+    /// side carrying only a nameplate and a dateline covers a fraction of the
+    /// region and is not a column. That cut must still be refused, or the
+    /// nameplate is emitted after the whole body instead of at the top of the
+    /// page where it is printed.
+    #[test]
+    fn test_masthead_side_under_a_banner_is_still_refused() {
+        let strategy = XYCutStrategy::new();
+        let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
+        let mut spans = vec![make_span_text(
+            55.0,
+            730.0,
+            470.0,
+            16.0,
+            &"W".repeat(40),
+            16.0,
+        )];
+
+        let mut y = 100.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(55.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+        // Nameplate and dateline only: about 28% of the region's height.
+        let mut y = 530.0;
+        while y <= 700.0 {
+            spans.push(make_span_text(325.0, y, 200.0, 8.0, line, 8.0));
+            y += 12.0;
+        }
+
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        let split = strategy.find_horizontal_split_indexed(&spans, &indices);
+        assert!(
+            split.is_none(),
+            "a side holding only a nameplate and a dateline is not a column, \
+             and the gap beside it is not a gutter"
+        );
+    }
+
+    /// Build a two-column region whose left side carries `full_width` lines
+    /// that reach across the right column, and `plain` that stop at the
+    /// gutter. The right column always gets a line on every row, so the
+    /// full-measure lines genuinely share a row with it.
+    ///
+    /// Left column 72..272, right column 320..520, so the corridor is 48 pt
+    /// wide and `right_x_max` is 520. A full-measure line is 100% of the
+    /// region's width, over the 55% bound, so the density profile leaves it
+    /// out and the corridor is still found.
+    fn two_columns_with_full_measure_lines(full_width: usize, plain: usize) -> Vec<TextSpan> {
+        // 0.45 em per char at 8 pt is 3.6 pt: 56 chars spans 202 pt (the
+        // column), 125 chars spans 450 pt (the whole region).
+        let short = "a".repeat(56);
+        let wide = "a".repeat(125);
+        let mut spans = Vec::new();
+        let mut y = 700.0_f32;
+        for row in 0..(full_width + plain) {
+            if row < full_width {
+                spans.push(make_span_text(72.0, y, 448.0, 8.0, &wide, 8.0));
+            } else {
+                spans.push(make_span_text(72.0, y, 200.0, 8.0, &short, 8.0));
+            }
+            spans.push(make_span_text(320.0, y, 200.0, 8.0, &short, 8.0));
+            y -= 12.0;
+        }
+        spans
+    }
+
+    /// A heading, a footnote and a caption running the full measure over two
+    /// columns of prose are three full-width rows, and three is what the
+    /// table-row veto counted. A data table's rows are most of it, so the
+    /// count only means anything against the side it came from — measured on
+    /// a real page, 3 of 100 left rows vetoed the cut and the two columns
+    /// were then read straight across.
+    #[test]
+    fn three_full_measure_lines_over_a_prose_page_do_not_veto_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = two_columns_with_full_measure_lines(3, 97);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_some(),
+            "three full-measure lines among a hundred are a heading and a \
+             caption, not a table; the columns must still be cut apart"
+        );
+    }
+
+    /// The counter-direction, and the shape the veto exists for: when the
+    /// rows that blanket the right column are most of the side, the region is
+    /// a table and cutting it vertically shreds its rows.
+    #[test]
+    fn test_page_whose_rows_are_mostly_full_measure_still_vetoes_the_cut() {
+        let strategy = XYCutStrategy::new();
+        let spans = two_columns_with_full_measure_lines(30, 6);
+        let indices: Vec<usize> = (0..spans.len()).collect();
+        assert!(
+            strategy
+                .find_horizontal_split_indexed(&spans, &indices)
+                .is_none(),
+            "rows that blanket the right column and are most of the side are \
+             a table's rows; a vertical cut through them shreds every row"
+        );
     }
 }

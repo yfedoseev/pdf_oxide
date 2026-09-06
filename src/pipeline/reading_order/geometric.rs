@@ -220,9 +220,23 @@ impl ReadingOrderStrategy for GeometricStrategy {
         // sort by x within the band. Matches pdfplumber's default and
         // resolves the form-style false-column-detection bug.
         if !is_likely_columnar(&spans) {
+            // Row keys come from `snap_baselines_to_rows` rather than each
+            // span's own baseline: a row that mixes font sizes puts the larger
+            // run's baseline below the smaller run's, near enough to the next
+            // row to band with it.
+            let all: Vec<usize> = (0..spans.len()).collect();
+            let row_baseline = crate::utils::snap_baselines_to_rows(&spans, &all);
             let mut indexed: Vec<(usize, TextSpan)> = spans.into_iter().enumerate().collect();
-            indexed.sort_by(|(_, a), (_, b)| {
-                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
+            indexed.sort_by(|(ia, a), (ib, b)| {
+                crate::utils::row_band_then_x_axis(
+                    a.rotation_degrees,
+                    row_baseline[*ia],
+                    a.bbox.x,
+                    b.rotation_degrees,
+                    row_baseline[*ib],
+                    b.bbox.x,
+                )
+                .then_with(|| crate::utils::safe_float_cmp(b.bbox.y, a.bbox.y))
             });
             return Ok(indexed
                 .into_iter()
@@ -257,9 +271,27 @@ impl ReadingOrderStrategy for GeometricStrategy {
             if column.is_empty() {
                 continue;
             }
-            // Sort by Y descending (top of page first)
+            // Sort by row band, top of page first, then left-to-right within
+            // the band. A bare descending-Y sort has no X tiebreak at all, so
+            // a column's own lines came back in baseline order rather than
+            // reading order whenever two spans of one line differed by any
+            // amount — the single-column path above already uses this
+            // comparator for exactly that reason.
             let mut sorted = column.clone();
-            sorted.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
+            let row_baseline = crate::utils::snap_baselines_to_rows(&spans, &sorted);
+            let row_of: std::collections::HashMap<usize, f32> =
+                sorted.iter().copied().zip(row_baseline).collect();
+            sorted.sort_by(|&a, &b| {
+                crate::utils::row_band_then_x_axis(
+                    spans[a].rotation_degrees,
+                    row_of[&a],
+                    spans[a].bbox.x,
+                    spans[b].rotation_degrees,
+                    row_of[&b],
+                    spans[b].bbox.x,
+                )
+                .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
+            });
 
             if sorted.len() == 1 {
                 sub_groups.push(sorted);

@@ -183,17 +183,17 @@ pub fn to_xlsx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
                 }
             };
 
-            let color_hex = if style.color.r == 0.0 && style.color.g == 0.0 && style.color.b == 0.0
-            {
-                None
-            } else {
-                Some(format!(
-                    "{:02X}{:02X}{:02X}",
-                    (style.color.r * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (style.color.g * 255.0).round().clamp(0.0, 255.0) as u8,
-                    (style.color.b * 255.0).round().clamp(0.0, 255.0) as u8,
-                ))
-            };
+            let color_hex =
+                if crate::color::is_document_black(style.color.r, style.color.g, style.color.b) {
+                    None
+                } else {
+                    Some(format!(
+                        "{:02X}{:02X}{:02X}",
+                        (style.color.r * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (style.color.g * 255.0).round().clamp(0.0, 255.0) as u8,
+                        (style.color.b * 255.0).round().clamp(0.0, 255.0) as u8,
+                    ))
+                };
 
             sheet.add_text_shape(
                 trimmed_joined,

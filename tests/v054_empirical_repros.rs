@@ -126,34 +126,106 @@ fn fix_535_bullet_and_ligature_decode() {
     );
 }
 
-/// #535b: `warning_01_cmap_miss.pdf` — pre-fix output was 2 chars total.
-/// Post-fix should be substantially larger.
+/// #535b, superseded. A Type0 font whose `/ToUnicode` misses the drawn codes
+/// no longer has its text "recovered" by guessing.
+///
+/// The original fixture is deliberately broken: `/Encoding /Identity-H` makes
+/// the codes two bytes (`<0048 0065 006C 006C 006F>`, "Hello" as CIDs), while
+/// its `/ToUnicode` declares a **one-byte** codespace `<00> <FF>` and maps
+/// only `<41>`..`<5A>`. Read literally, the single byte `0x48` falls in that
+/// range and yields `H`; nothing else does.
+///
+/// v0.3.54 filled the gap by treating an uncovered CID as a Unicode
+/// codepoint, which turned this into "Hello", and this test pinned that.
+/// **v0.3.71 removed the guess on purpose**: it emitted
+/// "plausible-but-wrong, content-like" characters — a `ti` ligature became
+/// `:` so `notificacao` read `no:ficacao` — which is silent corruption. For
+/// Identity-ordered fonts the CID-as-Unicode guess is now restricted to
+/// whitespace, and any other uncovered CID decodes to `U+FFFD`.
+///
+/// So the assertion is inverted: what matters is that the letters are **not**
+/// invented. Verified to fail identically at the v0.3.77 tag, so this was
+/// never a v0.3.78 regression — the test simply outlived the decision it
+/// encoded, and went unnoticed because it read its fixture from an absolute
+/// path outside the repository and returned `Ok` when that path was missing.
+/// It now builds its own.
 #[test]
-fn fix_535_cmap_miss_recovers_text() {
-    let Some(bytes) =
-        read_pdf("/home/yfedoseev/projects/share/share/test_pdfs/warning_01_cmap_miss.pdf")
-    else {
-        return;
-    };
-    let doc = PdfDocument::from_bytes(bytes).expect("parse warning_01 PDF");
-    let opts = pdf_oxide::converters::ConversionOptions::default();
-    let md = doc.to_markdown_all(&opts).expect("extract markdown");
-    eprintln!("[#535b] markdown ({} chars):", md.len());
-    eprintln!("{}", md);
-    // Pre-fix (v0.3.53): output collapsed to a single character.
-    // Post-fix (v0.3.54): the §9.10.2 Priority 3c fallback recovers
-    // some glyphs ("# Hello") — partial coverage. Full coverage for
-    // every subset-font shape is a follow-up; this fixture's
-    // embedded font program shape doesn't surface all the glyph
-    // names we need. Lower bound = the partial-recovery floor.
-    assert!(
-        md.trim().chars().count() >= 4,
-        "[#535b] warning_01_cmap_miss.pdf still collapses to < 4 chars \
-         ({} chars total) — the §9.10.2 Priority 3c fallback didn't recover \
-         the CMap-miss text. Output was: {:?}",
-        md.trim().chars().count(),
-        md
+fn cmap_miss_does_not_invent_letters() {
+    let doc = PdfDocument::from_bytes(cmap_miss_pdf()).expect("synthetic PDF parses");
+    let text = doc.extract_text(0).expect("extract page 0");
+
+    // The one code the /ToUnicode genuinely covers.
+    assert!(text.contains('H'), "the code the CMap does cover should still decode: {text:?}");
+
+    // The codes it does not cover must not be guessed into letters.
+    for invented in ["ello", "Hello", "World", "orld"] {
+        assert!(
+            !text.contains(invented),
+            "uncovered CIDs were guessed into {invented:?}, which v0.3.71 removed \
+             deliberately as silent corruption: {text:?}"
+        );
+    }
+}
+
+/// The fixture from #535b, built in-code: Type0 / Identity-H over a
+/// CIDFontType2, with a `/ToUnicode` whose codespace is one byte wide while
+/// the text is written in two-byte codes.
+fn cmap_miss_pdf() -> Vec<u8> {
+    let content = b"BT\n/F1 24 Tf\n50 700 Td\n<0048 0065 006C 006C 006F> Tj\n\
+                    0 -30 Td\n<0057 006F 0072 006C 0064> Tj\nET\n"
+        .to_vec();
+    let tounicode = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+                      /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+                      /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+                      1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+                      1 beginbfrange\n<41> <5A> <0041>\nendbfrange\n\
+                      endcmap\nCMapSpaceUsed\nend end\n"
+        .to_vec();
+
+    let mut pdf = Vec::new();
+    let mut off = [0usize; 9];
+    macro_rules! push {
+        ($s:expr) => {
+            pdf.extend_from_slice($s.as_bytes())
+        };
+    }
+    push!("%PDF-1.7\n");
+    off[1] = pdf.len();
+    push!("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    off[2] = pdf.len();
+    push!("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    off[3] = pdf.len();
+    push!(
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
     );
+    off[4] = pdf.len();
+    push!(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()));
+    pdf.extend_from_slice(&content);
+    push!("endstream\nendobj\n");
+    off[5] = pdf.len();
+    push!(
+        "5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /TestFont \
+         /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>\nendobj\n"
+    );
+    off[6] = pdf.len();
+    push!(
+        "6 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /TestFont \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+         /DW 600 >>\nendobj\n"
+    );
+    off[7] = pdf.len();
+    push!(format!("7 0 obj\n<< /Length {} >>\nstream\n", tounicode.len()));
+    pdf.extend_from_slice(&tounicode);
+    push!("endstream\nendobj\n");
+
+    let xref = pdf.len();
+    push!("xref\n0 8\n0000000000 65535 f \r\n");
+    for id in 1..=7 {
+        push!(format!("{:010} 00000 n \r\n", off[id]));
+    }
+    push!(format!("trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"));
+    pdf
 }
 
 /// #536: French Louis Segond Bible page 10 (Genesis 1). The pre-fix

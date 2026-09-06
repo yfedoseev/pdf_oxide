@@ -411,6 +411,8 @@ defmodule PdfOxide.Native do
   def doc_extract_page_auto(_doc, _page, _options_json), do: nif_error()
   def doc_classify_page(_doc, _page), do: nif_error()
   def doc_classify_document(_doc), do: nif_error()
+  def doc_structured_warnings(_doc), do: nif_error()
+  def doc_take_structured_warnings(_doc), do: nif_error()
 
   # phase 8 — header / footer / artifact
   def doc_erase_header(_doc, _page), do: nif_error()

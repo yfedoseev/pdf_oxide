@@ -2928,14 +2928,41 @@ impl<'doc> TextExtractor<'doc> {
         // or larger. Keep it unless a majority of the placed words also appear
         // outside (a duplicate overlay). Tokenising here (behind gates 1 and 2)
         // keeps the common single-column path allocation-free.
-        Self::text_duplication_fraction(&placed_txt, &other_txt) < MAX_DUP_FRACTION
+        match Self::text_duplication_fraction(&placed_txt, &other_txt) {
+            // No tokens could be read out of the placed operands, so there is
+            // no evidence either way — and "no evidence" must not read as "not
+            // a duplicate". The operands carry encoded character codes, not
+            // text: under Identity-H, the dominant modern encoding for exactly
+            // the producer this gate targets, the bytes are two-byte CIDs and
+            // no run of ASCII alphanumerics forms. The measured duplication was
+            // then 0.0, the gate kept, and `extract_text` emitted every word
+            // twice — precisely the case the suppression exists to prevent.
+            //
+            // Failing closed suppresses instead. Gate 2 above already keeps a
+            // placed body that dominates the page whatever its encoding, so
+            // what reaches here is placed text of comparable size to the rest
+            // of the page, where a duplicate overlay is the likely reading.
+            //
+            // The real discriminator is bounding-box overlap, which exists
+            // downstream and is not consulted here; decoding the operand
+            // through the font before tokenising would also settle it. Either
+            // is a larger change than this gate.
+            None => false,
+            Some(fraction) => fraction < MAX_DUP_FRACTION,
+        }
     }
 
     /// Fraction of alphanumeric word tokens in `a` (counting repeats) that also
     /// occur anywhere in `b`. Words are lowercased runs of >= 2 alphanumeric
-    /// bytes; punctuation and single characters are ignored. Returns 0.0 when `a`
-    /// has no such tokens (nothing to be a duplicate of).
-    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> f64 {
+    /// bytes; punctuation and single characters are ignored.
+    ///
+    /// Returns `None` when `a` yields no tokens at all. That is not "nothing to
+    /// be a duplicate of" — these are raw show operands, i.e. encoded character
+    /// codes rather than text, so an encoding whose codes are not ASCII
+    /// alphanumerics (Identity-H, and any non-Latin script) produces no tokens
+    /// from text that is certainly there. The caller must treat it as absence
+    /// of evidence, not as evidence of absence.
+    fn text_duplication_fraction(a: &[u8], b: &[u8]) -> Option<f64> {
         fn tokens(bytes: &[u8]) -> Vec<Vec<u8>> {
             let mut out = Vec::new();
             let mut cur = Vec::new();
@@ -2957,11 +2984,11 @@ impl<'doc> TextExtractor<'doc> {
         }
         let a_tokens = tokens(a);
         if a_tokens.is_empty() {
-            return 0.0;
+            return None;
         }
         let b_set: std::collections::HashSet<Vec<u8>> = tokens(b).into_iter().collect();
         let shared = a_tokens.iter().filter(|t| b_set.contains(*t)).count();
-        shared as f64 / a_tokens.len() as f64
+        Some(shared as f64 / a_tokens.len() as f64)
     }
 
     /// Parse artifact type and subtype from artifact properties dictionary.
@@ -3523,18 +3550,42 @@ impl<'doc> TextExtractor<'doc> {
     /// extractor a different CTM. On govdocs_003_003181.pdf page 4 that cost
     /// a 90°-rotated chart axis: char mode returned 2322 glyphs, all at
     /// rotation 0, where span mode saw 2590 glyphs, 122 at 90°.
+    /// Whether this extraction carries an **emission filter** — a caller
+    /// decision about what to leave out of the result.
+    ///
+    /// Every such filter is evaluated against interpreted state that the
+    /// text-only parser's >256 KB prescan route does not deliver: it keeps
+    /// only `BT..ET`/`Do` regions and discards everything between them.
+    /// Ink filtering needs the colour operators (`cs`, `rg`, `g`, `k`); layer
+    /// exclusion needs the `BDC`/`EMC` pairs that carry optional-content
+    /// membership. Both must therefore take the full parser.
+    ///
+    /// This is one predicate rather than a condition per filter because the
+    /// list had already been forgotten once: the gate tested inks alone, so
+    /// `set_excluded_layers()` was silently ignored above the threshold — the
+    /// caller asked for exclusion, got no error, and got the content. A new
+    /// filter is added here, with its reason, or it inherits the same defect.
+    ///
+    /// This localises the class; it does not close it. ISO 32000-1:2008
+    /// §8.11.3 requires that when optional content is hidden "the content
+    /// shall not be drawn" while "graphics state operations … shall still be
+    /// applied", so visibility is a decision about marking the page, taken
+    /// after interpretation — never a licence to stop parsing. The structural
+    /// answer is one sequential interpreter with suppression at emission,
+    /// which retires this predicate along with the prescan branch.
+    fn has_emission_filter(&self) -> bool {
+        !self.excluded_inks.is_empty() || !self.excluded_layers.is_empty()
+    }
+
     fn run_content_stream(&mut self, content_stream: &[u8]) -> Result<()> {
-        if self.excluded_inks.is_empty() {
-            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
-        } else {
-            // Ink filtering needs the color operators (cs, rg, g, k). The
-            // text-only parser does not guarantee their delivery — its >256KB
-            // prescan route parses only text regions — so use the full parser.
+        if self.has_emission_filter() {
             let operators = parse_content_stream(content_stream)?;
             for op in operators {
                 self.execute_operator(op)?;
             }
             Ok(())
+        } else {
+            parse_and_execute_text_only(content_stream, |op| self.execute_operator(op))
         }
     }
 
@@ -4022,7 +4073,17 @@ impl<'doc> TextExtractor<'doc> {
         let mut prev_y_rounded: Option<i32> = None;
         let mut prev_x: Option<f32> = None;
         let mut prev_text: Option<String> = None;
-        let mut seen_content: std::collections::HashMap<String, (f32, f32)> =
+        // Every place a given string has been kept, not merely the last one.
+        //
+        // One slot per string cannot see an overprint. A page that draws each
+        // glyph twice — a grey pass and a black pass a fraction of a point
+        // apart, the usual way of faking a bold — yields single-glyph spans, so
+        // a title like `SICHERHEITS` stores `S` at its first position and then
+        // overwrites it with the `S` at the end of the same word. The second
+        // pass then compares its `S` against the wrong one and finds no
+        // duplicate.
+        const MAX_TRACKED_POSITIONS: usize = 32;
+        let mut seen_content: std::collections::HashMap<String, Vec<(f32, f32)>> =
             std::collections::HashMap::new();
 
         let mut geometric_skips = 0;
@@ -4049,22 +4110,36 @@ impl<'doc> TextExtractor<'doc> {
             };
 
             // PHASE 2: Content-based deduplication — require positions to OVERLAP
-            let content_duplicate = if span.text.len() >= 5 {
-                if let Some((prev_x_val, prev_y_val)) = seen_content.get(&span.text) {
-                    let y_diff = (span.bbox.y - prev_y_val).abs();
-                    let x_diff = (span.bbox.x - prev_x_val).abs();
-
-                    // Only dedup when spans overlap geometrically (X within 5pt)
-                    // NOT when they're at different positions on the same line
-                    let same_line = y_diff < 2.0;
-                    let overlapping_position = x_diff < 5.0;
-
-                    same_line && overlapping_position
+            //
+            // Short runs are included. They were excluded because a five-byte
+            // floor is a cheap stand-in for "this string is distinctive enough
+            // that repeating it at one position means a duplicate", but it also
+            // exempts every overprinted glyph, and PHASE 1 cannot cover them:
+            // it compares against the immediately preceding span only, and the
+            // sort that decides adjacency uses the same integer-rounded row key
+            // that the overprint's sub-point offset straddles, so the two
+            // copies are never neighbours — a page's whole grey pass is emitted
+            // before its black pass begins.
+            //
+            // What replaces the floor for a short run is a tighter bar on
+            // position: the same per-glyph advance PHASE 1 uses, so two
+            // legitimate repeats of one letter — the `ll` in `callibrator`, an
+            // `SS` — stand a full advance apart and are never confused with a
+            // pair that differs by a fraction of one.
+            let content_duplicate = {
+                let char_count = span.text.chars().count().max(1) as f32;
+                let per_glyph_width = (span.bbox.width / char_count).max(0.1);
+                let x_bar = if span.text.len() >= 5 {
+                    5.0
                 } else {
-                    false
-                }
-            } else {
-                false
+                    (per_glyph_width * Self::DEDUP_OVERLAP_RATIO).min(Self::DEDUP_OVERLAP_CAP_PT)
+                };
+                seen_content.get(&span.text).is_some_and(|seen| {
+                    seen.iter().any(|(prev_x_val, prev_y_val)| {
+                        (span.bbox.y - prev_y_val).abs() < 2.0
+                            && (span.bbox.x - prev_x_val).abs() < x_bar
+                    })
+                })
             };
 
             if geometric_duplicate {
@@ -4076,9 +4151,13 @@ impl<'doc> TextExtractor<'doc> {
                 prev_x = Some(x);
                 prev_text = Some(span.text.clone());
 
-                // Track content for duplicate detection
-                if span.text.len() >= 5 {
-                    seen_content.insert(span.text.clone(), (span.bbox.x, span.bbox.y));
+                // Track content for duplicate detection. Bounded, so a page
+                // repeating one string thousands of times cannot grow this
+                // without limit; the positions that matter for an overprint are
+                // the recent ones.
+                let at = seen_content.entry(span.text.clone()).or_default();
+                if at.len() < MAX_TRACKED_POSITIONS {
+                    at.push((span.bbox.x, span.bbox.y));
                 }
                 // Move span instead of cloning
                 deduplicated.push(span);
@@ -4684,9 +4763,21 @@ impl<'doc> TextExtractor<'doc> {
                 );
                 current.text.push('.');
                 current.text.push_str(&span.text);
-            } else if cross_font_word_glue {
+            } else if cross_font_word_glue || small_caps_glue {
                 // Mid-word font/weight change: concatenate without any space
                 // or space-heuristic — these are same-word character runs.
+                //
+                // `small_caps_glue` belongs here for the same reason, and
+                // reaching the space heuristic instead is what put a space
+                // inside a small-capitals caption: it admitted the merge, then
+                // the heuristic it fell through to inserted a space anyway, so
+                // `TABLE 66.01-11(5)-COORDINATES OF CHROMATICITY` came out as
+                // `...-C OORDINATES...`. The predicate already establishes that
+                // the two runs share a font, a weight, a slant and a baseline
+                // and sit within a point of each other; ISO 32000-1:2008 §9.3.1
+                // makes the size a graphics-state parameter that may change
+                // between show operators, and nothing in §9.4 makes such a
+                // change a word boundary.
                 current.text.push_str(&span.text);
             } else if should_merge {
                 // PHASE 1 FIX: Check if next span is entirely whitespace-only OR marked as offset_semantic space
@@ -5258,30 +5349,74 @@ impl<'doc> TextExtractor<'doc> {
                 // two axes swap. The added conjunct re-checks both along the
                 // run's own writing axis (ISO 32000-1 §9.4.4).
                 let cur_font_size = self.state_stack.current().font_size;
+                // A run is contiguous glyphs, so the new origin must not skip
+                // an em of empty space past the run's own advance. `Td`, `TD`
+                // and `T*` all end the run outright; without a bound here `Tm`
+                // alone accepted an arbitrary forward jump, so two show
+                // operations positioned in different columns were glued into
+                // one span carrying no separator and a width spanning the void
+                // between them. ISO 32000-1:2008 §9.4.2, Table 108 gives `Tm`
+                // and `Td` the same effect on the text and text-line matrices,
+                // so a displacement that ends a run for one must end it for the
+                // other: continuity is a property of the resulting pen
+                // position, not of the operator that moved the pen.
+                //
+                // The bound is a column gap, not a word space. A producer can
+                // leave an intra-word repositioning seam WIDER than the same
+                // font's declared space advance, so no word-space constant
+                // separates a seam from a space; only the source-order
+                // evidence the span merger reads (a space glyph occupies a
+                // character position, a seam is pure repositioning) tells them
+                // apart. Everything narrower is therefore left to the merger,
+                // and this rule speaks only to gaps wide enough that the line
+                // grouping would already call them a column boundary — the
+                // same `max(3 x font size, 30 pt)` it uses, so the two levels
+                // cannot disagree about what separates text.
                 let is_continuation = self.merging_config.merge_tm_tj_runs
                     && match self.tj_span_buffer {
                         Some(ref mut buffer)
                             if !buffer.is_empty()
-                                && (f - buffer.start_matrix.f).abs()
-                                    <= ((cur_font_size * buffer.start_matrix.d).abs() * 0.5)
-                                        .max(0.5)
                                 && a == buffer.start_matrix.a
                                 && b == buffer.start_matrix.b
                                 && c == buffer.start_matrix.c
                                 && d == buffer.start_matrix.d
-                                && e >= buffer.start_matrix.e
-                                && Self::advances_along_writing_axis(
-                                    buffer.start_matrix,
-                                    buffer.wmode,
-                                    e,
-                                    f,
-                                    cur_font_size,
-                                ) =>
+                                // The raw-matrix band and forward test are kept
+                                // ANDed with the frame-correct rule rather than
+                                // replaced by it. Substituting reads better and
+                                // is what the writing-axis helper was built for,
+                                // but it changes what a quarter-turn run does:
+                                // the raw band collapses to its 0.5 pt floor
+                                // there, so rotated runs never merge today, and
+                                // letting them merge concatenates them in
+                                // content-stream order. That defeats the
+                                // writing-axis ordering the rotated line
+                                // grouping performs — a chart label drawing its
+                                // subscript last reads "H02" instead of "H2O".
+                                // Merging rotated runs is worth doing (a run set
+                                // glyph by glyph yields one span per glyph), but
+                                // only together with an ordering rule that
+                                // survives it, which is not this change.
+                                && (f - buffer.start_matrix.f).abs()
+                                    <= ((cur_font_size * buffer.start_matrix.d).abs() * 0.5)
+                                        .max(0.5)
+                                && e >= buffer.start_matrix.e =>
                         {
-                            // Same line, same transform, LTR progression →
-                            // update width to reflect actual visual extent
-                            buffer.accumulated_width = e - buffer.start_matrix.e;
-                            true
+                            match Self::run_continuation_along(
+                                buffer.start_matrix,
+                                buffer.wmode,
+                                e,
+                                f,
+                                cur_font_size,
+                                buffer.accumulated_width,
+                            ) {
+                                // Same line, same transform, forward along the
+                                // run → carry the visual extent forward.
+                                Some(along) => {
+                                    buffer.accumulated_width = along;
+                                    true
+                                },
+                                None => false,
+                            }
                         },
                         _ => false,
                     };
@@ -8102,7 +8237,22 @@ impl<'doc> TextExtractor<'doc> {
                     }
                     w_sum += w;
                     // Track per-character advance widths
-                    let chars_added = buffer.unicode.len() - len_before;
+                    // Count the characters this code produced, not the bytes.
+                    // `unicode` is a `String`, so its `len()` is a byte count:
+                    // one em dash is three bytes and used to push three widths
+                    // for one character, leaving `char_widths` two entries
+                    // ahead of the text for the rest of the run. Every glyph
+                    // after it then carried a neighbour's advance — on one
+                    // regulatory caption the closing `C` of `66.01–11(5)—C`
+                    // was given 2.664 pt, a bracket's width, where its own is
+                    // 5.776 pt, so the span ended 3.648 pt short of its ink and
+                    // a gap appeared where the page has none.
+                    //
+                    // ISO 32000-1:2008 §9.4.4 gives each glyph one displacement
+                    // along the writing axis, so this array carries one entry
+                    // per character and must be indexed the same way the text
+                    // is.
+                    let chars_added = buffer.unicode[len_before..].chars().count();
                     if chars_added == 1 {
                         buffer.char_widths.push(w);
                     } else if chars_added > 1 {
@@ -8307,7 +8457,22 @@ impl<'doc> TextExtractor<'doc> {
                         w += ws_hs;
                     }
                     w_sum += w;
-                    let chars_added = buffer.unicode.len() - len_before;
+                    // Count the characters this code produced, not the bytes.
+                    // `unicode` is a `String`, so its `len()` is a byte count:
+                    // one em dash is three bytes and used to push three widths
+                    // for one character, leaving `char_widths` two entries
+                    // ahead of the text for the rest of the run. Every glyph
+                    // after it then carried a neighbour's advance — on one
+                    // regulatory caption the closing `C` of `66.01–11(5)—C`
+                    // was given 2.664 pt, a bracket's width, where its own is
+                    // 5.776 pt, so the span ended 3.648 pt short of its ink and
+                    // a gap appeared where the page has none.
+                    //
+                    // ISO 32000-1:2008 §9.4.4 gives each glyph one displacement
+                    // along the writing axis, so this array carries one entry
+                    // per character and must be indexed the same way the text
+                    // is.
+                    let chars_added = buffer.unicode[len_before..].chars().count();
                     if chars_added == 1 {
                         buffer.char_widths.push(w);
                     } else if chars_added > 1 {
@@ -8573,15 +8738,41 @@ impl<'doc> TextExtractor<'doc> {
     /// WMode 1 is exempt: vertical text advances along `(c, d)` instead, the
     /// branch [`GraphicsState::advance_text_matrix`] already makes, and reading
     /// its advance as a perpendicular offset splits a column glyph by glyph.
-    fn advances_along_writing_axis(
+    /// The run's new accumulated width when `(e, f)` continues the run that
+    /// started at `start`, or `None` when it ends the run.
+    ///
+    /// One frame-correct test in place of three raw-matrix ones. `e` and `f`
+    /// are the text matrix's translation components, so comparing them
+    /// directly assumes the run advances along `+x` and separates along `y` —
+    /// true only for an upright matrix. Under a quarter turn the two axes are
+    /// exchanged, and per ISO 32000-1:2008 §9.4.4 the glyph displacement lies
+    /// along the text matrix's `(a, b)` row whichever way it points. Projecting
+    /// the displacement onto that row and its perpendicular asks the same three
+    /// questions in the run's own frame:
+    ///
+    /// * is the new origin on the run's line (perpendicular within tolerance),
+    /// * does it lie forward along the run rather than behind it,
+    /// * and is it close enough to the run's end to be the next glyph?
+    ///
+    /// The raw-matrix form got the right answer for upright text and, for a
+    /// quarter turn, an accidental one: the perpendicular tolerance collapsed
+    /// to its 0.5 pt floor, so consecutive glyphs of a rotated run each became
+    /// their own span. Ten glyphs that batch into one span upright produced ten
+    /// spans rotated.
+    ///
+    /// Vertical writing mode keeps the raw comparison. §9.7.4.3 gives it a
+    /// different axis convention, which the `(a, b)` row does not describe.
+    fn run_continuation_along(
         start: Matrix,
         wmode: u8,
         e: f32,
         f: f32,
         font_size: f32,
-    ) -> bool {
+        accumulated: f32,
+    ) -> Option<f32> {
         if wmode != 0 {
-            return true;
+            let on_line = (f - start.f).abs() <= ((font_size * start.d).abs() * 0.5).max(0.5);
+            return (on_line && e >= start.e).then_some(e - start.e);
         }
         // Unit vector along the writing direction. A degenerate (zero-scale)
         // matrix has no direction to speak of; fall back to +x so such runs
@@ -8599,7 +8790,17 @@ impl<'doc> TextExtractor<'doc> {
         // run keeps at least the raw `f` band.
         let line_scale = (start.c * start.c + start.d * start.d).sqrt();
         let tolerance = ((font_size * line_scale).abs() * 0.5).max(0.5);
-        perp.abs() <= tolerance && along >= 0.0
+        if perp.abs() > tolerance || along < 0.0 {
+            return None;
+        }
+        // The run is contiguous glyphs, so the new origin must not skip a
+        // separating gap past the run's own advance. `max(3 x font size,
+        // 30 pt)` is the column-gap threshold the line grouping already uses
+        // to decide that two pieces of text belong to different columns; a
+        // displacement that wide is the same judgement made one level earlier,
+        // so the two agree by construction rather than by coincidence.
+        let limit = ((font_size * 3.0).max(30.0) * axis.max(1e-6)).abs();
+        (along - accumulated <= limit).then_some(along)
     }
 
     /// Flush accumulated Tj span buffer into a single TextSpan.
@@ -9080,13 +9281,12 @@ mod tests {
 
     /// The writing-axis continuation test, quadrant by quadrant.
     ///
-    /// Upright cases must be no stricter than the raw `e`/`f` tests they are
-    /// ANDed with — that implication is why unrotated output cannot move.
-    /// Rotated along-axis cases pin the helper alone: in the composed
-    /// predicate the raw `f` band still gates them, so there the helper is
-    /// veto-only.
+    /// This is now the whole continuation rule rather than one veto ANDed onto
+    /// a raw-matrix pair, so each quadrant pins all three of its questions: on
+    /// the line, forward along it, and near enough to the run's end to be the
+    /// next glyph.
     #[test]
-    fn test_advances_along_writing_axis_by_quadrant() {
+    fn test_run_continuation_by_quadrant() {
         let m = |a, b, c, d| Matrix {
             a,
             b,
@@ -9096,11 +9296,14 @@ mod tests {
             f: 500.0,
         };
         let fs = 10.0;
+        // A run that has already advanced 14 pt, so a 14 pt displacement puts
+        // the new origin exactly at its end — the contiguous case.
         let at = |mat: Matrix, de: f32, df: f32| {
-            TextExtractor::advances_along_writing_axis(mat, 0, mat.e + de, mat.f + df, fs)
+            TextExtractor::run_continuation_along(mat, 0, mat.e + de, mat.f + df, fs, 14.0)
+                .is_some()
         };
 
-        // Must match the raw e/f test exactly.
+        // Upright: the frame the raw `e`/`f` comparison was already right for.
         let upright = m(1.0, 0.0, 0.0, 1.0);
         assert!(at(upright, 14.0, 0.0), "upright advance must continue");
         assert!(!at(upright, 0.0, -14.0), "upright line break must not");
@@ -9112,34 +9315,95 @@ mod tests {
 
         // Advances along +y; lines separate along +x.
         let cw = m(0.0, 1.0, -1.0, 0.0);
-        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must not be vetoed");
-        assert!(!at(cw, 14.0, 0.0), "90° line break must not continue");
+        assert!(at(cw, 0.0, 14.0), "90° along-axis advance must continue");
+        assert!(!at(cw, 14.0, 0.0), "90° line break must not");
         assert!(at(cw, -4.0, 14.0), "90° sub-glyph offset must not be vetoed");
         assert!(!at(cw, -8.0, 14.0), "90° line step must be vetoed");
 
         // Advances along -y; the sign a single-rotation fixture cannot catch.
         let ccw = m(0.0, -1.0, 1.0, 0.0);
-        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must not be vetoed");
-        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not continue");
-        assert!(!at(ccw, 14.0, 0.0), "270° line break must not continue");
+        assert!(at(ccw, 0.0, -14.0), "270° along-axis advance must continue");
+        assert!(!at(ccw, 0.0, 14.0), "270° backwards advance must not");
+        assert!(!at(ccw, 14.0, 0.0), "270° line break must not");
 
         // 180°: advances along -x.
         let flip = m(-1.0, 0.0, 0.0, -1.0);
-        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must not be vetoed");
-        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not continue");
+        assert!(at(flip, -14.0, 0.0), "180° along-axis advance must continue");
+        assert!(!at(flip, 14.0, 0.0), "180° backwards advance must not");
 
         // No writing direction: falls back to +x, as before.
         let degenerate = m(0.0, 0.0, 0.0, 0.0);
         assert!(at(degenerate, 14.0, 0.0));
         assert!(!at(degenerate, -14.0, 0.0));
+    }
 
-        // WMode 1 advances along (c, d), so this test never vetoes it.
-        for (de, df) in [(14.0, 0.0), (0.0, 14.0), (-14.0, 0.0), (0.0, -14.0)] {
-            assert!(
-                TextExtractor::advances_along_writing_axis(cw, 1, cw.e + de, cw.f + df, fs),
-                "vertical run vetoed at ({de}, {df})"
-            );
+    /// The gap bound, in every quadrant. A jump past the run's end by more
+    /// than a column gap is a new run wherever the run happens to point — the
+    /// rule that keeps two columns of rotated text from gluing into one span.
+    ///
+    /// The threshold is `max(3 x font size, 30 pt)`, the same one the line
+    /// grouping uses to separate columns, so the two levels agree about what
+    /// counts as a separating gap.
+    #[test]
+    fn test_run_continuation_bounds_the_gap_in_every_quadrant() {
+        let m = |a, b, c, d| Matrix {
+            a,
+            b,
+            c,
+            d,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        // The run has advanced 14 pt and the threshold at 10 pt type is
+        // max(30, 30) = 30 pt, so a displacement of 44 lands exactly at the
+        // bound and 60 is well beyond it.
+        let at = |mat: Matrix, de: f32, df: f32| {
+            TextExtractor::run_continuation_along(mat, 0, mat.e + de, mat.f + df, fs, 14.0)
+                .is_some()
+        };
+        for (name, mat, unit) in [
+            ("upright", m(1.0, 0.0, 0.0, 1.0), (1.0f32, 0.0f32)),
+            ("90°", m(0.0, 1.0, -1.0, 0.0), (0.0, 1.0)),
+            ("270°", m(0.0, -1.0, 1.0, 0.0), (0.0, -1.0)),
+            ("180°", m(-1.0, 0.0, 0.0, -1.0), (-1.0, 0.0)),
+        ] {
+            let step = |d: f32| (unit.0 * d, unit.1 * d);
+            let (e44, f44) = step(44.0);
+            assert!(at(mat, e44, f44), "{name}: a gap of exactly the threshold must continue");
+            let (e60, f60) = step(60.0);
+            assert!(!at(mat, e60, f60), "{name}: a gap beyond the threshold must end the run");
         }
+    }
+
+    /// Vertical writing mode keeps the raw comparison: §9.7.4.3 gives it an
+    /// axis convention the `(a, b)` row does not describe, so it is out of
+    /// this rule's scope and must behave exactly as before.
+    #[test]
+    fn test_run_continuation_leaves_vertical_writing_mode_alone() {
+        let upright = Matrix {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 100.0,
+            f: 500.0,
+        };
+        let fs = 10.0;
+        // The raw test: same `f`, forward `e`.
+        assert_eq!(
+            TextExtractor::run_continuation_along(upright, 1, 140.0, 500.0, fs, 0.0),
+            Some(40.0),
+            "a forward step on the same baseline continues, and reports its offset"
+        );
+        assert!(
+            TextExtractor::run_continuation_along(upright, 1, 60.0, 500.0, fs, 0.0).is_none(),
+            "a backwards step ends the run"
+        );
+        assert!(
+            TextExtractor::run_continuation_along(upright, 1, 140.0, 460.0, fs, 0.0).is_none(),
+            "a line step ends the run"
+        );
     }
 
     #[test]
@@ -9206,6 +9470,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(

@@ -245,7 +245,212 @@ fn is_fullwidth_or_math_op(c: char) -> bool {
 /// (e.g. `≤`, `＜`, `μ`), no space is inserted even if the geometric gap
 /// exceeds the threshold.  This mirrors the CJK-pair suppression in the text
 /// extraction path (`document.rs`).
+/// True for a character belonging to a right-to-left script.
+///
+/// Covers Hebrew, Arabic and its supplements and presentation forms, Syriac,
+/// Thaana and NKo — the ranges ISO 32000-1:2008 14.8.2.3.3 has in mind when it
+/// describes right-to-left show-text runs. Used to keep left-to-right
+/// positional reasoning from being applied to a script that advances the other
+/// way.
+fn is_rtl_char(c: char) -> bool {
+    matches!(c as u32,
+        0x0590..=0x05FF   // Hebrew
+        | 0x0600..=0x06FF // Arabic
+        | 0x0700..=0x074F // Syriac
+        | 0x0750..=0x077F // Arabic Supplement
+        | 0x0780..=0x07BF // Thaana
+        | 0x07C0..=0x07FF // NKo
+        | 0x08A0..=0x08FF // Arabic Extended-A
+        | 0xFB1D..=0xFDFF // Hebrew/Arabic Presentation Forms-A
+        | 0xFE70..=0xFEFF // Arabic Presentation Forms-B
+    )
+}
+
+/// A footnote or citation marker set immediately after a prose word.
+///
+/// ISO 32000-1:2008 §9.4.4 makes the glyph advance the only thing that moves
+/// the text position, so a marker typeset at the base word's advance edge is
+/// not separated by geometry at all — `has_horizontal_gap` correctly reports no
+/// gap, and the two run together as `phosphorylation55`.
+///
+/// Gap size cannot settle it, and the measurements are inverted from the
+/// intuition: the footnote markers sit at 0.10 em from their word while genuine
+/// maths subscripts (`W2`, `CP3`, `H1`) sit at 0.14 em and larger. Any
+/// threshold that splits the first fuses on the second.
+///
+/// What does separate them is the same distinction `merge_sub_superscript_spans`
+/// already draws for the text path: a sub/superscript *host* is a symbol, not a
+/// prose word. `H`, `x`, `ADP` and `SO` are hosts; `phosphorylation` is not. So
+/// this fires only where the base is a word, the marker is a bare numeral, and
+/// the run is set smaller in a different font — the shape a reference callout
+/// has and a subscript does not.
+///
+/// Deliberately kept out of `has_horizontal_gap`: that function also serves
+/// `render_cell_html` and `cell_plain_text`, and table rendering must not move.
+pub(crate) fn is_reference_marker_boundary(prev: &TextSpan, current: &TextSpan) -> bool {
+    // Only in the band the gap rule already declines; never override a real gap.
+    if (prev.rotation_degrees - current.rotation_degrees).abs() > 0.5
+        || has_horizontal_gap(prev, current)
+    {
+        return false;
+    }
+    // An italic base is a mathematical expression, not prose.
+    if prev.is_italic || current.is_italic {
+        return false;
+    }
+    // The marker is a distinctly smaller run in a different font resource.
+    if prev.font_name == current.font_name
+        || current.font_size >= prev.font_size * 0.85
+        || current.font_size <= 0.0
+    {
+        return false;
+    }
+    let em = prev.font_size.max(current.font_size).max(1.0);
+    let gap = current.bbox.x - (prev.bbox.x + prev.bbox.width);
+    if gap <= 0.5 || gap >= em * 3.0 {
+        return false;
+    }
+    // The base ends in a prose word: three or more letters, ending lowercase.
+    // That excludes every sub/superscript host — a lone symbol, an element pair
+    // or a trailing acronym.
+    let base = prev.text.trim_end();
+    let tail: String = base
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphabetic())
+        .collect();
+    if tail.chars().count() < 3 || !base.ends_with(|c: char| c.is_ascii_lowercase()) {
+        return false;
+    }
+    // The marker is a bare numeral, optionally a list or range of them.
+    let head: String = current
+        .text
+        .trim_start()
+        .chars()
+        .take_while(|c| {
+            c.is_ascii_digit() || matches!(c, ',' | '-' | '\u{2013}' | '\u{2014}' | '\u{2212}')
+        })
+        .collect();
+    !head.is_empty()
+        && head.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && head.chars().any(|c| c.is_ascii_digit())
+}
+
+/// True when a run reads as a piece of a sentence rather than a title.
+///
+/// The heading predicates are built from typography — font size, weight, word
+/// count, capitalisation. On a page whose text layer is garbled those signals
+/// survive intact while the words themselves stop forming titles, and a body
+/// fragment carrying a large font gets promoted. A 1919 broadsheet produced
+/// `## Furthermore, one reads in the` and `### palaces league.` that way: both
+/// clear every existing test, because the first leads with a capital and is
+/// only five words, and the second is two words, below the five-word floor the
+/// lowercase-initial rule uses.
+///
+/// Two shapes settle it without appealing to layout:
+///
+/// A title does not end on a function word. `in`, `the`, `of` and their kin
+/// exist to attach what follows them, so a run ending in one has had its
+/// continuation cut away. The check needs three words before it applies, which
+/// keeps `About`, `Contact Us` and titles that genuinely end in such a word
+/// out of its reach.
+///
+/// A run that opens lowercase and closes on a full stop is a sentence with its
+/// head removed. Headings that legitimately begin lowercase — a product name,
+/// a stylised mark — do not also terminate in a period.
+///
+/// Both tests are English-shaped and both only ever *reject*, so a heading in
+/// another language is untouched: its words match no entry in the list, and
+/// scripts without case report `is_lowercase() == false`.
+pub(crate) fn reads_as_a_sentence_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+
+    // Opens lowercase, closes on a full stop.
+    if trimmed.ends_with('.') {
+        if let Some(first) = trimmed.chars().find(|c| c.is_alphabetic()) {
+            if first.is_lowercase() {
+                return true;
+            }
+        }
+    }
+
+    // Ends on a function word, with enough words for that to mean anything.
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() < 3 {
+        return false;
+    }
+    let last: String = words[words.len() - 1]
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    // Articles, prepositions, the coordinating conjunctions and the two
+    // complementisers. Deliberately no auxiliaries or pronouns: `Let It Be`,
+    // `Yes We Can` and `Doctor Who` are titles that end exactly that way.
+    matches!(
+        last.as_str(),
+        "a" | "an"
+            | "the"
+            | "of"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "with"
+            | "from"
+            | "by"
+            | "into"
+            | "onto"
+            | "upon"
+            | "over"
+            | "under"
+            | "between"
+            | "among"
+            | "through"
+            | "during"
+            | "against"
+            | "about"
+            | "than"
+            | "without"
+            | "within"
+            | "and"
+            | "or"
+            | "but"
+            | "nor"
+            | "that"
+            | "which"
+    )
+}
+
+/// True for a character that establishes left-to-right reading on its own.
+///
+/// Unicode Standard Annex #9 sorts characters into strong, weak and neutral
+/// types, and only the strong ones carry a direction. A Latin, Greek, Cyrillic
+/// or Han letter is strong; digits and `/`, `%`, `-`, `#` are weak or neutral
+/// and take their direction from whatever surrounds them. ISO 32000-1:2008
+/// Table 344 defers to that annex by name — a writing mode's
+/// inline-progression direction "is subject to local override within the text
+/// being laid out, as described in Unicode Standard Annex #9, The
+/// Bidirectional Algorithm".
+///
+/// So a run of digits is evidence of nothing. It reads left-to-right in a Latin
+/// paragraph and right-to-left in an Arabic one, and its geometry alone cannot
+/// say which.
+fn is_strong_ltr_char(c: char) -> bool {
+    c.is_alphabetic() && !is_rtl_char(c)
+}
+
 pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
+    // Runs on different writing axes are not comparable along page-x at all.
+    // ISO 32000-1:2008 9.4.4: a glyph's displacement is interpreted in text
+    // space, so a 90-degree run's `bbox.width` is its advance along a
+    // physically vertical axis. Subtracting it from a horizontal run's x gave
+    // `72 - (32 + 343.30) = -303.30` for a rotated marginal stamp beside a body
+    // line, which read as "no gap" and glued the two together.
+    if (prev.rotation_degrees - current.rotation_degrees).abs() > 0.5 {
+        return true;
+    }
     let font_size = prev.font_size.max(current.font_size).max(1.0);
     let prev_end_x = prev.bbox.x + prev.bbox.width;
     let gap = current.bbox.x - prev_end_x;
@@ -258,7 +463,51 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     // `3.80%` + `4.41%` into `3.80%4.41%` when the rate-table cells
     // sit ~265 pt apart and the table detector wasn't able to capture
     // them as a real grid.
-    if gap <= threshold {
+    // A span that ends before the previous one begins cannot be a
+    // continuation of it: the two are separated by a reading discontinuity —
+    // a new line, a new column, or a re-ordered run on an OCR text layer
+    // whose baselines jitter enough to scramble the row grouping. Treating
+    // that as "no gap" concatenated tokens that were never adjacent, so
+    // `It is the` came out as `theisIt`. Only a *complete* backward step
+    // counts: a small negative gap is glyph overlap (accent composition, an
+    // over-wide advance estimate) and must stay unseparated.
+    //
+    // The premise holds only for a left-to-right run. In Arabic, Hebrew and
+    // the other right-to-left scripts a continuation steps *leftward* by
+    // definition, so every glyph pair in a right-to-left word satisfies the
+    // test and the word is split into single letters. Word-final forms often
+    // carry a zero advance here as well, which makes the apparent step even
+    // larger. So the rule is scoped to runs with no right-to-left character on
+    // either side; a right-to-left run falls back to the plain gap test, which
+    // is what separated its words correctly before.
+    // A *large* backward jump is a discontinuity even when the two boxes still
+    // overlap. Requiring a complete step missed the case where a second
+    // overlaid layer, or a run re-ordered on an OCR text layer, starts well to
+    // the left of where the previous run ended but stretches past its start:
+    // "…Labeling Technologies" ending at 396.07 followed by a run beginning at
+    // 205.31 is a gap of −190.76 pt, and the two were concatenated as
+    // "TechnologiesA Guide". The bound mirrors the one `extract_text` uses for
+    // the same judgement (twenty ems), which is far outside the range of the
+    // glyph overlap this rule exists to tolerate.
+    let backward_em = prev.font_size.max(current.font_size).max(6.0) * 20.0;
+    //
+    // Carrying no right-to-left character does not establish that a run is
+    // left-to-right, because digits and their separators establish no direction
+    // at all. A Persian form's `1403/09/19` is drawn right-to-left like the
+    // words around it, but `19`, `/` and `09` hold no strong character of
+    // either script, so a guard keyed on right-to-left characters never sees
+    // them and the rule split every date, percentage and section number it met:
+    // `19 / 09 /1403`, `50 %`, `5 2`.
+    //
+    // The test needs positive evidence rather than the absence of contrary
+    // evidence, so it applies only where some strong left-to-right character is
+    // present and no right-to-left one is.
+    let steps_backward = (current.bbox.x + current.bbox.width <= prev.bbox.x || gap < -backward_em)
+        && !prev.text.chars().any(is_rtl_char)
+        && !current.text.chars().any(is_rtl_char)
+        && (prev.text.chars().any(is_strong_ltr_char)
+            || current.text.chars().any(is_strong_ltr_char));
+    if gap <= threshold && !steps_backward {
         return false;
     }
 
@@ -281,6 +530,23 @@ pub(crate) fn has_horizontal_gap(prev: &TextSpan, current: &TextSpan) -> bool {
     true
 }
 
+/// Two spans a table cell renders one after the other need a separator when
+/// they are not on the same line, whatever their horizontal relationship.
+///
+/// The cell renderers asked only `has_horizontal_gap`, which compares x. A
+/// cell that stacks its members vertically — a CAD sheet's contour labels, a
+/// wrapped sentence — has consecutive spans at nearly the same x and different
+/// y, so that test found no gap and ran them together, inventing words the
+/// page never draws (`128` above `126` became `128126`). The paragraph path
+/// has always inserted a separator between lines; the cell path had no
+/// equivalent.
+///
+/// The 0.5 × font-size threshold is the same line test used throughout.
+pub(crate) fn spans_are_stacked(prev: &TextSpan, current: &TextSpan) -> bool {
+    let font_size = prev.font_size.max(current.font_size).max(1.0);
+    (current.bbox.y - prev.bbox.y).abs() >= font_size * 0.5
+}
+
 /// Return the index of the table whose bounding box contains the span's
 /// origin AND that has a cell whose bbox also contains the span — i.e.
 /// the table is actually going to render this span as part of a cell.
@@ -297,7 +563,91 @@ pub(crate) fn span_in_table(span: &OrderedTextSpan, tables: &[Table]) -> Option<
     let sx = span.span.bbox.x;
     let sy = span.span.bbox.y;
 
+    // Two tiers ahead of the geometric fallback, so this predicate answers from
+    // what the table ACTUALLY renders rather than re-deriving ownership from a
+    // different test over a different span population.
+    //
+    // The detector claims a span by its **centre**, with a 3 pt snap, over
+    // *populated* cells. This function historically claimed by the span's
+    // **origin**, with a 2 pt slack, over the *full lattice* — placeholder cells
+    // included. Those disagree at the edges: a span whose centre snaps in from
+    // outside is rendered by the cell AND emitted in prose (duplication, at the
+    // left and bottom edges), while one whose origin lands in an empty lattice
+    // square is suppressed from prose and rendered by nobody (loss, at the top
+    // and right).
+    //
+    // `TableCell::spans` is the bridge: it holds the word spans the cell really
+    // renders, and a placeholder cell has none. That distinction already exists,
+    // so no field and no struct change is needed. Identity matching was tried
+    // before and reverted because the detector consumes
+    // `extract_table_word_spans` while the converters walk flow spans — two
+    // populations whose `sequence` values do not correspond. Geometry against
+    // the cell's own spans works where identity cannot.
+    //
+    // A tier that applies is **decisive** for its table: it answers both ways,
+    // so the span it declines is left to prose rather than falling through to a
+    // rule that would suppress it and leave it rendered by nobody.
+    let mut undecided: Vec<usize> = Vec::with_capacity(tables.len());
     for (i, table) in tables.iter().enumerate() {
+        // Tier 1 — marked content. Exact for tagged PDFs, and the same test
+        // `extract_text` applies.
+        let table_has_mcids = table
+            .rows
+            .iter()
+            .any(|r| r.cells.iter().any(|c| !c.mcids.is_empty()));
+        if table_has_mcids {
+            if let Some(mcid) = span.span.mcid {
+                if table
+                    .rows
+                    .iter()
+                    .any(|r| r.cells.iter().any(|c| c.mcids.contains(&mcid)))
+                {
+                    return Some(i);
+                }
+                continue;
+            }
+        }
+
+        // Tier 2 — the cell's own ink. Claim the span only where the runs the
+        // cell renders actually cover it, on the same line.
+        let table_has_spans = table
+            .rows
+            .iter()
+            .any(|r| r.cells.iter().any(|c| !c.spans.is_empty()));
+        if table_has_spans {
+            let sw = span.span.bbox.width;
+            let s_end = sx + sw;
+            let band = span.span.font_size.max(1.0) * 0.5;
+            let mut covered = 0.0f32;
+            for row in &table.rows {
+                for cell in &row.cells {
+                    for member in &cell.spans {
+                        if (member.bbox.y - sy).abs() > band {
+                            continue;
+                        }
+                        let m_end = member.bbox.x + member.bbox.width;
+                        let lo = sx.max(member.bbox.x);
+                        let hi = s_end.min(m_end);
+                        if hi > lo {
+                            covered += hi - lo;
+                        }
+                    }
+                }
+            }
+            if sw > 0.0 && covered >= sw * 0.5 {
+                return Some(i);
+            }
+            continue;
+        }
+
+        // Tier 3 — a table whose cells carry neither MCIDs nor spans
+        // (MCID-built tables and unit-test fixtures). The legacy geometric rule
+        // is all there is.
+        undecided.push(i);
+    }
+
+    for i in undecided {
+        let table = &tables[i];
         let Some(ref bbox) = table.bbox else { continue };
         let tolerance = 2.0;
         let in_outer_bbox = sx >= bbox.x - tolerance
@@ -622,6 +972,144 @@ mod tests {
         }
     }
 
+    // ========================================================================
+    // sentence-fragment rejection for heading promotion
+    // ========================================================================
+
+    /// The guard is English-shaped and must only ever reject, so a heading in a
+    /// language it knows nothing about has to pass untouched — including
+    /// scripts with no case, where `is_lowercase()` is false for every
+    /// character.
+    #[test]
+    fn test_heading_in_another_script_is_untouched() {
+        for heading in [
+            "\u{7b2c}\u{4e00}\u{7ae0}",
+            "\u{627}\u{644}\u{645}\u{642}\u{62f}\u{645}\u{629}",
+            "\u{41f}\u{440}\u{435}\u{434}\u{438}\u{441}\u{43b}\u{43e}\u{432}\u{438}\u{435}",
+            "\u{7d50}\u{8ad6}\u{3068}\u{8003}\u{5bdf}",
+        ] {
+            assert!(
+                !reads_as_a_sentence_fragment(heading),
+                "{heading:?} must not be rejected by an English-shaped rule"
+            );
+        }
+    }
+
+    // ========================================================================
+    // has_horizontal_gap right-to-left scoping
+    // ========================================================================
+
+    /// Build a span at an explicit x/width/size, for the RTL geometry below.
+    fn rtl_span(x: f32, w: f32, fs: f32, text: &str) -> crate::layout::TextSpan {
+        crate::layout::TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect::new(x, 0.0, w, fs),
+            font_size: fs,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn arabic_glyphs_stepping_leftward_are_not_separated() {
+        // Measured from the page that exposed this: two glyphs of one Arabic
+        // word, the second starting well left of the first and carrying a zero
+        // advance. A right-to-left continuation steps leftward by definition,
+        // so the backward-step discontinuity rule must not claim it.
+        let prev = rtl_span(497.37, 0.0, 22.0, "\u{629}");
+        let curr = rtl_span(386.46, 0.0, 22.0, "\u{632}");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "an RTL continuation is not a reading discontinuity"
+        );
+    }
+
+    #[test]
+    fn hebrew_glyphs_stepping_leftward_are_not_separated() {
+        let prev = rtl_span(300.0, 0.0, 12.0, "\u{5e9}");
+        let curr = rtl_span(288.0, 0.0, 12.0, "\u{5dc}");
+        assert!(!has_horizontal_gap(&prev, &curr), "Hebrew advances right-to-left too");
+    }
+
+    #[test]
+    fn test_latin_backward_step_is_still_a_discontinuity() {
+        // The rule the RTL guard narrows must still fire for left-to-right
+        // text, where a run beginning left of the previous run's start is a
+        // new line or column — this is what stops `It is the` becoming
+        // `theisIt`.
+        let prev = rtl_span(300.0, 20.0, 12.0, "the");
+        let curr = rtl_span(100.0, 12.0, 12.0, "It");
+        assert!(
+            has_horizontal_gap(&prev, &curr),
+            "a Latin run starting 200pt back is a discontinuity"
+        );
+    }
+
+    #[test]
+    fn adjacent_latin_kerning_is_still_not_a_gap() {
+        let prev = rtl_span(100.0, 18.0, 12.0, "Effi");
+        let curr = rtl_span(118.1, 26.0, 12.0, "ciency");
+        assert!(!has_horizontal_gap(&prev, &curr), "a sub-em gap is inter-glyph kerning");
+    }
+
+    /// The four span pairs of a Persian form's issue date, at the geometry the
+    /// file actually draws. The digits are laid down left-to-right —
+    /// `1403` `/` `09` `/` `19` at ascending x — and the bidi pass reverses
+    /// them into reading order, so each consecutive pair in the flow steps
+    /// leftward. Nothing here carries an Arabic character, so a guard keyed on
+    /// right-to-left characters cannot see that this is a right-to-left run.
+    ///
+    /// The last pair is the tell: `/`→`1403` ends at 160.32 against a previous
+    /// start of 160.22, missing the backward-step test by a tenth of a point
+    /// where the other three met it. That is why the damage was asymmetric —
+    /// `19 / 09 /1403`, a space before every separator but not after the last.
+    #[test]
+    fn test_date_in_a_right_to_left_run_is_not_split_at_its_separators() {
+        let date = [
+            (176.54, 11.28, "19"),
+            (174.02, 2.48, "/"),
+            (162.74, 11.28, "09"),
+            (160.22, 2.48, "/"),
+            (137.90, 22.42, "1403"),
+        ];
+        for pair in date.windows(2) {
+            let (px, pw, pt) = pair[0];
+            let (cx, cw, ct) = pair[1];
+            let prev = rtl_span(px, pw, 12.0, pt);
+            let curr = rtl_span(cx, cw, 12.0, ct);
+            assert!(
+                !has_horizontal_gap(&prev, &curr),
+                "a date must not gain a break between {pt:?} and {ct:?}"
+            );
+        }
+    }
+
+    /// A percentage from the same page. `%` is a bidi terminator and the digits
+    /// are European numbers; neither establishes a direction, so neither can
+    /// justify reading a leftward step as a discontinuity.
+    #[test]
+    fn test_percentage_in_a_right_to_left_run_keeps_its_sign() {
+        let prev = rtl_span(202.49, 5.63, 12.0, "5");
+        let curr = rtl_span(197.21, 5.24, 12.0, "%");
+        assert!(
+            !has_horizontal_gap(&prev, &curr),
+            "a percent sign must not be separated from its number"
+        );
+    }
+
+    /// The counter-case that keeps the narrowing honest. Identical leftward
+    /// geometry, but with strong left-to-right letters on both sides this is a
+    /// genuine reading discontinuity and must still separate — it is what stops
+    /// a re-ordered OCR layer emitting `It is the` as `theisIt`.
+    #[test]
+    fn test_latin_backward_step_with_letters_still_separates() {
+        let prev = rtl_span(176.54, 11.28, 12.0, "is");
+        let curr = rtl_span(160.22, 11.28, 12.0, "the");
+        assert!(
+            has_horizontal_gap(&prev, &curr),
+            "a backward step between Latin words is still a discontinuity"
+        );
+    }
+
     #[test]
     fn test_has_horizontal_gap_cjk_cjk_suppressed() {
         // CJK char followed by CJK char with a gap > 0.15em → no space.
@@ -792,5 +1280,233 @@ mod tests {
         let table = make_table_with_cell((10.0, 50.0, 200.0, 100.0), (40.0, 60.0, 100.0, 20.0));
         let span = make_ordered_span(500.0, 500.0);
         assert_eq!(span_in_table(&span, &[table]), None);
+    }
+
+    // ========================================================================
+    // reference-marker boundary
+    // ========================================================================
+
+    /// A span at an explicit x/width/size/font, for the marker geometry below.
+    fn marker_span(x: f32, w: f32, fs: f32, font: &str, text: &str) -> crate::layout::TextSpan {
+        crate::layout::TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect::new(x, 0.0, w, fs),
+            font_size: fs,
+            font_name: font.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The measured geometry from a real paper: the marker sits 0.99 pt after
+    /// the word at 9.96 pt body size, i.e. 0.10 em — well inside the 0.15 em
+    /// bar, so `has_horizontal_gap` declines and the two glue as
+    /// `phosphorylation55`.
+    #[test]
+    fn test_footnote_marker_after_a_word_is_a_boundary() {
+        let word = marker_span(124.60, 189.36, 9.96, "TWJDIY+SFRM1000", "phosphorylation");
+        let marker = marker_span(314.95, 6.0, 6.97, "MIOKXQ+SFRM0700", "55.");
+        assert!(
+            !has_horizontal_gap(&word, &marker),
+            "precondition: the gap rule must decline this, or the test proves nothing"
+        );
+        assert!(
+            is_reference_marker_boundary(&word, &marker),
+            "a numeral set smaller after a prose word is a reference callout"
+        );
+    }
+
+    /// The counter-case, and the reason gap size cannot be the discriminator:
+    /// a maths subscript sits *further* from its base (0.14 em) than the
+    /// footnote marker does (0.10 em), so any threshold that splits the marker
+    /// fuses this. The base being a symbol rather than a prose word is what
+    /// separates them — the same rule `merge_sub_superscript_spans` uses.
+    #[test]
+    fn test_maths_subscript_is_not_a_boundary() {
+        for (base, sub) in [
+            ("W", "2"),
+            ("H", "2"),
+            ("ADP", "3"),
+            ("SO", "4"),
+            ("x", "2"),
+        ] {
+            let b = marker_span(100.0, 8.0, 11.96, "BODY+Font", base);
+            let s = marker_span(109.63, 4.0, 6.97, "SUB+Font", sub);
+            assert!(
+                !is_reference_marker_boundary(&b, &s),
+                "{base}+{sub} is a subscript on a symbol host and must stay joined"
+            );
+        }
+    }
+
+    /// An italic base is a mathematical expression, not prose.
+    #[test]
+    fn test_italic_base_is_not_a_prose_word() {
+        let mut base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "alpha");
+        base.is_italic = true;
+        let marker = marker_span(131.0, 5.0, 6.5, "SUB+Font", "2");
+        assert!(!is_reference_marker_boundary(&base, &marker));
+    }
+
+    /// The marker must be a numeral. A letter following a word at the advance
+    /// edge is a glyph-split word, not a callout, and must stay joined.
+    #[test]
+    fn test_letter_continuation_is_not_a_marker() {
+        let base = marker_span(100.0, 30.0, 10.0, "BODY+Font", "ultrasonographi");
+        let cont = marker_span(131.0, 20.0, 10.0, "BODY+Font", "cally");
+        assert!(!is_reference_marker_boundary(&base, &cont));
+    }
+
+    /// Same font means one run, whatever the size — no callout.
+    #[test]
+    fn test_same_font_resource_is_not_a_boundary() {
+        let base = marker_span(100.0, 30.0, 10.0, "SAME+Font", "phosphorylation");
+        let marker = marker_span(131.0, 5.0, 6.5, "SAME+Font", "55");
+        assert!(!is_reference_marker_boundary(&base, &marker));
+    }
+}
+
+#[cfg(test)]
+mod span_ownership_tests {
+    use super::*;
+    use crate::layout::TextSpan;
+    use crate::pipeline::ordered_span::OrderedTextSpan;
+    use crate::structure::table_extractor::{Table, TableCell, TableRow};
+
+    fn span_at(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
+        TextSpan {
+            text: text.to_string(),
+            bbox: crate::geometry::Rect {
+                x,
+                y,
+                width,
+                height: 10.0,
+            },
+            font_size: 10.0,
+            ..Default::default()
+        }
+    }
+
+    /// A table whose single populated cell renders one run, plus an empty
+    /// placeholder cell in the lattice beside it. `bbox` covers both.
+    fn table_with_a_placeholder_cell() -> Table {
+        let mut populated = TableCell::new("Region".to_string(), false);
+        populated.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+        populated.spans = vec![span_at("Region", 102.0, 701.0, 34.0)];
+
+        // The lattice square the detector left empty — no text was placed in it.
+        let mut placeholder = TableCell::new(String::new(), false);
+        placeholder.bbox = Some(crate::geometry::Rect {
+            x: 160.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+
+        let mut row = TableRow::new(false);
+        row.add_cell(populated);
+        row.add_cell(placeholder);
+
+        let mut table = Table::new();
+        table.add_row(row);
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+        table
+    }
+
+    /// The loss half. A span whose origin lands in an empty lattice square is
+    /// rendered by no cell, so suppressing it from prose deletes it from the
+    /// document. The origin test said it belonged to the table; the cell's own
+    /// ink says otherwise, and the ink is what gets rendered.
+    #[test]
+    fn test_span_no_cell_renders_is_left_to_prose() {
+        let table = table_with_a_placeholder_cell();
+        let orphan = OrderedTextSpan::new(span_at("footnote", 165.0, 703.0, 40.0), 0);
+
+        assert_eq!(
+            span_in_table(&orphan, std::slice::from_ref(&table)),
+            None,
+            "a span sitting in an empty lattice square was suppressed from prose \
+             and is rendered by nobody, so it is lost from every surface"
+        );
+    }
+
+    /// The counter-case, and the reason the predicate cannot simply answer
+    /// `None`: a span the cell really does render must stay out of prose, or it
+    /// appears twice.
+    #[test]
+    fn test_span_a_cell_renders_is_claimed_by_it() {
+        let table = table_with_a_placeholder_cell();
+        let owned = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
+
+        assert_eq!(
+            span_in_table(&owned, std::slice::from_ref(&table)),
+            Some(0),
+            "a span the cell renders was also emitted into prose, so it appears twice"
+        );
+    }
+
+    /// A tagged table answers from marked content, which is exact — and it
+    /// answers both ways, so an unclaimed span is not swept up by geometry.
+    #[test]
+    fn marked_content_decides_a_tagged_table_both_ways() {
+        let mut cell = TableCell::new("Region".to_string(), false);
+        cell.mcids = vec![7];
+        cell.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 60.0,
+            height: 12.0,
+        });
+        let mut row = TableRow::new(false);
+        row.add_cell(cell);
+        let mut table = Table::new();
+        table.add_row(row);
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+
+        let mut inside = span_at("Region", 102.0, 701.0, 34.0);
+        inside.mcid = Some(7);
+        assert_eq!(
+            span_in_table(&OrderedTextSpan::new(inside, 0), std::slice::from_ref(&table)),
+            Some(0)
+        );
+
+        let mut other = span_at("caption", 102.0, 701.0, 34.0);
+        other.mcid = Some(9);
+        assert_eq!(
+            span_in_table(&OrderedTextSpan::new(other, 0), std::slice::from_ref(&table)),
+            None,
+            "a span the table's marked content does not claim must reach prose, \
+             even though it sits inside the table's bbox"
+        );
+    }
+
+    /// A table carrying neither marked content nor cell spans still falls back
+    /// to the geometric rule, which is all there is for it.
+    #[test]
+    fn test_bare_table_still_uses_the_geometric_rule() {
+        let mut table = Table::new();
+        table.add_row(TableRow::new(false));
+        table.bbox = Some(crate::geometry::Rect {
+            x: 100.0,
+            y: 700.0,
+            width: 120.0,
+            height: 12.0,
+        });
+        let inside = OrderedTextSpan::new(span_at("Region", 102.0, 701.0, 34.0), 0);
+        assert_eq!(span_in_table(&inside, std::slice::from_ref(&table)), Some(0));
     }
 }

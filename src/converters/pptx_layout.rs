@@ -185,7 +185,7 @@ pub fn to_pptx_bytes_layout(doc: &crate::document::PdfDocument) -> Result<Vec<u8
                 if span.is_italic {
                     run = run.italic();
                 }
-                if !(span.color.r == 0.0 && span.color.g == 0.0 && span.color.b == 0.0) {
+                if !crate::color::is_document_black(span.color.r, span.color.g, span.color.b) {
                     let hex = format!(
                         "{:02X}{:02X}{:02X}",
                         (span.color.r * 255.0).round().clamp(0.0, 255.0) as u8,

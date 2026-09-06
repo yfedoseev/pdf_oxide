@@ -81,7 +81,25 @@ impl Rect {
         Self::new(self.x, self.y, self.width, self.height)
     }
 
-    /// Create a rectangle from two corner points.
+    /// Create a rectangle from two corner points, in either order.
+    ///
+    /// The two points are **diagonally opposite corners**, not an origin and
+    /// a far corner, so neither ordering is privileged. ISO 32000-1:2008
+    /// §7.9.5 (`docs/spec/pdf.md:6443`) is explicit about this for the
+    /// rectangles PDF files carry:
+    ///
+    /// > Although rectangles are conventionally specified by their lower-left
+    /// > and upper-right corners, it is acceptable to specify any two
+    /// > diagonally opposite corners. Applications that process PDF should be
+    /// > prepared to normalize such rectangles in situations where specific
+    /// > corners are required.
+    ///
+    /// This constructor previously built the struct literally, so a
+    /// `/MediaBox [612 792 0 0]` produced a negative width and height while
+    /// [`Rect::new`] — the same type's other constructor, fed a width and a
+    /// height — normalised correctly. The two disagreed, and the callers that
+    /// need specific corners (page pixmap allocation among them) got the
+    /// unnormalised one.
     ///
     /// # Examples
     ///
@@ -93,14 +111,12 @@ impl Rect {
     /// assert_eq!(rect.y, 20.0);
     /// assert_eq!(rect.width, 100.0);
     /// assert_eq!(rect.height, 50.0);
+    ///
+    /// // The other diagonal describes the same rectangle.
+    /// assert_eq!(Rect::from_points(110.0, 70.0, 10.0, 20.0), rect);
     /// ```
     pub fn from_points(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
-        Self {
-            x: x0,
-            y: y0,
-            width: x1 - x0,
-            height: y1 - y0,
-        }
+        Self::new(x0, y0, x1 - x0, y1 - y0)
     }
 
     /// Get the left edge x-coordinate.

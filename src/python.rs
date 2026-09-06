@@ -56,64 +56,6 @@ impl PyPdfDocument {
 
 #[pymethods]
 impl PyPdfDocument {
-    /// Open a PDF file.
-    ///
-    /// Open a PDF file, optionally with a password for encrypted documents.
-    ///
-    /// Args:
-    ///     path (str | pathlib.Path): Path to the PDF file
-    ///     password (str, optional): Password for encrypted PDFs
-    #[new]
-    #[pyo3(signature = (path, password=None))]
-    #[allow(unused_mut)]
-    fn new(path: PathBuf, password: Option<&str>) -> PyResult<Self> {
-        let mut doc = RustPdfDocument::open(&path)
-            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF: {}", e)))?;
-
-        if let Some(pw) = password {
-            let ok = doc
-                .authenticate(pw.as_bytes())
-                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
-            if !ok {
-                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
-            }
-        }
-
-        let path_str = path.to_string_lossy().into_owned();
-        Ok(PyPdfDocument {
-            inner: doc,
-            path: Some(path_str),
-            raw_bytes: None,
-            editor: None,
-        })
-    }
-
-    /// Open a PDF from bytes, optionally with a password.
-    #[staticmethod]
-    #[pyo3(signature = (data, password=None))]
-    #[allow(unused_mut)]
-    fn from_bytes(data: &Bound<'_, PyBytes>, password: Option<&str>) -> PyResult<Self> {
-        let bytes = data.as_bytes().to_vec();
-        let mut doc = RustPdfDocument::from_bytes(bytes.clone())
-            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF from bytes: {}", e)))?;
-
-        if let Some(pw) = password {
-            let ok = doc
-                .authenticate(pw.as_bytes())
-                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
-            if !ok {
-                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
-            }
-        }
-
-        Ok(PyPdfDocument {
-            inner: doc,
-            path: None,
-            raw_bytes: Some(bytes),
-            editor: None,
-        })
-    }
-
     /// Context manager support.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
@@ -132,13 +74,6 @@ impl PyPdfDocument {
     /// Get PDF version.
     fn version(&self) -> (u8, u8) {
         self.inner.version()
-    }
-
-    /// Authenticate with a password.
-    fn authenticate(&mut self, password: &str) -> PyResult<bool> {
-        self.inner
-            .authenticate(password.as_bytes())
-            .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))
     }
 
     /// Get number of pages.
@@ -1355,88 +1290,6 @@ impl PyPdfDocument {
         } else {
             Err(PyRuntimeError::new_err("No editor initialized."))
         }
-    }
-
-    /// Save encrypted PDF.
-    #[pyo3(signature = (path, user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
-    fn save_encrypted(
-        &mut self,
-        path: &str,
-        user_password: &str,
-        owner_password: Option<&str>,
-        allow_print: bool,
-        allow_copy: bool,
-        allow_modify: bool,
-        allow_annotate: bool,
-    ) -> PyResult<()> {
-        use crate::editor::{
-            EditableDocument, EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions,
-        };
-        self.ensure_editor()?;
-        if let Some(ref mut editor) = self.editor {
-            let owner_pwd = owner_password.unwrap_or(user_password);
-            let permissions = Permissions {
-                print: allow_print,
-                print_high_quality: allow_print,
-                modify: allow_modify,
-                copy: allow_copy,
-                annotate: allow_annotate,
-                fill_forms: allow_annotate,
-                accessibility: true,
-                assemble: allow_modify,
-            };
-            let config = EncryptionConfig::new(user_password, owner_pwd)
-                .with_algorithm(EncryptionAlgorithm::Aes256)
-                .with_permissions(permissions);
-            let options = SaveOptions::with_encryption(config);
-            editor
-                .save_with_options(path, options)
-                .map_err(|e| PyIOError::new_err(format!("Failed to save encrypted PDF: {}", e)))
-        } else {
-            Err(PyRuntimeError::new_err("No editor initialized."))
-        }
-    }
-
-    /// Return the (possibly edited) document as encrypted bytes.
-    ///
-    /// Equivalent to `save_encrypted` but returns bytes instead of writing to disk.
-    /// Useful for in-memory pipelines where writing a temporary file is undesirable.
-    #[pyo3(signature = (user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
-    fn to_bytes_encrypted<'py>(
-        &mut self,
-        py: Python<'py>,
-        user_password: &str,
-        owner_password: Option<&str>,
-        allow_print: bool,
-        allow_copy: bool,
-        allow_modify: bool,
-        allow_annotate: bool,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        use crate::editor::{EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions};
-        self.ensure_editor()?;
-        let editor = self
-            .editor
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("No editor initialized."))?;
-        let owner_pwd = owner_password.unwrap_or(user_password);
-        let permissions = Permissions {
-            print: allow_print,
-            print_high_quality: allow_print,
-            modify: allow_modify,
-            copy: allow_copy,
-            annotate: allow_annotate,
-            fill_forms: allow_annotate,
-            accessibility: true,
-            assemble: allow_modify,
-        };
-        let config = EncryptionConfig::new(user_password, owner_pwd)
-            .with_algorithm(EncryptionAlgorithm::Aes256)
-            .with_permissions(permissions);
-        let options = SaveOptions::with_encryption(config);
-        let bytes = editor
-            .save_to_bytes_with_options(options)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to encrypt PDF: {}", e)))?;
-        Ok(PyBytes::new(py, &bytes))
     }
 
     /// Set document metadata title.
@@ -3020,6 +2873,165 @@ impl PyPdfDocument {
 
     fn __repr__(&self) -> String {
         format!("PdfDocument(version={}.{})", self.inner.version().0, self.inner.version().1)
+    }
+}
+
+/// The credential-taking entry points live in their own `#[pymethods]` block.
+///
+/// Static analysis reads a `#[pymethods]` block's argument extraction as one
+/// macro expansion, so a `password` argument here would taint every other
+/// method's arguments in the same block — a page index handed to the library
+/// and written to a debug log then reads as cleartext logging of a secret
+/// (30 findings of that shape on one release). Keeping the constructors and
+/// `authenticate` apart makes the analysis precise: only what a password
+/// actually reaches is checked against it.
+#[pymethods]
+impl PyPdfDocument {
+    /// Open a PDF file.
+    ///
+    /// Open a PDF file, optionally with a password for encrypted documents.
+    ///
+    /// Args:
+    ///     path (str | pathlib.Path): Path to the PDF file
+    ///     password (str, optional): Password for encrypted PDFs
+    #[new]
+    #[pyo3(signature = (path, password=None))]
+    #[allow(unused_mut)]
+    fn new(path: PathBuf, password: Option<&str>) -> PyResult<Self> {
+        let mut doc = RustPdfDocument::open(&path)
+            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF: {}", e)))?;
+
+        if let Some(pw) = password {
+            let ok = doc
+                .authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+            if !ok {
+                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
+            }
+        }
+
+        let path_str = path.to_string_lossy().into_owned();
+        Ok(PyPdfDocument {
+            inner: doc,
+            path: Some(path_str),
+            raw_bytes: None,
+            editor: None,
+        })
+    }
+
+    /// Open a PDF from bytes, optionally with a password.
+    #[staticmethod]
+    #[pyo3(signature = (data, password=None))]
+    #[allow(unused_mut)]
+    fn from_bytes(data: &Bound<'_, PyBytes>, password: Option<&str>) -> PyResult<Self> {
+        let bytes = data.as_bytes().to_vec();
+        let mut doc = RustPdfDocument::from_bytes(bytes.clone())
+            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF from bytes: {}", e)))?;
+
+        if let Some(pw) = password {
+            let ok = doc
+                .authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+            if !ok {
+                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
+            }
+        }
+
+        Ok(PyPdfDocument {
+            inner: doc,
+            path: None,
+            raw_bytes: Some(bytes),
+            editor: None,
+        })
+    }
+
+    /// Authenticate with a password.
+    fn authenticate(&mut self, password: &str) -> PyResult<bool> {
+        self.inner
+            .authenticate(password.as_bytes())
+            .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))
+    }
+
+    /// Save encrypted PDF.
+    #[pyo3(signature = (path, user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
+    fn save_encrypted(
+        &mut self,
+        path: &str,
+        user_password: &str,
+        owner_password: Option<&str>,
+        allow_print: bool,
+        allow_copy: bool,
+        allow_modify: bool,
+        allow_annotate: bool,
+    ) -> PyResult<()> {
+        use crate::editor::{
+            EditableDocument, EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions,
+        };
+        self.ensure_editor()?;
+        if let Some(ref mut editor) = self.editor {
+            let owner_pwd = owner_password.unwrap_or(user_password);
+            let permissions = Permissions {
+                print: allow_print,
+                print_high_quality: allow_print,
+                modify: allow_modify,
+                copy: allow_copy,
+                annotate: allow_annotate,
+                fill_forms: allow_annotate,
+                accessibility: true,
+                assemble: allow_modify,
+            };
+            let config = EncryptionConfig::new(user_password, owner_pwd)
+                .with_algorithm(EncryptionAlgorithm::Aes256)
+                .with_permissions(permissions);
+            let options = SaveOptions::with_encryption(config);
+            editor
+                .save_with_options(path, options)
+                .map_err(|e| PyIOError::new_err(format!("Failed to save encrypted PDF: {}", e)))
+        } else {
+            Err(PyRuntimeError::new_err("No editor initialized."))
+        }
+    }
+
+    /// Return the (possibly edited) document as encrypted bytes.
+    ///
+    /// Equivalent to `save_encrypted` but returns bytes instead of writing to disk.
+    /// Useful for in-memory pipelines where writing a temporary file is undesirable.
+    #[pyo3(signature = (user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
+    fn to_bytes_encrypted<'py>(
+        &mut self,
+        py: Python<'py>,
+        user_password: &str,
+        owner_password: Option<&str>,
+        allow_print: bool,
+        allow_copy: bool,
+        allow_modify: bool,
+        allow_annotate: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        use crate::editor::{EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions};
+        self.ensure_editor()?;
+        let editor = self
+            .editor
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("No editor initialized."))?;
+        let owner_pwd = owner_password.unwrap_or(user_password);
+        let permissions = Permissions {
+            print: allow_print,
+            print_high_quality: allow_print,
+            modify: allow_modify,
+            copy: allow_copy,
+            annotate: allow_annotate,
+            fill_forms: allow_annotate,
+            accessibility: true,
+            assemble: allow_modify,
+        };
+        let config = EncryptionConfig::new(user_password, owner_pwd)
+            .with_algorithm(EncryptionAlgorithm::Aes256)
+            .with_permissions(permissions);
+        let options = SaveOptions::with_encryption(config);
+        let bytes = editor
+            .save_to_bytes_with_options(options)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to encrypt PDF: {}", e)))?;
+        Ok(PyBytes::new(py, &bytes))
     }
 }
 
@@ -5002,6 +5014,11 @@ impl PyLineCap {
     fn SQUARE() -> Self {
         Self::square()
     }
+    /// `LineCap.Round`-style representation, so a value read back from the
+    /// editor's settings can be told apart in a REPL.
+    fn __repr__(&self) -> String {
+        format!("LineCap.{:?}", self.inner)
+    }
 }
 
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "LineJoin", skip_from_py_object)]
@@ -5043,6 +5060,11 @@ impl PyLineJoin {
     #[allow(non_snake_case)]
     fn BEVEL() -> Self {
         Self::bevel()
+    }
+    /// `LineJoin.Round`-style representation, so a value read back from the
+    /// editor's settings can be told apart in a REPL.
+    fn __repr__(&self) -> String {
+        format!("LineJoin.{:?}", self.inner)
     }
 }
 

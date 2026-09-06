@@ -147,6 +147,13 @@ impl HtmlOutputConverter {
             return true;
         }
 
+        // A run that reads as a piece of a sentence rather than a title: one
+        // ending on a function word, or opening lowercase and closing on a full
+        // stop. Shared with the markdown predicate so the two formats agree.
+        if super::reads_as_a_sentence_fragment(trimmed) {
+            return true;
+        }
+
         // Currency amounts: $1,234.56 or 1,234.56$ or similar
         if trimmed.contains('$')
             || trimmed.contains('\u{20AC}') // euro
@@ -410,6 +417,11 @@ impl HtmlOutputConverter {
 
         // Track which tables have been rendered
         let mut tables_rendered = vec![false; tables.len()];
+        // Spans a table claimed, kept so the ones it does not actually render
+        // can be recovered below. Without this a claimed-but-unrendered span is
+        // dropped outright, and unlike markdown this converter had no second
+        // chance at it.
+        let mut table_skipped_spans: Vec<Vec<&OrderedTextSpan>> = vec![Vec::new(); tables.len()];
 
         let mut result = String::new();
         let mut prev_span: Option<&OrderedTextSpan> = None;
@@ -469,6 +481,7 @@ impl HtmlOutputConverter {
                         tables_rendered[table_idx] = true;
                         prev_span = None;
                     }
+                    table_skipped_spans[table_idx].push(span);
                     continue;
                 }
             }
@@ -483,7 +496,18 @@ impl HtmlOutputConverter {
 
                     // Heading text is emitted without emphasis wrapping — a bold
                     // heading must be <h2>…</h2>, not <h2><strong>…</strong></h2>.
-                    let text = self.escaped_span_text(span, span.span.text.trim());
+                    // Keep the span's own whitespace. A producer that sets each
+                    // word as its own span routinely puts the separator inside
+                    // the span ("To ", "get this ", "file "), leaving gaps of a
+                    // few hundredths of a point between them — far under the
+                    // 0.15 em bar `has_horizontal_gap` applies. Trimming here
+                    // destroyed the one unambiguous separator the file gives us
+                    // and then asked geometry to reinvent it, which produced
+                    // "Toget thisfileintothe communityof peers". The paragraph
+                    // branch below already gets this right. `flush_heading`
+                    // trims the accumulated buffer, so no stray whitespace
+                    // reaches the emitted <hN>.
+                    let text = self.escaped_span_text(span, &span.span.text);
                     let same_level = matches!(current_heading, Some((lvl, _)) if lvl == level);
                     if same_level {
                         // Continuation of the same heading run — join with the
@@ -496,7 +520,9 @@ impl HtmlOutputConverter {
                                 || (same_line && super::has_horizontal_gap(&prev.span, &span.span))
                         });
                         if let Some((_, ref mut buf)) = current_heading {
-                            if !buf.is_empty() && need_space && !buf.ends_with(' ') {
+                            let already_spaced = buf.ends_with(' ')
+                                || span.span.text.starts_with(char::is_whitespace);
+                            if !buf.is_empty() && need_space && !already_spaced {
                                 buf.push(' ');
                             }
                             buf.push_str(&text);
@@ -520,7 +546,18 @@ impl HtmlOutputConverter {
             let is_marker = super::is_bullet_span(text_raw)
                 || super::starts_with_bullet(text_raw)
                 || ordered.is_some();
-            if is_marker || super::is_list_item_role(span.struct_role) {
+            // A list marker has to begin a visual line. Without that condition
+            // any mid-sentence `X. ` opens a list: `p. 132.` in a citation
+            // became `<ol><li>132.</li></ol>` and `p.` was discarded by
+            // `strip_list_marker`, and a lone bullet glyph mid-line opened a
+            // `<ul>` that flushed empty. The markdown converter has carried this
+            // requirement all along (its equivalent block sits inside an
+            // `else if !same_line` arm), which is why only HTML shows it.
+            // A structure-tree list role stays authoritative wherever it sits.
+            let starts_line = prev_span.is_none_or(|prev| {
+                (span.span.bbox.y - prev.span.bbox.y).abs() >= span.span.font_size * 0.5
+            });
+            if (is_marker && starts_line) || super::is_list_item_role(span.struct_role) {
                 close_paragraph(&mut result, &mut current_content, &mut in_paragraph);
 
                 if list_kind.is_none() {
@@ -584,10 +621,39 @@ impl HtmlOutputConverter {
             //      tokens come out as "InpatientBed" because the same_line gate
             //      above skips the space-insertion check whenever y_diff >
             //      0.5 × font_size.
+            // Close a soft-hyphen wrap, using the same geometry the text
+            // assembler uses. §14.8.2.2.3 makes U+00AD a break offered *inside*
+            // a word, and §9.4.2 leaves the glyph positions as the only evidence
+            // of where the line ended — evidence that is gone once the HTML is a
+            // string, which is why the downstream pass cannot decide this.
+            //
+            // Two signals must coincide: the baseline drops about one line, and
+            // the continuation returns left of where the previous run ended. A
+            // re-ordered scan's apparent "drop" is band jitter and fails the
+            // first test.
+            let mut wrap_closed = false;
+            if let Some(prev) = prev_span {
+                let em = prev.span.font_size.max(span.span.font_size).max(6.0);
+                let drop = prev.span.bbox.y - span.span.bbox.y;
+                let seam_gap = span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
+                if current_content
+                    .strip_suffix('\u{00AD}')
+                    .is_some_and(|t| t.ends_with(char::is_alphabetic))
+                    && span.span.text.starts_with(char::is_alphabetic)
+                    && drop >= em * 0.6
+                    && drop <= em * 1.6
+                    && seam_gap < -em
+                {
+                    current_content.pop();
+                    wrap_closed = true;
+                }
+            }
+
             if let Some(prev) = prev_span {
                 let y_diff = (span.span.bbox.y - prev.span.bbox.y).abs();
                 let same_line = y_diff < span.span.font_size * 0.5;
-                let need_space_between_lines = !same_line
+                let need_space_between_lines = !wrap_closed
+                    && !same_line
                     && y_diff > 0.0
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
@@ -612,11 +678,18 @@ impl HtmlOutputConverter {
                     matches!((cs.next(), cs.next(), cs.next()),
                              (Some(c), Some('.'), None) if c.is_alphabetic())
                 };
-                let need_space_same_line = same_line
+                let need_space_same_line = !wrap_closed
+                    && same_line
                     && !current_content.is_empty()
                     && !current_content.ends_with(' ')
                     && !span.span.text.starts_with(' ')
-                    && (prev_was_enumerator || super::has_horizontal_gap(&prev.span, &span.span));
+                    && (prev_was_enumerator
+                        || super::has_horizontal_gap(&prev.span, &span.span)
+                        // A footnote marker sits at the base word's advance
+                        // edge, so the gap rule declines it; the base being a
+                        // prose word rather than a subscript host is what
+                        // separates it from `H2O`.
+                        || super::is_reference_marker_boundary(&prev.span, &span.span));
                 if need_space_same_line || need_space_between_lines {
                     current_content.push(' ');
                 }
@@ -631,6 +704,127 @@ impl HtmlOutputConverter {
         // Close any heading / list left open at end of document.
         flush_heading(&mut result, &mut current_heading);
         flush_list(&mut result, &mut list_kind, &mut current_li);
+
+        // Recover claimed spans the table did not render.
+        //
+        // `span_in_table` decides ownership from a span's ORIGIN against a cell
+        // box, while the detector assigns a span to a cell by its bbox CENTRE.
+        // The two disagree at a boundary, so a span can be claimed here and yet
+        // appear in no cell's text — and this converter dropped it outright,
+        // where markdown has always had a recovery pass. The result was silent,
+        // permanent loss on the HTML surface alone.
+        //
+        // The comparison mirrors markdown's deliberately, so the two surfaces
+        // cannot drift: glyph-sequence for a single-token span, because the
+        // cell builder joins its members with a space where the flow assembler
+        // joins them with none; literal for a span that carries spaces of its
+        // own, because a squashed multi-word sequence can be found running
+        // across gaps the table never rendered as one string.
+        for (table_idx, skipped) in table_skipped_spans.iter().enumerate() {
+            if !tables_rendered[table_idx] || skipped.is_empty() {
+                continue;
+            }
+            // Compare the span against what the cells WILL RENDER, produced
+            // by the same span walk `render_cell_html` uses.
+            //
+            // The cell's own `text` field is not that string. `render_cell_html`
+            // walks `cell.spans` whenever it has any, inserting a space where
+            // `has_horizontal_gap` finds one and routing each span through
+            // `push_span_text`, which can itself split a column-spanning
+            // decimal (`1.10` -> `1 10`). Testing against `cell.text` therefore
+            // asked whether a *different* string contained the span, and
+            // recovered spans the table was about to render anyway: 140
+            // duplicated paragraphs over the corpus against 66 before the
+            // recovery pass existed.
+            //
+            // Two other approaches were measured and rejected. Comparing
+            // against the *rendered* HTML fails on escaping — `&` and quotes
+            // are escaped there and not in the span — which duplicated whole
+            // paragraphs across a legal corpus; sharing the span walk gets the
+            // same string without the escaping round-trip. And testing
+            // membership by span identity fails outright: the detector's cell
+            // spans and the ordered spans this converter walks are different
+            // objects whose `sequence` values do not correspond, which
+            // duplicated 9814 words across eleven documents.
+            let row_texts: Vec<String> = tables[table_idx]
+                .rows
+                .iter()
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(Self::cell_plain_text)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            // Per ROW, not per table. A row is what the reader sees on one
+            // line, so a flow span the detector split across that row's cells
+            // is the same content; a span whose glyphs are only found by
+            // running across the whole table is not.
+            let row_glyphs: Vec<String> = row_texts
+                .iter()
+                .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect())
+                .collect();
+            let mut orphans: Vec<&&OrderedTextSpan> = skipped
+                .iter()
+                .filter(|s| {
+                    let trimmed = s.span.text.trim();
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    if trimmed.split_whitespace().nth(1).is_some() {
+                        // Multi-word: compare glyph sequences, bounded to a
+                        // single row.
+                        //
+                        // Comparing whitespace-normalised text was too strict.
+                        // The two sides disagree about where the spaces go,
+                        // not about the glyphs: a table of contents renders
+                        // `Chapter I— Federal Trade Commission ....` from four
+                        // cells while the flow span reads
+                        // `Chapter I—Federal Trade Commission ....`, and one
+                        // file split `Department` as `D epartm ent` across
+                        // cells while another joined `National Park` into
+                        // `NationalPark`. Every one of those was recovered and
+                        // emitted a second time beside the table.
+                        //
+                        // Ignoring whitespace outright was the other extreme,
+                        // matching a sequence the table never rendered as one
+                        // string. The row is what resolves it: cells of one row
+                        // ARE adjacent on the page, so matching across them is
+                        // right, and matching across the whole table is not.
+                        let want: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+                        return !row_glyphs.iter().any(|r| r.contains(&want));
+                    }
+                    // Single token: the only spacing disagreement possible is
+                    // the space the cell builder inserts between the members it
+                    // joined, so ignore whitespace outright.
+                    // Bounded to a row, exactly as the multi-word branch above
+                    // is. Testing against the whole table concatenated meant a
+                    // short orphan — "5", "of", "A" — was suppressed by any
+                    // coincidental occurrence of those glyphs anywhere in the
+                    // table, and the span stayed lost. A row is the unit that
+                    // is actually adjacent on the page.
+                    let glyphs: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+                    !glyphs.is_empty() && !row_glyphs.iter().any(|r| r.contains(&glyphs))
+                })
+                .collect();
+            if orphans.is_empty() {
+                continue;
+            }
+            // Reading order, not arrival order: a recovered span belongs where
+            // it was read, not appended wherever the loop happened to end.
+            orphans.sort_by_key(|s| s.reading_order);
+            let mut recovered = String::new();
+            for orphan in orphans {
+                if !recovered.is_empty() {
+                    recovered.push(' ');
+                }
+                recovered.push_str(&Self::escape_html(orphan.span.text.trim()));
+            }
+            if !recovered.is_empty() {
+                result.push_str(&format!("<p>{recovered}</p>\n"));
+            }
+        }
 
         // Render any tables that weren't matched to spans
         for (i, table) in tables.iter().enumerate() {
@@ -656,6 +850,34 @@ impl HtmlOutputConverter {
         }
 
         Ok(result)
+    }
+
+    /// The visible text of a cell, by the same span walk `render_cell_html`
+    /// performs — same gap rule, same `push_span_text` — but without the
+    /// escaping and the `<strong>`/`<em>` wrappers.
+    ///
+    /// This exists so the orphan-recovery guard can ask "will the table
+    /// already show these glyphs?" against the string the table actually
+    /// shows, rather than against `cell.text`, which the renderer does not
+    /// use when the cell carries spans.
+    fn cell_plain_text(cell: &crate::structure::table_extractor::TableCell) -> String {
+        if cell.spans.is_empty() {
+            return cell.text.trim().to_string();
+        }
+        let mut out = String::new();
+        for (i, span) in cell.spans.iter().enumerate() {
+            if i > 0 {
+                let prev = &cell.spans[i - 1];
+                let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
+                let needs_break =
+                    super::has_horizontal_gap(prev, span) || super::spans_are_stacked(prev, span);
+                if needs_break && !already_has_space {
+                    out.push(' ');
+                }
+            }
+            crate::document::PdfDocument::push_span_text(&mut out, span);
+        }
+        out
     }
 
     /// Render the text content of a single table cell as HTML.
@@ -689,7 +911,8 @@ impl HtmlOutputConverter {
             // and the span-gap logic in render_table_markdown).
             if i > 0 {
                 let prev = &cell.spans[i - 1];
-                let has_gap = super::has_horizontal_gap(prev, span);
+                let has_gap =
+                    super::has_horizontal_gap(prev, span) || super::spans_are_stacked(prev, span);
                 let already_has_space = out.ends_with(' ') || span.text.starts_with(' ');
                 if has_gap && !already_has_space {
                     out.push(' ');
@@ -785,6 +1008,29 @@ impl HtmlOutputConverter {
 
 #[cfg(test)]
 mod tests {
+    /// The HTML converter gates heading promotion through its own predicate,
+    /// so the sentence-fragment rule has to be asserted there too — the two
+    /// formats must agree on what is a heading.
+    #[test]
+    fn test_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+        for fragment in ["Furthermore, one reads in the", "palaces league."] {
+            assert!(
+                HtmlOutputConverter::looks_like_non_heading(fragment),
+                "{fragment:?} is a sentence fragment, not a heading"
+            );
+        }
+        for heading in [
+            "Spring Equinox Gathering",
+            "Materials and Methods",
+            "Doctor Who",
+        ] {
+            assert!(
+                !HtmlOutputConverter::looks_like_non_heading(heading),
+                "{heading:?} is a heading and must still promote"
+            );
+        }
+    }
+
     use super::*;
     use crate::geometry::Rect;
     use crate::layout::{Color, TextSpan};
@@ -1046,7 +1292,43 @@ mod tests {
 
         assert!(result.contains("<p>Intro</p>"), "Should contain paragraph: {}", result);
         assert!(result.contains("<table>"), "Should contain table: {}", result);
-        assert!(!result.contains("Inside"), "Should exclude span in table region");
+        // The span lies in the table's region but the table renders only
+        // "Cell", so nothing re-emits "Inside". Dropping it here is the loss
+        // this converter used to suffer and markdown never did: suppression is
+        // only safe when the table actually renders the text it claimed.
+        assert!(
+            result.contains("Inside"),
+            "a claimed span the table does not render must survive: {}",
+            result
+        );
+    }
+
+    /// The other direction, so recovery cannot pass by emitting everything: a
+    /// span the table DOES render stays suppressed.
+    #[test]
+    fn test_convert_with_tables_suppresses_a_span_the_table_renders() {
+        let converter = HtmlOutputConverter::new();
+        let config = TextPipelineConfig::default();
+
+        let mut span_in_table = make_span("Cell", 50.0, 70.0, 12.0, FontWeight::Normal);
+        span_in_table.reading_order = 0;
+
+        let mut table = Table::new();
+        table.bbox = Some(Rect::new(10.0, 50.0, 200.0, 100.0));
+        let mut row = TableRow::new(false);
+        row.add_cell(TableCell::new("Cell".to_string(), false));
+        table.add_row(row);
+
+        let result = converter
+            .convert_with_tables(&[span_in_table], &[table], &config)
+            .unwrap();
+
+        assert_eq!(
+            result.matches("Cell").count(),
+            1,
+            "the table renders this span, so it must not also appear as prose: {}",
+            result
+        );
     }
 
     #[test]

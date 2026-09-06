@@ -1226,6 +1226,10 @@ class _Native {
             lib.lookupFunction<_TextC, _TextD>('pdf_document_classify_page'),
         classifyDocument = lib.lookupFunction<_TextAllC, _TextAllD>(
             'pdf_document_classify_document'),
+        structuredWarnings = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_structured_warnings'),
+        takeStructuredWarnings = lib.lookupFunction<_TextAllC, _TextAllD>(
+            'pdf_document_take_structured_warnings'),
         // furniture
         eraseHeader = lib.lookupFunction<_DeI32I32C, _DeI32I32D>(
             'pdf_document_erase_header'),
@@ -1712,6 +1716,8 @@ class _Native {
   final _TextD extractTextAuto, classifyPage;
   final _TextAllD extractAllText,
       classifyDocument,
+      structuredWarnings,
+      takeStructuredWarnings,
       getOutline,
       getPageLabels,
       getXmpMetadata;
@@ -3790,6 +3796,33 @@ class PdfDocument implements Finalizable {
     try {
       return _takeString(
           _n.classifyDocument(_handle, code), code.value, 'classifyDocument');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// The document's structured diagnostics as a raw JSON array (`'[]'` when
+  /// there are none). Non-destructive: a later call returns the same entries
+  /// plus any raised since. Each entry's `category` is an open-ended
+  /// snake_case token — tolerate tokens you do not know.
+  String structuredWarnings() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.structuredWarnings(_handle, code), code.value,
+          'structuredWarnings');
+    } finally {
+      calloc.free(code);
+    }
+  }
+
+  /// As [structuredWarnings], but drains: the returned entries are removed.
+  String takeStructuredWarnings() {
+    _check();
+    final code = calloc<Int32>();
+    try {
+      return _takeString(_n.takeStructuredWarnings(_handle, code), code.value,
+          'takeStructuredWarnings');
     } finally {
       calloc.free(code);
     }

@@ -165,6 +165,16 @@ struct BoundedObjectCache {
     insertion_order: std::collections::VecDeque<ObjectRef>,
     current_bytes: usize,
     max_bytes: usize,
+    /// Objects that exist only in this cache and cannot be re-read.
+    ///
+    /// A synthetic Catalog or page tree rebuilt for a truncated file has no
+    /// byte offset, and reconstruction pre-populates the scanned-offset map, so
+    /// a later lookup reports "not found" immediately rather than rescanning.
+    /// Evicting one therefore does not cost a re-parse — it makes the object
+    /// permanently unreachable, and a large truncated document would open,
+    /// extract its first pages, then fail silently on every later call once the
+    /// cache turned over.
+    pinned: HashSet<ObjectRef>,
 }
 
 impl BoundedObjectCache {
@@ -174,7 +184,14 @@ impl BoundedObjectCache {
             insertion_order: std::collections::VecDeque::new(),
             current_bytes: 0,
             max_bytes,
+            pinned: HashSet::new(),
         }
+    }
+
+    /// Insert an object that has no backing bytes and so must never be evicted.
+    fn insert_pinned(&mut self, key: ObjectRef, value: Object) {
+        self.pinned.insert(key);
+        self.insert(key, value);
     }
 
     fn get(&self, key: &ObjectRef) -> Option<&Object> {
@@ -201,9 +218,22 @@ impl BoundedObjectCache {
         // larger replacement doesn't leave the cache over budget — keep
         // evicting other entries instead.
         let mut skipped_self = false;
+        // Bounds the rotation below: once every remaining entry has been
+        // examined without evicting anything, the queue is all pinned (or all
+        // this key) and there is nothing left to reclaim.
+        let mut examined = 0usize;
         while self.current_bytes + entry_size > self.max_bytes {
+            if examined > self.insertion_order.len() {
+                break;
+            }
             match self.insertion_order.pop_front() {
                 Some(old_key) => {
+                    examined += 1;
+                    if self.pinned.contains(&old_key) {
+                        // Unevictable: rotate it to the back and keep looking.
+                        self.insertion_order.push_back(old_key);
+                        continue;
+                    }
                     if old_key == key {
                         if skipped_self {
                             self.insertion_order.push_front(old_key);
@@ -239,10 +269,17 @@ impl BoundedObjectCache {
         self.map.keys()
     }
 
+    /// Drop every evictable entry, keeping the pinned ones.
+    ///
+    /// Callers clear this cache to force a re-parse (after authentication, for
+    /// instance). A pinned object has nothing to re-parse from, so clearing it
+    /// would destroy it rather than refresh it.
     fn clear(&mut self) {
-        self.map.clear();
-        self.insertion_order.clear();
-        self.current_bytes = 0;
+        let pinned = std::mem::take(&mut self.pinned);
+        self.map.retain(|k, _| pinned.contains(k));
+        self.insertion_order.retain(|k| pinned.contains(k));
+        self.current_bytes = self.map.values().map(Self::estimate_size).sum();
+        self.pinned = pinned;
     }
 
     fn estimate_size(obj: &Object) -> usize {
@@ -911,6 +948,132 @@ pub(crate) enum ActualTextAction {
     Suppress,
 }
 
+/// The rotated reading frame a page's spans were mapped into.
+///
+/// A landscape table typeset on a portrait page carries a dominant text-matrix
+/// rotation, and the row-major assembler only reads it correctly after the
+/// spans are rotated upright. That map used to be an unwritten convention of
+/// whichever local variable held the mapped spans, so every other page-space
+/// value a converter compared them against — a `/Link` rectangle, a widget
+/// `/Rect`, a table's bounding box — was silently in the wrong frame. Making
+/// the frame a value means a consumer can map its own geometry into the same
+/// one instead of having to know the convention.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReadingFrame {
+    /// Quadrant rotation applied, one of 90, 180 or 270.
+    rot: u16,
+    /// The media box the map was built against.
+    llx: f32,
+    lly: f32,
+    w: f32,
+    h: f32,
+}
+
+impl ReadingFrame {
+    /// Map a page-space point into the frame.
+    fn map_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let (rx, ry) = (x - self.llx, y - self.lly);
+        let (mx, my) = match self.rot {
+            90 => (ry, self.w - rx),
+            180 => (self.w - rx, self.h - ry),
+            270 => (self.h - ry, rx),
+            _ => (rx, ry),
+        };
+        (self.llx + mx, self.lly + my)
+    }
+
+    /// Map a page-space rectangle into the frame.
+    ///
+    /// A quadrant rotation takes an axis-aligned rectangle to an axis-aligned
+    /// rectangle, so mapping two opposite corners and normalising is exact
+    /// rather than a bounding approximation.
+    fn map_rect(&self, r: &crate::geometry::Rect) -> crate::geometry::Rect {
+        let (x0, y0) = self.map_point(r.x, r.y);
+        let (x1, y1) = self.map_point(r.x + r.width, r.y + r.height);
+        crate::geometry::Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+    }
+
+    /// Map a detected table's geometry into the frame.
+    ///
+    /// `extract_page_tables` works from page-space words and paths and returns
+    /// page-space rectangles, so on a rotated-frame page the table's own boxes
+    /// and the spans a converter tests against them are in different frames.
+    /// Every ownership test then fails: the table renders, and the spans it
+    /// should have claimed are emitted a second time as flow text beside it.
+    fn map_table(&self, table: &mut crate::structure::Table) {
+        if let Some(ref b) = table.bbox {
+            table.bbox = Some(self.map_rect(b));
+        }
+        for row in &mut table.rows {
+            for cell in &mut row.cells {
+                if let Some(ref b) = cell.bbox {
+                    cell.bbox = Some(self.map_rect(b));
+                }
+                // The runs a cell draws travel with it. Ownership is decided by
+                // measuring a page span against the spans a cell renders, so
+                // leaving these in page space puts the two sides of that
+                // comparison in different frames: no cell claims the spans it
+                // draws, and every one is emitted by the table and again as
+                // prose beside it. Mapping the boxes alone was enough only
+                // while ownership was a question about boxes.
+                for span in &mut cell.spans {
+                    self.map_span_origin(span);
+                }
+            }
+        }
+    }
+
+    /// Map a span's origin into the frame, keeping its text-local extents.
+    ///
+    /// Rotated spans store text-local extents (origin, advance-along-the-run as
+    /// `width`, font size as `height`), which already describe the run in its
+    /// own upright frame, so only the origin moves.
+    fn map_span_origin(&self, span: &mut crate::layout::TextSpan) {
+        let (x, y) = self.map_point(span.bbox.x, span.bbox.y);
+        span.bbox.x = x;
+        span.bbox.y = y;
+        span.rotation_degrees = 0.0;
+    }
+}
+
+/// RAII borrow of the thread-local warning sink on behalf of one document.
+///
+/// See [`PdfDocument::sink_scope`] for why this exists.
+pub(crate) struct SinkScope<'a> {
+    doc: &'a PdfDocument,
+    stashed: Vec<crate::extractors::warnings::Warning>,
+}
+
+impl Drop for SinkScope<'_> {
+    fn drop(&mut self) {
+        let mine = crate::extractors::warnings::drain_global_warnings();
+        if !mine.is_empty() {
+            self.doc.warning_sink.extend(mine);
+        }
+        crate::extractors::warnings::restore_global_warnings(std::mem::take(&mut self.stashed));
+    }
+}
+
+/// What the geometry at a seam says about a soft-hyphen wrap.
+///
+/// ISO 32000-1:2008 §14.8.2.2.3 makes U+00AD a break offered *inside* a word,
+/// so a marker with a letter on each side is either a wrap to close or a
+/// coincidence to leave alone — and §9.4.2 puts the only evidence in the glyph
+/// positions, which are gone once the text is assembled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoftHyphenSeam {
+    /// A line wrap: the baseline dropped by about one line and the
+    /// continuation returned to the left of where the previous run ended.
+    Close,
+    /// Neither a wrap nor contiguous glyphs. The marker has to survive, and
+    /// the seam has to be made non-empty so nothing downstream reads string
+    /// adjacency as page adjacency.
+    Keep,
+    /// Contiguous glyphs on one line — a word the file split into two runs.
+    /// Left to the existing rule, which already closes it.
+    Contiguous,
+}
+
 impl PdfDocument {
     /// Open a PDF document from in-memory bytes.
     ///
@@ -1158,7 +1321,9 @@ impl PdfDocument {
         if !synthetic_objects.is_empty() {
             let mut cache = document.object_cache.lock_or_recover();
             for (obj_ref, obj) in synthetic_objects {
-                cache.insert(obj_ref, obj);
+                // Pinned: there is no byte offset to re-read these from, so an
+                // eviction would not cost a re-parse — it would lose the object.
+                cache.insert_pinned(obj_ref, obj);
             }
         }
 
@@ -1311,9 +1476,14 @@ impl PdfDocument {
             },
             Ok(false) => {
                 log::warn!("PDF is encrypted and requires a password");
-                self.push_warning(
-                    "PDF is encrypted and requires a password; call authenticate() before extracting text".to_string()
-                );
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Encryption,
+                    page: None,
+                    message: "PDF is encrypted and requires a password; call \
+                              authenticate() before extracting text"
+                        .to_string(),
+                    spec_section: Some("7.6"),
+                });
                 // Set handler anyway - user can call authenticate() later
             },
             Err(e) => {
@@ -1813,6 +1983,7 @@ impl PdfDocument {
             fragmented_word_ratio,
             consecutive_repeat_ratio,
             vector_path_density,
+            vector_path_count: path_count,
             has_reliable_structure,
             producer_prior,
             page_is_empty,
@@ -2883,6 +3054,29 @@ impl PdfDocument {
         out
     }
 
+    /// Sort spans top-to-bottom then left-to-right, with each span keyed to
+    /// the row it is printed on rather than to its own baseline.
+    ///
+    /// See `crate::utils::snap_baselines_to_rows` for why the baseline alone
+    /// is not a row key on a line that mixes font sizes.
+    fn sort_spans_by_snapped_rows(spans: &mut [crate::layout::TextSpan]) {
+        let all: Vec<usize> = (0..spans.len()).collect();
+        let row_baseline = crate::utils::snap_baselines_to_rows(spans, &all);
+        let mut order: Vec<usize> = all;
+        order.sort_by(|&a, &b| {
+            crate::utils::row_band_then_x(
+                row_baseline[a],
+                spans[a].bbox.x,
+                row_baseline[b],
+                spans[b].bbox.x,
+            )
+            .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
+        });
+        let reordered: Vec<crate::layout::TextSpan> =
+            order.into_iter().map(|i| spans[i].clone()).collect();
+        spans.clone_from_slice(&reordered);
+    }
+
     pub(crate) fn reorder_rowspan_labels(spans: &mut Vec<crate::layout::TextSpan>) {
         use std::collections::HashMap;
 
@@ -3064,6 +3258,26 @@ impl PdfDocument {
         if labels.is_empty() {
             return;
         }
+
+        // A stub label is a word. The clustering reasons in table terms — a
+        // sparse column against a dense one — and on prose it finds that shape
+        // anyway: a mathematics page whose lines are cut into many runs by
+        // inline symbols offered three single glyphs of a display equation as
+        // its sparse column, and promoting them to the head of their block
+        // reordered the paragraph around them, so a trailing line came out
+        // ahead of the line it continues (`criterionThe ridge regression ...`).
+        //
+        // ISO 32000-1:2008 §14.8.4.3.4 makes a table's row (TR) the element
+        // that holds its cells (TD), and a stub cell carries the row's name —
+        // text, not a lone glyph. Requiring most candidates to be more than one
+        // character keeps the promotion on the shape it was written for.
+        let multi_char = labels
+            .iter()
+            .filter(|&&i| spans[i].text.trim().chars().count() > 1)
+            .count();
+        if multi_char * 2 <= labels.len() {
+            return;
+        }
         labels.sort_by(|&a, &b| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y));
 
         // Labels that sit at near-identical Y values almost always
@@ -3128,14 +3342,32 @@ impl PdfDocument {
             return;
         }
 
-        // Re-sort spans using the promoted Ys for labels and actual Ys
-        // for everything else. Keep the row-aware comparator so the
-        // ordering stays consistent with the rest of the pipeline.
-        let mut order: Vec<usize> = (0..spans.len()).collect();
+        // Re-sort spans using the promoted Ys for labels and, for everything
+        // else, the baseline of the row the span is printed on. Keep the
+        // row-aware comparator so the ordering stays consistent with the rest
+        // of the pipeline.
+        //
+        // The unpromoted spans take their key from `snap_baselines_to_rows`
+        // rather than `bbox.y`: this re-sort covers the whole page, so reading
+        // the raw baseline here would undo the row grouping the caller just
+        // established and split a mixed-size row apart again.
+        let all: Vec<usize> = (0..spans.len()).collect();
+        let row_baseline = crate::utils::snap_baselines_to_rows(spans, &all);
+        let mut order: Vec<usize> = all;
         order.sort_by(|&a, &b| {
-            let ya = promoted.get(&a).copied().unwrap_or(spans[a].bbox.y);
-            let yb = promoted.get(&b).copied().unwrap_or(spans[b].bbox.y);
-            crate::utils::row_aware_span_cmp(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
+            let ya = promoted.get(&a).copied().unwrap_or(row_baseline[a]);
+            let yb = promoted.get(&b).copied().unwrap_or(row_baseline[b]);
+            // Band and x come from the promoted key — that is what lifts a
+            // label to the head of its row block. The final baseline tiebreak
+            // must come from the baseline the page actually draws: a promoted
+            // key is `anchor + 1.0`, an offset chosen to land inside the
+            // anchor's band, and it is bookkeeping rather than a position. Let
+            // it break the tie and it outranks a real baseline — a wrapped
+            // table cell's continuation line, promoted to `anchor + 1.0` and
+            // sharing its column's x exactly, sorted ahead of the line it
+            // continues and split that row apart.
+            crate::utils::row_band_then_x(ya, spans[a].bbox.x, yb, spans[b].bbox.x)
+                .then_with(|| crate::utils::safe_float_cmp(spans[b].bbox.y, spans[a].bbox.y))
         });
         let reordered: Vec<crate::layout::TextSpan> =
             order.into_iter().map(|i| spans[i].clone()).collect();
@@ -4350,12 +4582,76 @@ impl PdfDocument {
         // [4 0 R 5 0 R 6 0 R 7 0 R]`). Resolve each element before
         // coercing — otherwise an unresolved Reference reads as 0.0 and
         // the page collapses to a zero-area box that clips all content.
-        Ok((
+        let (x0, y0, x1, y1) = (
             to_f32(&self.resolve_obj_ref(&media_box[0])),
             to_f32(&self.resolve_obj_ref(&media_box[1])),
             to_f32(&self.resolve_obj_ref(&media_box[2])),
             to_f32(&self.resolve_obj_ref(&media_box[3])),
-        ))
+        );
+
+        // §7.9.5 (`docs/spec/pdf.md:6443`): "Although rectangles are
+        // conventionally specified by their lower-left and upper-right
+        // corners, it is acceptable to specify any two diagonally opposite
+        // corners. Applications that process PDF should be prepared to
+        // normalize such rectangles in situations where specific corners are
+        // required."
+        //
+        // Every caller of this function requires specific corners — each one
+        // computes `urx - llx` for a width — so a box written `[612 792 0 0]`
+        // yielded a negative extent that propagated into pixmap allocation
+        // (`Pixmap::new` fails and the page does not render at all), clip
+        // rectangles and coordinate mapping. Normalising here rather than at
+        // the ten-odd call sites means no caller has to know the file may
+        // have used the other diagonal; `Rect::new` already does the same for
+        // rectangles built from a width and a height.
+        Ok((x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
+    }
+
+    /// The region of a page a reader can see: its CropBox reduced to the
+    /// MediaBox, as absolute normalised corners `(llx, lly, urx, ury)`.
+    ///
+    /// ISO 32000-1:2008 Table 30 (`docs/spec/pdf.md:5761`): the CropBox "shall
+    /// define the visible region of default user space. When the page is
+    /// displayed or printed, its contents shall be clipped (cropped) to this
+    /// rectangle"; its default is the MediaBox. §14.11.2 (`:40128`): a crop box
+    /// that extends beyond the medium is "effectively reduced to \[its\]
+    /// intersection with the media box".
+    ///
+    /// A CropBox that misses the medium entirely, or is written as a
+    /// degenerate rectangle, describes nothing to show; the MediaBox stands in
+    /// so a malformed entry never blanks a page. The renderer draws the same
+    /// region (`page_render_box`), which is what keeps the text a document
+    /// yields in step with the page it shows.
+    pub fn get_page_visible_box(&self, page_index: usize) -> Result<(f32, f32, f32, f32)> {
+        let (mx0, my0, mx1, my1) = self.get_page_media_box(page_index)?;
+        let page = self.get_page(page_index)?;
+        let Some(crop) = page
+            .as_dict()
+            .and_then(|d| d.get("CropBox"))
+            .map(|o| self.resolve_obj_ref(o))
+            .as_ref()
+            .and_then(|o| o.as_array().map(|a| a.to_owned()))
+            .filter(|a| a.len() >= 4)
+        else {
+            return Ok((mx0, my0, mx1, my1));
+        };
+        let coord = |o: &Object| match self.resolve_obj_ref(o) {
+            Object::Integer(v) => Some(v as f32),
+            Object::Real(v) => Some(v as f32),
+            _ => None,
+        };
+        let (Some(a), Some(b), Some(c), Some(d)) =
+            (coord(&crop[0]), coord(&crop[1]), coord(&crop[2]), coord(&crop[3]))
+        else {
+            return Ok((mx0, my0, mx1, my1));
+        };
+        // §7.9.5: either diagonal may be given, so normalise the corners.
+        let (cx0, cy0, cx1, cy1) = (a.min(c), b.min(d), a.max(c), b.max(d));
+        let (x0, y0, x1, y1) = (cx0.max(mx0), cy0.max(my0), cx1.min(mx1), cy1.min(my1));
+        if x1 <= x0 || y1 <= y0 {
+            return Ok((mx0, my0, mx1, my1));
+        }
+        Ok((x0, y0, x1, y1))
     }
 
     /// Page `/Rotate` normalised to one of `{0, 90, 180, 270}`
@@ -5120,12 +5416,27 @@ impl PdfDocument {
                 // Collect inheritable attributes from this node to pass to children
                 let inheritable_attrs = ["Resources", "MediaBox", "CropBox", "Rotate"];
 
+                // ISO 32000-1:2008 §7.7.3.4 Table 30: an inheritable attribute
+                // is taken from the NEAREST ancestor that specifies it.
+                //
+                // This walked root-first with `entry().or_insert_with()`, which
+                // keeps the value already in the map — the FIRST one seen, i.e.
+                // the most distant ancestor. The root won and every intermediate
+                // node was ignored. (The comment claimed the opposite, which is
+                // why it read as correct.)
+                //
+                // `insert` is right once the map is snapshotted and restored
+                // around the recursion, so a node's values apply to its own
+                // subtree and not to its siblings' — which is exactly what the
+                // eager walker `collect_all_pages` already does. The two now
+                // agree, so a page no longer resolves differently depending on
+                // which walker ran, and that in turn removes the observable
+                // dependence on how many pages had been touched first.
+                let saved = inherited.clone();
+
                 for attr_name in &inheritable_attrs {
                     if let Some(attr_value) = node_dict.get(*attr_name) {
-                        // Only add if not already in inherited map (child values override parent)
-                        inherited
-                            .entry(attr_name.to_string())
-                            .or_insert_with(|| attr_value.clone());
+                        inherited.insert(attr_name.to_string(), attr_value.clone());
                     }
                 }
 
@@ -5171,6 +5482,9 @@ impl PdfDocument {
                     }
                 }
 
+                // No kid under this node held the target page, so this node's
+                // contribution must not leak to its siblings.
+                *inherited = saved;
                 Err(Error::InvalidPdf(format!("Page index {} not found", target_index)))
             },
             _ => Err(Error::InvalidPdf(format!("Unknown page tree node type: {}", node_type))),
@@ -5457,6 +5771,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         let base_spans = self.extract_spans(page_index)?;
         // Vertical CJK (tategaki, ISO 32000-1 §9.7.4.3 vertical writing mode):
         // glyphs run top-to-bottom in columns that progress right-to-left, so
@@ -5480,14 +5798,33 @@ impl PdfDocument {
     /// `to_plain_text`. Callers must apply `ConversionOptions` region filters
     /// BEFORE this: region rects are page-space coordinates, and the map
     /// rewrites the geometry they select against.
+    /// The page's spans in the frame the text reads in, together with the
+    /// frame itself when one was applied.
+    ///
+    /// Callers that go on to compare these spans against any other page-space
+    /// geometry must map that geometry with the returned frame; the two are
+    /// only comparable in the same frame.
+    /// Detected tables in the same frame as the caller's page spans.
+    fn tables_in_frame(
+        mut tables: Vec<crate::structure::Table>,
+        frame: Option<ReadingFrame>,
+    ) -> Vec<crate::structure::Table> {
+        if let Some(f) = frame {
+            for t in &mut tables {
+                f.map_table(t);
+            }
+        }
+        tables
+    }
+
     fn spans_in_reading_frame(
         &self,
         page_index: usize,
         spans: Vec<crate::layout::TextSpan>,
-    ) -> Vec<crate::layout::TextSpan> {
+    ) -> (Vec<crate::layout::TextSpan>, Option<ReadingFrame>) {
         match self.map_dominant_rotation_into_reading_frame(page_index, spans) {
-            Ok(mapped) => mapped,
-            Err(original) => original,
+            Ok((mapped, frame)) => (mapped, Some(frame)),
+            Err(original) => (original, None),
         }
     }
 
@@ -5512,7 +5849,10 @@ impl PdfDocument {
         &self,
         page_index: usize,
         spans: Vec<crate::layout::TextSpan>,
-    ) -> std::result::Result<Vec<crate::layout::TextSpan>, Vec<crate::layout::TextSpan>> {
+    ) -> std::result::Result<
+        (Vec<crate::layout::TextSpan>, ReadingFrame),
+        Vec<crate::layout::TextSpan>,
+    > {
         if self.get_page_rotation(page_index).unwrap_or(0) != 0 {
             return Err(spans);
         }
@@ -5538,25 +5878,18 @@ impl PdfDocument {
             .get_page_media_box(page_index)
             .unwrap_or((0.0, 0.0, 612.0, 792.0));
         let (w, h) = (urx - llx, ury - lly);
+        let frame = ReadingFrame {
+            rot,
+            llx,
+            lly,
+            w,
+            h,
+        };
         let mut spans = spans;
-        // Rotated spans store TEXT-LOCAL extents (origin + advance-along-
-        // the-run as `width` + font size as `height`): rotate the ORIGIN
-        // as a point and keep the extents, which already describe the run
-        // in its own upright frame (same convention as
-        // `order_rotated_blocks`).
         for s in &mut spans {
-            let (rx, ry) = (s.bbox.x - llx, s.bbox.y - lly);
-            let (mx, my) = match rot {
-                90 => (ry, w - rx),
-                180 => (w - rx, h - ry),
-                270 => (h - ry, rx),
-                _ => (rx, ry),
-            };
-            s.bbox.x = llx + mx;
-            s.bbox.y = lly + my;
-            s.rotation_degrees = 0.0;
+            frame.map_span_origin(s);
         }
-        Ok(spans)
+        Ok((spans, frame))
     }
 
     /// Assemble page text from the page's native spans **plus** caller-supplied
@@ -5776,7 +6109,7 @@ impl PdfDocument {
         // pages in their rotated reading frame instead — after the region
         // filters, whose rects select in page space, and before table
         // detection, which consumes the geometry this maps.
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        let (base_spans, reading_frame) = self.spans_in_reading_frame(page_index, base_spans);
         // Struct-tree-scope `/ActualText` is applied per branch below
         // — the structure-order assembler handles it natively via the
         // per-page action map, and the geometric branch applies the
@@ -5792,14 +6125,17 @@ impl PdfDocument {
         // AND /MarkInfo /Suspects is not true. Suspect documents fall through to
         // the geometric `else` arm below, the spec-correct behaviour.
         let cached_tree = self.struct_tree_trustworthy();
-        let widget_spans = self.extract_widget_spans(page_index);
+        let widget_spans = self.widget_spans_in_frame(page_index, reading_frame);
 
         // Table detection uses base spans only (no widget spans).
         let tables = if options.extract_tables {
             // text_fallback=false: extract_text preserves the pre-v0.3.47 behaviour
             // where line-less pages return no tables. Only the structured-output
             // converters (to_markdown, to_html) opt in to text-only spatial fallback.
-            self.extract_page_tables(page_index, &base_spans, options, false)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, false),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
@@ -6050,6 +6386,59 @@ impl PdfDocument {
                     }
                     true
                 }
+
+                /// The mirror of `take_one`'s containment case: one span token
+                /// may be the **concatenation of several** budget tokens.
+                ///
+                /// The two sides split words at different distances — word
+                /// clustering breaks at roughly 1.8 pt while the flow assembler
+                /// only inserts a space at about 7.2 pt for 10 pt Courier — so a
+                /// cell yielding `{"abc", "def"}` faces a flow span of
+                /// `"abcdef"`. Containment alone cannot absorb that: no budget
+                /// token contains the longer span token, so the span was kept
+                /// and its glyphs were emitted a second time alongside the
+                /// table's own rendering.
+                ///
+                /// Consumes the covering sequence only if the whole token is
+                /// covered exactly, so nothing is spent on a partial match.
+                fn take_concatenation(
+                    work: &mut std::collections::HashMap<&str, usize>,
+                    tok: &str,
+                ) -> bool {
+                    // Deterministic: longest available prefix first, ties by
+                    // text. HashMap iteration order is not stable and this
+                    // decides what the page emits.
+                    fn cover<'a>(
+                        work: &mut std::collections::HashMap<&'a str, usize>,
+                        rest: &str,
+                        taken: &mut Vec<&'a str>,
+                    ) -> bool {
+                        if rest.is_empty() {
+                            return true;
+                        }
+                        let mut candidates: Vec<&'a str> = work
+                            .iter()
+                            .filter(|(k, n)| **n > 0 && !k.is_empty() && rest.starts_with(**k))
+                            .map(|(k, _)| *k)
+                            .collect();
+                        candidates.sort_by_key(|k| (std::cmp::Reverse(k.len()), *k));
+                        for cand in candidates {
+                            if let Some(slot) = work.get_mut(cand) {
+                                *slot -= 1;
+                            }
+                            taken.push(cand);
+                            if cover(work, &rest[cand.len()..], taken) {
+                                return true;
+                            }
+                            taken.pop();
+                            *work.entry(cand).or_insert(0) += 1;
+                        }
+                        false
+                    }
+
+                    let mut taken: Vec<&str> = Vec::new();
+                    cover(work, tok, &mut taken)
+                }
                 // Test plus decrement, in one place so the containment and
                 // text-fallback paths cannot drift apart — they must draw on
                 // the SAME accounting. All-or-nothing: a span either fits
@@ -6062,7 +6451,9 @@ impl PdfDocument {
                     let mut work = remaining.clone();
                     for (tok, n) in span_tokens {
                         for _ in 0..*n {
-                            if !take_one(&mut work, tok, allow_fragment) {
+                            if !take_one(&mut work, tok, allow_fragment)
+                                && !(allow_fragment && take_concatenation(&mut work, tok))
+                            {
                                 return false;
                             }
                         }
@@ -6275,9 +6666,50 @@ impl PdfDocument {
                 // plain-text path. Tightly gated (≥30 spans, narrow sidebar with
                 // ≥2 furniture labels), so it is a no-op (None) on ordinary pages.
                 spans = ordered;
-            } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans)
-                .or_else(|| Self::classifier_column_gutter(&spans))
-            {
+            } else if let Some(gutter_x) = Self::prose_two_column_gutter(&spans).or_else(|| {
+                // The fallback detector is not consulted when the page's only
+                // multi-column signal is a table. A data grid's own inter-column
+                // gap is a real empty vertical corridor: the corridor sweep finds
+                // it, and neither half of a numeric grid classifies Table/Form (a
+                // column of short numerals reads Reference, a labelled half reads
+                // Prose), so the class gate admits it. `reorder_column_major_with_bands`
+                // then cuts every row of the grid at that x and each row's
+                // right-hand cells surface a whole column-run below the label they
+                // belong to. ISO 32000-1:2008 §14.8.4.3.4 makes a row (TR) the
+                // element that holds its data cells (TD): a grid row is one
+                // reading unit and must not be split across a page gutter.
+                //
+                // `multicol_signal_is_tabular` measures the left edges of the lines
+                // OUTSIDE the detected tables — a single dominant cluster means
+                // single-column prose with a grid on it, which the row-aware band
+                // branch below linearises correctly. It is the same predicate that
+                // branch already consults; it simply has to be consulted before the
+                // corridor sweep as well. Only the fallback detector is gated:
+                // `prose_two_column_gutter` is content-balance gated and keeps
+                // deciding genuine two-column bodies on its own, table or no table.
+                //
+                // `multicol_signal_is_tabular` measures each Y band's MINIMUM
+                // left edge, and a Y band crosses the whole page: on a
+                // two-column page both columns fall in one band and the minimum
+                // is the left column's margin on every shared line, so the right
+                // column is invisible to it and a genuine two-column body reads
+                // as one dominant left edge. It therefore suppresses the gutter
+                // on exactly the pages this branch exists to serve — a
+                // two-column journal page with a full-measure figure under the
+                // columns, where the figure's cells and the centred folio leave
+                // `prose_two_column_gutter` no page-wide corridor to find, and
+                // the columns are then read straight across, tearing a wrapped
+                // word in half at every line. `two_column_starts_outside_tables`
+                // counts the page's column STARTS instead, and lets a body with
+                // exactly two of them through. It only ever opens the gate: a
+                // page where the classifier still declines falls through to the
+                // row-aware branch below exactly as before.
+                (tables.is_empty()
+                    || !Self::multicol_signal_is_tabular(&spans, &tables)
+                    || Self::two_column_starts_outside_tables(&spans, &tables))
+                .then(|| Self::classifier_column_gutter(&spans))
+                .flatten()
+            }) {
                 // Genuine two-column prose (content-balance gated — forms /
                 // TOC / tables / figures are rejected), OR a ragged
                 // reference list / dense results body that the clean corridor
@@ -6302,7 +6734,9 @@ impl PdfDocument {
                 // (bibliography interleave) or shattering wrapped hyphenated
                 // lines in dense two-column bodies.
             } else if !Self::is_multi_column_page(&spans)
-                || (!tables.is_empty() && Self::multicol_signal_is_tabular(&spans, &tables))
+                || (!tables.is_empty()
+                    && Self::multicol_signal_is_tabular(&spans, &tables)
+                    && !Self::two_column_starts_outside_tables(&spans, &tables))
             {
                 // Either a genuine single-column page, OR a single-column page
                 // whose only multi-column geometric signal comes from a TABLE
@@ -6320,6 +6754,29 @@ impl PdfDocument {
                 // signal (`multicol_signal_is_tabular`), so genuine two-column
                 // pages — which the column branches catch first, and which carry
                 // no page-dominating table — are unaffected.
+                //
+                // `multicol_signal_is_tabular` cannot see a right column that
+                // shares its bands with the left one (it keeps each band's
+                // MINIMUM left edge), so on a two-column body with a
+                // full-measure ruled table across it — a regulation page whose
+                // columns run above and below a resistance table — it reports
+                // the signal as tabular even though the prose around the table
+                // plainly starts at two column positions. The column branches
+                // above decline such a page because the table's rows and its
+                // centred caption straddle the gutter, and the row-aware sort
+                // then reads the two columns straight across, cutting a wrapped
+                // word at every line (`must be config-` / `ured`). Reading
+                // across a gutter is never right for a two-column body: ISO
+                // 32000-1:2008 §14.8.2.3 Page Content Order (`docs/spec/pdf.md`
+                // lines 37221-37234) makes the writer responsible for a
+                // content-stream order that "should normally ... proceed from
+                // top to bottom (and, in a multiple-column layout, from column
+                // to column)", and this page's stream is column-major, which is
+                // why that order is kept below when this branch declines. So
+                // the tabular override is withheld whenever the content outside
+                // the tables starts at exactly two column positions
+                // (`two_column_starts_outside_tables` — the same corrective the
+                // classifier gate above applies).
                 spans.sort_by(|a, b| {
                     let cmp =
                         crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x);
@@ -6332,6 +6789,17 @@ impl PdfDocument {
                 // Promote multi-row-spanning labels (sparse-column spans
                 // vertically centred across several dense-column data rows)
                 // to sort at the top of their row block.
+                //
+                // Only where the page actually has a table. The promotion
+                // reasons in table terms — a sparse stub column against dense
+                // data columns — and clusters spans by their left edge to find
+                // them. On prose it finds clusters anyway: a mathematics page
+                // whose lines are cut into many runs by inline symbols gave a
+                // densest cluster starting mid-measure, and three glyphs of a
+                // display equation were promoted to the head of their block.
+                // That reordered the paragraph around them, and a trailing
+                // line came out ahead of the line it continues —
+                // `criterionThe ridge regression ...`.
                 Self::reorder_rowspan_labels(&mut spans);
 
                 // Restore intra-line reading order after the row-aware band sort.
@@ -6449,6 +6917,36 @@ impl PdfDocument {
                     }
                 }
 
+                // Close a soft-hyphen wrap here, at the seam, because this is
+                // the last point where the geometry exists. §14.8.2.2.3 makes
+                // U+00AD a break offered *inside* a word, and §9.4.2 puts the
+                // only evidence of where the line actually ended in the glyph
+                // positions — which are gone by the time the text is assembled.
+                //
+                // Two signals have to coincide, and together they separate a
+                // real wrap from a re-ordered scan: the baseline drops by about
+                // one line, and the continuation returns left of where the
+                // previous run ended.
+                //
+                // Measured over the 2008-document corpus: of 1272 seams with a
+                // letter either side of a marker, this accepts 34 and every one
+                // is a genuine wrap (`admini-stration`, `усло-виях`,
+                // `gezamen-lijke`), while rejecting all 23 false joins the
+                // scrambled scans offer (`con-the`, `locomo-she`, `im-by`).
+                // Accepted wraps sit at 1.08-1.40 em of baseline drop; the false
+                // ones at -0.29 to +0.59 em, which is OCR band jitter rather
+                // than a line advance.
+                //
+                // Judged later, on assembled text, only character adjacency
+                // survives — which is why the earlier attempt to decide this in
+                // `join_soft_hyphen_wraps` could not be made safe.
+                if let Some(prev) = &prev_span {
+                    if Self::apply_soft_hyphen_seam(&mut text, prev, span) {
+                        prev_span = Some(span.clone());
+                        continue;
+                    }
+                }
+
                 if let Some(prev) = &prev_span {
                     let prev_end_x = prev.bbox.x + prev.bbox.width;
                     let span_end_x = span.bbox.x + span.bbox.width;
@@ -6475,7 +6973,80 @@ impl PdfDocument {
                     // y-line break OR (when the two halves share a baseline band) as a
                     // large backward X jump, so it is gated at each break site below.
                     let hangul_midword_wrap = Self::hangul_midword_line_wrap(&text, prev, span);
-                    if y_diff > Self::same_line_threshold(prev, span) {
+                    // A blank run is on no axis at all. It has no glyphs, so
+                    // there is no displacement for §9.4.4 to interpret and
+                    // nothing to say which direction it ran in — its
+                    // `rotation_degrees` records the matrix that happened to be
+                    // in force, not evidence about the page.
+                    //
+                    // Producers emit them freely, and a rotated watermark
+                    // scatters them across the rows it crosses. A table row read
+                    // `R-+  t/tdr }/Wr t/rt`; two blank 90-degree spans from the
+                    // watermark sat between the label and its first cell, and
+                    // the axis test fired twice — once entering them, once
+                    // leaving — leaving the label alone on its line and its
+                    // cells on the next.
+                    //
+                    // So an axis change is only a line break between two runs
+                    // that both carry ink.
+                    //
+                    // Exempt from THIS test only. Making a blank cross-axis run
+                    // transparent to line breaking altogether was tried and is
+                    // worse: the run then bridges the two inked runs on either
+                    // side of it, and a rotated page stamp joined the body text
+                    // that followed it — `Downloaded from ... 2019` acquired
+                    // `<! f (2 %d/t %d/d`. The vertical test below still gets to
+                    // decide, which is what keeps them apart.
+                    let both_carry_ink =
+                        !prev.text.trim().is_empty() && !span.text.trim().is_empty();
+                    if both_carry_ink && (prev.rotation_degrees - span.rotation_degrees).abs() > 0.5
+                    {
+                        // Two runs on different writing axes are not one line.
+                        // §9.4.4 puts the glyph displacement along the writing
+                        // direction the text matrix sets, so a matrix that
+                        // differs in rotation starts a new run by definition.
+                        //
+                        // The gap arithmetic below cannot see this. It reads an
+                        // axis-aligned `bbox.width`, which for a run on a
+                        // diagonal baseline is the width of a box drawn round
+                        // that diagonal rather than an advance along it. On a
+                        // perspective diagram whose labels sit at 20.3, 25.3,
+                        // 30.4 and 35.5 degrees, their boxes overlap, the gap
+                        // comes out negative, and the runs concatenated with no
+                        // separator at all — `Opt_Decoder` + `Opt_Heads` became
+                        // `Opt_DecoderOpt_Heads`.
+                        //
+                        // `pipeline/converters/mod.rs`already guards this for the
+                        // converter path; the shared assembly behind `.text`
+                        // and the extractors never consulted `rotation_degrees`.
+                        //
+                        // One newline is not enough when the line ends on a
+                        // wrap hyphen. `dehyphenate_line_breaks` rejoins
+                        // `<lowercase>-` across a *single* line break, so the
+                        // break this guard inserts was itself the seam it was
+                        // rejoined over: a body line ending `Soekarno-` was
+                        // de-hyphenated onto the rotated left-margin stamp that
+                        // followed it, deleting the hyphen, destroying the
+                        // proper noun `Soekarno-Hatta`, and inventing the token
+                        // `Soekarnojbell`.
+                        //
+                        // A run on another writing axis is never the
+                        // continuation of a hyphenated word, so end the
+                        // paragraph rather than the line. A blank line is not a
+                        // seam that pass will cross.
+                        let ends_on_a_wrap_hyphen = {
+                            let t = text.trim_end_matches([' ', '\t']);
+                            let mut back = t.chars().rev();
+                            back.next() == Some('-')
+                                && back.next().is_some_and(|c| c.is_ascii_lowercase())
+                        };
+                        if !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        if ends_on_a_wrap_hyphen && !text.ends_with("\n\n") {
+                            text.push('\n');
+                        }
+                    } else if y_diff > Self::same_line_threshold(prev, span) {
                         let font_size = prev.font_size.max(span.font_size).max(10.0);
                         let line_height = font_size * 1.2;
                         let num_breaks = (y_diff / line_height).round() as usize;
@@ -6580,6 +7151,69 @@ impl PdfDocument {
                             // -1.75 pt and -12.75 pt sit alongside
                             // delta_x values of 56 pt and 78 pt.
                             text.push(' ');
+                        } else if gap < -fs * 3.0
+                            && delta_x.abs() <= fs * 0.5
+                            && !hangul_midword_wrap
+                            && !prev.rtl_draw_logical
+                            && !span.rtl_draw_logical
+                            && !text.ends_with(' ')
+                            && !text.ends_with('\n')
+                        {
+                            // Two runs drawn over the SAME horizontal extent
+                            // from the SAME origin — an overlaid pair of chart
+                            // legend labels, or a stamped duplicate. The
+                            // current span restarts within half an em of the
+                            // previous span's ORIGIN while overlapping its ink
+                            // by more than three em: that is neither kerning
+                            // nor a wrap, it is a second line of text drawn in
+                            // the same place, and §9.4.3 makes it two runs.
+                            //
+                            // Nothing above this point claims the shape, so
+                            // the pair concatenated. It only became reachable
+                            // when the leaf sort stopped comparing baselines
+                            // with an exact float equality: two labels whose
+                            // tops differ by 8.6e-4 pt used to fall into
+                            // separate groups and keep draw order, and now
+                            // interleave by x.
+                            //
+                            // A superscript or subscript always advances
+                            // forward, so `gap < -3 em` excludes it outright;
+                            // the widest kerning overlap this file admits
+                            // anywhere is `gap > -fs`, three times narrower; a
+                            // fraction denominator sits ~2 em back, failing
+                            // the half-em origin test; and CJK glyphs advance
+                            // an em at a time and never overlap backwards.
+                            text.push('\n');
+                        }
+                    } else if y_diff >= prev.font_size.max(span.font_size).max(1.0)
+                        && gap < FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
+                    {
+                        // Stacked lines, not a kerned run.
+                        //
+                        // `same_line_threshold` allows 1.2x the SMALLER font so
+                        // normal leading does not produce false breaks, which for
+                        // two spans of the same size admits everything below
+                        // 1.2 em -- including a plain single-spaced line advance.
+                        // A wrapped line is normally caught further down by its
+                        // large negative `delta_x` (it restarts at the left
+                        // margin), but stacked table-header labels start at or
+                        // to the RIGHT of the line above, so the gap is ~0 and
+                        // no arm here separates them: "Latency" over
+                        // "Efficiency" came out as "LatencyEfficiency".
+                        //
+                        // One em is the bound: a real line advance is at least
+                        // that (normal leading is ~1.2 em) and a superscript
+                        // shift is less, so the two separate cleanly. Measured —
+                        // a footnote marker raised over a 7.04 pt comma sits at
+                        // 0.82 em, two stacked 7.24 pt labels at 1.10 em. An
+                        // earlier 0.8 bound fell between them and split the
+                        // marker onto its own line: the marker's own run is
+                        // small, so max_fs is small and the shift is a much
+                        // larger fraction of it than the ~0.3 em a superscript
+                        // costs against body text. The gap bound leaves the
+                        // wide-gap column boundary below untouched.
+                        if !text.ends_with('\n') {
+                            text.push('\n');
                         }
                     } else if y_diff > 2.0
                         && gap > FORWARD_GAP_K * prev.font_size.max(span.font_size).max(1.0)
@@ -6628,7 +7262,9 @@ impl PdfDocument {
             while let Some((_, table)) = pending_tables.pop() {
                 flush_table(&mut text, table);
             }
-            text
+            // Close soft-hyphen wraps now the line seams exist: the span
+            // writer could not tell a mid-word wrap from a marker to keep.
+            Self::join_soft_hyphen_wraps(&text)
         };
 
         // Annotation text is already included via annotation_content_spans() in
@@ -7877,7 +8513,25 @@ impl PdfDocument {
     /// `true` if a space should be inserted between the spans
     fn should_insert_space(prev: &TextSpan, current: &TextSpan) -> bool {
         // Get font size (use the larger of the two)
-        let font_size = prev.font_size.max(current.font_size).max(1.0);
+        // Scale the space threshold by the SMALLER of the two runs.
+        //
+        // A space between two runs is set in one of their two fonts, and the
+        // failure modes are not symmetric: too large a threshold fuses two
+        // words into one the page never draws, while too small a one merely
+        // separates what was already separate. On an OCR'd scan whose words
+        // carry independently estimated sizes — `And` at 13.12 pt beside
+        // `welcomes` at 8.97 — the larger size raised the threshold above the
+        // real gap and produced `Andwelcomes`; likewise `little` (6.28) and
+        // `fishes` (8.08) became `littlefishes`.
+        //
+        // Fall back to the larger when either size is missing, so a span with
+        // no font size cannot drive the threshold to the floor and split
+        // everything.
+        let font_size = if prev.font_size > 0.0 && current.font_size > 0.0 {
+            prev.font_size.min(current.font_size).max(1.0)
+        } else {
+            prev.font_size.max(current.font_size).max(1.0)
+        };
 
         // Same-line gate. Uses the shared threshold so the assembly
         // loop's same-line decision and the space-insertion decision
@@ -8479,18 +9133,306 @@ impl PdfDocument {
         }
     }
 
-    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN). Per ISO 32000-1
-    /// §14.8.2.2.3 a soft hyphen only marks a discretionary line-break point —
-    /// it is never meaningful rendered content, so it must not survive into
-    /// flat-text output regardless of whether it sits at a line boundary (the
-    /// PDF's own line wrap is not preserved here) or mid-word within a span
-    /// whose glyphs were positioned individually.
+    /// Append `s` to `out`, dropping U+00AD (SOFT HYPHEN) **only where it marks
+    /// a hyphenation point**: between two alphabetic characters.
+    ///
+    /// §14.8.2.2.3 treats a soft hyphen as an incidental artifact of layout,
+    /// which is what licenses removing it — but only where it is one. Annex D
+    /// note 5 is explicit that it is not always: "The hyphen character is also
+    /// encoded as 255 in WinAnsiEncoding. The meaning of this duplicate code
+    /// shall be 'soft hyphen,' but it shall be **typographically the same as
+    /// hyphen**." A producer using that code draws a visible hyphen, so
+    /// removing it deletes a character the reader sees.
+    ///
+    /// Stripping unconditionally did exactly that. A part number `SS<shy>2541
+    /// <shy>03<shy>M` became `SS254103M` and a date `2023<shy>06<shy>15`
+    /// became `20230615`; both render with visible hyphens and poppler and
+    /// MuPDF both keep them. It also fired on a 0xAD byte that was the low half
+    /// of a GBK sequence, and on a maths font that maps U+00AD to a large
+    /// parenthesis, deleting one side of the delimiter pair.
+    ///
+    /// Requiring a letter on both sides keeps every one of those and still
+    /// removes the hyphenation marker in `ultrasonographi<shy>cally`, which is
+    /// the case the rule exists for. A digit, a symbol, a space or a
+    /// misdecoded byte on either side means this is not a word being
+    /// hyphenated.
+    ///
+    /// One shape is exempt: a soft hyphen that *terminates* the fragment and
+    /// directly follows a hyphen-minus. There the soft hyphen is the wrap
+    /// marker and the `-` is part of the word — a typesetter breaking an
+    /// already-hyphenated compound writes `Cross-<soft>` / `sectional`.
+    /// Dropping the marker here leaves a bare `Cross-`, which the rejoiner
+    /// downstream then reads as the wrap marker and removes, fusing the two
+    /// halves into `Crosssectional`. Keeping it lets the rejoiner take its
+    /// soft-hyphen branch, which strips the marker and preserves the hyphen;
+    /// the marker cannot survive a join, and a fragment that is never joined
+    /// keeps a character the page itself declares invisible.
     #[inline]
+    /// Close soft-hyphen line wraps in assembled output.
+    ///
+    /// U+00AD marks a break offered *inside* a word (ISO 32000-1:2008
+    /// §14.8.2.2.3), so wherever one survives with a letter on each side —
+    /// with only the whitespace the line assembler inserted in between — the
+    /// two halves are one word and the marker plus that whitespace go away.
+    ///
+    /// This has to happen on assembled text rather than per span: the span
+    /// writer sees `"wonder\u{AD}"` and `"ful"` as separate fragments and
+    /// cannot tell a mid-word wrap from a marker it must keep, and the space
+    /// that stands in for the line break is added later still. A soft hyphen
+    /// whose neighbours are not both letters is left alone — it is a glyph or
+    /// a misdecoded byte, not hyphenation.
+    /// Act on a soft-hyphen seam between `prev` and `span`, and report whether
+    /// `span` has been consumed.
+    ///
+    /// `text` is the output assembled so far. On a wrap the marker and the
+    /// span are both written here and the caller moves on; otherwise `text` is
+    /// left ready for the caller's own cascade to append the span.
+    fn apply_soft_hyphen_seam(text: &mut String, prev: &TextSpan, span: &TextSpan) -> bool {
+        let marker_seam = text
+            .strip_suffix('\u{00AD}')
+            .is_some_and(|t| t.ends_with(char::is_alphabetic))
+            && span.text.starts_with(char::is_alphabetic);
+        if !marker_seam {
+            return false;
+        }
+        let em = prev.font_size.max(span.font_size).max(6.0);
+        let drop = prev.bbox.y - span.bbox.y;
+        let seam_gap = span.bbox.x - (prev.bbox.x + prev.bbox.width);
+        match Self::soft_hyphen_seam(em, drop, seam_gap) {
+            SoftHyphenSeam::Close => {
+                text.pop();
+                Self::push_span_text(text, span);
+                true
+            },
+            SoftHyphenSeam::Keep => {
+                // The marker has to survive, so put a separator where the
+                // assembler was about to put nothing.
+                //
+                // Downstream, `push_str_without_soft_hyphens` reads an empty
+                // seam as proof that the two runs are contiguous glyphs and
+                // drops the marker. On a re-ordered scan that inference is
+                // false: the next run in reading order can begin 40 pt to the
+                // *left* of where this one ended, and the string is adjacent
+                // only because nothing was inserted. A space makes the seam
+                // non-empty, which is the truth the geometry reports.
+                text.push(' ');
+                false
+            },
+            SoftHyphenSeam::Contiguous => {
+                // Annex D Note 5 (`docs/spec/pdf.md`:41814): WinAnsi code 255
+                // is a soft hyphen whose *meaning* is a discretionary break,
+                // but which "shall be typographically the same as hyphen".
+                // Such a marker is a painted glyph with a real advance, so
+                // mid-line it is a character the page draws and joining across
+                // it deletes one — `Campus<shy>Main` became `CampusMain` where
+                // every reference extractor keeps the marker. A marker with no
+                // advance was never drawn; that is a true break opportunity and
+                // the existing rule closes it.
+                if Self::soft_hyphen_was_painted(prev) {
+                    let cut = text.len() - '\u{00AD}'.len_utf8();
+                    text.truncate(cut);
+                    Self::push_span_text(text, span);
+                    text.insert(cut, '\u{00AD}');
+                    return true;
+                }
+                false
+            },
+        }
+    }
+
+    /// Whether the soft hyphen ending `prev` was actually painted.
+    ///
+    /// `char_widths` holds per-character advances in user-space points and is
+    /// only trustworthy when it matches the text length, which is the same
+    /// condition `to_chars` applies before using it.
+    fn soft_hyphen_was_painted(prev: &TextSpan) -> bool {
+        prev.char_widths.len() == prev.text.chars().count()
+            && prev.char_widths.last().is_some_and(|w| *w > 0.0)
+    }
+
+    /// Classify a soft-hyphen seam from the geometry either side of it.
+    ///
+    /// `em` is the larger of the two font sizes, `drop` the baseline fall from
+    /// the previous run to this one, and `seam_gap` the horizontal distance
+    /// from where the previous run ended to where this one starts (negative
+    /// when the new run begins to the left).
+    ///
+    /// Measured over the 2008-document corpus: of 1272 seams with a letter
+    /// either side of a marker, `Close` accepts 34 and every one is a genuine
+    /// wrap (`admini-stration`, `усло-виях`, `gezamen-lijke`), while the
+    /// scrambled scans' false joins (`con-the`, `con-and`, `locomo-she`,
+    /// `im-by`, `Dur-per`) all fall to `Keep`. Real wraps sit at 1.08-1.40 em
+    /// of baseline drop; the false ones at -0.29 to +0.59 em, which is OCR
+    /// band jitter rather than a line advance.
+    ///
+    /// Length cannot separate the cases — the bad joins came from fragments of
+    /// two to seven characters and a legitimate wrap (`modali-` + `ties`) is
+    /// six — and neither can case, since the false continuations are lowercase
+    /// too.
+    fn soft_hyphen_seam(em: f32, drop: f32, seam_gap: f32) -> SoftHyphenSeam {
+        if drop >= em * 0.6 && drop <= em * 1.6 && seam_gap < -em {
+            return SoftHyphenSeam::Close;
+        }
+        // One baseline, and the next run starts where this one ended: the file
+        // split a word across two runs and the marker sits at the split.
+        if drop.abs() <= em * 0.35 && seam_gap > -em * 0.35 && seam_gap < em * 0.6 {
+            return SoftHyphenSeam::Contiguous;
+        }
+        SoftHyphenSeam::Keep
+    }
+
+    fn join_soft_hyphen_wraps(s: &str) -> String {
+        if !s.contains('\u{00AD}') {
+            return s.to_string();
+        }
+        let mut out = String::with_capacity(s.len());
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c != '\u{00AD}' || !out.chars().next_back().is_some_and(|p| p.is_alphabetic()) {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            // Skip the whitespace standing in for the wrap: spaces and tabs,
+            // and at most one newline, so a marker at a real line end still
+            // closes but paragraph breaks are never swallowed.
+            let mut j = i + 1;
+            let mut newlines = 0;
+            while j < chars.len() {
+                match chars[j] {
+                    ' ' | '\t' | '\r' => j += 1,
+                    '\n' if newlines == 0 => {
+                        newlines += 1;
+                        j += 1;
+                    },
+                    _ => break,
+                }
+            }
+            // Whether the halves belong together depends on what separates
+            // them. Adjacent fragments are contiguous glyphs on one line, so
+            // they are one word whatever the case. Once whitespace intervenes
+            // it stands in for a line wrap, and only a **lowercase**
+            // continuation is the rest of the broken word — an uppercase one
+            // starts a new sentence, a heading, or the next column of a scan.
+            // `TextPostProcessor::rejoin_hyphenated_words` has always drawn
+            // the line here for the same reason; dropping the test glued
+            // "pre" to "The" across a multi-column scan.
+            // Only fragments that are genuinely contiguous. Once any
+            // whitespace intervenes, whether the halves belong together is a
+            // question about the page's geometry — is the continuation the next
+            // line of the *same column*? — and that information is gone by the
+            // time this runs on assembled text.
+            //
+            // Guessing from the characters alone is not good enough. A
+            // lowercase continuation was the guess, and on a re-ordered scan
+            // the fragment that follows a marker is lowercase but unrelated:
+            // one page gained `conthe`, `conand`, `rewas`, `locomoshe`,
+            // `sesper`, `Durper` and `introalone`, none of which it contains.
+            // Length cannot separate the cases either — the bad joins came from
+            // fragments of two to seven characters, and a legitimate wrap
+            // ("modali-" + "ties") is six.
+            //
+            // v0.3.77 did not close these, and neither does MuPDF, pdfium,
+            // poppler, pypdf or pdfminer: on the document above the previous
+            // release agreed with pymupdf and pypdf exactly, and closing the
+            // wrap moved us away from all three. So the conservative reading is
+            // also the one the panel corroborates.
+            // Never join here. The `adjacent` case this used to close is
+            // precisely the one that CANNOT be a wrap: contiguous characters
+            // with nothing between them sit on one line, so no break occurred
+            // and Annex D Note 5 (`docs/spec/pdf.md`:41814) makes the marker a
+            // painted hyphen. `Campus<shy>Main` became `CampusMain` here, and
+            // v0.3.77 plus all five reference extractors keep it.
+            //
+            // A genuine wrap has whitespace between its halves, which the
+            // adjacency test already excluded — so this branch never closed a
+            // real wrap. Wraps are closed upstream, at the span seam, where the
+            // geometry that identifies them still exists.
+            let continues = false;
+            if continues {
+                i = j;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
     fn push_str_without_soft_hyphens(out: &mut String, s: &str) {
-        if s.contains('\u{00AD}') {
-            out.extend(s.chars().filter(|&c| c != '\u{00AD}'));
-        } else {
+        // Close a hyphenation point that straddles two fragments.
+        //
+        // A fragment-final soft hyphen is ambiguous on its own: it is either a
+        // word split across two spans of the SAME line, where the halves must
+        // join directly ("ultrasonographi" + "cally"), or the wrap marker at a
+        // line end, which `TextPostProcessor::rejoin_hyphenated_words` needs in
+        // order to rejoin the next line without a space. The fragment cannot
+        // tell them apart, but the seam can: a line break or a space is pushed
+        // into `out` between fragments, so a soft hyphen still sitting at the
+        // end of `out` means the next fragment is directly adjacent to it.
+        //
+        // Deciding here keeps both cases right. Stripping it eagerly in the
+        // loop below instead — which is what this used to do — silently
+        // deleted the wrap marker, and a word broken across a line came back
+        // as "wonder ful".
+        if s.starts_with(char::is_alphabetic) {
+            // Same rule as `join_soft_hyphen_wraps` below: once whitespace
+            // separates the halves it stands in for a line wrap, and only a
+            // lowercase continuation is the rest of the broken word.
+            // Look back past any spaces the assembler inserted where the file
+            // had a line break. A soft hyphen is by definition a break offered
+            // *inside* a word (§14.8.2.2.3), so a space following one is
+            // layout rather than a word boundary, and the halves still belong
+            // together. A newline is left alone: line structure still exists
+            // there, and `rejoin_hyphenated_words` decides whether the two
+            // lines are one paragraph.
+            // Nothing to do. This used to drop the marker whenever the two
+            // fragments had nothing between them, which is the third and last
+            // copy of a rule that cannot be expressed over characters:
+            // `prin<shy>` + `from` is textually identical to `wonder<shy>` +
+            // `ful`, and only the geometry tells them apart.
+            //
+            // The geometry-bearing caller decides now.
+            // `apply_soft_hyphen_seam` pops the marker itself when the
+            // baseline drop and the carriage return say a line wrapped, so by
+            // the time a fragment reaches here every genuine wrap is already
+            // closed and anything left is a hyphen the page drew.
+        }
+
+        if !s.contains('\u{00AD}') {
             out.push_str(s);
+            return;
+        }
+        let keeps_wrap_marker = {
+            let mut cs = s.chars().rev();
+            cs.next() == Some('\u{00AD}') && cs.next() == Some('-')
+        };
+        let body = if keeps_wrap_marker {
+            &s[..s.len() - '\u{00AD}'.len_utf8()]
+        } else {
+            s
+        };
+        // Every soft hyphen still in the body is kept: one *inside a single
+        // span* is never a line
+        // wrap: a span is one run drawn on one line, so no break occurs at
+        // that point and the glyph was painted. Annex D Note 5
+        // (`docs/spec/pdf.md`:41814) says WinAnsi code 255 "shall be
+        // typographically the same as hyphen", so a painted one is a
+        // character the page draws and dropping it deletes content --
+        // `Campus<shy>Main` became `CampusMain`.
+        //
+        // Only a **seam** between two spans can be a wrap, and
+        // `apply_soft_hyphen_seam` decides those from the geometry, which
+        // is the only place the evidence exists.
+        //
+        // Measured over the 2008-document corpus: v0.3.77 kept 20 in-span
+        // markers across 6 documents and this dropped every one of them.
+        // poppler, MuPDF, pdfium, pypdf and pdfminer all keep them.
+        out.push_str(body);
+        if keeps_wrap_marker {
+            out.push('\u{00AD}');
         }
     }
 
@@ -8839,6 +9781,27 @@ impl PdfDocument {
     /// Converts each widget annotation's field value into a `TextSpan` with the annotation's
     /// bounding box. These spans merge naturally with content stream spans and get positioned
     /// correctly by existing layout algorithms.
+    /// Widget annotation spans in the same frame as the caller's page spans.
+    ///
+    /// A widget's `/Rect` is page-space (ISO 32000-1:2008 §12.5.2), so on a page
+    /// whose spans were mapped into a rotated reading frame the two are not
+    /// comparable: appending unmapped widget spans to mapped page spans puts
+    /// two coordinate frames in one vector, and the field value sorts into a
+    /// position belonging to some other field.
+    fn widget_spans_in_frame(
+        &self,
+        page_index: usize,
+        frame: Option<ReadingFrame>,
+    ) -> Vec<TextSpan> {
+        let mut spans = self.extract_widget_spans(page_index);
+        if let Some(f) = frame {
+            for s in &mut spans {
+                f.map_span_origin(s);
+            }
+        }
+        spans
+    }
+
     fn extract_widget_spans(&self, page_index: usize) -> Vec<TextSpan> {
         use crate::extractors::forms::field_flags;
         use crate::geometry::Rect;
@@ -10181,13 +11144,20 @@ impl PdfDocument {
             return Ok(text);
         }
 
-        // Step 2: Build MCID → Vec<TextSpan> map
-        let mut mcid_map: HashMap<u32, Vec<TextSpan>> = HashMap::new();
+        // Step 2: Build (scope, MCID) → Vec<TextSpan> map.
+        //
+        // ISO 32000-1:2008 §14.7.4.2 makes an /MCID unique only "within its
+        // content stream", so the bare id is not an identity: a page and a
+        // Form XObject may each number theirs from 0.
+        let default_scope = crate::structure::McidScope::Page(page_index as u32);
+        let mut mcid_map: HashMap<(crate::structure::McidScope, u32), Vec<TextSpan>> =
+            HashMap::new();
         let mut spans_without_mcid: Vec<TextSpan> = Vec::new();
 
         for span in all_spans {
             if let Some(mcid) = span.mcid {
-                mcid_map.entry(mcid).or_default().push(span);
+                let key = (span.mcid_scope.clone().unwrap_or(default_scope.clone()), mcid);
+                mcid_map.entry(key).or_default().push(span);
             } else {
                 // Collect spans without MCID (shouldn't happen in well-formed Tagged PDFs)
                 spans_without_mcid.push(span);
@@ -10220,7 +11190,6 @@ impl PdfDocument {
             .get(&page_index)
             .cloned()
             .unwrap_or_default();
-        let default_scope = crate::structure::McidScope::Page(page_index as u32);
         let mcid_order: Vec<(crate::structure::McidScope, u32)> = ordered_content
             .iter()
             .filter_map(|c| {
@@ -10228,10 +11197,24 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // A reference and the glyphs it names can disagree about scope without
+        // colliding: a producer that draws part of a page through a Form
+        // XObject numbers one continuous id space across both and references it
+        // with bare integers, which resolve to the page's own stream. Match
+        // such a reference to the run it names, but only where the bare id is
+        // numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(mcid_map.keys());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_order.iter());
+        let bucket_for = |key: &(crate::structure::McidScope, u32)| {
+            if !referenced_once.contains_key(&key.1) {
+                return mcid_map.contains_key(key).then(|| key.clone());
+            }
+            crate::structure::resolve_mcid_key(&mcid_map, &drawn_once, key)
+        };
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(m) {
+            if let Some(sp) = bucket_for(&(scope.clone(), *m)).and_then(|k| mcid_map.get(&k)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -10242,7 +11225,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |_scope, m| mcid_map.contains_key(&m),
+            |scope, m| bucket_for(&(scope.clone(), m)).is_some(),
             &mc_wins,
             &glyph_text,
         );
@@ -10253,7 +11236,8 @@ impl PdfDocument {
         // Whether the content element that emitted `prev_span` sat inside a
         // table — used to collapse a table row boundary to a single newline.
         let mut prev_in_table = false;
-        let mut consumed_mcids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut consumed_mcids: std::collections::HashSet<(crate::structure::McidScope, u32)> =
+            std::collections::HashSet::new();
 
         for content in &ordered_content {
             // Handle word break markers by inserting a space
@@ -10276,10 +11260,13 @@ impl PdfDocument {
             // /ActualText replacement — now declined by the §14.9.4 conformance
             // gate — can mask this by collapsing each consecutive run to a
             // single emit.)
-            if !consumed_mcids.insert(mcid) {
+            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            let content_key = (mcid_scope_key.clone(), mcid);
+            if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
-            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            // The bucket this reference names, which is not always its own key.
+            let bucket_key = bucket_for(&content_key);
 
             // ActualText action dispatch. `EmitAndSuppress` is set only
             // on the first visible covered MCID of a consecutive-same-
@@ -10289,7 +11276,9 @@ impl PdfDocument {
             // the extractor's in-stream replacement reaches output.
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(mcid);
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -10297,14 +11286,18 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(mcid);
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&mcid) {
-                consumed_mcids.insert(mcid);
+            if let Some(spans) = bucket_key.as_ref().and_then(|k| mcid_map.get(k)) {
+                if let Some(k) = bucket_key.clone() {
+                    consumed_mcids.insert(k);
+                }
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
@@ -10338,9 +11331,15 @@ impl PdfDocument {
                     "Structure tree references MCID {} but no spans found with that MCID",
                     mcid
                 );
-                self.push_warning(format!(
-                    "page {page_index}: structure tree references MCID {mcid} but no content spans found — some text may be missing"
-                ));
+                self.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::Layout,
+                    page: Some(page_index),
+                    message: format!(
+                        "structure tree references MCID {mcid} but no content spans \
+                         carry it; some text may be missing"
+                    ),
+                    spec_section: Some("14.7.4.2"),
+                });
             }
         }
 
@@ -10348,11 +11347,17 @@ impl PdfDocument {
         // This happens with Form XObjects that lack /StructParents, where
         // their BDC/MCID markers exist in the content stream but are not
         // registered in the page's ParentTree.
-        let mut unconsumed: Vec<(&u32, &Vec<TextSpan>)> = mcid_map
+        let mut unconsumed: Vec<(&(crate::structure::McidScope, u32), &Vec<TextSpan>)> = mcid_map
             .iter()
-            .filter(|(mcid, _)| !consumed_mcids.contains(mcid))
+            .filter(|(key, _)| !consumed_mcids.contains(*key))
             .collect();
-        unconsumed.sort_by_key(|(mcid, _)| **mcid);
+        // Deterministic order: by id, then by scope, so two streams that both
+        // number from 0 still append in a stable sequence.
+        unconsumed.sort_by(|a, b| {
+            a.0 .1
+                .cmp(&b.0 .1)
+                .then_with(|| format!("{:?}", a.0 .0).cmp(&format!("{:?}", b.0 .0)))
+        });
         if !unconsumed.is_empty() {
             log::debug!(
                 "Appending {} unreferenced MCIDs (e.g., from Form XObjects without StructParents)",
@@ -10976,12 +11981,19 @@ impl PdfDocument {
     /// Tag ordered spans that fall within a `/Link` annotation's rectangle
     /// with its resolved URI, so the markdown/HTML converters can emit
     /// hyperlinks (ISO 32000-1 §12.5.6.5 Link annotations + §12.6.4.7 URI
-    /// actions). Spans and link rectangles share PDF user-space coordinates,
-    /// so a span is linked when its bbox centre lies inside the rectangle.
+    /// actions).
+    ///
+    /// A link rectangle is page-space. The spans may not be: a page whose text
+    /// carries a dominant rotation is assembled in a rotated reading frame, and
+    /// intersecting a page-space rectangle against a mapped span matches
+    /// nothing, so every link on such a page was silently dropped. `frame`
+    /// carries the map the spans went through, and the rectangles follow them
+    /// into it.
     pub(crate) fn apply_link_annotations_to_ordered_spans(
         &self,
         page_index: usize,
         ordered: &mut [crate::pipeline::OrderedTextSpan],
+        frame: Option<ReadingFrame>,
     ) {
         use crate::annotation_types::AnnotationSubtype;
         use crate::annotations::LinkAction;
@@ -11002,15 +12014,22 @@ impl PdfDocument {
                 _ => continue,
             };
             if let Some(r) = a.rect {
-                links.push((
-                    [
-                        r[0].min(r[2]) as f32,
-                        r[1].min(r[3]) as f32,
-                        r[0].max(r[2]) as f32,
-                        r[1].max(r[3]) as f32,
-                    ],
-                    uri,
-                ));
+                let (x0, y0) = (r[0].min(r[2]) as f32, r[1].min(r[3]) as f32);
+                let (x1, y1) = (r[0].max(r[2]) as f32, r[1].max(r[3]) as f32);
+                let rect = match frame {
+                    Some(f) => {
+                        let mapped =
+                            f.map_rect(&crate::geometry::Rect::new(x0, y0, x1 - x0, y1 - y0));
+                        [
+                            mapped.x,
+                            mapped.y,
+                            mapped.x + mapped.width,
+                            mapped.y + mapped.height,
+                        ]
+                    },
+                    None => [x0, y0, x1, y1],
+                };
+                links.push((rect, uri));
             }
         }
         if links.is_empty() {
@@ -11327,13 +12346,24 @@ impl PdfDocument {
                 .collect()
         };
 
-        // Step 2: Build MCID → Vec<TextSpan> map
-        let mut mcid_map: HashMap<u32, Vec<TextSpan>> = HashMap::new();
+        // Step 2: Build (scope, MCID) → Vec<TextSpan> map.
+        //
+        // ISO 32000-1:2008 §14.7.4.2 makes an /MCID unique only "within its
+        // content stream", so the bare id is not an identity: a page and a
+        // Form XObject may each number theirs from 0. Bucketed by bare id, a
+        // form's MCID 0 joined the page's MCID 0 and both were emitted at the
+        // page element's slot — putting the form's text inside a table cell —
+        // while the form's own structure element then found the id already
+        // consumed and emitted nothing.
+        let default_scope = crate::structure::McidScope::Page(page_index as u32);
+        let mut mcid_map: HashMap<(crate::structure::McidScope, u32), Vec<TextSpan>> =
+            HashMap::new();
         let mut spans_without_mcid: Vec<TextSpan> = Vec::new();
 
         for span in all_spans {
             if let Some(mcid) = span.mcid {
-                mcid_map.entry(mcid).or_default().push(span);
+                let key = (span.mcid_scope.clone().unwrap_or(default_scope.clone()), mcid);
+                mcid_map.entry(key).or_default().push(span);
             } else {
                 spans_without_mcid.push(span);
             }
@@ -11374,10 +12404,24 @@ impl PdfDocument {
                     .map(|m| (c.mcid_scope.clone().unwrap_or(default_scope.clone()), m))
             })
             .collect();
+        // A reference and the glyphs it names can disagree about scope without
+        // colliding: a producer that draws part of a page through a Form
+        // XObject numbers one continuous id space across both and references it
+        // with bare integers, which resolve to the page's own stream. Match
+        // such a reference to the run it names, but only where the bare id is
+        // numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(mcid_map.keys());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_order.iter());
+        let bucket_for = |key: &(crate::structure::McidScope, u32)| {
+            if !referenced_once.contains_key(&key.1) {
+                return mcid_map.contains_key(key).then(|| key.clone());
+            }
+            crate::structure::resolve_mcid_key(&mcid_map, &drawn_once, key)
+        };
         // Per-key rendered glyph text for the §14.9.4 conformance gate.
         let mut glyph_text: HashMap<(crate::structure::McidScope, u32), String> = HashMap::new();
         for (scope, m) in &mcid_order {
-            if let Some(sp) = mcid_map.get(m) {
+            if let Some(sp) = bucket_for(&(scope.clone(), *m)).and_then(|k| mcid_map.get(&k)) {
                 let joined: String = sp.iter().map(|s| s.text.as_str()).collect();
                 glyph_text
                     .entry((scope.clone(), *m))
@@ -11388,7 +12432,7 @@ impl PdfDocument {
         let actions = Self::actualtext_actions_for_page(
             at_index.as_deref(),
             &mcid_order,
-            |_scope, m| mcid_map.contains_key(&m),
+            |scope, m| bucket_for(&(scope.clone(), m)).is_some(),
             &mc_wins,
             &glyph_text,
         );
@@ -11405,7 +12449,7 @@ impl PdfDocument {
         let mut text = String::with_capacity(mcid_map.len() * 50);
         let mut prev_span: Option<TextSpan> = None;
         let mut prev_in_table = false;
-        let mut consumed_mcids: HashSet<u32> = HashSet::new();
+        let mut consumed_mcids: HashSet<(crate::structure::McidScope, u32)> = HashSet::new();
 
         for content in ordered_content {
             if content.is_word_break {
@@ -11426,14 +12470,19 @@ impl PdfDocument {
             // /ActualText replacement — now declined by the §14.9.4 conformance
             // gate — can mask this by collapsing each consecutive run to a
             // single emit.)
-            if !consumed_mcids.insert(mcid) {
+            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            let content_key = (mcid_scope_key.clone(), mcid);
+            if !consumed_mcids.insert(content_key.clone()) {
                 continue;
             }
-            let mcid_scope_key = content.mcid_scope.clone().unwrap_or(default_scope.clone());
+            // The bucket this reference names, which is not always its own key.
+            let bucket_key = bucket_for(&content_key);
 
             match actions.get(&(mcid_scope_key, mcid)) {
                 Some(ActualTextAction::EmitAndSuppress(repl)) => {
-                    consumed_mcids.insert(mcid);
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n') {
                         text.push('\n');
                     }
@@ -11441,14 +12490,18 @@ impl PdfDocument {
                     continue;
                 },
                 Some(ActualTextAction::Suppress) => {
-                    consumed_mcids.insert(mcid);
+                    if let Some(k) = bucket_key {
+                        consumed_mcids.insert(k);
+                    }
                     continue;
                 },
                 None => {},
             }
 
-            if let Some(spans) = mcid_map.get(&mcid) {
-                consumed_mcids.insert(mcid);
+            if let Some(spans) = bucket_key.as_ref().and_then(|k| mcid_map.get(k)) {
+                if let Some(k) = bucket_key.clone() {
+                    consumed_mcids.insert(k);
+                }
                 let rtl_run = Self::mcid_run_is_pure_rtl(spans);
                 // Repair the cross-span Arabic glyph-interleave defect (zero-width
                 // mark/consonant spans landing at word edges) before ordering.
@@ -11485,11 +12538,17 @@ impl PdfDocument {
         }
 
         // Append spans with MCIDs not referenced by the structure tree
-        let mut unconsumed: Vec<(&u32, &Vec<TextSpan>)> = mcid_map
+        let mut unconsumed: Vec<(&(crate::structure::McidScope, u32), &Vec<TextSpan>)> = mcid_map
             .iter()
-            .filter(|(mcid, _)| !consumed_mcids.contains(mcid))
+            .filter(|(key, _)| !consumed_mcids.contains(*key))
             .collect();
-        unconsumed.sort_by_key(|(mcid, _)| **mcid);
+        // Deterministic order: by id, then by scope, so two streams that both
+        // number from 0 still append in a stable sequence.
+        unconsumed.sort_by(|a, b| {
+            a.0 .1
+                .cmp(&b.0 .1)
+                .then_with(|| format!("{:?}", a.0 .0).cmp(&format!("{:?}", b.0 .0)))
+        });
         if !unconsumed.is_empty() {
             log::debug!(
                 "Appending {} unreferenced MCIDs (e.g., from Form XObjects without StructParents)",
@@ -11910,20 +12969,30 @@ impl PdfDocument {
         out
     }
 
-    /// Drop spans whose bbox lies ENTIRELY outside the page's MediaBox.
+    /// Drop spans whose bbox lies ENTIRELY outside the page's visible region —
+    /// the CropBox reduced to the MediaBox (`get_page_visible_box`).
     ///
     /// PDFs that reuse one big Form XObject across pages (ExpertPdf and similar
     /// tools - see issue B1 / nougat_005.pdf) rely on the content stream's `W n`
     /// clip rectangle to hide the off-page portion. The text extractor does not
     /// honour `W n` yet, so without this filter a page emits every page's worth of
-    /// spans at distinct but out-of-bounds Y coordinates. Spans that even
-    /// PARTIALLY overlap the MediaBox are kept, so legitimate bleed / trim-mark
-    /// content is never dropped.
+    /// spans at distinct but out-of-bounds Y coordinates.
     ///
-    /// `get_page_media_box` returns `(llx, lly, urx, ury)` - absolute corner
+    /// The CropBox matters for the same reason. A book made from a print
+    /// master keeps the compositor's slug line and the proof's marginal line
+    /// numbers in the content stream and crops them off with the CropBox
+    /// (Table 30, `docs/spec/pdf.md:5761`: contents "shall be clipped" to it
+    /// when displayed). No reader sees them, the renderer here does not paint
+    /// them, and left in the text they land between a wrap hyphen and its line
+    /// break, where they stop the halves of the word from being rejoined.
+    ///
+    /// Spans that even PARTIALLY overlap the box are kept, so legitimate
+    /// bleed / trim-mark content is never dropped.
+    ///
+    /// `get_page_visible_box` returns `(llx, lly, urx, ury)` - absolute corner
     /// coordinates per ISO 32000-1 s7.7.3.3, NOT `(x, y, width, height)`.
     fn drop_offpage_spans(&self, page_index: usize, spans: &mut Vec<crate::layout::TextSpan>) {
-        if let Ok((llx, lly, urx, ury)) = self.get_page_media_box(page_index) {
+        if let Ok((llx, lly, urx, ury)) = self.get_page_visible_box(page_index) {
             const EDGE_TOLERANCE_PT: f32 = 2.0;
             // Normalise corners: some producers write the MediaBox with swapped
             // corners (e.g. `[0 792 612 0]`, ury < lly). Taking min/max makes the
@@ -12057,18 +13126,22 @@ impl PdfDocument {
                         "XY-cut reading order failed on page {page_index} ({e}), \
                          falling back to row-aware sort"
                     );
-                    spans.sort_by(|a, b| {
-                        crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
-                    });
+                    Self::sort_spans_by_snapped_rows(&mut spans);
                     Self::reorder_rowspan_labels(&mut spans);
                 },
             }
         } else {
             // Row-aware sort: Y-band descending (top→bottom), X ascending
             // within a row.
-            spans.sort_by(|a, b| {
-                crate::utils::row_aware_span_cmp(a.bbox.y, a.bbox.x, b.bbox.y, b.bbox.x)
-            });
+            //
+            // The row key is `snap_baselines_to_rows`, not each span's own
+            // baseline. Banding a baseline on its own puts a row that mixes
+            // font sizes into two rows: the larger run's baseline sits below
+            // the smaller run's by the difference in their descent, which on a
+            // 5 pt label beside an 8 pt name is 3.3 pt — further than the row
+            // spacing itself, so the name banded with the row below the one it
+            // is printed on.
+            Self::sort_spans_by_snapped_rows(&mut spans);
             // Lift multi-row-spanning labels to the top of their block.
             Self::reorder_rowspan_labels(&mut spans);
         }
@@ -12808,6 +13881,11 @@ impl PdfDocument {
     ///
     /// This API makes previously invisible extraction degradations programmatically
     /// observable without requiring callers to hook into the `log` crate.
+    #[deprecated(
+        since = "0.3.78",
+        note = "use structured_warnings(), which carries a category, page and spec \
+                reference rather than a bare string"
+    )]
     pub fn warnings(&self) -> Vec<String> {
         self.accumulated_warnings.lock_or_recover().clone()
     }
@@ -12817,13 +13895,13 @@ impl PdfDocument {
     /// After this call, [`Self::warnings`] returns an empty `Vec` until new warnings
     /// are generated. Useful for incremental processing pipelines that want to
     /// inspect warnings on a per-page or per-operation basis.
+    #[deprecated(
+        since = "0.3.78",
+        note = "use take_structured_warnings(), which carries a category, page and \
+                spec reference rather than a bare string"
+    )]
     pub fn take_warnings(&self) -> Vec<String> {
         std::mem::take(&mut *self.accumulated_warnings.lock_or_recover())
-    }
-
-    /// Record an extraction warning. Called internally when a silent fallback occurs.
-    pub(crate) fn push_warning(&self, msg: impl Into<String>) {
-        self.accumulated_warnings.lock_or_recover().push(msg.into());
     }
 
     /// Return the document's accumulated structured warnings as a
@@ -12858,6 +13936,33 @@ impl PdfDocument {
     /// (which returns the form-flattening side-effect log, a
     /// `&[String]` — different feature). Both the Rust and Python
     /// (`PyDocument`) surfaces now agree on `structured_warnings`.
+    /// Borrow this thread's free-function warning sink for the duration of one
+    /// operation on this document.
+    ///
+    /// Five diagnostic producers hold no `PdfDocument` — the stream parser, the
+    /// operator-cap notice and the rasterizer's dropped-glyph report among them
+    /// — so they write to a thread-local sink instead. That sink is keyed by
+    /// thread, not by document, and the drain is first-caller-wins, so two
+    /// documents read in sequence on one thread took each other's diagnostics.
+    ///
+    /// On entry the guard sets aside whatever was already pending (it belongs
+    /// to somebody else); on drop it absorbs what this operation raised into
+    /// this document's own sink and puts the other document's entries back
+    /// exactly as they were. Nesting is safe: each level stashes and restores
+    /// its own slice.
+    fn sink_scope(&self) -> SinkScope<'_> {
+        SinkScope {
+            doc: self,
+            stashed: crate::extractors::warnings::drain_global_warnings(),
+        }
+    }
+
+    /// Every diagnostic this document has recorded, without draining them.
+    ///
+    /// Extraction reports what it could not do — an unreadable font, a page
+    /// with no text layer, a dropped glyph — rather than writing it into the
+    /// content. Reading is non-destructive, so calling this twice returns the
+    /// same warnings; use the taking form to drain them.
     pub fn structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
         let global = crate::extractors::warnings::drain_global_warnings();
         if !global.is_empty() {
@@ -12869,6 +13974,17 @@ impl PdfDocument {
     /// Drain and return all accumulated structured warnings.
     /// Companion to [`Self::structured_warnings`].
     pub fn take_structured_warnings(&self) -> Vec<crate::extractors::warnings::Warning> {
+        // Drain the free-function sink first, exactly as the non-draining
+        // companion does. Five of the nine producers — every parser
+        // `SpecViolation`, the operator-cap truncation, the Type 3 and missing
+        // `/ToUnicode` font diagnostics, and the dropped-glyph report — write
+        // only there, so without this a caller who uses the draining accessor
+        // saw none of them. That is the accessor the C ABI exposes, which put
+        // the gap in front of every binding.
+        let global = crate::extractors::warnings::drain_global_warnings();
+        if !global.is_empty() {
+            self.warning_sink.extend(global);
+        }
         self.warning_sink.take()
     }
 
@@ -13674,13 +14790,27 @@ impl PdfDocument {
         let step = (content_w / 400.0).clamp(0.5, 3.0);
         // "Empty" tolerates a few stray straddlers (noise / a rare long token).
         let empty_max = (0.01 * col_idx.len() as f32).ceil() as usize;
+        // A run straddles `x` when it opens left of it and closes right of
+        // it. Counting that by rescanning every run at every step of the scan
+        // costs the scan's width times the page's run count; the same answer
+        // reads off two sorted lists. For an interval whose open precedes its
+        // close, `open < x AND close > x` is exactly `#{open < x} - #{close <= x}`,
+        // so drop the runs that close where they open (they straddle nothing)
+        // and binary-search the two lists.
+        let (mut opens, mut closes): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+        for &i in &col_idx {
+            let (o, c) = (spans[i].bbox.x + 2.0, spans[i].bbox.x + spans[i].bbox.width - 2.0);
+            if o < c {
+                opens.push(o);
+                closes.push(c);
+            }
+        }
+        opens.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        closes.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
         let straddle_at = |x: f32| -> usize {
-            col_idx
-                .iter()
-                .filter(|&&i| {
-                    spans[i].bbox.x + 2.0 < x && spans[i].bbox.x + spans[i].bbox.width - 2.0 > x
-                })
-                .count()
+            let started = opens.partition_point(|&o| o < x);
+            let ended = closes.partition_point(|&c| c <= x);
+            started.saturating_sub(ended)
         };
         let (mut best_lo, mut best_hi) = (f32::NAN, f32::NAN);
         let (mut run_start, mut in_run, mut best_w) = (lo, false, 0.0f32);
@@ -13998,7 +15128,24 @@ impl PdfDocument {
     /// applied (the caller can then suppress geometric block re-ordering that
     /// would otherwise re-derive row-major order from positions).
     fn reorder_two_column_prose(spans: &mut Vec<crate::layout::TextSpan>) -> bool {
-        match Self::prose_two_column_gutter(spans) {
+        // Both gutter detectors, in the order the text path tries them.
+        //
+        // Asking only the first one is what broke the promise above. The
+        // geometric detector demands a corridor wider than a fixed bar, which a
+        // dense journal page does not give it, and the classifier exists
+        // precisely to catch the pages it misses. Over a multi-column corpus the
+        // text path took a column branch on 91 pages of 149 where the converters
+        // could take one on 5, so on 86 of them the partition used for
+        // `extract_text` was never even computed for markdown and HTML.
+        //
+        // What the converters did instead was worse than doing nothing: a
+        // `false` here also tells the pipeline the caller has no opinion, and
+        // the geometric strategy then re-derives a row-major order and joins
+        // consecutive same-baseline spans into one line. That is what splices a
+        // right column into the middle of a left column's sentence —
+        // `is a less toxic properties against several RNA viruses`.
+        match Self::prose_two_column_gutter(spans).or_else(|| Self::classifier_column_gutter(spans))
+        {
             Some(gutter_x) => {
                 Self::reorder_column_major_with_bands(spans, gutter_x);
                 true
@@ -14124,6 +15271,106 @@ impl PdfDocument {
         *spans = out;
     }
 
+    /// Does the content outside the detected tables start at exactly TWO column
+    /// positions — the shape of a two-column body?
+    ///
+    /// `multicol_signal_is_tabular` asks a related question and cannot answer
+    /// this one: it reduces each Y band to the band's MINIMUM left edge, and a Y
+    /// band crosses the whole page, so on a two-column page both columns fall in
+    /// one band and the minimum is the left column's margin on every shared line.
+    /// The right column is recorded only on the bands where the left column
+    /// happens to be empty, so a balanced two-column body measures as one
+    /// dominant left edge — the shape that predicate reads as single-column prose
+    /// with a grid on it. Measured on a two-column journal page: 55 bands, 42
+    /// sharing one left edge, 0.76 against a 0.70 bar.
+    ///
+    /// Walk each band left to right instead and open a new column start wherever
+    /// the horizontal gap since the last ink on that band exceeds a column
+    /// gutter. A horizontal show string occupies one unbroken interval on the X
+    /// axis (ISO 32000-1:2008 §9.4.4, `docs/spec/pdf.md`:17398), so ink and gap
+    /// on a band are exactly measurable this way. Then count the significant
+    /// starts: a two-column body has exactly two, an unruled numeric grid has one
+    /// per cell column, an N-up spread one per page. That is the rule
+    /// `prose_two_column_gutter` already applies to the same question.
+    fn two_column_starts_outside_tables(
+        spans: &[crate::layout::TextSpan],
+        tables: &[crate::structure::table_extractor::Table],
+    ) -> bool {
+        let in_table = |s: &crate::layout::TextSpan| -> bool {
+            let cx = s.bbox.x + s.bbox.width * 0.5;
+            let cy = s.bbox.y + s.bbox.height * 0.5;
+            tables.iter().any(|t| {
+                t.bbox.is_some_and(|b| {
+                    cx >= b.x - 2.0
+                        && cx <= b.x + b.width + 2.0
+                        && cy >= b.y - 2.0
+                        && cy <= b.y + b.height + 14.0
+                })
+            })
+        };
+        let outside: Vec<&crate::layout::TextSpan> = spans
+            .iter()
+            .filter(|s| {
+                !s.text.trim().is_empty()
+                    && s.bbox.width > 0.0
+                    && s.bbox.x.is_finite()
+                    && s.bbox.width.is_finite()
+                    && s.bbox.y.is_finite()
+                    && !in_table(s)
+            })
+            .collect();
+        if outside.len() < 8 {
+            return false;
+        }
+        const COLUMN_GAP_PT: f32 = 10.0;
+        let mut by_band: std::collections::BTreeMap<i32, Vec<&crate::layout::TextSpan>> =
+            std::collections::BTreeMap::new();
+        for s in &outside {
+            by_band
+                .entry((s.bbox.y / 2.0).round() as i32)
+                .or_default()
+                .push(s);
+        }
+        let mut lefts: Vec<f32> = Vec::new();
+        for band in by_band.values_mut() {
+            band.sort_by(|a, b| crate::utils::safe_float_cmp(a.bbox.x, b.bbox.x));
+            let mut cover = f32::NEG_INFINITY;
+            for s in band.iter() {
+                if s.bbox.x - cover > COLUMN_GAP_PT {
+                    lefts.push(s.bbox.x);
+                }
+                cover = cover.max(s.bbox.x + s.bbox.width);
+            }
+        }
+        if lefts.len() < 6 {
+            return false;
+        }
+        lefts.sort_by(|a, b| crate::utils::safe_float_cmp(*a, *b));
+        // Same 12pt (≈ one indent) clustering the sibling predicate uses, so a
+        // hanging indent folds into its column's start rather than opening one.
+        let mut clusters: Vec<usize> = Vec::new();
+        let mut run = 1usize;
+        let mut prev = lefts[0];
+        for &v in &lefts[1..] {
+            if v - prev > 12.0 {
+                clusters.push(run);
+                run = 0;
+            }
+            run += 1;
+            prev = v;
+        }
+        clusters.push(run);
+        let total = lefts.len();
+        // A "significant" start carries at least a sixth of the starts measured,
+        // which keeps a stray indent, a centred folio, or a caption from counting
+        // as a column.
+        clusters
+            .iter()
+            .filter(|&&c| c as f32 >= total as f32 / 6.0)
+            .count()
+            == 2
+    }
+
     /// True when the page's multi-column geometric signal is explained by a
     /// detected TABLE rather than a genuine two-column text body.
     ///
@@ -14142,6 +15389,15 @@ impl PdfDocument {
     /// lines), so a two-column page — whose non-table prose still splits into two
     /// left-edge clusters — is rejected. Spans inside the table contribute their
     /// own column-aligned left edges and are deliberately excluded.
+    ///
+    /// CAUTION: that last claim does not hold for a BALANCED two-column body.
+    /// The measurement below is the MINIMUM left edge per Y band, and a Y band
+    /// crosses the whole page, so wherever both columns print on one line the
+    /// band records only the left column's margin. The right column is seen only
+    /// on the bands the left column leaves empty, and a two-column journal page
+    /// measured 42 of 55 bands on one left edge. Callers that need to know
+    /// whether the page has two column STARTS must ask
+    /// `two_column_starts_outside_tables`, not this.
     fn multicol_signal_is_tabular(
         spans: &[crate::layout::TextSpan],
         tables: &[crate::structure::table_extractor::Table],
@@ -16234,14 +17490,21 @@ impl PdfDocument {
                     }
 
                     if !table_rank.is_empty() {
+                        // A marked-content id is scoped to the content stream that
+                        // defines it (ISO 32000-1:2008 14.7.4.2: an /MCID is unique
+                        // "within its content stream"), so a page and a Form XObject
+                        // may each number theirs from 0. A span with no scope of its
+                        // own already defaults to the page's above, so a miss here
+                        // means the span carries an explicit non-page scope and that
+                        // scope genuinely has no table rank — retrying the page
+                        // namespace then matched a *different* stream's id and swapped
+                        // form text into table cells. Every other scoped lookup in
+                        // this file has no such retry.
                         let key_of = |s: &crate::layout::TextSpan| {
                             s.mcid.and_then(|m| {
                                 let scope =
                                     s.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
-                                table_rank
-                                    .get(&(scope, m))
-                                    .or_else(|| table_rank.get(&(page_scope.clone(), m)))
-                                    .copied()
+                                table_rank.get(&(scope, m)).copied()
                             })
                         };
                         // The slots the table spans occupy in geometric order, and the
@@ -17707,21 +18970,56 @@ impl PdfDocument {
                 },
             }
         }
-        lines.extend(rotated_lines.into_iter().map(|(rot, off, mut line)| {
+        lines.extend(rotated_lines.into_iter().flat_map(|(rot, off, mut line)| {
             // A merged quarter-turn line collects its runs in arrival order,
             // which is content-stream order: a subscript drawn after the
             // line's tail lands at the end of the string. Order members
             // along the writing axis instead — ascending y for +90,
             // descending for -90 — the order the text assembler reads them
             // in. Stable, so runs sharing a coordinate keep drawing order.
-            if !off.is_nan() {
-                if rot > 0.0 {
-                    line.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
-                } else {
-                    line.sort_by(|a, b| b.bbox.y.total_cmp(&a.bbox.y));
-                }
+            if off.is_nan() {
+                return vec![line];
             }
-            line
+            if rot > 0.0 {
+                line.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+            } else {
+                line.sort_by(|a, b| b.bbox.y.total_cmp(&a.bbox.y));
+            }
+            // Runs are merged into one line by their offset ACROSS the writing
+            // axis, with nothing said about their separation ALONG it — so two
+            // columns of rotated text fused into single lines, however wide the
+            // gutter between them. The horizontal path splits a line at
+            // `max(3 x font size, 30 pt)`; a rotated line is the same line with
+            // its axes exchanged, and gets the same rule measured along its own
+            // writing axis (ISO 32000-1:2008 §9.4.4 puts the glyph displacement
+            // along the text matrix's writing direction).
+            //
+            // A word's `width` is its advance along that axis and `bbox.y` its
+            // origin, so projecting the origin onto the writing direction makes
+            // both quarter turns one computation.
+            let along = |w: &crate::layout::Word| {
+                if rot > 0.0 {
+                    w.bbox.y
+                } else {
+                    -w.bbox.y
+                }
+            };
+            let mut split: Vec<Vec<crate::layout::Word>> = Vec::new();
+            let mut current: Vec<crate::layout::Word> = Vec::new();
+            for word in line {
+                if let Some(prev) = current.last() {
+                    let gap = along(&word) - (along(prev) + prev.bbox.width);
+                    let font_size_ref = word.avg_font_size.max(prev.avg_font_size);
+                    if gap >= (font_size_ref * 3.0).max(30.0) {
+                        split.push(std::mem::take(&mut current));
+                    }
+                }
+                current.push(word);
+            }
+            if !current.is_empty() {
+                split.push(current);
+            }
+            split
         }));
         // Reading order: sort lines by the span sequence of their first word
         // (stable so intra-line order is preserved).
@@ -20143,7 +21441,11 @@ impl PdfDocument {
             if !table_elems.is_empty() {
                 let mut tables = Vec::new();
                 for table_elem in &table_elems {
-                    match crate::structure::extract_table_from_spans(table_elem, spans) {
+                    match crate::structure::extract_table_from_spans_on_page(
+                        table_elem,
+                        spans,
+                        Some(page_index as u32),
+                    ) {
                         Ok(mut table) if !table.is_empty() => {
                             // Compute bbox from spans matching the table's MCIDs
                             if table.bbox.is_none() {
@@ -20206,16 +21508,26 @@ impl PdfDocument {
         // Extract vector paths (lines/rects) for visual detection
         let paths = self.extract_paths(page_index).unwrap_or_default();
 
-        // Filter to table-relevant paths (lines and rectangles only).
-        // Chart/plot pages often have hundreds of curves and fills that
-        // extract_edges ignores anyway — passing them through the full
-        // detection pipeline wastes O(n²) time.
-        const LINE_TOL: f32 = 2.0;
+        // Filter to table-relevant paths. Chart/plot pages often carry
+        // hundreds of curves and fills that `extract_edges` ignores anyway —
+        // passing them through the full detection pipeline wastes O(n²) time.
+        //
+        // Use the same predicate the public `extract_tables` uses. The looser
+        // `is_horizontal_line || is_vertical_line || is_rectangle` test here
+        // accepted any small filled box as ruling, so a figure's artwork could
+        // seed a table on a page that has none: the arrowhead slabs of a TikZ
+        // axis — 4.5 x 2.5 pt, filled *and* stroked — fabricated a 2x4 table
+        // over a sub-figure caption row, and the caption was then emitted twice,
+        // once by the table and once by the flow.
+        //
+        // `is_table_primitive` encodes the elongation and thinness a ruling
+        // has and a slab does not, so it rejects the artwork while keeping
+        // every real rule. The two paths agreed on nothing before this: the
+        // same page yields a table through this filter and none through
+        // `extract_tables`.
         let table_paths: Vec<_> = paths
             .into_iter()
-            .filter(|p| {
-                p.is_horizontal_line(LINE_TOL) || p.is_vertical_line(LINE_TOL) || p.is_rectangle()
-            })
+            .filter(|p| p.is_table_primitive())
             .collect();
 
         // A page with thousands of line/rect paths is a drawing or chart, not a
@@ -20261,6 +21573,40 @@ impl PdfDocument {
         } else {
             spans
         };
+
+        // Decline spatial detection on a predominantly-RTL page that has no
+        // grid to bound it. Arabic and Hebrew align horizontally in patterns
+        // the column clustering reads as columns, and with too little ruling
+        // there is nothing to contradict it.
+        //
+        // This has to be decided BEFORE detection runs. The guard further down
+        // only ever reached the *retry*: by the time it was consulted this call
+        // had already produced a table, and `return tables` handed it straight
+        // back. An Urdu verse page with 25 words — eleven of them zero-width
+        // diacritics at aligned x positions — became a 6x4 table that way, and
+        // its runs were then emitted twice, once as the table and once as a
+        // paragraph.
+        //
+        // Bounding one cell takes two rules on each axis, so fewer than four
+        // primitives cannot describe a grid however they are arranged. A
+        // genuinely ruled RTL table clears that easily and is unaffected.
+        const MIN_PRIMITIVES_FOR_A_GRID: usize = 4;
+        if config.text_fallback && paths.len() < MIN_PRIMITIVES_FOR_A_GRID {
+            let rtl = spans
+                .iter()
+                .filter(|s| crate::text::bidi::looks_rtl(&s.text))
+                .count() as f32
+                / spans.len().max(1) as f32;
+            if rtl > 0.30 {
+                log::debug!(
+                    "Declining spatial table detection on page {} — {:.0}% RTL spans and                      only {} table primitives",
+                    page_index,
+                    rtl * 100.0,
+                    paths.len()
+                );
+                return Vec::new();
+            }
+        }
 
         let raw_tables = crate::structure::spatial_table_detector::detect_tables_with_lines(
             input_spans,
@@ -20511,6 +21857,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         self.to_markdown_inner(page_index, options, &[])
     }
 
@@ -20585,7 +21935,7 @@ impl PdfDocument {
         // Same frame `extract_text` assembles in, applied at the same point:
         // after the vertical-CJK check (which reads the rotation this clears)
         // and before table detection (which consumes the geometry this maps).
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        let (base_spans, reading_frame) = self.spans_in_reading_frame(page_index, base_spans);
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -20596,14 +21946,17 @@ impl PdfDocument {
             // text_fallback=true: to_markdown explicitly targets structured output,
             // so we enable the text-only spatial fallback for line-less tables
             // (e.g. sailing-score grids with no ruling lines — issue #486).
-            self.extract_page_tables(page_index, &base_spans, options, true)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, true),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
 
         let mut spans = base_spans;
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // B1: stitch a full-width line that the producer drew as adjacent
@@ -20663,8 +22016,22 @@ impl PdfDocument {
                     .cloned();
                 let cached_page = cached_page_owned.as_deref();
 
-                let order: Vec<u32> = cached_page
-                    .map(|content| content.iter().filter_map(|c| c.mcid).collect())
+                // The scope travels with the id — §14.7.4.2 scopes an /MCID
+                // to its content stream, so a form's 0 and the page's 0 are
+                // different marked content.
+                let page_scope = crate::structure::McidScope::Page(page_index as u32);
+                let order: Vec<(crate::structure::McidScope, u32)> = cached_page
+                    .map(|content| {
+                        content
+                            .iter()
+                            .filter_map(|c| {
+                                let m = c.mcid?;
+                                let scope =
+                                    c.mcid_scope.clone().unwrap_or_else(|| page_scope.clone());
+                                Some((scope, m))
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 let mut role_map: std::collections::HashMap<u32, crate::pipeline::StructRole> =
@@ -20833,7 +22200,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
@@ -20859,26 +22226,40 @@ impl PdfDocument {
             }
         }
 
-        // A scanned / image page produces no extractable text and would
-        // render as a silently-blank page. Emit a visible marker so a reader
-        // knows content was lost and OCR is required, rather than dropping
-        // (on a scanned corpus) ~half the document with no explanation. Gated
-        // to genuinely scanned/image pages (not legitimately-blank ones) and
-        // suppressible via `annotate_skipped_pages`.
-        if options.annotate_skipped_pages && markdown.trim().is_empty() {
+        // A scanned page produces no extractable text. That fact is reported
+        // as a diagnostic, not written into the content: a sentence spliced
+        // into the extracted text is indistinguishable from text the page
+        // actually contains, so every consumer indexes, embeds and searches it
+        // as though the document said it. No reference extractor does this —
+        // MuPDF, poppler, pypdf and pdfminer all return nothing for such a
+        // page and carry the reason out of band, and returning nothing is what
+        // `to_html_all` already does here with an empty page div.
+        //
+        // The caller reads the reason from `structured_warnings()`, or from
+        // `classify_document().pages_needing_ocr`, and decides whether to
+        // surface it, where, and in what language. `annotate_skipped_pages`
+        // could never make that decision for anyone but a Rust caller: every
+        // binding, the CLI and the MCP server construct `ConversionOptions`
+        // with the default and cannot reach the field.
+        if markdown.trim().is_empty() {
             if let Ok(c) = self.classify_page(page_index) {
                 use crate::extractors::auto::PageKind;
                 if matches!(c.kind, PageKind::Scanned | PageKind::ImageText) {
-                    return Ok(format!(
-                        "> [OCR REQUIRED — page {}]\n> This page is a scanned/rasterised image with no \
-                         extractable text layer; run OCR to recover its content.\n",
-                        page_index + 1
-                    ));
+                    self.push_structured_warning(crate::extractors::warnings::Warning {
+                        category: crate::extractors::warnings::WarningCategory::NoTextLayer,
+                        page: Some(page_index),
+                        message: format!(
+                            "page {} has no extractable text layer; it looks like a scan and \
+                             OCR is what would recover its content",
+                            page_index + 1
+                        ),
+                        spec_section: None,
+                    });
                 }
             }
         }
 
-        Ok(markdown)
+        Ok(Self::join_soft_hyphen_wraps(&markdown))
     }
 
     /// Generate Markdown for extracted images.
@@ -20916,10 +22297,6 @@ impl PdfDocument {
             if options.embed_images {
                 match image.to_base64_data_uri() {
                     Ok(data_uri) => {
-                        if !has_content {
-                            markdown.push_str("\n\n---\n\n");
-                            has_content = true;
-                        }
                         let alt = format!("Image {} from page {}", i + 1, page_index + 1);
                         if data_uri.len() > MAX_BASE64_DATA_URI {
                             // Estimate decoded binary size from the base64
@@ -20932,14 +22309,38 @@ impl PdfDocument {
                                 .unwrap_or(&data_uri);
                             let unpadded = payload.trim_end_matches('=').len();
                             let approx_binary_kb = (unpadded * 3 / 4) / 1024;
-                            markdown.push_str(&format!(
-                                "<!-- ![{}] suppressed: ~{} KB decoded image (base64 data URI {} KB) exceeds {} KB inline-image cap -->\n\n",
-                                alt,
-                                approx_binary_kb,
-                                data_uri.len() / 1024,
-                                MAX_BASE64_DATA_URI / 1024
-                            ));
+                            // Report, do not write. The converted document is
+                            // what the page draws; an explanation of why this
+                            // library declined to inline something is a
+                            // diagnostic about the library, and belongs
+                            // out-of-band where the caller can decide whether
+                            // to surface it, where, and in what language.
+                            self.push_structured_warning(
+                                crate::extractors::warnings::Warning {
+                                    category:
+                                        crate::extractors::warnings::WarningCategory::ImageSuppressed,
+                                    page: Some(page_index),
+                                    message: format!(
+                                        "image {} on page {} is ~{} KB decoded ({} KB as a base64 data URI) and exceeds the {} KB inline-image cap, so it was not embedded",
+                                        i + 1,
+                                        page_index + 1,
+                                        approx_binary_kb,
+                                        data_uri.len() / 1024,
+                                        MAX_BASE64_DATA_URI / 1024
+                                    ),
+                                    spec_section: None,
+                                },
+                            );
                         } else {
+                            // The separator introduces the image block, so it
+                            // is emitted only once something is actually going
+                            // to follow it. Emitting it before the size check
+                            // left a bare horizontal rule on a page whose only
+                            // image was suppressed.
+                            if !has_content {
+                                markdown.push_str("\n\n---\n\n");
+                                has_content = true;
+                            }
                             markdown.push_str(&format!("![{}]({})\n\n", alt, data_uri));
                         }
                     },
@@ -20973,7 +22374,7 @@ impl PdfDocument {
             }
         }
 
-        Ok(markdown)
+        Ok(Self::join_soft_hyphen_wraps(&markdown))
     }
 
     /// Convert a page to Markdown with automatic OCR fallback for scanned pages.
@@ -21115,6 +22516,10 @@ impl PdfDocument {
         page_index: usize,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         self.to_html_inner(page_index, options, &[])
     }
 
@@ -21166,7 +22571,17 @@ impl PdfDocument {
         }
 
         // Same frame `extract_text` assembles in — see `to_markdown_inner`.
-        let base_spans = self.spans_in_reading_frame(page_index, base_spans);
+        // `preserve_layout` writes each span's bbox straight out as absolute
+        // CSS, so it needs the frame the page DISPLAYS in. The reading-frame
+        // map exists to give the row-major assembler an upright reading order
+        // and deliberately moves spans out of display space, which placed every
+        // span wrong in layout mode. Layout mode does not consume a reading
+        // order at all, so it simply does not take the map.
+        let (base_spans, reading_frame) = if options.preserve_layout {
+            (base_spans, None)
+        } else {
+            self.spans_in_reading_frame(page_index, base_spans)
+        };
 
         // Two-column prose (#734) is content-balance-gated to reject real
         // tables, so when it fires suppress the text-only spatial table
@@ -21177,14 +22592,17 @@ impl PdfDocument {
             // text_fallback=true: to_html explicitly targets structured output,
             // so we enable the text-only spatial fallback for line-less tables
             // (e.g. sailing-score grids with no ruling lines — issue #486).
-            self.extract_page_tables(page_index, &base_spans, options, true)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &base_spans, options, true),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
 
         let mut spans = base_spans;
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // B1: stitch a full-width line that the producer drew as adjacent
@@ -21258,7 +22676,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
@@ -21287,7 +22705,7 @@ impl PdfDocument {
             }
         }
 
-        Ok(html)
+        Ok(Self::join_soft_hyphen_wraps(&html))
     }
 
     /// Generate HTML for extracted images.
@@ -21347,7 +22765,7 @@ impl PdfDocument {
         }
 
         html.push_str("</div>\n");
-        Ok(html)
+        Ok(Self::join_soft_hyphen_wraps(&html))
     }
 
     /// Convert a page to plain text.
@@ -21410,18 +22828,22 @@ impl PdfDocument {
         }
 
         // Step 1: Extract raw spans (unchanged - this is the foundation)
-        let mut spans = self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
+        let (mut spans, reading_frame) =
+            self.spans_in_reading_frame(page_index, self.extract_spans(page_index)?);
 
         // Step 1b: Merge widget annotation spans (form field values) if enabled
         if options.include_form_fields {
-            spans.extend(self.extract_widget_spans(page_index));
+            spans.extend(self.widget_spans_in_frame(page_index, reading_frame));
         }
 
         // Step 2: Extract tables if enabled
         let tables = if options.extract_tables {
             // text_fallback=false: to_plain_text uses the conservative pre-v0.3.47
             // behaviour to avoid false-positive table detection in key-value layouts.
-            self.extract_page_tables(page_index, &spans, options, false)
+            Self::tables_in_frame(
+                self.extract_page_tables(page_index, &spans, options, false),
+                reading_frame,
+            )
         } else {
             Vec::new()
         };
@@ -21466,7 +22888,7 @@ impl PdfDocument {
         self.apply_actualtext_to_ordered_spans(page_index, &mut ordered_spans);
 
         // Tag spans inside /Link annotations with their URI.
-        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans);
+        self.apply_link_annotations_to_ordered_spans(page_index, &mut ordered_spans, reading_frame);
 
         // Correct right-to-left reading order (Arabic/Hebrew) before the
         // converter emits spans verbatim — the converter pipeline does not
@@ -21513,6 +22935,10 @@ impl PdfDocument {
         &self,
         options: &crate::converters::ConversionOptions,
     ) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty markdown");
             return Ok(String::new());
@@ -21717,6 +23143,10 @@ impl PdfDocument {
     /// ```
     #[allow(clippy::wrong_self_convention)] // Needs mutable access for caching
     pub fn to_html_all(&self, options: &crate::converters::ConversionOptions) -> Result<String> {
+        // Diagnostics raised by the producers that hold no document land
+        // in a thread-local sink; scope them to this call so a document
+        // read earlier on this thread cannot claim them.
+        let _sink = self.sink_scope();
         use std::fmt::Write as _;
         if self.is_encrypted_unreadable() {
             log::warn!("PDF is encrypted and could not be decrypted; returning empty HTML");
@@ -25008,6 +26438,88 @@ mod tests {
     // of triggering a SECOND full-file scan (the heavy "first extract_text"
     // cost on corrupt-xref polyglot PDFs).
     #[test]
+    fn pinned_cache_entries_survive_eviction_pressure() {
+        // A synthetic Catalog / page tree rebuilt for a truncated file has no
+        // byte offset, and reconstruction pre-populates the scanned-offset map
+        // so a later lookup reports "not found" rather than rescanning.
+        // Evicting one therefore does not cost a re-parse — it loses the
+        // object, and a large truncated document opens, extracts its first
+        // pages, then fails silently once the cache turns over.
+        //
+        // Exercised on the cache directly: reproducing it end to end needs a
+        // document large enough to churn 64 MB, which is not a reasonable
+        // fixture. The property under test is the eviction rule itself.
+        let mut cache = BoundedObjectCache::new(4096);
+        let synthetic = ObjectRef::new(9999, 0);
+        cache.insert_pinned(synthetic, Object::Integer(42));
+
+        // Flood well past the budget with ordinary entries.
+        for i in 0..500u32 {
+            cache.insert(ObjectRef::new(i, 0), Object::String(vec![b'x'; 256]));
+        }
+
+        assert!(
+            cache.get(&synthetic).is_some(),
+            "the pinned synthetic object was evicted and is now unreachable"
+        );
+        assert!(cache.len() < 500, "eviction should still be reclaiming ordinary entries");
+    }
+
+    #[test]
+    fn test_unpinned_entry_is_evicted_under_the_same_pressure() {
+        // The control for the test above: it would pass vacuously if the flood
+        // did not actually evict anything. Same budget, same flood, ordinary
+        // insert — and the entry must be gone, which is exactly what happened
+        // to the synthetic recovery objects before they were pinned.
+        let mut cache = BoundedObjectCache::new(4096);
+        let ordinary = ObjectRef::new(9999, 0);
+        cache.insert(ordinary, Object::Integer(42));
+
+        for i in 0..500u32 {
+            cache.insert(ObjectRef::new(i, 0), Object::String(vec![b'x'; 256]));
+        }
+
+        assert!(
+            cache.get(&ordinary).is_none(),
+            "the flood did not evict an ordinary entry, so the pinned test proves nothing"
+        );
+    }
+
+    #[test]
+    fn clearing_the_cache_keeps_pinned_entries() {
+        // `authenticate()` clears this cache to force re-decryption. A pinned
+        // object has nothing to re-parse from, so clearing must refresh the
+        // evictable entries and leave the pinned ones alone.
+        let mut cache = BoundedObjectCache::new(1 << 20);
+        let synthetic = ObjectRef::new(9999, 0);
+        cache.insert_pinned(synthetic, Object::Integer(7));
+        cache.insert(ObjectRef::new(1, 0), Object::Integer(1));
+
+        cache.clear();
+
+        assert!(
+            cache.get(&synthetic).is_some(),
+            "clear() destroyed a pinned object that cannot be re-read"
+        );
+        assert!(
+            cache.get(&ObjectRef::new(1, 0)).is_none(),
+            "clear() should still drop ordinary entries so they are re-parsed"
+        );
+    }
+
+    #[test]
+    fn test_all_pinned_cache_does_not_spin() {
+        // Eviction rotates past pinned entries; with nothing evictable it must
+        // terminate rather than cycle the queue forever.
+        let mut cache = BoundedObjectCache::new(512);
+        for i in 0..8u32 {
+            cache.insert_pinned(ObjectRef::new(i, 0), Object::String(vec![b'y'; 256]));
+        }
+        // Reaching here at all is the assertion.
+        assert_eq!(cache.len(), 8);
+    }
+
+    #[test]
     fn test_reconstructed_xref_preseeds_scan_cache() {
         let pdf = b"%PDF-1.4\n\
             1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
@@ -26627,23 +28139,28 @@ mod tests {
     }
 
     #[test]
-    fn test_push_span_text_strips_soft_hyphen_mid_word() {
-        // ISO 32000-1 §14.8.2.2.3: U+00AD marks a discretionary line-break
-        // point only — it must never survive into extract_text/to_markdown/
-        // to_html output, even mid-word with no adjacent line break (the
-        // span was drawn as a single reflowed run, not split across lines).
+    fn test_soft_hyphen_inside_one_span_survives() {
+        // A span is one run drawn on one line, so a marker inside it sits at
+        // no line break and was painted. Annex D Note 5
+        // (`docs/spec/pdf.md`:41814) makes WinAnsi code 255 "typographically
+        // the same as hyphen", so it is a character the page draws.
+        //
+        // This asserted the opposite for one release, and it cost 20 markers
+        // across 6 corpus documents that v0.3.77 and all five reference
+        // extractors keep. Only a seam between two spans can be a wrap, and
+        // `apply_soft_hyphen_seam` judges those from the geometry.
         let span = make_decimal_span("recon\u{00AD}struction", vec![], 80.0, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "reconstruction");
+        assert_eq!(out, "recon\u{00AD}struction");
     }
 
     #[test]
-    fn test_push_span_text_strips_multiple_soft_hyphens() {
+    fn several_soft_hyphens_inside_one_span_all_survive() {
         let span = make_decimal_span("un\u{00AD}be\u{00AD}liev\u{00AD}able", vec![], 100.0, 12.0);
         let mut out = String::new();
         PdfDocument::push_span_text(&mut out, &span);
-        assert_eq!(out, "unbelievable");
+        assert_eq!(out, "un\u{00AD}be\u{00AD}liev\u{00AD}able");
     }
 
     // ========================================================================
@@ -31564,6 +33081,76 @@ mod tests {
     /// across N data rows) must be placed at the top of its row block in
     /// reading-order output, not interleaved mid-group by Y.
     ///
+    /// The counter-case to `test_rowspan_label_promoted_to_top_of_block`.
+    ///
+    /// The promotion reasons in table terms — a sparse column of labels beside
+    /// a dense column of data — and finds that shape on prose too. A
+    /// mathematics page whose lines are cut into many runs by inline symbols
+    /// offers single glyphs of a display equation as its sparse column, and
+    /// hoisting them to the head of their block reorders the paragraph around
+    /// them: a trailing line comes out ahead of the line it continues.
+    ///
+    /// ISO 32000-1:2008 §14.8.4.3.4 makes a row (TR) the element that holds its
+    /// cells (TD), and a stub cell carries the row's name — text, not one
+    /// glyph. The fixture is the promoted fixture with its labels cut down to a
+    /// single character each, so it differs in exactly the thing under test.
+    #[test]
+    fn single_glyph_columns_are_not_promoted_as_rowspan_labels() {
+        use crate::layout::TextSpan;
+
+        fn mk(text: &str, x: f32, y: f32, w: f32) -> TextSpan {
+            TextSpan {
+                provenance: None,
+                text_rise: 0.0,
+                artifact_type: None,
+                text: text.to_string(),
+                bbox: crate::geometry::Rect::new(x, y, w, 10.0),
+                font_size: 12.0,
+                font_name: "Arial".into(),
+                font_weight: crate::layout::FontWeight::Normal,
+                is_italic: false,
+                is_monospace: false,
+                color: crate::layout::Color::black(),
+                mcid: None,
+                mcid_scope: None,
+                sequence: 0,
+                split_boundary_before: false,
+                offset_semantic: false,
+                char_spacing: 0.0,
+                word_spacing: 0.0,
+                horizontal_scaling: 100.0,
+                primary_detected: false,
+                char_widths: vec![],
+                char_x_offsets: Vec::new(),
+                heading_level: None,
+                rotation_degrees: 0.0,
+                wmode: 0,
+                rtl_draw_logical: false,
+                mirrored: false,
+                page_rotation_applied: 0,
+            }
+        }
+
+        // Same geometry as the promoted case: a sparse column at x=50 sitting
+        // between blocks of a dense column at x=200 — but each sparse entry is
+        // one glyph, as a display equation's fragments are.
+        let mut spans = vec![mk("x", 50.0, 75.0, 8.0), mk("y", 50.0, 45.0, 8.0)];
+        for i in 0..12 {
+            let y = 100.0 - (i as f32) * 10.0;
+            spans.push(mk(&format!("d{:02}", i), 200.0, y, 20.0));
+        }
+        let before: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+
+        PdfDocument::reorder_rowspan_labels(&mut spans);
+
+        let after: Vec<String> = spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(
+            after, before,
+            "a sparse column of single glyphs is a fragmented line, not a stub \
+             column of labels, and must not be hoisted"
+        );
+    }
+
     /// Simulates a simplified 2-column table:
     /// - Column A (sparse, "labels"): 2 labels, each centered in its
     ///   block of 6 data rows.
@@ -32571,5 +34158,341 @@ mod ink_dict_extractor_tests {
         let doc = PdfDocument::from_bytes(pdf).expect("synthetic PDF should parse");
         let inks = doc.get_page_inks(0).expect("page-inks walk must not panic");
         assert!(inks.is_empty(), "self-cycle yields no plates");
+    }
+}
+#[cfg(test)]
+mod soft_hyphen_scope_tests {
+    use super::PdfDocument;
+
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        PdfDocument::push_str_without_soft_hyphens(&mut out, s);
+        out
+    }
+
+    /// Appending `b` after `a`, the way the span assembler does.
+    fn strip_seam(a: &str, sep: &str, b: &str) -> String {
+        let mut out = String::new();
+        PdfDocument::push_str_without_soft_hyphens(&mut out, a);
+        out.push_str(sep);
+        PdfDocument::push_str_without_soft_hyphens(&mut out, b);
+        out
+    }
+
+    /// A fragment-final marker is **kept** when the fragment is taken alone,
+    /// because at that point it cannot be told from a line-wrap marker — and
+    /// `TextPostProcessor::rejoin_hyphenated_words` needs the wrap marker to
+    /// rejoin the next line without inserting a space.
+    #[test]
+    fn test_fragment_final_marker_is_kept_on_its_own() {
+        assert_eq!(strip("ultrasonographi\u{00AD}"), "ultrasonographi\u{00AD}");
+    }
+
+    /// ... and is removed once the next fragment proves it was a mid-word
+    /// split on the same line, with nothing between the two halves.
+    #[test]
+    fn test_marker_between_two_adjacent_fragments_is_kept() {
+        assert_eq!(
+            strip_seam("ultrasonographi\u{00AD}", "", "cally"),
+            "ultrasonographi\u{00AD}cally"
+        );
+    }
+
+    /// A line break between the fragments means it was a wrap marker, so it
+    /// survives for the converter to act on.
+    #[test]
+    fn test_marker_before_a_line_break_survives_as_the_wrap_marker() {
+        assert_eq!(strip_seam("wonder\u{00AD}", "\n", "ful"), "wonder\u{00AD}\nful");
+    }
+
+    /// At the seam, only fragments with **nothing** between them are joined.
+    ///
+    /// A space means the assembler decided these were separate runs, and it
+    /// decided that from the span rectangles. `prin<shy>` + `from` on a
+    /// multi-column scan is textually identical to `wonder<shy>` + `ful` on a
+    /// wrapped line, so this function — which sees only text — cannot tell
+    /// them apart and must not guess. Closing the wrap across a space fused
+    /// words from different columns and cost 464 words against poppler on one
+    /// newspaper.
+    ///
+    /// The genuine wrap is still closed, one level up, by
+    /// `join_soft_hyphen_wraps` on assembled text.
+    #[test]
+    fn test_seam_never_joins_on_adjacency_alone() {
+        assert_eq!(strip_seam("wonder\u{00AD}", "", "ful"), "wonder\u{00AD}ful");
+        assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonder\u{00AD} ful");
+    }
+
+    /// But a soft hyphen that does not follow a letter is not a hyphenation
+    /// point at all — it is a glyph or a misdecoded byte — and nothing is
+    /// joined across it.
+    #[test]
+    fn test_marker_not_preceded_by_a_letter_joins_nothing() {
+        assert_eq!(strip_seam("log \u{00AD}", " ", "p"), "log \u{00AD} p");
+    }
+
+    fn join(s: &str) -> String {
+        PdfDocument::join_soft_hyphen_wraps(s)
+    }
+
+    /// A marker separated from its continuation by whitespace is **kept**, and
+    /// so is the whitespace.
+    ///
+    /// This pass used to close such a wrap on a lowercase continuation. That
+    /// guess is wrong on a re-ordered page, where the fragment following a
+    /// marker is lowercase but unrelated, and it invented `conthe`, `rewas`
+    /// and `locomoshe` on a scrambled scan. Whether the halves belong together
+    /// is a question about column geometry, which is gone by the time the text
+    /// is assembled — so this pass no longer guesses.
+    ///
+    /// v0.3.77 did not close these either, and on the document that exposed it
+    /// the previous release agreed with pymupdf and pypdf **exactly** while
+    /// closing the wrap moved us away from poppler, pymupdf and pypdf at once.
+    #[test]
+    fn test_wrap_separated_by_whitespace_is_left_alone() {
+        assert_eq!(
+            join("a truly wonder\u{00AD} ful example"),
+            "a truly wonder\u{00AD} ful example"
+        );
+        assert_eq!(join("modali\u{00AD}\nties"), "modali\u{00AD}\nties");
+    }
+
+    /// Contiguous fragments do NOT join. With nothing between them the two
+    /// sit on one line, so nothing wrapped there and Annex D Note 5
+    /// (`docs/spec/pdf.md`:41814) makes the marker a painted hyphen. A real
+    /// wrap always has whitespace between its halves, which the adjacency test
+    /// excludes — so this branch never closed one. Wraps close at the span
+    /// seam, where the geometry still exists.
+    #[test]
+    fn contiguous_fragments_do_not_join() {
+        assert_eq!(join("ultrasonographi\u{00AD}cally"), "ultrasonographi\u{00AD}cally");
+    }
+
+    /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
+    /// content and must survive.
+    #[test]
+    fn test_mojibake_byte_is_not_treated_as_hyphenation() {
+        assert_eq!(join("\u{00A1}\u{00AD} \u{00A1}\u{00AD}"), "\u{00A1}\u{00AD} \u{00A1}\u{00AD}");
+    }
+
+    /// A font that maps U+00AD to a delimiter glyph leaves it between spaces,
+    /// so it is not hyphenation either.
+    #[test]
+    fn test_delimiter_glyph_is_not_treated_as_hyphenation() {
+        assert_eq!(join("log \u{00AD} p \u{00AE}"), "log \u{00AD} p \u{00AE}");
+    }
+
+    /// A paragraph break is never swallowed, even after a marker.
+    #[test]
+    fn test_blank_line_after_a_marker_is_preserved() {
+        assert_eq!(join("word\u{00AD}\n\nNext"), "word\u{00AD}\n\nNext");
+    }
+
+    /// An **uppercase** continuation after the wrap is not the rest of the
+    /// word — it is a new sentence, a heading, or the next column of a scan.
+    /// Gluing them produced "preThe" across a multi-column newspaper scan.
+    #[test]
+    fn test_uppercase_continuation_across_a_wrap_is_not_joined() {
+        assert_eq!(
+            join("The bill to pre\u{00AD} The clerk of laid bill"),
+            "The bill to pre\u{00AD} The clerk of laid bill"
+        );
+        assert_eq!(join("word\u{00AD}\nNext"), "word\u{00AD}\nNext");
+    }
+
+    /// ... and adjacent fragments do not join either, whatever the case. The
+    /// marker between them was drawn, and `Mac-Donald` is a name with a
+    /// hyphen in it — deleting the hyphen invents a different word.
+    #[test]
+    fn adjacent_fragments_do_not_join_either() {
+        assert_eq!(join("Mac\u{00AD}Donald"), "Mac\u{00AD}Donald");
+        assert_eq!(strip_seam("Mac\u{00AD}", "", "Donald"), "Mac\u{00AD}Donald");
+    }
+
+    /// ... so an uppercase continuation across a space is refused, while an
+    /// adjacent one joins on the same grounds as `Mac` + `Donald`: with
+    /// nothing between them the two fragments are contiguous glyphs, and the
+    /// marker between contiguous glyphs is a hyphenation point whatever case
+    /// follows.
+    #[test]
+    fn test_seam_refuses_an_uppercase_continuation_either_way() {
+        assert_eq!(strip_seam("pre\u{00AD}", " ", "The"), "pre\u{00AD} The");
+        // This produced `preThe` for one release, which is the defect the
+        // uppercase guard above was written to prevent and could not.
+        assert_eq!(strip_seam("pre\u{00AD}", "", "The"), "pre\u{00AD}The");
+    }
+
+    /// The column-boundary case this restriction exists for: a wrap that ends
+    /// a column, followed by a fragment from the next column.
+    #[test]
+    fn test_column_ending_wrap_does_not_swallow_the_next_column() {
+        assert_eq!(
+            strip_seam("the prin\u{00AD}", " ", "from the icene"),
+            "the prin\u{00AD} from the icene"
+        );
+    }
+
+    /// And between two letters within one fragment, which is the same case:
+    /// the fragment is one run on one line, so nothing wrapped there and the
+    /// glyph was painted. This asserted removal for one release, which was
+    /// inconsistent with the letter-and-digit case immediately below — both
+    /// rest on the same Annex D note, and both markers are equally drawn.
+    #[test]
+    fn test_marker_between_two_letters_is_kept_too() {
+        assert_eq!(strip("Pharmaceu\u{00AD}ticals"), "Pharmaceu\u{00AD}ticals");
+    }
+
+    /// Annex D note 5: WinAnsi 255 is a soft hyphen "typographically the same
+    /// as hyphen", so a producer using it in a part number draws a visible
+    /// hyphen. Removing it deletes a character the reader sees.
+    #[test]
+    fn test_marker_between_a_letter_and_a_digit_is_kept() {
+        assert_eq!(strip("SS\u{00AD}2541"), "SS\u{00AD}2541");
+    }
+
+    #[test]
+    fn test_marker_between_two_digits_is_kept() {
+        assert_eq!(strip("2023\u{00AD}06\u{00AD}15"), "2023\u{00AD}06\u{00AD}15");
+    }
+
+    /// A 0xAD that is the low half of a misdecoded multi-byte sequence, and a
+    /// maths font mapping U+00AD to a delimiter glyph: neither is hyphenation.
+    #[test]
+    fn test_marker_next_to_punctuation_or_space_is_kept() {
+        assert_eq!(strip("\u{00A1}\u{00AD}"), "\u{00A1}\u{00AD}");
+        assert_eq!(strip("log \u{00AD} p"), "log \u{00AD} p");
+    }
+
+    /// The existing exemption: a marker directly after a hyphen-minus at the
+    /// end of a fragment is the wrap marker for an already-hyphenated
+    /// compound, and must survive so the rejoiner keeps the real hyphen.
+    #[test]
+    fn test_marker_after_a_hyphen_minus_still_survives() {
+        assert_eq!(strip("Cross-\u{00AD}"), "Cross-\u{00AD}");
+    }
+}
+
+#[cfg(test)]
+mod soft_hyphen_seam_tests {
+    use super::*;
+
+    /// A span at a given baseline and left edge, with a width.
+    fn seam_span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
+        TextSpan {
+            provenance: None,
+            text_rise: 0.0,
+            text: text.to_string(),
+            bbox: crate::geometry::Rect {
+                x,
+                y,
+                width,
+                height: font_size,
+            },
+            font_name: "F1".to_string(),
+            font_size,
+            font_weight: crate::layout::FontWeight::Normal,
+            is_italic: false,
+            is_monospace: false,
+            color: crate::layout::Color::new(0.0, 0.0, 0.0),
+            mcid: None,
+            mcid_scope: None,
+            sequence: 0,
+            split_boundary_before: false,
+            offset_semantic: false,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scaling: 100.0,
+            primary_detected: false,
+            artifact_type: None,
+            char_widths: Vec::new(),
+            char_x_offsets: Vec::new(),
+            heading_level: None,
+            rotation_degrees: 0.0,
+            wmode: 0,
+            rtl_draw_logical: false,
+            mirrored: false,
+            page_rotation_applied: 0,
+        }
+    }
+
+    /// The five false joins measured on a scrambled OCR scan: one baseline,
+    /// and the next run starting well to the left of where the last ended.
+    /// The marker has to survive, and the seam has to become non-empty so that
+    /// nothing downstream reads string adjacency as page adjacency.
+    #[test]
+    fn test_backward_seam_keeps_the_marker_and_separates_the_runs() {
+        // The exact geometry of the `con` + `and` seam.
+        let prev = seam_span("con\u{00AD}", 315.45, 639.61, 19.28, 9.9);
+        let span = seam_span("and ", 294.82, 639.20, 17.70, 9.9);
+        let mut text = String::from("ducted the\ncon\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(!consumed, "the span must be left to the caller's cascade");
+        assert!(
+            text.ends_with("con\u{00AD} "),
+            "the marker was dropped or the seam left empty, so the next run will \
+             glue to it and invent a word: {text:?}"
+        );
+    }
+
+    /// The counter-case at the same seam: a real line wrap, one line down and
+    /// back to the left margin. Both halves join and the marker goes.
+    #[test]
+    fn test_line_wrap_closes_and_consumes_the_span() {
+        let prev = seam_span("admini\u{00AD}", 430.0, 700.0, 30.0, 10.0);
+        let span = seam_span("stration", 72.0, 686.0, 38.0, 10.0);
+        let mut text = String::from("the admini\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(consumed, "a wrap writes the span itself");
+        assert!(text.contains("administration"), "a genuine wrap was left broken: {text:?}");
+    }
+
+    /// Contiguous glyphs on one line — a word the file split into two runs.
+    /// Left untouched for the existing rule, which already closes it.
+    #[test]
+    fn contiguous_runs_are_left_to_the_existing_rule() {
+        let prev = seam_span("recon\u{00AD}", 72.0, 700.0, 28.0, 10.0);
+        let span = seam_span("struction", 100.0, 700.0, 42.0, 10.0);
+        let mut text = String::from("recon\u{00AD}");
+
+        let consumed = PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span);
+
+        assert!(!consumed);
+        assert_eq!(
+            text, "recon\u{00AD}",
+            "an empty seam between contiguous glyphs must stay empty: {text:?}"
+        );
+    }
+
+    /// A marker with no letter after it is a glyph or a misdecoded byte, not
+    /// hyphenation, and nothing here applies.
+    #[test]
+    fn test_marker_before_a_non_letter_is_not_a_seam() {
+        let prev = seam_span("re\u{00AD}", 315.0, 640.0, 12.0, 9.9);
+        let span = seam_span("42", 281.0, 639.4, 11.0, 9.9);
+        let mut text = String::from("re\u{00AD}");
+
+        assert!(!PdfDocument::apply_soft_hyphen_seam(&mut text, &prev, &span));
+        assert_eq!(text, "re\u{00AD}");
+    }
+
+    /// The classifier's own boundaries, in em, from the corpus measurements:
+    /// accepted wraps sit at 1.08-1.40 em of baseline drop, the false joins at
+    /// -0.29 to +0.59 em.
+    #[test]
+    fn test_classifier_separates_wraps_from_band_jitter() {
+        let em = 10.0;
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 14.0, -30.0), SoftHyphenSeam::Close);
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 0.41, -39.9), SoftHyphenSeam::Keep);
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, -2.9, -25.0), SoftHyphenSeam::Keep);
+        assert_eq!(
+            PdfDocument::soft_hyphen_seam(em, 5.9, -30.0),
+            SoftHyphenSeam::Keep,
+            "0.59 em is band jitter, not a line advance"
+        );
+        assert_eq!(PdfDocument::soft_hyphen_seam(em, 0.0, 0.0), SoftHyphenSeam::Contiguous);
     }
 }

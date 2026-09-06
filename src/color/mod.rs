@@ -609,6 +609,30 @@ pub fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> (f32, f32, f32) {
     (acc[0].clamp(0.0, 1.0), acc[1].clamp(0.0, 1.0), acc[2].clamp(0.0, 1.0))
 }
 
+/// Whether a text colour is the document's "black" — the case a converter
+/// treats as *no explicit colour*, so the destination document's theme applies.
+///
+/// Exact `(0, 0, 0)` is RGB black. **CMYK black is not `(0, 0, 0)`.** Text
+/// painted `0 0 0 1 k` converts through the process-ink model to the measured
+/// 000K corner, approximately `(0.137, 0.122, 0.126)` — a dark grey. Converters
+/// testing only for exact zero therefore stamped a hard-coded dark grey into
+/// DOCX/PPTX/XLSX output for every print-origin PDF, instead of leaving the
+/// run's colour unset for the theme to supply. A word-level corpus diff cannot
+/// see it: the text is identical and only the colour attribute changed.
+///
+/// This recognises the specific value the CMYK conversion produces rather than
+/// applying a blanket tolerance, so genuinely dark-grey text — an author's
+/// deliberate choice — still carries its colour through.
+pub fn is_document_black(r: f32, g: f32, b: f32) -> bool {
+    /// Tight enough that only the conversion's own output matches, loose
+    /// enough to absorb the f32 round trip through 8-bit and back.
+    const EPS: f32 = 0.01;
+    let exact_rgb_black = r == 0.0 && g == 0.0 && b == 0.0;
+    let (kr, kg, kb) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+    let process_black = (r - kr).abs() < EPS && (g - kg).abs() < EPS && (b - kb).abs() < EPS;
+    exact_rgb_black || process_black
+}
+
 /// Solve the 3x3 linear system `a * x = b` by Cramer's rule. `None` when the
 /// matrix is (near-)singular.
 fn solve3(a: [[f32; 3]; 3], b: [f32; 3]) -> Option<[f32; 3]> {
@@ -696,6 +720,43 @@ pub fn rgb_to_cmyk(r: f32, g: f32, b: f32) -> (f32, f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmyk_black_is_recognised_as_document_black() {
+        // 0 0 0 1 k does not convert to (0,0,0): it lands on the measured
+        // 000K process-ink corner. A converter testing for exact zero stamps
+        // that dark grey into its output instead of leaving the run's colour
+        // unset for the destination theme.
+        let (r, g, b) = cmyk_to_rgb(0.0, 0.0, 0.0, 1.0);
+        assert!(
+            r > 0.0 || g > 0.0 || b > 0.0,
+            "precondition: CMYK black is not exact RGB black, else this rule is moot"
+        );
+        assert!(
+            is_document_black(r, g, b),
+            "CMYK black {r},{g},{b} should count as the document's black"
+        );
+    }
+
+    #[test]
+    fn rgb_black_is_recognised_as_document_black() {
+        assert!(is_document_black(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_deliberate_dark_grey_is_not_document_black() {
+        // The rule recognises the conversion's own output, not "anything
+        // dark" — an author's dark grey must keep its colour.
+        assert!(!is_document_black(0.2, 0.2, 0.2));
+        assert!(!is_document_black(0.35, 0.35, 0.35));
+    }
+
+    #[test]
+    fn ordinary_colours_are_not_document_black() {
+        assert!(!is_document_black(1.0, 0.0, 0.0));
+        assert!(!is_document_black(1.0, 1.0, 1.0));
+        assert!(!is_document_black(0.0, 0.0, 1.0));
+    }
 
     #[test]
     fn rgb_to_cmyk_round_trips_in_gamut_and_stays_in_range() {

@@ -87,6 +87,13 @@ jobs:
       - name: Validate fixtures
         run: ./tools/benchmark-harness/validate_fixtures.sh --strict
 
+      - name: No untracked-provenance PDF under tests/
+        # What CONTRIBUTING.md and AGENTS.md say this job does: every PDF
+        # committed under tests/ must be listed with its provenance in
+        # tests/fixtures/TRACKED_PDFS.txt. A new third-party or reporter PDF
+        # fails here; the grandfathered ones are listed with a replacement note.
+        run: ./tools/check_tracked_fixtures.sh
+
   # Linting with Clippy
   clippy:
     name: Clippy
@@ -106,6 +113,32 @@ jobs:
 
       - name: Run Clippy on full workspace
         run: cargo clippy --all-targets --workspace -- -D warnings
+
+      - name: Advisory lints (counted, not yet gated)
+        # `iter_over_hash_type` and the cast lints at the parse boundary are
+        # not in the gate: 64 hash-iteration sites at v0.3.78, and `-D warnings`
+        # makes a `warn` level fatal, so they are counted here first and go
+        # into the gate once the count is small enough to fix in one change.
+        continue-on-error: true
+        env:
+          RUSTFLAGS: ""
+        run: |
+          cargo clippy --lib --message-format=short -- \
+            -W clippy::iter_over_hash_type \
+            -W clippy::cast_possible_truncation \
+            -W clippy::cast_sign_loss \
+            -W clippy::cast_possible_wrap 2>&1 | tee advisory.txt >/dev/null || true
+          hash=$(grep -c 'iter_over_hash_type' advisory.txt || true)
+          casts_all=$(grep -cE 'cast_(possible_truncation|sign_loss|possible_wrap)' advisory.txt || true)
+          casts_parse=$(grep -E 'cast_(possible_truncation|sign_loss|possible_wrap)' advisory.txt | grep -cE '^src/(parser\.rs|lexer\.rs|object\.rs|objstm\.rs|xref\.rs|xref_reconstruction\.rs|decoders/)' || true)
+          {
+            echo "### Advisory lints (not gated)"
+            echo "| lint | sites |"
+            echo "|---|---:|"
+            echo "| \`iter_over_hash_type\` | $hash |"
+            echo "| cast lints, whole crate | $casts_all |"
+            echo "| cast lints at the parse boundary (parser, lexer, object, objstm, xref, decoders) | $casts_parse |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Build and test
   test:
@@ -1640,13 +1673,15 @@ jobs:
           # on the instrumented path (object files are larger). #399.
           CARGO_BUILD_JOBS: "2"
         run: |
-          cargo llvm-cov --lib --tests --lcov --output-path lcov.info \
-            --ignore-filename-regex '(cid_mappings/|adobe_glyph_list\.rs|python\.rs|wasm\.rs|ffi\.rs|ocr/|rendering/|bin/)'
+          # The renderer is measured too: it is behind the `rendering` feature,
+          # and excluding `rendering/` by name had left it outside every gate.
+          cargo llvm-cov --lib --tests --features rendering --lcov --output-path lcov.info \
+            --ignore-filename-regex '(cid_mappings/|adobe_glyph_list\.rs|python\.rs|wasm\.rs|ffi\.rs|ocr/|bin/)'
 
       - name: Enforce 85% coverage threshold
         run: |
           cargo llvm-cov report \
-            --ignore-filename-regex '(cid_mappings/|adobe_glyph_list\.rs|python\.rs|wasm\.rs|ffi\.rs|ocr/|rendering/|bin/)' \
+            --ignore-filename-regex '(cid_mappings/|adobe_glyph_list\.rs|python\.rs|wasm\.rs|ffi\.rs|ocr/|bin/)' \
             --fail-under-lines 85
 
       - name: Upload coverage to Codecov

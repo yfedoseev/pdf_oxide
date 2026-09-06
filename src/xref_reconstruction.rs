@@ -403,8 +403,21 @@ fn synthesize_catalog_from_pages<R: Read + Seek>(
     xref: &CrossRefTable,
 ) -> Result<(ObjectRef, Vec<(ObjectRef, Object)>)> {
     // Free object numbers for the objects we invent: above every surviving one.
+    //
+    // Both operands come from the file's own object numbering, and this path
+    // runs only on files that are already malformed — so hostile input is
+    // guaranteed here rather than merely possible. `max_obj + 1` on a file
+    // containing `4294967295 0 obj` panics in debug and wraps in release (no
+    // profile sets `overflow-checks`), and the wrapped number then collides
+    // with a real object, placing the synthetic page tree on top of it.
     let max_obj = xref.all_object_numbers().max().unwrap_or(0);
-    let catalog_num = max_obj + 1;
+    let Some(catalog_num) = max_obj.checked_add(1) else {
+        return Err(Error::InvalidPdf(
+            "Cannot reconstruct: the file's object numbering leaves no free number \
+             for a synthesized Catalog"
+                .to_string(),
+        ));
+    };
 
     // Deterministic, low-first scan (the same bound the Catalog scan uses).
     const MAX_SCAN: usize = 4096;
@@ -464,7 +477,13 @@ fn synthesize_catalog_from_pages<R: Read + Seek>(
     }
     page_objs.sort_unstable();
     log::info!("Recovery: synthesizing flat /Pages over {} orphan pages", page_objs.len());
-    let pages_num = max_obj + 2;
+    let Some(pages_num) = max_obj.checked_add(2) else {
+        return Err(Error::InvalidPdf(
+            "Cannot reconstruct: the file's object numbering leaves no free number \
+             for a synthesized /Pages node"
+                .to_string(),
+        ));
+    };
     let kids: Vec<Object> = page_objs
         .iter()
         .map(|&n| Object::Reference(ObjectRef::new(n, 0)))
@@ -542,6 +561,14 @@ fn recover_from_objstms<R: Read + Seek>(
         let Ok(contained) = crate::objstm::parse_object_stream(&container) else {
             continue;
         };
+        // `parse_object_stream` returns a HashMap, and the selections below are
+        // all `get_or_insert` — first one seen wins. Walking it in hash order
+        // therefore let the same damaged bytes recover a *different* /Root
+        // between runs of the same binary. Ascending object number is the order
+        // the sibling non-object-stream path already uses
+        // (`smallest_object_numbers`), so use it here too.
+        let mut contained: Vec<(u32, Object)> = contained.into_iter().collect();
+        contained.sort_by_key(|(num, _)| *num);
         for (num, obj) in contained {
             match obj
                 .as_dict()
@@ -573,11 +600,15 @@ fn recover_from_objstms<R: Read + Seek>(
     // Free object numbers for anything we synthesize must clear EVERY injected
     // number too, not just the uncompressed max (compressed objects can outrank
     // it), or a synthetic Catalog could shadow a real recovered object.
+    // Same hazard as `catalog_num` above: an injected object numbered at the
+    // top of the range must not wrap when we reach past it. Saturating is the
+    // right disposition here — this helper returns Option and its caller
+    // simply declines to synthesize, rather than failing the whole recovery.
     let free_base = injected
         .iter()
         .map(|(r, _)| r.id)
         .max()
-        .map_or(catalog_num, |m| m.max(catalog_num - 1) + 1);
+        .map_or(catalog_num, |m| m.max(catalog_num.saturating_sub(1)).saturating_add(1));
 
     // Else anchor a synthesized Catalog on the best page tree we found.
     if let Some(root) = pages_root.or(pages_any) {

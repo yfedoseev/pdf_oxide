@@ -6,8 +6,22 @@
 use crate::error::Result;
 use crate::layout::TextSpan;
 use crate::pipeline::{OrderedTextSpan, ReadingOrderInfo};
+use crate::structure::McidScope;
 
 use super::{ArticleThreadStrategy, ReadingOrderContext, ReadingOrderStrategy, XYCutStrategy};
+
+/// A marked-content id together with the content stream that defines it.
+///
+/// ISO 32000-1:2008 §14.7.4.2 makes an `/MCID` unique only "within its content
+/// stream", so the id alone does not identify a piece of marked content: a
+/// page and a Form XObject may each number theirs from 0.
+pub(crate) type McidKey = (McidScope, u32);
+
+/// The scope-qualified key for `span`, defaulting to the page's own scope when
+/// the span carries none — the convention the rest of the crate uses.
+fn span_mcid_key(span: &TextSpan, mcid: u32, page: u32) -> McidKey {
+    (span.mcid_scope.clone().unwrap_or(McidScope::Page(page)), mcid)
+}
 
 /// Structure tree-based reading order strategy.
 ///
@@ -62,16 +76,16 @@ impl StructureTreeStrategy {
 /// 3. If crossings exceed `2 * (num_columns - 1)` the order is zigzagging
 ///    (a column-respecting order crosses columns only at bottom-of-one /
 ///    top-of-next transitions).
-fn mcid_order_zigzags_columns(spans: &[TextSpan], mcid_order: &[u32]) -> bool {
+fn mcid_order_zigzags_columns(spans: &[TextSpan], mcid_order: &[McidKey], page: u32) -> bool {
     // Build ordered list of (span_index, x_center) in MCID order
-    let mcid_to_idx: std::collections::HashMap<u32, usize> = spans
+    let mcid_to_idx: std::collections::HashMap<McidKey, usize> = spans
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| s.mcid.map(|m| (m, i)))
+        .filter_map(|(i, s)| s.mcid.map(|m| (span_mcid_key(s, m, page), i)))
         .collect();
     let ordered_x: Vec<f32> = mcid_order
         .iter()
-        .filter_map(|m| mcid_to_idx.get(m))
+        .filter_map(|k| mcid_to_idx.get(k))
         .map(|&i| spans[i].bbox.x + spans[i].bbox.width * 0.5)
         .collect();
     if ordered_x.len() < 10 {
@@ -151,17 +165,42 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
         // untrustworthy for reading order (common in PDFs where the
         // authoring tool assigned MCIDs in content-stream order without
         // respecting column visual order). Fall back to geometric.
-        if mcid_order_zigzags_columns(&spans, mcid_order) {
+        if mcid_order_zigzags_columns(&spans, mcid_order, context.page_number) {
             log::debug!("MCID order zigzags across columns, falling back to geometric ordering");
             return self.fallback_order(spans, context);
         }
 
-        // Create MCID -> reading order mapping
-        let mcid_to_order: std::collections::HashMap<u32, usize> = mcid_order
+        // Create (scope, MCID) -> reading order mapping.
+        //
+        // The key carries the scope because ISO 32000-1:2008 §14.7.4.2 makes
+        // an /MCID unique only "within its content stream": a page and a Form
+        // XObject may each number theirs from 0. Keyed on the bare id, a
+        // form's MCID 0 collided with the page's and the form's text was
+        // ordered into the page's structural slot.
+        let mcid_to_order: std::collections::HashMap<McidKey, usize> = mcid_order
             .iter()
             .enumerate()
-            .map(|(order, &mcid)| (mcid, order))
+            .map(|(order, key)| (key.clone(), order))
             .collect();
+
+        // The spans' own keys, collected before the loop below consumes them.
+        let span_keys: Vec<McidKey> = spans
+            .iter()
+            .filter_map(|s| s.mcid.map(|m| span_mcid_key(s, m, context.page_number)))
+            .collect();
+
+        // A span and the reference that names it can disagree about scope
+        // without colliding. §14.7.4.3 lets a marked-content reference name its
+        // stream with /Stm; a structure element whose kid is a bare integer
+        // carries none and so resolves against the page's own stream — while a
+        // producer that draws part of the page through a Form XObject numbers
+        // one continuous id space across both. Every such run then failed to
+        // find its slot and was demoted to "untagged", which appends it after
+        // the whole tagged page: a callout label printed between two paragraphs
+        // came out at the end. Match across scopes, but only where the bare id
+        // is numbered once on each side — see `unambiguous_mcid_scopes`.
+        let drawn_once = crate::structure::unambiguous_mcid_scopes(span_keys.iter());
+        let referenced_once = crate::structure::unambiguous_mcid_scopes(mcid_to_order.keys());
 
         // Separate spans with and without MCIDs
         let mut with_mcid: Vec<(TextSpan, usize)> = Vec::new();
@@ -169,7 +208,14 @@ impl ReadingOrderStrategy for StructureTreeStrategy {
 
         for span in spans {
             if let Some(mcid) = span.mcid {
-                if let Some(&order) = mcid_to_order.get(&mcid) {
+                let key = span_mcid_key(&span, mcid, context.page_number);
+                let slot = if drawn_once.contains_key(&mcid) {
+                    crate::structure::resolve_mcid_key(&mcid_to_order, &referenced_once, &key)
+                        .and_then(|k| mcid_to_order.get(&k).copied())
+                } else {
+                    mcid_to_order.get(&key).copied()
+                };
+                if let Some(order) = slot {
                     with_mcid.push((span, order));
                 } else {
                     // MCID not in structure tree - treat as untagged
@@ -223,6 +269,12 @@ mod tests {
     use crate::geometry::Rect;
     use crate::layout::{Color, FontWeight};
 
+    /// Page-scoped keys for the fixtures below, which build spans with no
+    /// explicit `mcid_scope` (so they default to `Page(0)`).
+    fn page_keys(ids: &[u32]) -> Vec<McidKey> {
+        ids.iter().map(|&m| (McidScope::Page(0), m)).collect()
+    }
+
     fn make_span(text: &str, x: f32, y: f32, mcid: Option<u32>) -> TextSpan {
         TextSpan {
             provenance: None,
@@ -266,7 +318,7 @@ mod tests {
         ];
 
         let strategy = StructureTreeStrategy::new();
-        let context = ReadingOrderContext::new().with_mcid_order(vec![0, 1, 2]);
+        let context = ReadingOrderContext::new().with_mcid_order(page_keys(&[0, 1, 2]));
         let ordered = strategy.apply(spans, &context).unwrap();
 
         assert_eq!(ordered[0].span.text, "First");
@@ -283,7 +335,7 @@ mod tests {
         ];
 
         let strategy = StructureTreeStrategy::new();
-        let context = ReadingOrderContext::new().with_mcid_order(vec![0]);
+        let context = ReadingOrderContext::new().with_mcid_order(page_keys(&[0]));
         let ordered = strategy.apply(spans, &context).unwrap();
 
         // Tagged comes first, then untagged
@@ -375,7 +427,7 @@ mod tests {
 
         // With suspects=false, structure tree order is used
         let context = ReadingOrderContext::new()
-            .with_mcid_order(vec![0, 1])
+            .with_mcid_order(page_keys(&[0, 1]))
             .with_suspects(false);
         let ordered = strategy.apply(spans.clone(), &context).unwrap();
         assert_eq!(ordered[0].span.text, "StructOrder1"); // MCID order
@@ -383,7 +435,7 @@ mod tests {
 
         // With suspects=true, geometric order is used (top-to-bottom)
         let context = ReadingOrderContext::new()
-            .with_mcid_order(vec![0, 1])
+            .with_mcid_order(page_keys(&[0, 1]))
             .with_suspects(true);
         let ordered = strategy.apply(spans, &context).unwrap();
         assert_eq!(ordered[0].span.text, "StructOrder2"); // Geometric: y=100 first (top)

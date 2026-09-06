@@ -17,6 +17,31 @@ static RE_URL: LazyLock<Regex> =
 static RE_EMAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})").unwrap());
 
+/// The text with every whitespace character removed.
+///
+/// Used to compare what a table rendered against what a span carries when the
+/// two sides disagree only about spacing.
+fn squash_whitespace(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Put `out` at the start of a line before a block-level marker is written
+/// into it.
+///
+/// A heading prefix only opens a heading at the start of a line. Written after
+/// text it is three literal `#` characters welded to the preceding word, and
+/// the heading it was meant to open is lost as well as the word boundary — a
+/// form's reset-button label came out as `au Luxembourg### Réinitialiser`.
+///
+/// This is only ever additive: it inserts a newline that CommonMark requires
+/// and never removes one, so a caller that already ended its line is
+/// unaffected.
+fn begin_block(out: &mut String) {
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
 /// Detect markdown table separator rows like `|---|---|` or
 /// `| :--- | ---: |`. A line qualifies if every `|`-delimited cell is
 /// a sequence of `-` (with optional surrounding `:` for alignment) and
@@ -882,6 +907,13 @@ impl MarkdownOutputConverter {
             }
         }
 
+        // Reject a run that reads as a piece of a sentence rather than a
+        // title — one ending on a function word, or opening lowercase and
+        // closing on a full stop. See `reads_as_a_sentence_fragment`.
+        if super::reads_as_a_sentence_fragment(trimmed) {
+            return false;
+        }
+
         // Reject a line ending in a hyphen: that is a mid-word line break
         // ("...three categories: com-"), i.e. a wrapped body line, not a heading.
         if trimmed.ends_with('-') {
@@ -1196,8 +1228,9 @@ impl MarkdownOutputConverter {
                             // alone and so glued tight-set word pairs like
                             // "Value"+"Aktien" -> "ValueAktien" that the main text
                             // path separates via that same boundary metadata.
-                            let has_gap =
-                                super::has_horizontal_gap(prev, span) || span.split_boundary_before;
+                            let has_gap = super::has_horizontal_gap(prev, span)
+                                || super::spans_are_stacked(prev, span)
+                                || span.split_boundary_before;
                             let already_has_space =
                                 cell_md.ends_with(' ') || span.text.starts_with(' ');
                             if has_gap && !already_has_space {
@@ -1567,6 +1600,7 @@ impl MarkdownOutputConverter {
             if span_starts_list && !current_line.trim().is_empty() {
                 if let Some(level) = current_heading_level {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
+                    begin_block(&mut result);
                     let prefix = "#".repeat(level as usize);
                     result.push_str(&format!(
                         "{} {}\n\n",
@@ -1579,9 +1613,39 @@ impl MarkdownOutputConverter {
             }
 
             // Check for paragraph break or line break
-            let same_line = prev_span
+            let mut same_line = prev_span
                 .map(|prev| (span.span.bbox.y - prev.span.bbox.y).abs() < span.span.font_size * 0.5)
                 .unwrap_or(true);
+
+            // Close a soft-hyphen wrap, using the same geometry the text
+            // assembler uses. §14.8.2.2.3 makes U+00AD a break offered *inside*
+            // a word, and §9.4.2 leaves the glyph positions as the only evidence
+            // of where the line ended — evidence that is gone once the markdown
+            // is a string, which is why the downstream pass cannot decide this.
+            //
+            // Two signals must coincide: the baseline drops about one line, and
+            // the continuation returns left of where the previous run ended.
+            // Over the corpus that accepts genuine wraps and rejects the false
+            // joins a re-ordered scan offers, whose baseline "drop" is band
+            // jitter rather than a line advance.
+            let mut wrap_closed = false;
+            if let Some(prev) = prev_span {
+                let em = prev.span.font_size.max(span.span.font_size).max(6.0);
+                let drop = prev.span.bbox.y - span.span.bbox.y;
+                let seam_gap = span.span.bbox.x - (prev.span.bbox.x + prev.span.bbox.width);
+                if current_line
+                    .strip_suffix('\u{00AD}')
+                    .is_some_and(|t| t.ends_with(char::is_alphabetic))
+                    && span.span.text.starts_with(char::is_alphabetic)
+                    && drop >= em * 0.6
+                    && drop <= em * 1.6
+                    && seam_gap < -em
+                {
+                    current_line.pop();
+                    same_line = true;
+                    wrap_closed = true;
+                }
+            }
 
             if let Some(prev) = prev_span {
                 // Group boundary: when group_id changes, insert a paragraph break
@@ -1723,6 +1787,7 @@ impl MarkdownOutputConverter {
                     close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                     if !current_line.is_empty() {
                         if let Some(level) = current_heading_level {
+                            begin_block(&mut result);
                             let prefix = "#".repeat(level as usize);
                             result.push_str(&format!(
                                 "{} {}\n\n",
@@ -1777,6 +1842,7 @@ impl MarkdownOutputConverter {
                         close_formatting(&mut current_line, &mut active_bold, &mut active_italic);
                         if !current_line.is_empty() {
                             if let Some(level) = current_heading_level {
+                                begin_block(&mut result);
                                 let prefix = "#".repeat(level as usize);
                                 result.push_str(&format!(
                                     "{} {}\n\n",
@@ -1967,7 +2033,18 @@ impl MarkdownOutputConverter {
                             .chars()
                             .next()
                             .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-                    if no_existing_ws && (visual_gap || punct_boundary) {
+                    // A closed wrap joins its halves directly — the marker was
+                    // the hyphenation point, not a word boundary.
+                    // A footnote marker sits at the base word's advance edge,
+                    // so `has_horizontal_gap` declines it; the base being a
+                    // prose word rather than a subscript host is what separates
+                    // it from `H2O`.
+                    let marker_boundary =
+                        super::is_reference_marker_boundary(&prev.span, &span.span);
+                    if !wrap_closed
+                        && no_existing_ws
+                        && (visual_gap || punct_boundary || marker_boundary)
+                    {
                         current_line.push(' ');
                     }
                 }
@@ -2020,11 +2097,25 @@ impl MarkdownOutputConverter {
                 continue;
             }
             let rendered = &table_mds[table_idx];
+            // Compare on the glyph sequence, not on the spacing. The cell
+            // builder joins its member spans with a space while the flow
+            // assembler joins the same glyphs with none, so a span the table
+            // already renders can fail a literal substring test purely on
+            // whitespace and be re-emitted beside the table. Whitespace is a
+            // rendering choice of each side; the glyphs are the content. The
+            // row's `|` delimiters are not whitespace and so survive the
+            // squash, which keeps a span that straddles two cells from
+            // matching the concatenation of their texts.
+            let rendered_glyphs = squash_whitespace(rendered);
             let mut orphans: Vec<&&OrderedTextSpan> = skipped
                 .iter()
                 .filter(|s| {
                     let trimmed = s.span.text.trim();
-                    !trimmed.is_empty() && !rendered.contains(trimmed)
+                    if trimmed.is_empty() {
+                        return false;
+                    }
+                    let glyphs = squash_whitespace(trimmed);
+                    !glyphs.is_empty() && !rendered_glyphs.contains(&glyphs)
                 })
                 .collect();
             if !orphans.is_empty() {
@@ -2048,6 +2139,7 @@ impl MarkdownOutputConverter {
             if !tables_rendered[i] && !table.is_empty() {
                 if !current_line.is_empty() {
                     if let Some(level) = current_heading_level {
+                        begin_block(&mut result);
                         let prefix = "#".repeat(level as usize);
                         result.push_str(&format!(
                             "{} {}\n\n",
@@ -2071,6 +2163,7 @@ impl MarkdownOutputConverter {
         // Flush remaining content
         if !current_line.is_empty() {
             if let Some(level) = current_heading_level {
+                begin_block(&mut result);
                 let prefix = "#".repeat(level as usize);
                 result.push_str(&format!("{} {}\n", prefix, strip_emphasis(current_line.trim())));
             } else if current_line_all_mono {
@@ -2994,6 +3087,43 @@ mod tests {
             "  plain",
         ] {
             assert!(!is_md_list_item_line(no), "{no:?} should NOT be a list item");
+        }
+    }
+
+    /// The two fragments a garbled 1919 broadsheet had promoted to headings.
+    /// Both clear every other test the predicate applies: the first leads with
+    /// a capital and runs to five words, the second is two words, under the
+    /// five-word floor the lowercase-initial rule uses.
+    ///
+    /// Asserted through `is_valid_heading_text` rather than the helper it calls,
+    /// so that disabling the call site fails this test.
+    #[test]
+    fn test_mid_sentence_fragment_is_not_promoted_to_a_heading() {
+        for fragment in ["Furthermore, one reads in the", "palaces league."] {
+            assert!(
+                !MarkdownOutputConverter::is_valid_heading_text(fragment),
+                "{fragment:?} is a sentence fragment, not a heading"
+            );
+        }
+    }
+
+    /// Real headings must still promote, including ones that end on a word the
+    /// guard could plausibly over-reach on.
+    #[test]
+    fn real_headings_still_promote() {
+        for heading in [
+            "Spring Equinox Gathering",
+            "Introduction",
+            "Contact Us",
+            "Let It Be",
+            "Doctor Who",
+            "Materials and Methods",
+            "Terms of Service",
+        ] {
+            assert!(
+                MarkdownOutputConverter::is_valid_heading_text(heading),
+                "{heading:?} is a heading and must still promote"
+            );
         }
     }
 

@@ -1,0 +1,25 @@
+# pyo3's argument extraction is not a secret.
+#
+# CodeQL's sensitive-data heuristic (shared/concepts/.../SensitiveDataHeuristics.qll,
+# `maybeSecret`) classifies any function whose NAME contains `trusted` as a
+# secret source. pyo3 0.29 extracts a `#[pymethods]` receiver through
+# `extract_pyclass_ref_mut_trusted` / `extract_pyclass_ref_trusted` — "trusted"
+# there means the object's type was already checked — and every argument of
+# every method in the block flows out of the same macro expansion. So a page
+# index handed to the library and written to a debug log
+# (`log::debug!("... page {}", page_index)`) is reported as cleartext logging
+# of a secret: thirty such findings on the v0.3.78 release, thirty-seven on
+# main, none of them logging anything a caller would call a secret.
+#
+# These rows tell the flow analysis exactly that: the value pyo3's receiver
+# extraction returns is a barrier for the `log-injection` kind the
+# cleartext-logging query honours. Nothing else changes — a value that IS a
+# secret by name (a `password` argument) is still a source, and logging it
+# would still be reported.
+extensions:
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: barrierModel
+    data:
+      - ["pyo3::impl_::extract_argument::extract_pyclass_ref_trusted", "ReturnValue", "log-injection", "manual"]
+      - ["pyo3::impl_::extract_argument::extract_pyclass_ref_mut_trusted", "ReturnValue", "log-injection", "manual"]

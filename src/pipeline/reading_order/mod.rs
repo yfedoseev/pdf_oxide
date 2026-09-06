@@ -76,8 +76,15 @@ pub struct ReadingOrderContext {
     /// Whether the document has a structure tree (Tagged PDF).
     pub has_structure_tree: bool,
 
-    /// MCID to reading order mapping (if structure tree available).
-    pub mcid_order: Option<Vec<u32>>,
+    /// Marked-content reading order from the structure tree, if available.
+    ///
+    /// Each entry is `(scope, mcid)`: ISO 32000-1:2008 §14.7.4.2 makes an
+    /// `/MCID` unique only "within its content stream", so a page and a Form
+    /// XObject may each number theirs from 0 and the bare id does not identify
+    /// a piece of marked content. This carried bare ids, and the scope — which
+    /// the structure traversal computes correctly — was projected away at the
+    /// boundary, so a form's MCID 0 was ordered into the page's slot.
+    pub mcid_order: Option<Vec<crate::pipeline::reading_order::structure_tree::McidKey>>,
 
     /// Ordered article-thread bead rectangles for this page, in `/N` order
     /// (ISO 32000-1:2008 §12.4.3). Set only when the document declares
@@ -124,7 +131,10 @@ impl ReadingOrderContext {
     }
 
     /// Set MCID order from structure tree traversal.
-    pub fn with_mcid_order(mut self, mcid_order: Vec<u32>) -> Self {
+    pub fn with_mcid_order(
+        mut self,
+        mcid_order: Vec<crate::pipeline::reading_order::structure_tree::McidKey>,
+    ) -> Self {
         self.has_structure_tree = true;
         self.mcid_order = Some(mcid_order);
         self

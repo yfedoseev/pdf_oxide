@@ -54,13 +54,15 @@ pub use spatial_table_detector::{
     detect_tables_from_spans, DetectedTable, SpatialTableDetector, TableDetectionConfig,
 };
 pub use table_extractor::{
-    extract_table, extract_table_from_spans, find_table_elements, find_table_elements_all_pages,
-    Table, TableCell, TableRow,
+    extract_table, extract_table_from_spans, extract_table_from_spans_on_page,
+    extract_table_on_page, find_table_elements, find_table_elements_all_pages, Table, TableCell,
+    TableRow,
 };
 pub use traversal::{
     extract_reading_order, traverse_structure_tree, traverse_structure_tree_all_pages, ListRole,
     OrderedContent,
 };
+pub(crate) use types::{resolve_mcid_key, unambiguous_mcid_scopes};
 pub use types::{
     ActualTextIndex, MarkInfo, McidScope, ParentTree, StructChild, StructElem, StructTreeRoot,
     StructType,

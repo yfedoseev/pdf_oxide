@@ -47,7 +47,9 @@ pub(crate) mod separation_renderer;
 pub mod sidecar;
 mod text_rasterizer;
 
-pub use page_renderer::{ImageFormat, PageRenderer, RenderOptions, RenderedImage};
+pub use page_renderer::{
+    ImageFormat, PageRenderer, RenderOptions, RenderedImage, DEFAULT_MAX_OUTPUT_PIXELS,
+};
 pub use separation_renderer::{render_separation, render_separations, SeparationPlate};
 
 use crate::content::GraphicsState;
@@ -123,6 +125,95 @@ pub(crate) fn pdf_blend_mode_to_skia(mode: &str) -> tiny_skia::BlendMode {
 /// device units, which an earlier 1e8 bound discarded.
 const MAX_DEVICE_COORD: f64 = 5.0e8;
 
+/// The rectangle a page is rendered to: its `/CropBox` clipped to the
+/// `/MediaBox`, or the media box when no crop box is given.
+///
+/// ISO 32000-1:2008 Table 30 on `/CropBox`: "A rectangle ... that shall define
+/// the visible region of default user space. When the page is displayed or
+/// printed, its contents **shall be clipped (cropped) to this rectangle** ...
+/// Default value: the value of MediaBox."
+///
+/// The crop box was parsed onto `PageInfo` and then never consulted by either
+/// renderer, so a cropped scan rendered at full media size showing the margins
+/// the file asked to have cropped away. §14.11.2 also has the crop box taken as
+/// its intersection with the media box, so a crop box larger than the medium
+/// does not enlarge the page.
+pub(crate) fn page_render_box(
+    media_box: &crate::geometry::Rect,
+    crop_box: Option<&crate::geometry::Rect>,
+) -> crate::geometry::Rect {
+    let Some(crop) = crop_box else {
+        return *media_box;
+    };
+    let x0 = crop.x.max(media_box.x);
+    let y0 = crop.y.max(media_box.y);
+    let x1 = (crop.x + crop.width).min(media_box.x + media_box.width);
+    let y1 = (crop.y + crop.height).min(media_box.y + media_box.height);
+    // A crop box that does not overlap the medium describes nothing to show;
+    // fall back to the media box rather than rendering an empty page.
+    if x1 <= x0 || y1 <= y0 {
+        return *media_box;
+    }
+    crate::geometry::Rect::from_points(x0, y0, x1, y1)
+}
+
+/// The page extent in points after the `/Rotate` turn, as `(width, height)`.
+///
+/// ISO 32000-1:2008 §7.7.3.3 Table 30: `/Rotate` is clockwise and a multiple
+/// of 90, so a quarter turn swaps the axes.
+pub(crate) fn rotated_page_extent(media_box: &crate::geometry::Rect, rotation: i32) -> (f32, f32) {
+    if rotation.rem_euclid(360) == 90 || rotation.rem_euclid(360) == 270 {
+        (media_box.height, media_box.width)
+    } else {
+        (media_box.width, media_box.height)
+    }
+}
+
+/// The page's base transform: PDF user space to device pixels, including the
+/// `/Rotate` turn and the y-up to y-down flip.
+///
+/// **Every case here has a negative determinant.** The flip from PDF's y-up
+/// user space to the raster's y-down rows contributes one reflection, and a
+/// quarter turn contributes none — so a matrix with a *positive* determinant
+/// is a mirror image, not a rotation. That is a cheap invariant to check and
+/// it is the one that failed: the composite renderer's 270° case was
+/// corrected to `from_row(0, -s, -s, 0, …)` (determinant −s²) and the
+/// separation renderer's copy was left as `from_row(0, s, -s, 0, …)`
+/// (determinant +s²), so every ink plate of a `/Rotate 270` page came out
+/// mirrored while the composite of the same page did not. Two renderers of
+/// one page disagreed, which is why this lives in one place now.
+///
+/// `rotation` may be negative — `/Rotate -90` is legal and means 270 — so it
+/// is normalised here rather than at each call site.
+pub(crate) fn page_base_transform(
+    media_box: &crate::geometry::Rect,
+    rotation: i32,
+    scale: f32,
+) -> tiny_skia::Transform {
+    use tiny_skia::Transform;
+    let origin = Transform::from_translate(-media_box.x, -media_box.y);
+    let (_, page_h) = rotated_page_extent(media_box, rotation);
+    match rotation.rem_euclid(360) {
+        // 90° CW: PDF (x, y) -> device (y·s, x·s).
+        90 => origin.post_concat(Transform::from_row(0.0, scale, scale, 0.0, 0.0, 0.0)),
+        180 => origin
+            .post_scale(-scale, scale)
+            .post_translate(media_box.width * scale, 0.0),
+        // 270° CW: PDF (x, y) -> device ((H − y)·s, (W − x)·s).
+        270 => origin.post_concat(Transform::from_row(
+            0.0,
+            -scale,
+            -scale,
+            0.0,
+            media_box.height * scale,
+            media_box.width * scale,
+        )),
+        _ => origin
+            .post_scale(scale, -scale)
+            .post_translate(0.0, page_h * scale),
+    }
+}
+
 /// How far a stroke's outline may reach from its centerline, in device
 /// units, before the width is narrowed. Measured separately from
 /// [`MAX_DEVICE_COORD`] because it is a separate failure: a 10x10 rect
@@ -174,6 +265,31 @@ pub(crate) fn device_bounds_rasterizable(
     transform: tiny_skia::Transform,
 ) -> bool {
     device_bounds(path, transform).is_some_and(|b| b.iter().all(|c| c.abs() <= MAX_DEVICE_COORD))
+}
+
+/// Whether a path's device bounds lie wholly outside a `width` x `height`
+/// pixmap — i.e. the region it describes contains none of the page.
+///
+/// Used to tell two very different unrasterizable clips apart. A clip with
+/// enormous coordinates that still *encloses* the page restricts nothing that
+/// is visible, so discarding it is harmless. A clip placed far off-page
+/// excludes everything, and discarding it paints the entire page that the file
+/// asked to be hidden — ISO 32000-1:2008 §8.5.4 says content outside the
+/// clipping path shall not be painted, and a blank page is the correct output
+/// there. Annex C.1 licenses *having* an arithmetic limit; it does not license
+/// resolving past one in the direction that paints more.
+///
+/// `None` bounds (a non-finite corner) are not "outside" — nothing can be
+/// concluded about them, so they are left to the caller's fallback.
+pub(crate) fn device_bounds_miss_pixmap(
+    path: &tiny_skia::Path,
+    transform: tiny_skia::Transform,
+    width: u32,
+    height: u32,
+) -> bool {
+    device_bounds(path, transform).is_some_and(|[min_x, min_y, max_x, max_y]| {
+        max_x < 0.0 || max_y < 0.0 || min_x > f64::from(width) || min_y > f64::from(height)
+    })
 }
 
 /// Whether a draw is worth handing to tiny_skia for a `width` x `height`

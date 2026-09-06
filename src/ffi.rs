@@ -4732,7 +4732,7 @@ pub extern "C" fn pdf_certificate_free(handle: *mut std::ffi::c_void) {
 #[cfg(feature = "rendering")]
 use crate::rendering::{
     self, ImageFormat as RenderImageFormat, RenderOptions as RustRenderOptions,
-    RenderedImage as RustRenderedImage,
+    RenderedImage as RustRenderedImage, DEFAULT_MAX_OUTPUT_PIXELS as RENDER_MAX_OUTPUT_PIXELS,
 };
 
 #[cfg(feature = "rendering")]
@@ -4859,6 +4859,7 @@ pub extern "C" fn pdf_render_page_with_options(
         // OCG layer filtering is exposed on the variant
         // `pdf_render_page_with_options_ex` below — keeping this ABI stable.
         let opts = RustRenderOptions {
+            max_output_pixels: RENDER_MAX_OUTPUT_PIXELS,
             dpi: dpi as u32,
             format: fmt,
             background,
@@ -4963,6 +4964,7 @@ pub extern "C" fn pdf_render_page_with_options_ex(
         }
 
         let opts = RustRenderOptions {
+            max_output_pixels: RENDER_MAX_OUTPUT_PIXELS,
             dpi: dpi as u32,
             format: fmt,
             background,
@@ -8340,6 +8342,80 @@ pub extern "C" fn pdf_document_classify_page(
         },
         Err(e) => {
             set_error(error_code, classify_error(&e));
+            ptr::null_mut()
+        },
+    }
+}
+
+/// The document's structured diagnostics as a malloc'd JSON array; free via
+/// the string-free. `"[]"` when there are none.
+///
+/// Non-destructive: a later call returns the same entries plus any raised
+/// since. Use `pdf_document_take_structured_warnings` to drain.
+///
+/// ```json
+/// [{"category":"no_text_layer","page":0,
+///   "message":"page 1 has no extractable text layer…","spec_section":null}]
+/// ```
+///
+/// `category` is a stable snake_case token. **Consumers must tolerate tokens
+/// they do not know** — categories are added in minor releases, so a binding
+/// that models this as a closed enum turns a routine release into a
+/// deserialisation failure for its users. Keep it a string, or give the enum
+/// an unknown-value arm.
+///
+/// This is the channel the library reports *about* extraction on. Nothing is
+/// written into the extracted content itself: a page with no text extracts as
+/// nothing and says so here, carrying the page index, so a caller can decide
+/// whether to surface it, where, and in what language.
+#[no_mangle]
+pub extern "C" fn pdf_document_structured_warnings(
+    handle: *mut PdfDocument,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match serde_json::to_string(&doc.structured_warnings()) {
+        Ok(j) => {
+            set_error(error_code, ERR_SUCCESS);
+            to_c_string(&j)
+        },
+        Err(e) => {
+            set_error(
+                error_code,
+                classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+            );
+            ptr::null_mut()
+        },
+    }
+}
+
+/// As `pdf_document_structured_warnings`, but drains: the returned entries are
+/// removed, so a batch pipeline can read per document without the sink growing
+/// across the run.
+#[no_mangle]
+pub extern "C" fn pdf_document_take_structured_warnings(
+    handle: *mut PdfDocument,
+    error_code: *mut i32,
+) -> *mut c_char {
+    if handle.is_null() {
+        set_error(error_code, ERR_INVALID_ARG);
+        return ptr::null_mut();
+    }
+    let doc = handle_ref(handle);
+    match serde_json::to_string(&doc.take_structured_warnings()) {
+        Ok(j) => {
+            set_error(error_code, ERR_SUCCESS);
+            to_c_string(&j)
+        },
+        Err(e) => {
+            set_error(
+                error_code,
+                classify_error(&crate::error::Error::InvalidOperation(e.to_string())),
+            );
             ptr::null_mut()
         },
     }

@@ -1,0 +1,11 @@
+# A CodeQL model pack for this repository. Code scanning detects packs under
+# .github/codeql/extensions automatically (default and advanced setup alike);
+# the models in it refine how the standard queries read a dependency, and
+# change nothing about which queries run.
+name: yfedoseev/pdf-oxide-pyo3-models
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/rust-all: "*"
+dataExtensions:
+  - "*.model.yml"

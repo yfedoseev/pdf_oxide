@@ -244,6 +244,33 @@ public final class PdfDocument implements AutoCloseable {
     }
 
     /**
+     * This document's structured diagnostics, as a raw JSON array string
+     * ({@code "[]"} when there are none). Non-destructive: a later call
+     * returns the same entries plus any raised since.
+     *
+     * <p>Each entry looks like {@code {"category":"no_text_layer","page":0,
+     * "message":"…","spec_section":null}}. The {@code category} token is
+     * open-ended — new ones ship in minor releases, so keep it a string and
+     * tolerate tokens this version does not know.
+     *
+     * @return a JSON array string; never {@code null}.
+     */
+    public String structuredWarnings() {
+        return nativeStructuredWarnings(checkHandle());
+    }
+
+    /**
+     * As {@link #structuredWarnings()}, but drains: the returned entries are
+     * removed, so a batch pipeline can read per document without the sink
+     * growing across the run.
+     *
+     * @return a JSON array string; never {@code null}.
+     */
+    public String takeStructuredWarnings() {
+        return nativeTakeStructuredWarnings(checkHandle());
+    }
+
+    /**
      * Render a page to PNG bytes at the default 150 DPI. Requires
      * the {@code rendering} Cargo feature on the {@code pdf_oxide_jni}
      * build (included in the {@code full} feature, which the
@@ -553,6 +580,10 @@ public final class PdfDocument implements AutoCloseable {
     private static native String nativeCreator(long handle);
 
     private static native String nativeExtractTextAuto(long handle, int pageIndex);
+
+    private static native String nativeStructuredWarnings(long handle);
+
+    private static native String nativeTakeStructuredWarnings(long handle);
 
     private static native String nativeExtractStructured(long handle, int pageIndex);
 

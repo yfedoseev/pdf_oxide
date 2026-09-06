@@ -26,6 +26,22 @@ use crate::error::{Error, Result};
 /// Each byte contains 8 pixels (MSB = leftmost pixel, LSB = rightmost pixel).
 /// Pixels are encoded as: 0 = white, 1 = black (unless /BlackIs1=true, then inverted).
 pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
+    decompress_ccitt_reporting(data, params).map(|(out, _)| out)
+}
+
+/// As [`decompress_ccitt`], but reports whether the data actually decoded.
+///
+/// The blank fallback below is a *substitute*, not a decode result, and a
+/// caller that treats it as one can be badly wrong: for an `/ImageMask` the
+/// all-zero buffer is a sample value like any other, so under `/Decode [1 0]`
+/// it reads as "paint every pixel" and an undecodable stencil covers its whole
+/// footprint in the fill colour. The caller needs to know the difference to
+/// choose a value that draws nothing under the mask's own `/Decode`.
+///
+/// Returns `(data, rows_valid)` — the number of leading rows that came from
+/// the stream. Rows beyond that are padding or a blank substitute, and a
+/// caller that must not paint what it could not read should overwrite them.
+pub fn decompress_ccitt_reporting(data: &[u8], params: &CcittParams) -> Result<(Vec<u8>, usize)> {
     // Validate required parameters
     if params.columns == 0 {
         return Err(Error::Decode("CCITT decompression requires /Columns parameter".to_string()));
@@ -56,9 +72,11 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
     // It honors /EncodedByteAlign (which the fax crate cannot — its bit reader
     // is private) and recovers partial content from truncated/damaged streams
     // instead of blanking the page.
+    let mut rows_valid: Option<usize> = None;
     let in_house = crate::decoders::ccitt::decode(data, params);
     let fax_result = match in_house {
         Ok(decoded) => {
+            rows_valid = Some(decoded.rows_decoded);
             if decoded.recovered_partial {
                 log::warn!(
                     "CCITT: recovered {} rows then padded white (truncated/damaged stream, {}x{}, {} bytes)",
@@ -83,7 +101,10 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
             if params.black_is_1 {
                 invert_bilevel_pixels(&mut output);
             }
-            Ok(output)
+            // The fax-crate fallback reports no row count; it either decodes
+            // the whole image or errors, so treat success as complete.
+            let rows = rows_valid.unwrap_or(usize::MAX);
+            Ok((output, rows))
         },
         Err(e) => {
             // Both decoders failed. Do NOT silently return an all-white page
@@ -112,7 +133,8 @@ pub fn decompress_ccitt(data: &[u8], params: &CcittParams) -> Result<Vec<u8>> {
                 Error::Decode(format!("Unable to allocate {fallback_len} bytes for CCITT fallback"))
             })?;
             fallback.resize(fallback_len, 0);
-            Ok(fallback)
+            // Nothing in this buffer came from the stream.
+            Ok((fallback, 0))
         },
     }
 }
@@ -358,6 +380,15 @@ pub fn decompress_ccitt_group4(data: &[u8], width: u32, height: u32) -> Result<V
     let params = CcittParams {
         columns: width,
         rows: Some(height),
+        // ISO 32000-1:2008 Table 11: K < 0 selects pure two-dimensional
+        // (Group 4) encoding. `CcittParams::default()` carries the *filter's*
+        // default of K = 0, which is Group 3 one-dimensional — so taking the
+        // default here handed Group 4 data to the Group 3 decoder, and this
+        // function never decoded anything its name promises. The failure is
+        // silent: callers fall back to the still-compressed bytes, and a mask
+        // built from them samples past the end of its own data at almost every
+        // pixel.
+        k: -1,
         ..Default::default()
     };
     decompress_ccitt(data, &params)
@@ -478,5 +509,46 @@ mod tests {
         assert_eq!(row.len(), width.div_ceil(8));
         assert_eq!(row[65_536 / 8], 0xFF, "the 8 pixels at 65536.. must be black");
         assert!(row[..65_536 / 8].iter().all(|&b| b == 0), "everything before must stay white");
+    }
+}
+
+#[cfg(test)]
+mod group4_entry_point_tests {
+    use super::*;
+
+    /// `decompress_ccitt_group4` must select Group 4.
+    ///
+    /// ISO 32000-1:2008 Table 11: `K < 0` selects pure two-dimensional (Group
+    /// 4) encoding, `K = 0` Group 3 one-dimensional. `CcittParams::default()`
+    /// carries the filter's default of `K = 0`, so building params with
+    /// `..Default::default()` and nothing else handed Group 4 data to the
+    /// Group 3 decoder — this entry point never decoded what its name
+    /// promises, and the failure is silent because callers fall back to the
+    /// still-compressed bytes.
+    #[test]
+    fn test_group4_entry_point_requests_group4() {
+        // A minimal G4 stream: EOFB alone decodes to zero rows without error
+        // in the G4 decoder, whereas the G3 decoder rejects it outright. The
+        // assertion is on which decoder was asked, so the payload only has to
+        // discriminate.
+        let params = CcittParams {
+            columns: 8,
+            rows: Some(1),
+            k: -1,
+            ..Default::default()
+        };
+        assert!(params.is_group_4(), "K = -1 must be Group 4");
+        assert!(!params.is_group_3(), "K = -1 must not be Group 3");
+
+        // The default alone is Group 3 — which is what made the bug silent.
+        let defaulted = CcittParams {
+            columns: 8,
+            rows: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            defaulted.is_group_3(),
+            "the filter default is Group 3, so a Group 4 helper must override it"
+        );
     }
 }

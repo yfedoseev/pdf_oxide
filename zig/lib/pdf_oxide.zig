@@ -1053,6 +1053,20 @@ pub const Document = struct {
         return takeString(alloc, c.pdf_document_classify_document(self.handle, &code), code);
     }
 
+    /// The document's structured diagnostics as a raw JSON array ("[]" when
+    /// there are none); caller owns it. Non-destructive. Each entry's
+    /// `category` is an open-ended snake_case token — tolerate unknown ones.
+    pub fn structuredWarnings(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_structured_warnings(self.handle, &code), code);
+    }
+
+    /// As `structuredWarnings`, but drains: the returned entries are removed.
+    pub fn takeStructuredWarnings(self: Document, alloc: std.mem.Allocator) Error![]u8 {
+        var code: i32 = 0;
+        return takeString(alloc, c.pdf_document_take_structured_warnings(self.handle, &code), code);
+    }
+
     // ── PHASE-8: header / footer / artifact removal ───────────────────────────
 
     /// Erase the detected running header from a (0-based) page. Returns a status.

@@ -1402,7 +1402,7 @@ where
                 PrescanResult::Empty => return Ok(()),
                 PrescanResult::Regions(regions) => {
                     for (start, end) in &regions {
-                        parse_region_text_only(&data[*start..*end], &mut handler)?;
+                        parse_region_text_only(&data[*start..*end], &mut handler, false)?;
                     }
                     return Ok(());
                 },
@@ -1427,7 +1427,7 @@ where
                                 size: font_size,
                             })?;
                         }
-                        parse_region_text_only(&data[*start..*end], &mut handler)?;
+                        parse_region_text_only(&data[*start..*end], &mut handler, true)?;
                         handler(Operator::RestoreState)?;
                     }
                     return Ok(());
@@ -1582,7 +1582,7 @@ where
 /// safer half of a full cross-region marked-content-state carry, which
 /// isn't needed for the reported failure mode: it can only ever end scopes
 /// this region opened, never fabricate a scope's original tag/properties).
-fn parse_region_text_only<F>(data: &[u8], handler: &mut F) -> Result<()>
+fn parse_region_text_only<F>(data: &[u8], handler: &mut F, bracketed: bool) -> Result<()>
 where
     F: FnMut(Operator) -> Result<()>,
 {
@@ -1591,6 +1591,7 @@ where
     let mut inside_text = false;
     let mut op_count: usize = 0;
     let mut mc_depth: u32 = 0;
+    let mut q_depth: u32 = 0;
     let mut call = |op: Operator, handler: &mut F| -> Result<()> {
         match &op {
             Operator::BeginMarkedContent { .. } | Operator::BeginMarkedContentDict { .. } => {
@@ -1598,6 +1599,22 @@ where
             },
             Operator::EndMarkedContent => {
                 mc_depth = mc_depth.saturating_sub(1);
+            },
+            Operator::SaveState if bracketed => {
+                q_depth += 1;
+            },
+            Operator::RestoreState if bracketed => {
+                if q_depth == 0 {
+                    // A `Q` whose `q` lies OUTSIDE this region. The caller
+                    // wrapped the region in its own SaveState/RestoreState so
+                    // that one region's state cannot leak into the next;
+                    // forwarding this would pop that injected save instead,
+                    // and every later region would then inherit this region's
+                    // CTM. The `q` it was meant to match was never replayed,
+                    // so there is nothing here for it to close: drop it.
+                    return Ok(());
+                }
+                q_depth -= 1;
             },
             _ => {},
         }
@@ -1714,6 +1731,14 @@ where
     // open when the region started.
     for _ in 0..mc_depth {
         handler(Operator::EndMarkedContent)?;
+    }
+
+    // Balance any `q` this region opened but did not close, for the same
+    // reason: an unclosed save would still be on the stack when the caller
+    // emits its RestoreState, so the caller would pop the region's `q` rather
+    // than its own and the region's CTM would leak into every region after it.
+    for _ in 0..q_depth {
+        handler(Operator::RestoreState)?;
     }
 
     Ok(())
@@ -2239,6 +2264,14 @@ fn build_operator(name: &str, operands: SmallVec<[Object; 6]>) -> Operator {
             }
         },
         "S" => Operator::Stroke,
+        // ISO 32000-1:2008 Table 60 (pdf.md:9532): `s` is "the same effect as
+        // the sequence h S". `parse_content_stream_paths_only` decomposes it,
+        // but this table — which the streaming parser and therefore annotation
+        // appearance streams go through — had no entry at all, so the operator
+        // was dropped and the path never stroked. Widget borders are commonly
+        // drawn exactly this way (`0 G 0.5 0.5 149 21 re s`), which is why
+        // AcroForm field borders were missing across the corpus.
+        "s" => Operator::CloseAndStroke,
         "f" | "F" => Operator::Fill, // "F" is obsolete equivalent of "f" (nonzero winding fill)
         "f*" => Operator::FillEvenOdd,
         "b" => Operator::CloseFillStroke,

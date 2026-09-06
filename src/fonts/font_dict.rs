@@ -129,6 +129,15 @@ pub struct FontInfo {
     /// CFF byte_code → glyph_id mapping for embedded CFF subset fonts.
     /// Allows direct glyph rendering without Unicode cmap.
     pub cff_gid_map: Option<HashMap<u8, u16>>,
+    /// CID → GID mapping read from a **CID-keyed** CFF's charset.
+    ///
+    /// ISO 32000-1:2008 §9.7.4.2 (`docs/spec/pdf.md`:18641-18644): when the
+    /// embedded CFF's Top DICT uses CIDFont operators, "the CIDs shall be used
+    /// to determine the GID value for the glyph procedure using the charset
+    /// table in the CFF program" — and the NOTE at :18646 warns the two "may
+    /// differ". `None` means the font is not CID-keyed, in which case the same
+    /// clause (:18649-18650) says the CIDs are the GIDs.
+    pub cff_cid_to_gid: Option<HashMap<u16, u16>>,
     /// Pre-computed byte→char lookup for simple (non-Type0) fonts.
     /// Index by byte value (0-255). '\0' means "use full char_to_unicode fallback".
     /// Built lazily on first text decode. Avoids per-byte HashMap lookups.
@@ -608,14 +617,18 @@ impl FontInfo {
             // user-defined CharProcs glyph-program model; the
             // standard glyph name registry doesn't apply, so
             // extraction may fall back to glyph-name heuristics.
-            crate::extractors::warnings::push_global_warning(
-                crate::extractors::warnings::Warning {
-                    category: crate::extractors::warnings::WarningCategory::Type3Font,
-                    page: None,
-                    message: msg,
-                    spec_section: Some("9.6.4"),
-                },
-            );
+            // Straight to THIS document's sink. The free-function sink is
+            // keyed by thread, not by document, so two documents parsed in
+            // sequence on one thread take each other's warnings. `from_dict`
+            // already holds `doc`, so no signature has to change — and it must
+            // not, because this is a `pub fn` and the crate ships bindings for
+            // fourteen languages.
+            doc.push_structured_warning(crate::extractors::warnings::Warning {
+                category: crate::extractors::warnings::WarningCategory::Type3Font,
+                page: None,
+                message: msg,
+                spec_section: Some("9.6.4"),
+            });
         }
 
         // Parse FontMatrix [a] for Type 3 fonts.
@@ -1080,14 +1093,15 @@ impl FontInfo {
                 // Spec §9.10.2 "ToUnicode CMaps" describes the
                 // mapping; absent ToUnicode triggers the fallback
                 // chain (Encoding → AGL → CID-as-Unicode) per §9.10.3.
-                crate::extractors::warnings::push_global_warning(
-                    crate::extractors::warnings::Warning {
-                        category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
-                        page: None,
-                        message: msg,
-                        spec_section: Some("9.10.2"),
-                    },
-                );
+                // Same reasoning as the Type 3 site above: the document is
+                // already in scope, so the warning is attributed to it rather
+                // than to whichever thread happened to parse it.
+                doc.push_structured_warning(crate::extractors::warnings::Warning {
+                    category: crate::extractors::warnings::WarningCategory::ToUnicodeMissing,
+                    page: None,
+                    message: msg,
+                    spec_section: Some("9.10.2"),
+                });
             }
             None
         };
@@ -1295,6 +1309,24 @@ impl FontInfo {
         // tables are frequently sparse (some prepress subsetters emit only
         // `space` and `A`) and would silently drop most content bytes to
         // `.notdef` without this routing.
+        // A CID-keyed CFF carries its own CID -> GID table in the charset, and
+        // §9.7.4.2 requires it to be used. Only built for Type0, since the
+        // clause is about CIDFonts; `None` for everything else means "the CID
+        // is the GID", which is the other half of the same clause.
+        let cff_cid_to_gid = if subtype == "Type0" {
+            embedded_font_data.as_ref().and_then(|data| {
+                super::cff_encoding::parse_cff_cid_to_gid(data).inspect(|map| {
+                    log::debug!(
+                        "Font '{}': CID-keyed CFF, {} CID->GID entries from the charset",
+                        base_font,
+                        map.len()
+                    );
+                })
+            })
+        } else {
+            None
+        };
+
         let cff_gid_map = if subtype != "Type0" {
             embedded_font_data.as_ref().and_then(|data| {
                 super::cff_encoding::parse_cff_gid_mapping_with_pdf_encoding(
@@ -1476,6 +1508,7 @@ impl FontInfo {
             cid_default_width,
             has_explicit_dw,
             cff_gid_map,
+            cff_cid_to_gid,
             multi_char_map: diff_multi_char_map,
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2104,6 +2137,31 @@ fn wrap_cff_in_opentype(cff_data: &[u8]) -> Vec<u8> {
     let entry_selector: u16 = 2;
     let range_shift: u16 = (num_tables * 16) - search_range;
 
+    // The em size the CFF's charstrings are actually drawn in.
+    //
+    // ISO 32000-1:2008 §9.2.2 (`docs/spec/pdf.md`:8459-8461): "The
+    // transformation from glyph space to text space shall be defined by the
+    // font matrix. For most types of fonts, this matrix shall be predefined to
+    // map 1000 units of glyph space to 1 unit of text space." *Most* — a CFF
+    // may declare its own `/FontMatrix` (Adobe TN #5176, operator 12 7), and
+    // subsetters from a 2048-unit-em workflow routinely emit 1/2048.
+    //
+    // This head table is ours, fabricated to wrap a bare CFF, and the
+    // rasteriser scales every outline by `font_size / units_per_em` read from
+    // it. Writing 1000 unconditionally therefore painted a 2048-unit font at
+    // 2.048x its intended size. Advances were unaffected — they come from
+    // `/Widths` — so the glyphs simply overlapped and smeared, which on one
+    // form rendered the whole page about 21 grey levels too dark.
+    //
+    // Only a plain uniform scale is folded in; anything skewed, rotated or
+    // non-uniform keeps the 1000 default, which is also the CFF default.
+    let units_per_em: u16 = crate::fonts::cff_encoding::parse_cff_font_matrix_scale(cff_data)
+        .map(|sx| (1.0 / sx).round())
+        .filter(|u| (16.0..=16384.0).contains(u))
+        .map(|u| u as u16)
+        .unwrap_or(1000);
+    let [upem_hi, upem_lo] = units_per_em.to_be_bytes();
+
     // Minimal head table (54 bytes) — OpenType spec required fields
     let head_table: [u8; 54] = [
         0x00, 0x01, 0x00, 0x00, // majorVersion=1, minorVersion=0
@@ -2111,7 +2169,7 @@ fn wrap_cff_in_opentype(cff_data: &[u8]) -> Vec<u8> {
         0x00, 0x00, 0x00, 0x00, // checksumAdjustment (0, will be ignored)
         0x5F, 0x0F, 0x3C, 0xF5, // magicNumber
         0x00, 0x0B, // flags (baseline at y=0, lsb at x=0, etc)
-        0x03, 0xE8, // unitsPerEm = 1000
+        upem_hi, upem_lo, // unitsPerEm, from the CFF's own /FontMatrix
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // created (0)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // modified (0)
         0xFF, 0x38, // xMin = -200
@@ -3021,7 +3079,85 @@ impl FontInfo {
         }
         let is_times = std14.is_times;
         let code = char_code as u8;
+        if let Some(w) = self.winansi_punctuation_width(std14, is_times, is_bold, code) {
+            return Some(w);
+        }
         self.std14_width(std14, is_times, is_bold, code)
+    }
+
+    /// Standard-14 widths for the WinAnsi punctuation above ASCII.
+    ///
+    /// The per-family tables in [`Self::std14_width`] run from 32 to 126 and
+    /// return `None` past that, so an en dash (150) or em dash (151) falls
+    /// through to the generic `default_width` of 550/1000 em. Helvetica advances
+    /// an em dash by a full em, so a caption reading
+    /// `TABLE 66.01-11(5)-COORDINATES` measured 3.648 pt narrower than its ink
+    /// — 3.600 from the em dash, 0.048 from the en dash — and the span ended
+    /// short of the run beside it.
+    ///
+    /// ISO 32000-1:2008 §9.6.2.2 (docs/spec/pdf.md:17706) has the reader supply
+    /// the metrics when a Standard-14 dictionary omits `/Widths`; §9.4.4
+    /// (:17433) then spends them on the text matrix. Annex D.2 gives the code
+    /// for each glyph. Values are the Adobe Core-14 AFM advances — the same
+    /// argument `5d711c2e` made for completing these tables across ASCII.
+    ///
+    /// WinAnsiEncoding names these glyphs at these codes. StandardEncoding is
+    /// admitted because Annex D.2 leaves 128..=159 unused there, so a byte in
+    /// that range against a Standard-14 font is a producer writing CP1252 and
+    /// the decoder already reads it that way. MacRomanEncoding *does* define
+    /// that range and keeps the previous behaviour, as does any `/Differences`.
+    fn winansi_punctuation_width(
+        &self,
+        std14: Std14Flags,
+        is_times: bool,
+        is_bold: bool,
+        code: u8,
+    ) -> Option<f32> {
+        // The two encodings put these glyphs at different codes, so which
+        // encoding is named decides which codes mean what. Annex D.2 lists
+        // both: WinAnsi has the em dash at 151, StandardEncoding at 208.
+        let is_italic = std14.is_italic || std14.is_bold_italic;
+        let endash = if is_times { 500.0 } else { 556.0 };
+        let emdash = if is_times && is_italic && !is_bold {
+            889.0
+        } else {
+            1000.0
+        };
+        let ellipsis = emdash;
+        let quotedbl = match (is_times, is_bold, is_italic) {
+            (true, false, true) => 556.0,
+            (true, true, true) => 500.0,
+            (true, _, _) => 444.0,
+            (false, true, _) => 500.0,
+            (false, false, _) => 333.0,
+        };
+        let quotesingle = if is_times {
+            333.0
+        } else if is_bold {
+            278.0
+        } else {
+            222.0
+        };
+        let Encoding::Standard(name) = &self.encoding else {
+            return None;
+        };
+        Some(match (name.as_str(), code) {
+            // WinAnsiEncoding: the CP1252 punctuation block.
+            ("WinAnsiEncoding", 150) => endash,
+            ("WinAnsiEncoding", 151) => emdash,
+            ("WinAnsiEncoding", 133) => ellipsis,
+            ("WinAnsiEncoding", 149) => 350.0,
+            ("WinAnsiEncoding", 145 | 146) => quotesingle,
+            ("WinAnsiEncoding", 147 | 148) => quotedbl,
+            // StandardEncoding places the same glyphs elsewhere entirely.
+            ("StandardEncoding", 177) => endash,
+            ("StandardEncoding", 208) => emdash,
+            ("StandardEncoding", 188) => ellipsis,
+            ("StandardEncoding", 183) => 350.0,
+            ("StandardEncoding", 170) => quotedbl,
+            ("StandardEncoding", 186) => quotedbl,
+            _ => return None,
+        })
     }
 
     /// Classify `base_font` against the Standard-14 set (ISO 32000-1 Annex D).
@@ -3152,6 +3288,7 @@ impl FontInfo {
                     93 => 333.0,
                     94 => 570.0,
                     95 => 500.0,
+                    96 => 333.0, // StandardEncoding: quoteleft, not grave
                     97 => 500.0,
                     98 => 500.0,
                     99 => 444.0,
@@ -3178,6 +3315,10 @@ impl FontInfo {
                     120 => 500.0,
                     121 => 444.0,
                     122 => 389.0,
+                    123 => 348.0,
+                    124 => 220.0,
+                    125 => 348.0,
+                    126 => 570.0,
                     _ => return None,
                 });
             }
@@ -3239,6 +3380,7 @@ impl FontInfo {
                     93 => 333.0,
                     94 => 581.0,
                     95 => 500.0,
+                    96 => 333.0, // StandardEncoding: quoteleft, not grave
                     97 => 500.0,
                     98 => 556.0,
                     99 => 444.0,
@@ -3265,6 +3407,10 @@ impl FontInfo {
                     120 => 500.0,
                     121 => 500.0,
                     122 => 444.0,
+                    123 => 394.0,
+                    124 => 220.0,
+                    125 => 394.0,
+                    126 => 520.0,
                     _ => return None,
                 });
             }
@@ -3326,6 +3472,7 @@ impl FontInfo {
                     93 => 389.0,
                     94 => 422.0,
                     95 => 500.0,
+                    96 => 333.0, // StandardEncoding: quoteleft, not grave
                     97 => 500.0,
                     98 => 500.0,
                     99 => 444.0,
@@ -3352,6 +3499,10 @@ impl FontInfo {
                     120 => 444.0,
                     121 => 444.0,
                     122 => 389.0,
+                    123 => 400.0,
+                    124 => 275.0,
+                    125 => 400.0,
+                    126 => 541.0,
                     _ => return None,
                 });
             }
@@ -3418,6 +3569,9 @@ impl FontInfo {
                 91 => 333.0,
                 92 => 278.0,
                 93 => 333.0,
+                94 => 469.0,
+                95 => 500.0,
+                96 => 333.0, // StandardEncoding: quoteleft, not grave
                 97 => 444.0,
                 98 => 500.0,
                 99 => 444.0,
@@ -3444,6 +3598,10 @@ impl FontInfo {
                 120 => 500.0,
                 121 => 500.0,
                 122 => 444.0,
+                123 => 480.0,
+                124 => 200.0,
+                125 => 480.0,
+                126 => 541.0,
                 _ => return None,
             });
         }
@@ -3456,6 +3614,15 @@ impl FontInfo {
                     32 => 278.0,
                     33 => 333.0,
                     34 => 474.0,
+                    35 => 556.0,
+                    36 => 556.0,
+                    37 => 889.0,
+                    38 => 722.0,
+                    39 => 278.0, // StandardEncoding: quoteright, not quotesingle
+                    40 => 333.0,
+                    41 => 333.0,
+                    42 => 389.0,
+                    43 => 584.0,
                     44 => 278.0,
                     45 => 333.0,
                     46 => 278.0,
@@ -3463,6 +3630,11 @@ impl FontInfo {
                     48..=57 => 556.0,
                     58 => 333.0,
                     59 => 333.0,
+                    60 => 584.0,
+                    61 => 584.0,
+                    62 => 584.0,
+                    63 => 611.0,
+                    64 => 975.0,
                     65 => 722.0,
                     66 => 722.0,
                     67 => 722.0,
@@ -3489,6 +3661,12 @@ impl FontInfo {
                     88 => 667.0,
                     89 => 667.0,
                     90 => 611.0,
+                    91 => 333.0,
+                    92 => 278.0,
+                    93 => 333.0,
+                    94 => 584.0,
+                    95 => 556.0,
+                    96 => 278.0, // StandardEncoding: quoteleft, not grave
                     97 => 556.0,
                     98 => 611.0,
                     99 => 556.0,
@@ -3515,6 +3693,10 @@ impl FontInfo {
                     120 => 556.0,
                     121 => 556.0,
                     122 => 500.0,
+                    123 => 389.0,
+                    124 => 280.0,
+                    125 => 389.0,
+                    126 => 584.0,
                     _ => return None,
                 });
             }
@@ -3522,6 +3704,15 @@ impl FontInfo {
                 32 => 278.0,
                 33 => 278.0,
                 34 => 355.0,
+                35 => 556.0,
+                36 => 556.0,
+                37 => 889.0,
+                38 => 667.0,
+                39 => 222.0, // StandardEncoding: quoteright, not quotesingle
+                40 => 333.0,
+                41 => 333.0,
+                42 => 389.0,
+                43 => 584.0,
                 44 => 278.0,
                 45 => 333.0,
                 46 => 278.0,
@@ -3529,6 +3720,11 @@ impl FontInfo {
                 48..=57 => 556.0, // digits
                 58 => 278.0,
                 59 => 278.0,
+                60 => 584.0,
+                61 => 584.0,
+                62 => 584.0,
+                63 => 556.0,
+                64 => 1015.0,
                 65 => 667.0,
                 66 => 667.0,
                 67 => 722.0,
@@ -3555,6 +3751,12 @@ impl FontInfo {
                 88 => 667.0,
                 89 => 667.0,
                 90 => 611.0,
+                91 => 278.0,
+                92 => 278.0,
+                93 => 278.0,
+                94 => 469.0,
+                95 => 556.0,
+                96 => 222.0, // StandardEncoding: quoteleft, not grave
                 97 => 556.0,
                 98 => 556.0,
                 99 => 500.0,
@@ -3580,7 +3782,11 @@ impl FontInfo {
                 119 => 722.0,
                 120 => 500.0,
                 121 => 500.0,
-                122 => 444.0,
+                122 => 500.0, // Adobe AFM: Helvetica z is 500; 444 is the Times value
+                123 => 334.0,
+                124 => 260.0,
+                125 => 334.0,
+                126 => 584.0,
                 _ => return None,
             });
         }
@@ -6435,6 +6641,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6478,6 +6685,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6524,6 +6732,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6567,6 +6776,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6616,6 +6826,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6666,6 +6877,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6715,6 +6927,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6762,6 +6975,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -6907,6 +7121,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7042,6 +7257,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7095,6 +7311,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7141,6 +7358,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7191,6 +7409,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7237,6 +7456,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7283,6 +7503,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7333,6 +7554,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7379,6 +7601,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7425,6 +7648,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7475,6 +7699,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7520,6 +7745,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7565,6 +7791,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7610,6 +7837,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7655,6 +7883,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7700,6 +7929,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7745,6 +7975,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7790,6 +8021,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -7835,6 +8067,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8128,6 +8361,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8185,6 +8419,7 @@ mod tests {
             cid_default_width: 800.0, // CID default width
             has_explicit_dw: true,    // F15: /DW was explicitly set
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8238,6 +8473,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8301,6 +8537,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -8361,6 +8598,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10541,6 +10779,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10595,6 +10834,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10645,6 +10885,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10693,6 +10934,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10747,6 +10989,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(
@@ -10898,6 +11141,7 @@ mod tests {
             cid_default_width: 1000.0,
             has_explicit_dw: false,
             cff_gid_map: None,
+            cff_cid_to_gid: None,
             multi_char_map: HashMap::new(),
             byte_to_char_table: std::sync::OnceLock::new(),
             type0_unicode_memo: std::sync::Arc::new(std::sync::Mutex::new(

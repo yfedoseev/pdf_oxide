@@ -22,6 +22,29 @@ pub struct EncryptionWriteHandler {
 }
 
 impl EncryptionWriteHandler {
+    /// Create a handler that encrypts with an **explicit** file encryption key.
+    ///
+    /// ISO 32000-2 Algorithm 8 (AES-256, R6) generates one random file
+    /// encryption key, wraps it into `/UE` and `/OE`, and requires every string
+    /// and stream to use that same key. There is nothing to re-derive from the
+    /// password, so the key must be carried from
+    /// [`crate::encryption::EncryptDictBuilder::build_with_key`] to here —
+    /// deriving one
+    /// independently produces a file whose `/UE` wraps one key while its
+    /// streams are encrypted under another, which authenticates and then
+    /// decrypts to noise.
+    pub fn with_file_key(
+        encryption_key: Vec<u8>,
+        algorithm: Algorithm,
+        encrypt_metadata: bool,
+    ) -> Self {
+        Self {
+            encryption_key,
+            algorithm,
+            encrypt_metadata,
+        }
+    }
+
     /// Create a new encryption write handler.
     ///
     /// # Arguments
