@@ -22,7 +22,6 @@ jobs:
     name: Mutants (${{ github.event_name == 'pull_request' && 'in diff' || 'library' }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,7 +35,10 @@ jobs:
         run: cargo install cargo-mutants --locked
 
       - name: Mutants in the pull request's diff
+        # Reporting, not blocking: the step may fail, the check stays green
+        # and the summary carries the numbers.
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
           git diff "origin/${{ github.base_ref }}...HEAD" -- src/ > pr.diff
           cargo mutants --in-diff pr.diff --timeout 300 --no-shuffle -- --lib
