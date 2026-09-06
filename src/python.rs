@@ -1292,48 +1292,6 @@ impl PyPdfDocument {
         }
     }
 
-    /// Return the (possibly edited) document as encrypted bytes.
-    ///
-    /// Equivalent to `save_encrypted` but returns bytes instead of writing to disk.
-    /// Useful for in-memory pipelines where writing a temporary file is undesirable.
-    #[pyo3(signature = (user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
-    fn to_bytes_encrypted<'py>(
-        &mut self,
-        py: Python<'py>,
-        user_password: &str,
-        owner_password: Option<&str>,
-        allow_print: bool,
-        allow_copy: bool,
-        allow_modify: bool,
-        allow_annotate: bool,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        use crate::editor::{EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions};
-        self.ensure_editor()?;
-        let editor = self
-            .editor
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("No editor initialized."))?;
-        let owner_pwd = owner_password.unwrap_or(user_password);
-        let permissions = Permissions {
-            print: allow_print,
-            print_high_quality: allow_print,
-            modify: allow_modify,
-            copy: allow_copy,
-            annotate: allow_annotate,
-            fill_forms: allow_annotate,
-            accessibility: true,
-            assemble: allow_modify,
-        };
-        let config = EncryptionConfig::new(user_password, owner_pwd)
-            .with_algorithm(EncryptionAlgorithm::Aes256)
-            .with_permissions(permissions);
-        let options = SaveOptions::with_encryption(config);
-        let bytes = editor
-            .save_to_bytes_with_options(options)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to encrypt PDF: {}", e)))?;
-        Ok(PyBytes::new(py, &bytes))
-    }
-
     /// Set document metadata title.
     fn set_title(&mut self, title: &str) -> PyResult<()> {
         self.ensure_editor()?;
@@ -3032,6 +2990,48 @@ impl PyPdfDocument {
         } else {
             Err(PyRuntimeError::new_err("No editor initialized."))
         }
+    }
+
+    /// Return the (possibly edited) document as encrypted bytes.
+    ///
+    /// Equivalent to `save_encrypted` but returns bytes instead of writing to disk.
+    /// Useful for in-memory pipelines where writing a temporary file is undesirable.
+    #[pyo3(signature = (user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
+    fn to_bytes_encrypted<'py>(
+        &mut self,
+        py: Python<'py>,
+        user_password: &str,
+        owner_password: Option<&str>,
+        allow_print: bool,
+        allow_copy: bool,
+        allow_modify: bool,
+        allow_annotate: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        use crate::editor::{EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions};
+        self.ensure_editor()?;
+        let editor = self
+            .editor
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("No editor initialized."))?;
+        let owner_pwd = owner_password.unwrap_or(user_password);
+        let permissions = Permissions {
+            print: allow_print,
+            print_high_quality: allow_print,
+            modify: allow_modify,
+            copy: allow_copy,
+            annotate: allow_annotate,
+            fill_forms: allow_annotate,
+            accessibility: true,
+            assemble: allow_modify,
+        };
+        let config = EncryptionConfig::new(user_password, owner_pwd)
+            .with_algorithm(EncryptionAlgorithm::Aes256)
+            .with_permissions(permissions);
+        let options = SaveOptions::with_encryption(config);
+        let bytes = editor
+            .save_to_bytes_with_options(options)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to encrypt PDF: {}", e)))?;
+        Ok(PyBytes::new(py, &bytes))
     }
 }
 
