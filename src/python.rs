@@ -56,64 +56,6 @@ impl PyPdfDocument {
 
 #[pymethods]
 impl PyPdfDocument {
-    /// Open a PDF file.
-    ///
-    /// Open a PDF file, optionally with a password for encrypted documents.
-    ///
-    /// Args:
-    ///     path (str | pathlib.Path): Path to the PDF file
-    ///     password (str, optional): Password for encrypted PDFs
-    #[new]
-    #[pyo3(signature = (path, password=None))]
-    #[allow(unused_mut)]
-    fn new(path: PathBuf, password: Option<&str>) -> PyResult<Self> {
-        let mut doc = RustPdfDocument::open(&path)
-            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF: {}", e)))?;
-
-        if let Some(pw) = password {
-            let ok = doc
-                .authenticate(pw.as_bytes())
-                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
-            if !ok {
-                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
-            }
-        }
-
-        let path_str = path.to_string_lossy().into_owned();
-        Ok(PyPdfDocument {
-            inner: doc,
-            path: Some(path_str),
-            raw_bytes: None,
-            editor: None,
-        })
-    }
-
-    /// Open a PDF from bytes, optionally with a password.
-    #[staticmethod]
-    #[pyo3(signature = (data, password=None))]
-    #[allow(unused_mut)]
-    fn from_bytes(data: &Bound<'_, PyBytes>, password: Option<&str>) -> PyResult<Self> {
-        let bytes = data.as_bytes().to_vec();
-        let mut doc = RustPdfDocument::from_bytes(bytes.clone())
-            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF from bytes: {}", e)))?;
-
-        if let Some(pw) = password {
-            let ok = doc
-                .authenticate(pw.as_bytes())
-                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
-            if !ok {
-                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
-            }
-        }
-
-        Ok(PyPdfDocument {
-            inner: doc,
-            path: None,
-            raw_bytes: Some(bytes),
-            editor: None,
-        })
-    }
-
     /// Context manager support.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
@@ -132,13 +74,6 @@ impl PyPdfDocument {
     /// Get PDF version.
     fn version(&self) -> (u8, u8) {
         self.inner.version()
-    }
-
-    /// Authenticate with a password.
-    fn authenticate(&mut self, password: &str) -> PyResult<bool> {
-        self.inner
-            .authenticate(password.as_bytes())
-            .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))
     }
 
     /// Get number of pages.
@@ -3020,6 +2955,83 @@ impl PyPdfDocument {
 
     fn __repr__(&self) -> String {
         format!("PdfDocument(version={}.{})", self.inner.version().0, self.inner.version().1)
+    }
+}
+
+/// The credential-taking entry points live in their own `#[pymethods]` block.
+///
+/// Static analysis reads a `#[pymethods]` block's argument extraction as one
+/// macro expansion, so a `password` argument here would taint every other
+/// method's arguments in the same block — a page index handed to the library
+/// and written to a debug log then reads as cleartext logging of a secret
+/// (30 findings of that shape on one release). Keeping the constructors and
+/// `authenticate` apart makes the analysis precise: only what a password
+/// actually reaches is checked against it.
+#[pymethods]
+impl PyPdfDocument {
+    /// Open a PDF file.
+    ///
+    /// Open a PDF file, optionally with a password for encrypted documents.
+    ///
+    /// Args:
+    ///     path (str | pathlib.Path): Path to the PDF file
+    ///     password (str, optional): Password for encrypted PDFs
+    #[new]
+    #[pyo3(signature = (path, password=None))]
+    #[allow(unused_mut)]
+    fn new(path: PathBuf, password: Option<&str>) -> PyResult<Self> {
+        let mut doc = RustPdfDocument::open(&path)
+            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF: {}", e)))?;
+
+        if let Some(pw) = password {
+            let ok = doc
+                .authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+            if !ok {
+                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
+            }
+        }
+
+        let path_str = path.to_string_lossy().into_owned();
+        Ok(PyPdfDocument {
+            inner: doc,
+            path: Some(path_str),
+            raw_bytes: None,
+            editor: None,
+        })
+    }
+
+    /// Open a PDF from bytes, optionally with a password.
+    #[staticmethod]
+    #[pyo3(signature = (data, password=None))]
+    #[allow(unused_mut)]
+    fn from_bytes(data: &Bound<'_, PyBytes>, password: Option<&str>) -> PyResult<Self> {
+        let bytes = data.as_bytes().to_vec();
+        let mut doc = RustPdfDocument::from_bytes(bytes.clone())
+            .map_err(|e| PyIOError::new_err(format!("Failed to open PDF from bytes: {}", e)))?;
+
+        if let Some(pw) = password {
+            let ok = doc
+                .authenticate(pw.as_bytes())
+                .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))?;
+            if !ok {
+                return Err(PyRuntimeError::new_err("Authentication failed: wrong password"));
+            }
+        }
+
+        Ok(PyPdfDocument {
+            inner: doc,
+            path: None,
+            raw_bytes: Some(bytes),
+            editor: None,
+        })
+    }
+
+    /// Authenticate with a password.
+    fn authenticate(&mut self, password: &str) -> PyResult<bool> {
+        self.inner
+            .authenticate(password.as_bytes())
+            .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))
     }
 }
 
