@@ -5014,6 +5014,11 @@ impl PyLineCap {
     fn SQUARE() -> Self {
         Self::square()
     }
+    /// `LineCap.Round`-style representation, so a value read back from the
+    /// editor's settings can be told apart in a REPL.
+    fn __repr__(&self) -> String {
+        format!("LineCap.{:?}", self.inner)
+    }
 }
 
 #[pyclass(module = "pdf_oxide.pdf_oxide", name = "LineJoin", skip_from_py_object)]
@@ -5055,6 +5060,11 @@ impl PyLineJoin {
     #[allow(non_snake_case)]
     fn BEVEL() -> Self {
         Self::bevel()
+    }
+    /// `LineJoin.Round`-style representation, so a value read back from the
+    /// editor's settings can be told apart in a REPL.
+    fn __repr__(&self) -> String {
+        format!("LineJoin.{:?}", self.inner)
     }
 }
 
