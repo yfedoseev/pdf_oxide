@@ -4024,7 +4024,27 @@ pub fn detect_tables_with_lines(
                     })
                 })
             };
-            banded.retain(|b| !covered(b));
+            // And a band is read only where it continues a grid table:
+            // spanning most of THAT table's measure, and no more than a
+            // couple of rows away. A form's field labels sit between rules
+            // with no grid table beside them; a model summary's three lines
+            // sit under a layers table but cover a fifth of its width. A
+            // row-group of the same table runs its whole measure.
+            let continues_a_grid_table = |band: &Table| {
+                let Some(bb) = band.bbox else { return false };
+                final_tables.iter().any(|t| {
+                    t.bbox.is_some_and(|lb| {
+                        let x_overlap = (lb.x + lb.width).min(bb.x + bb.width) - lb.x.max(bb.x);
+                        let gap = if bb.y > lb.y + lb.height {
+                            bb.y - (lb.y + lb.height)
+                        } else {
+                            lb.y - (bb.y + bb.height)
+                        };
+                        x_overlap >= 0.8 * lb.width && gap <= 24.0
+                    })
+                })
+            };
+            banded.retain(|b| !covered(b) && continues_a_grid_table(b));
             let row_h = median_fragment_row_height(&banded);
             let y_tol = (row_h * 1.5).max(3.0);
             banded = consolidate_adjacent_table_fragments_with_tol(banded, 2.0, y_tol);
