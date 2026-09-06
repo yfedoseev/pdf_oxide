@@ -1292,46 +1292,6 @@ impl PyPdfDocument {
         }
     }
 
-    /// Save encrypted PDF.
-    #[pyo3(signature = (path, user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
-    fn save_encrypted(
-        &mut self,
-        path: &str,
-        user_password: &str,
-        owner_password: Option<&str>,
-        allow_print: bool,
-        allow_copy: bool,
-        allow_modify: bool,
-        allow_annotate: bool,
-    ) -> PyResult<()> {
-        use crate::editor::{
-            EditableDocument, EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions,
-        };
-        self.ensure_editor()?;
-        if let Some(ref mut editor) = self.editor {
-            let owner_pwd = owner_password.unwrap_or(user_password);
-            let permissions = Permissions {
-                print: allow_print,
-                print_high_quality: allow_print,
-                modify: allow_modify,
-                copy: allow_copy,
-                annotate: allow_annotate,
-                fill_forms: allow_annotate,
-                accessibility: true,
-                assemble: allow_modify,
-            };
-            let config = EncryptionConfig::new(user_password, owner_pwd)
-                .with_algorithm(EncryptionAlgorithm::Aes256)
-                .with_permissions(permissions);
-            let options = SaveOptions::with_encryption(config);
-            editor
-                .save_with_options(path, options)
-                .map_err(|e| PyIOError::new_err(format!("Failed to save encrypted PDF: {}", e)))
-        } else {
-            Err(PyRuntimeError::new_err("No editor initialized."))
-        }
-    }
-
     /// Return the (possibly edited) document as encrypted bytes.
     ///
     /// Equivalent to `save_encrypted` but returns bytes instead of writing to disk.
@@ -3032,6 +2992,46 @@ impl PyPdfDocument {
         self.inner
             .authenticate(password.as_bytes())
             .map_err(|e| PyRuntimeError::new_err(format!("Authentication failed: {}", e)))
+    }
+
+    /// Save encrypted PDF.
+    #[pyo3(signature = (path, user_password, owner_password=None, allow_print=true, allow_copy=true, allow_modify=true, allow_annotate=true))]
+    fn save_encrypted(
+        &mut self,
+        path: &str,
+        user_password: &str,
+        owner_password: Option<&str>,
+        allow_print: bool,
+        allow_copy: bool,
+        allow_modify: bool,
+        allow_annotate: bool,
+    ) -> PyResult<()> {
+        use crate::editor::{
+            EditableDocument, EncryptionAlgorithm, EncryptionConfig, Permissions, SaveOptions,
+        };
+        self.ensure_editor()?;
+        if let Some(ref mut editor) = self.editor {
+            let owner_pwd = owner_password.unwrap_or(user_password);
+            let permissions = Permissions {
+                print: allow_print,
+                print_high_quality: allow_print,
+                modify: allow_modify,
+                copy: allow_copy,
+                annotate: allow_annotate,
+                fill_forms: allow_annotate,
+                accessibility: true,
+                assemble: allow_modify,
+            };
+            let config = EncryptionConfig::new(user_password, owner_pwd)
+                .with_algorithm(EncryptionAlgorithm::Aes256)
+                .with_permissions(permissions);
+            let options = SaveOptions::with_encryption(config);
+            editor
+                .save_with_options(path, options)
+                .map_err(|e| PyIOError::new_err(format!("Failed to save encrypted PDF: {}", e)))
+        } else {
+            Err(PyRuntimeError::new_err("No editor initialized."))
+        }
     }
 }
 
