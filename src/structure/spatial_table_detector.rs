@@ -3976,6 +3976,63 @@ pub fn detect_tables_with_lines(
     // Filter out invalid line-based tables BEFORE overlap checking so that
     // spurious line-based tables don't shadow valid text-based ones.
     final_tables.retain(is_valid_table);
+    // The intersection grid is built from closed cells, so a rule-bounded
+    // band whose rows are closed on only some sides never becomes a group.
+    // A booktabs table whose row-groups are separated by full-width rules,
+    // with hairlines between a few of its columns and a shaded last row per
+    // group, yields a grid for the groups whose shaded rows and hairlines
+    // close their cells — and nothing for a group's unshaded rows: they are
+    // bounded above and below by rules and crossed by the hairlines, but
+    // their outer cells have no side. The grid's own slice of that group is
+    // its one shaded row, which the section-divider split then isolates and
+    // the validity filter drops, so the group's rows fall to the prose flow
+    // while the two groups beside it read as tables.
+    //
+    // ISO 32000-1:2008 §14.8.4.3.4 (docs/spec/pdf.md:37805) makes a row the
+    // element that holds its cells, and a row-group bounded by rules is a
+    // run of such rows whether or not every cell is boxed. So the rule
+    // bands are read as well, with the detector the rules-only page uses,
+    // and a band's table is kept where no grid table already covers it.
+    if !final_tables.is_empty() {
+        // Rules only: a shaded row's rectangle contributes an edge too, and
+        // that edge would split a group's band at the shaded row.
+        let rules: Vec<crate::elements::PathContent> = lines
+            .iter()
+            .filter(|p| p.is_horizontal_line(2.0))
+            .cloned()
+            .collect();
+        let (mut h_edges, _) = extract_edges(&rules);
+        if h_edges.len() >= 2 {
+            snap_and_merge(&mut h_edges);
+            let mut banded = detect_tables_from_horizontal_rules(spans, &h_edges, config);
+            // Bands the grid already reads are dropped BEFORE adjacent
+            // bands are consolidated: every rule pair of the table is a
+            // band, and consolidating them first fuses the whole table into
+            // one fragment that overlaps a grid table and is thrown away
+            // with the group the grid missed.
+            // Covered means a grid table spans most of the BAND's height:
+            // the grid's one-row slice of a shaded row overlaps the band
+            // it was cut from, and must not count as reading it.
+            let covered = |band: &Table| {
+                let Some(bb) = band.bbox else { return true };
+                final_tables.iter().any(|t| {
+                    t.bbox.is_some_and(|lb| {
+                        let overlap = (lb.y + lb.height).min(bb.y + bb.height) - lb.y.max(bb.y);
+                        overlap > 0.5 * bb.height
+                            && lb.x < bb.x + bb.width
+                            && bb.x < lb.x + lb.width
+                    })
+                })
+            };
+            banded.retain(|b| !covered(b));
+            let row_h = median_fragment_row_height(&banded);
+            let y_tol = (row_h * 1.5).max(3.0);
+            banded = consolidate_adjacent_table_fragments_with_tol(banded, 2.0, y_tol);
+            banded.retain(|t| t.rows.len() >= 3);
+            banded.retain(is_valid_table);
+            final_tables.extend(banded);
+        }
+    }
 
     // Only allow text-based fallback if BOTH strategies permit it AND the caller
     // explicitly enabled text-only detection (config.text_fallback=true).
