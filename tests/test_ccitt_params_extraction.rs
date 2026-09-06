@@ -86,8 +86,6 @@ mod ccitt_extraction_tests {
         assert!(!group4_params.is_group_3());
 
         println!("\n✅ CcittParams structure test passed");
-        println!("   - Default Group 3 parameters verified");
-        println!("   - Group 4 detection works correctly");
     }
 
     #[test]

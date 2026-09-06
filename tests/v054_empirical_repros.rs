@@ -137,7 +137,7 @@ fn fix_535_bullet_and_ligature_decode() {
 ///
 /// v0.3.54 filled the gap by treating an uncovered CID as a Unicode
 /// codepoint, which turned this into "Hello", and this test pinned that.
-/// **v0.3.71 removed the guess on purpose** (#773, #775): it emitted
+/// **v0.3.71 removed the guess on purpose**: it emitted
 /// "plausible-but-wrong, content-like" characters — a `ti` ligature became
 /// `:` so `notificacao` read `no:ficacao` — which is silent corruption. For
 /// Identity-ordered fonts the CID-as-Unicode guess is now restricted to
