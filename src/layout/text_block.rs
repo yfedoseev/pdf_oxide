@@ -1332,7 +1332,7 @@ mod tests {
     /// phantom gaps that opens are what the word-gap clusterer splits on:
     /// `Coast Guard, Department` came out as `C|o|ast G|u|ard, D|e|partm|ent`.
     #[test]
-    fn a_char_takes_its_width_from_the_next_offset() {
+    fn test_char_takes_its_width_from_the_next_offset() {
         // Offsets are correct and evenly 6 pt apart; the widths are nonsense.
         let span = TextSpan {
             text: "Cat".to_string(),
@@ -1361,7 +1361,7 @@ mod tests {
     /// "Indic-guarded model" — so those keep the nominal width rather than
     /// collapsing to zero.
     #[test]
-    fn a_zero_offset_step_keeps_the_nominal_width() {
+    fn test_zero_offset_step_keeps_the_nominal_width() {
         let span = TextSpan {
             text: "ka".to_string(),
             bbox: Rect::new(100.0, 200.0, 6.0, 8.0),
@@ -1386,7 +1386,7 @@ mod tests {
     /// runs place successive glyphs at decreasing x, and subtracting there
     /// would give a negative width — those keep the nominal value.
     #[test]
-    fn a_backward_offset_step_keeps_the_nominal_width() {
+    fn test_backward_offset_step_keeps_the_nominal_width() {
         let span = TextSpan {
             text: "ab".to_string(),
             bbox: Rect::new(100.0, 200.0, 12.0, 8.0),

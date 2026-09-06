@@ -31,7 +31,7 @@ fn rotated_line_of_separate_runs_pdf() -> Vec<u8> {
 }
 
 #[test]
-fn a_rotated_line_drawn_as_separate_runs_groups_into_one_line() {
+fn test_rotated_line_drawn_as_separate_runs_groups_into_one_line() {
     let doc = PdfDocument::from_bytes(rotated_line_of_separate_runs_pdf()).expect("parse fixture");
     let words = doc.extract_words(0).expect("extract words");
     let lines = doc.extract_text_lines(0).expect("extract lines");
@@ -174,7 +174,7 @@ fn parallel_rotated_lines_on_rotated_page_pdf() -> Vec<u8> {
 }
 
 #[test]
-fn a_rotate_page_keeps_one_line_per_rotated_run() {
+fn test_rotate_page_keeps_one_line_per_rotated_run() {
     let doc = PdfDocument::from_bytes(parallel_rotated_lines_on_rotated_page_pdf())
         .expect("parse fixture");
     let lines = doc.extract_text_lines(0).expect("extract lines");
@@ -227,7 +227,7 @@ fn rotated_line_with_late_subscript_pdf() -> Vec<u8> {
 }
 
 #[test]
-fn a_merged_rotated_line_reads_in_writing_axis_order() {
+fn test_merged_rotated_line_reads_in_writing_axis_order() {
     let doc =
         PdfDocument::from_bytes(rotated_line_with_late_subscript_pdf()).expect("parse fixture");
     let lines = doc.extract_text_lines(0).expect("extract lines");

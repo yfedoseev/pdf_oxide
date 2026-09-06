@@ -526,7 +526,7 @@ mod group4_entry_point_tests {
     /// promises, and the failure is silent because callers fall back to the
     /// still-compressed bytes.
     #[test]
-    fn the_group4_entry_point_requests_group4() {
+    fn test_group4_entry_point_requests_group4() {
         // A minimal G4 stream: EOFB alone decodes to zero rows without error
         // in the G4 decoder, whereas the G3 decoder rejects it outright. The
         // assertion is on which decoder was asked, so the payload only has to

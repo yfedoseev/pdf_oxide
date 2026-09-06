@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deliberate_dark_grey_is_not_document_black() {
+    fn test_deliberate_dark_grey_is_not_document_black() {
         // The rule recognises the conversion's own output, not "anything
         // dark" — an author's dark grey must keep its colour.
         assert!(!is_document_black(0.2, 0.2, 0.2));

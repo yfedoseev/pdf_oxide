@@ -397,7 +397,7 @@ mod sink_scope_tests {
 
     /// A repeated warning is recorded once, not once per occurrence.
     #[test]
-    fn an_identical_warning_is_not_recorded_repeatedly() {
+    fn test_identical_warning_is_not_recorded_repeatedly() {
         let _ = drain_global_warnings();
         for _ in 0..50 {
             push_global_warning(w("one malformed font, warned per glyph"));
@@ -408,7 +408,7 @@ mod sink_scope_tests {
     /// A reader that never drains does not grow without bound, and is told
     /// how many were dropped rather than silently losing them.
     #[test]
-    fn the_sink_is_bounded_and_reports_what_it_dropped() {
+    fn test_sink_is_bounded_and_reports_what_it_dropped() {
         let _ = drain_global_warnings();
         for i in 0..MAX_SINK_ENTRIES + 25 {
             push_global_warning(w(&format!("distinct {i}")));

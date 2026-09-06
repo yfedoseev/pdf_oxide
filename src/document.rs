@@ -26466,7 +26466,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unpinned_entry_is_evicted_under_the_same_pressure() {
+    fn test_unpinned_entry_is_evicted_under_the_same_pressure() {
         // The control for the test above: it would pass vacuously if the flood
         // did not actually evict anything. Same budget, same flood, ordinary
         // insert — and the entry must be gone, which is exactly what happened
@@ -26508,7 +26508,7 @@ mod tests {
     }
 
     #[test]
-    fn an_all_pinned_cache_does_not_spin() {
+    fn test_all_pinned_cache_does_not_spin() {
         // Eviction rotates past pinned entries; with nothing evictable it must
         // terminate rather than cycle the queue forever.
         let mut cache = BoundedObjectCache::new(512);
@@ -28139,7 +28139,7 @@ mod tests {
     }
 
     #[test]
-    fn a_soft_hyphen_inside_one_span_survives() {
+    fn test_soft_hyphen_inside_one_span_survives() {
         // A span is one run drawn on one line, so a marker inside it sits at
         // no line break and was painted. Annex D Note 5
         // (`docs/spec/pdf.md`:41814) makes WinAnsi code 255 "typographically
@@ -34184,14 +34184,14 @@ mod soft_hyphen_scope_tests {
     /// `TextPostProcessor::rejoin_hyphenated_words` needs the wrap marker to
     /// rejoin the next line without inserting a space.
     #[test]
-    fn a_fragment_final_marker_is_kept_on_its_own() {
+    fn test_fragment_final_marker_is_kept_on_its_own() {
         assert_eq!(strip("ultrasonographi\u{00AD}"), "ultrasonographi\u{00AD}");
     }
 
     /// ... and is removed once the next fragment proves it was a mid-word
     /// split on the same line, with nothing between the two halves.
     #[test]
-    fn a_marker_between_two_adjacent_fragments_is_kept() {
+    fn test_marker_between_two_adjacent_fragments_is_kept() {
         assert_eq!(
             strip_seam("ultrasonographi\u{00AD}", "", "cally"),
             "ultrasonographi\u{00AD}cally"
@@ -34201,7 +34201,7 @@ mod soft_hyphen_scope_tests {
     /// A line break between the fragments means it was a wrap marker, so it
     /// survives for the converter to act on.
     #[test]
-    fn a_marker_before_a_line_break_survives_as_the_wrap_marker() {
+    fn test_marker_before_a_line_break_survives_as_the_wrap_marker() {
         assert_eq!(strip_seam("wonder\u{00AD}", "\n", "ful"), "wonder\u{00AD}\nful");
     }
 
@@ -34218,7 +34218,7 @@ mod soft_hyphen_scope_tests {
     /// The genuine wrap is still closed, one level up, by
     /// `join_soft_hyphen_wraps` on assembled text.
     #[test]
-    fn the_seam_never_joins_on_adjacency_alone() {
+    fn test_seam_never_joins_on_adjacency_alone() {
         assert_eq!(strip_seam("wonder\u{00AD}", "", "ful"), "wonder\u{00AD}ful");
         assert_eq!(strip_seam("wonder\u{00AD}", " ", "ful"), "wonder\u{00AD} ful");
     }
@@ -34227,7 +34227,7 @@ mod soft_hyphen_scope_tests {
     /// point at all — it is a glyph or a misdecoded byte — and nothing is
     /// joined across it.
     #[test]
-    fn a_marker_not_preceded_by_a_letter_joins_nothing() {
+    fn test_marker_not_preceded_by_a_letter_joins_nothing() {
         assert_eq!(strip_seam("log \u{00AD}", " ", "p"), "log \u{00AD} p");
     }
 
@@ -34249,7 +34249,7 @@ mod soft_hyphen_scope_tests {
     /// the previous release agreed with pymupdf and pypdf **exactly** while
     /// closing the wrap moved us away from poppler, pymupdf and pypdf at once.
     #[test]
-    fn a_wrap_separated_by_whitespace_is_left_alone() {
+    fn test_wrap_separated_by_whitespace_is_left_alone() {
         assert_eq!(
             join("a truly wonder\u{00AD} ful example"),
             "a truly wonder\u{00AD} ful example"
@@ -34271,20 +34271,20 @@ mod soft_hyphen_scope_tests {
     /// A misdecoded GBK sequence puts 0xAD after a non-letter; those bytes are
     /// content and must survive.
     #[test]
-    fn a_mojibake_byte_is_not_treated_as_hyphenation() {
+    fn test_mojibake_byte_is_not_treated_as_hyphenation() {
         assert_eq!(join("\u{00A1}\u{00AD} \u{00A1}\u{00AD}"), "\u{00A1}\u{00AD} \u{00A1}\u{00AD}");
     }
 
     /// A font that maps U+00AD to a delimiter glyph leaves it between spaces,
     /// so it is not hyphenation either.
     #[test]
-    fn a_delimiter_glyph_is_not_treated_as_hyphenation() {
+    fn test_delimiter_glyph_is_not_treated_as_hyphenation() {
         assert_eq!(join("log \u{00AD} p \u{00AE}"), "log \u{00AD} p \u{00AE}");
     }
 
     /// A paragraph break is never swallowed, even after a marker.
     #[test]
-    fn a_blank_line_after_a_marker_is_preserved() {
+    fn test_blank_line_after_a_marker_is_preserved() {
         assert_eq!(join("word\u{00AD}\n\nNext"), "word\u{00AD}\n\nNext");
     }
 
@@ -34292,7 +34292,7 @@ mod soft_hyphen_scope_tests {
     /// word — it is a new sentence, a heading, or the next column of a scan.
     /// Gluing them produced "preThe" across a multi-column newspaper scan.
     #[test]
-    fn an_uppercase_continuation_across_a_wrap_is_not_joined() {
+    fn test_uppercase_continuation_across_a_wrap_is_not_joined() {
         assert_eq!(
             join("The bill to pre\u{00AD} The clerk of laid bill"),
             "The bill to pre\u{00AD} The clerk of laid bill"
@@ -34315,7 +34315,7 @@ mod soft_hyphen_scope_tests {
     /// marker between contiguous glyphs is a hyphenation point whatever case
     /// follows.
     #[test]
-    fn the_seam_refuses_an_uppercase_continuation_either_way() {
+    fn test_seam_refuses_an_uppercase_continuation_either_way() {
         assert_eq!(strip_seam("pre\u{00AD}", " ", "The"), "pre\u{00AD} The");
         // This produced `preThe` for one release, which is the defect the
         // uppercase guard above was written to prevent and could not.
@@ -34325,7 +34325,7 @@ mod soft_hyphen_scope_tests {
     /// The column-boundary case this restriction exists for: a wrap that ends
     /// a column, followed by a fragment from the next column.
     #[test]
-    fn a_column_ending_wrap_does_not_swallow_the_next_column() {
+    fn test_column_ending_wrap_does_not_swallow_the_next_column() {
         assert_eq!(
             strip_seam("the prin\u{00AD}", " ", "from the icene"),
             "the prin\u{00AD} from the icene"
@@ -34338,7 +34338,7 @@ mod soft_hyphen_scope_tests {
     /// inconsistent with the letter-and-digit case immediately below — both
     /// rest on the same Annex D note, and both markers are equally drawn.
     #[test]
-    fn a_marker_between_two_letters_is_kept_too() {
+    fn test_marker_between_two_letters_is_kept_too() {
         assert_eq!(strip("Pharmaceu\u{00AD}ticals"), "Pharmaceu\u{00AD}ticals");
     }
 
@@ -34346,19 +34346,19 @@ mod soft_hyphen_scope_tests {
     /// as hyphen", so a producer using it in a part number draws a visible
     /// hyphen. Removing it deletes a character the reader sees.
     #[test]
-    fn a_marker_between_a_letter_and_a_digit_is_kept() {
+    fn test_marker_between_a_letter_and_a_digit_is_kept() {
         assert_eq!(strip("SS\u{00AD}2541"), "SS\u{00AD}2541");
     }
 
     #[test]
-    fn a_marker_between_two_digits_is_kept() {
+    fn test_marker_between_two_digits_is_kept() {
         assert_eq!(strip("2023\u{00AD}06\u{00AD}15"), "2023\u{00AD}06\u{00AD}15");
     }
 
     /// A 0xAD that is the low half of a misdecoded multi-byte sequence, and a
     /// maths font mapping U+00AD to a delimiter glyph: neither is hyphenation.
     #[test]
-    fn a_marker_next_to_punctuation_or_space_is_kept() {
+    fn test_marker_next_to_punctuation_or_space_is_kept() {
         assert_eq!(strip("\u{00A1}\u{00AD}"), "\u{00A1}\u{00AD}");
         assert_eq!(strip("log \u{00AD} p"), "log \u{00AD} p");
     }
@@ -34367,7 +34367,7 @@ mod soft_hyphen_scope_tests {
     /// end of a fragment is the wrap marker for an already-hyphenated
     /// compound, and must survive so the rejoiner keeps the real hyphen.
     #[test]
-    fn a_marker_after_a_hyphen_minus_still_survives() {
+    fn test_marker_after_a_hyphen_minus_still_survives() {
         assert_eq!(strip("Cross-\u{00AD}"), "Cross-\u{00AD}");
     }
 }
@@ -34420,7 +34420,7 @@ mod soft_hyphen_seam_tests {
     /// The marker has to survive, and the seam has to become non-empty so that
     /// nothing downstream reads string adjacency as page adjacency.
     #[test]
-    fn a_backward_seam_keeps_the_marker_and_separates_the_runs() {
+    fn test_backward_seam_keeps_the_marker_and_separates_the_runs() {
         // The exact geometry of the `con` + `and` seam.
         let prev = seam_span("con\u{00AD}", 315.45, 639.61, 19.28, 9.9);
         let span = seam_span("and ", 294.82, 639.20, 17.70, 9.9);
@@ -34439,7 +34439,7 @@ mod soft_hyphen_seam_tests {
     /// The counter-case at the same seam: a real line wrap, one line down and
     /// back to the left margin. Both halves join and the marker goes.
     #[test]
-    fn a_line_wrap_closes_and_consumes_the_span() {
+    fn test_line_wrap_closes_and_consumes_the_span() {
         let prev = seam_span("admini\u{00AD}", 430.0, 700.0, 30.0, 10.0);
         let span = seam_span("stration", 72.0, 686.0, 38.0, 10.0);
         let mut text = String::from("the admini\u{00AD}");
@@ -34470,7 +34470,7 @@ mod soft_hyphen_seam_tests {
     /// A marker with no letter after it is a glyph or a misdecoded byte, not
     /// hyphenation, and nothing here applies.
     #[test]
-    fn a_marker_before_a_non_letter_is_not_a_seam() {
+    fn test_marker_before_a_non_letter_is_not_a_seam() {
         let prev = seam_span("re\u{00AD}", 315.0, 640.0, 12.0, 9.9);
         let span = seam_span("42", 281.0, 639.4, 11.0, 9.9);
         let mut text = String::from("re\u{00AD}");
@@ -34483,7 +34483,7 @@ mod soft_hyphen_seam_tests {
     /// accepted wraps sit at 1.08-1.40 em of baseline drop, the false joins at
     /// -0.29 to +0.59 em.
     #[test]
-    fn the_classifier_separates_wraps_from_band_jitter() {
+    fn test_classifier_separates_wraps_from_band_jitter() {
         let em = 10.0;
         assert_eq!(PdfDocument::soft_hyphen_seam(em, 14.0, -30.0), SoftHyphenSeam::Close);
         assert_eq!(PdfDocument::soft_hyphen_seam(em, 0.41, -39.9), SoftHyphenSeam::Keep);

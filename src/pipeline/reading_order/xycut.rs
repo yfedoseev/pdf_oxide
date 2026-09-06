@@ -2715,7 +2715,7 @@ mod tests {
     /// advance too, so justified prose measured about a ninth short and lines
     /// that genuinely reached the right margin went uncounted.
     #[test]
-    fn a_cut_crossed_by_full_measure_lines_is_refused() {
+    fn test_cut_crossed_by_full_measure_lines_is_refused() {
         let strategy = XYCutStrategy::new();
         let spans = full_measure_page(true);
         let indices: Vec<usize> = (0..spans.len()).collect();
@@ -2733,7 +2733,7 @@ mod tests {
     /// valley is found, and the cut IS taken. So the assertion above turns on
     /// the guard rather than on the valley never being detected at all.
     #[test]
-    fn the_same_fragment_geometry_alone_is_still_cut() {
+    fn test_same_fragment_geometry_alone_is_still_cut() {
         let strategy = XYCutStrategy::new();
         let spans = full_measure_page(false);
         let indices: Vec<usize> = (0..spans.len()).collect();
@@ -3724,7 +3724,7 @@ mod tests {
     /// there to 235 and holds `is`, `no`, `then` and `like` (the defect); or
     /// they run to x≈212, past those words, so the valley is 212..235 and
     /// holds nothing — an ordinary corridor beside a dense block.
-    fn a_paragraph_split_at_a_word_gap(listing_reaches_the_words: bool) -> Vec<TextSpan> {
+    fn paragraph_split_at_a_word_gap(listing_reaches_the_words: bool) -> Vec<TextSpan> {
         let size = 10.0;
         let gap = 0.81 * size;
         let w = |s: &str| s.chars().count() as f32 * 0.5 * size;
@@ -3772,9 +3772,9 @@ mod tests {
     /// short words on three rows. The cut must be refused, or `pro-` is
     /// emitted apart from `ceeds`.
     #[test]
-    fn a_corridor_that_holds_words_is_not_a_gutter() {
+    fn test_corridor_that_holds_words_is_not_a_gutter() {
         let strategy = XYCutStrategy::new();
-        let spans = a_paragraph_split_at_a_word_gap(true);
+        let spans = paragraph_split_at_a_word_gap(true);
         let indices: Vec<usize> = (0..spans.len()).collect();
         assert!(
             strategy
@@ -3791,9 +3791,9 @@ mod tests {
     /// This pins that the refusal is about what the corridor holds, not
     /// about the full lines between the rows, which are here too.
     #[test]
-    fn the_same_block_with_an_empty_corridor_still_takes_the_cut() {
+    fn test_same_block_with_an_empty_corridor_still_takes_the_cut() {
         let strategy = XYCutStrategy::new();
-        let spans = a_paragraph_split_at_a_word_gap(false);
+        let spans = paragraph_split_at_a_word_gap(false);
         let indices: Vec<usize> = (0..spans.len()).collect();
         assert!(
             strategy
@@ -3810,7 +3810,7 @@ mod tests {
     /// nameplate is emitted after the whole body instead of at the top of the
     /// page where it is printed.
     #[test]
-    fn a_masthead_side_under_a_banner_is_still_refused() {
+    fn test_masthead_side_under_a_banner_is_still_refused() {
         let strategy = XYCutStrategy::new();
         let line = "abcdefghij klmnopqrst uvwxyzabcd efghijklmn opqrstuvwx";
         let mut spans = vec![make_span_text(
@@ -3895,7 +3895,7 @@ mod tests {
     /// rows that blanket the right column are most of the side, the region is
     /// a table and cutting it vertically shreds its rows.
     #[test]
-    fn a_page_whose_rows_are_mostly_full_measure_still_vetoes_the_cut() {
+    fn test_page_whose_rows_are_mostly_full_measure_still_vetoes_the_cut() {
         let strategy = XYCutStrategy::new();
         let spans = two_columns_with_full_measure_lines(30, 6);
         let indices: Vec<usize> = (0..spans.len()).collect();

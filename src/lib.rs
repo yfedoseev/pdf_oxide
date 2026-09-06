@@ -1017,7 +1017,7 @@ pub(crate) mod utils {
         /// `Department` — splitting one phrase and gluing its second half to
         /// the line below.
         #[test]
-        fn a_tall_centred_run_does_not_join_a_short_row_beside_it() {
+        fn test_tall_centred_run_does_not_join_a_short_row_beside_it() {
             let spans = vec![
                 row_span(723.0, 8.2, "Prescribed by Treasury"),
                 row_span(716.0, 8.3, "Department"),
@@ -1292,7 +1292,7 @@ pub(crate) mod utils {
         /// logical reading order.
         /// Two spans in one band at the same x still order by baseline.
         #[test]
-        fn a_sub_band_baseline_difference_still_decides() {
+        fn test_sub_band_baseline_difference_still_decides() {
             assert_eq!(
                 row_aware_span_cmp(98.36, 232.08, 98.21, 232.08),
                 Ordering::Less,
@@ -1315,7 +1315,7 @@ pub(crate) mod utils {
         /// real geometry. The two comparators must differ in exactly this way,
         /// or the split has no effect and the hazard comes back.
         #[test]
-        fn the_band_and_x_comparator_leaves_a_same_x_tie_open() {
+        fn test_band_and_x_comparator_leaves_a_same_x_tie_open() {
             assert_eq!(row_band_then_x(98.21, 232.08, 98.36, 232.08), Ordering::Equal);
             assert_eq!(row_aware_span_cmp(98.21, 232.08, 98.36, 232.08), Ordering::Greater);
             // Wherever x differs the two agree, so swapping one for the other
@@ -1336,7 +1336,7 @@ pub(crate) mod utils {
         /// The row key settles the band and `x`; the baseline the page draws
         /// settles what is left.
         #[test]
-        fn a_shared_row_key_leaves_the_baseline_to_decide() {
+        fn test_shared_row_key_leaves_the_baseline_to_decide() {
             use crate::layout::TextSpan;
             let span = |y: f32, text: &str| TextSpan {
                 text: text.to_string(),
@@ -1367,7 +1367,7 @@ pub(crate) mod utils {
 
         /// A different band still wins over x.
         #[test]
-        fn a_different_band_still_wins_over_x() {
+        fn test_different_band_still_wins_over_x() {
             assert_eq!(row_aware_span_cmp(120.0, 400.0, 98.0, 50.0), Ordering::Less);
         }
 
@@ -1381,7 +1381,7 @@ pub(crate) mod utils {
         /// And the cached-key sort must agree with the comparator, or the two
         /// orderings diverge wherever both are used on the same data.
         #[test]
-        fn the_cached_key_sort_agrees_with_the_comparator() {
+        fn test_cached_key_sort_agrees_with_the_comparator() {
             let data = [(98.21_f32, 232.08_f32), (98.36, 232.08), (98.30, 100.0)];
             let mut by_key = data.to_vec();
             sort_by_row_band(&mut by_key, |it| it.0, |it| it.1);

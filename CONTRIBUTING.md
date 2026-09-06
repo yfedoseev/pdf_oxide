@@ -544,6 +544,16 @@ None of these is a judgement about you or about the underlying diagnosis, and
 none is permanent. Closing a pull request costs nothing to undo; a review cycle
 cannot be undone at all, which is the asymmetry all of this exists to manage.
 
+### 8. Test names follow the existing convention
+
+Nine in ten integration test files are `tests/test_<topic>.rs`, and three in four
+test functions are `test_<what_it_proves>`. Keep to that: prefix new test
+functions with `test_` and new integration test files with `test_`, and say what
+the test proves in the rest of the name rather than what it calls. Do not start a
+test name with an article (`a_`, `an_`, `the_`) — that reads well in prose but
+sorts and greps as a third style next to the other two. Fixture-builder helpers
+are plain descriptive names (`paragraph_split_at_a_word_gap`), not test names.
+
 ## Test fixture policy
 
 - **No third-party, copyrighted, or reporter-supplied PDF binaries in the repo.**
