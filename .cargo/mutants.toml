@@ -1,0 +1,5 @@
+# cargo-mutants (mutants.yml): the library is the subject. The CLI binaries
+# and the harness examples are not, and one of the binaries carries syntax
+# the mutator's parser rejects ("expected square brackets"), which stopped
+# the whole run before a single mutant was tried.
+exclude_globs = ["src/bin/**", "examples/**", "pdf_oxide_cli/**", "pdf_oxide_mcp/**", "pdf_oxide_jni/**"]
