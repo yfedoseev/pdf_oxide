@@ -4614,7 +4614,7 @@ impl PdfDocument {
     /// define the visible region of default user space. When the page is
     /// displayed or printed, its contents shall be clipped (cropped) to this
     /// rectangle"; its default is the MediaBox. §14.11.2 (`:40128`): a crop box
-    /// that extends beyond the medium is "effectively reduced to [its]
+    /// that extends beyond the medium is "effectively reduced to \[its\]
     /// intersection with the media box".
     ///
     /// A CropBox that misses the medium entirely, or is written as a
