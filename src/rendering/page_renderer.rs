@@ -801,7 +801,6 @@ impl PageRenderer {
     /// pairs are. That is what makes it safe to express a form's `/BBox` this
     /// way rather than by wrapping the stream's operators in an injected
     /// save/restore, where a stray `Q` would drop the clip partway through.
-    #[allow(clippy::too_many_arguments)]
     fn execute_operators_clipped(
         &mut self,
         pixmap: &mut Pixmap,
@@ -5216,7 +5215,6 @@ impl PageRenderer {
     /// Returns `Some(true)` when the pattern was painted, `Some(false)` when
     /// the named pattern is not a shading pattern (so the caller falls back to
     /// its flat-colour path), and `None` when the mask cannot be built.
-    #[allow(clippy::too_many_arguments)]
     fn image_mask_shading_pattern(
         &mut self,
         pixmap: &mut Pixmap,
@@ -5553,7 +5551,6 @@ impl PageRenderer {
     /// under a transform that does not yet implement that fit trims real
     /// content rather than the content the file meant to hide, so the
     /// appearance path keeps its existing behaviour until the fit lands.
-    #[allow(clippy::too_many_arguments)]
     fn render_form_xobject_scoped(
         &mut self,
         pixmap: &mut Pixmap,
@@ -5593,7 +5590,6 @@ impl PageRenderer {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_form_xobject_inner(
         &mut self,
         pixmap: &mut Pixmap,

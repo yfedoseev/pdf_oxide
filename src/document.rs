@@ -13904,18 +13904,6 @@ impl PdfDocument {
         std::mem::take(&mut *self.accumulated_warnings.lock_or_recover())
     }
 
-    /// Record an extraction warning as a bare string.
-    ///
-    /// Superseded by [`Self::push_structured_warning`]. Both producers that
-    /// used this now emit a categorised warning instead, so a consumer can
-    /// filter on the category and read the page rather than pattern-matching
-    /// English. Retained only so `warnings()` keeps its shape for the
-    /// deprecation window.
-    #[allow(dead_code)]
-    pub(crate) fn push_warning(&self, msg: impl Into<String>) {
-        self.accumulated_warnings.lock_or_recover().push(msg.into());
-    }
-
     /// Return the document's accumulated structured warnings as a
     /// snapshot. Each entry carries the warning's
     /// [`WarningCategory`](crate::extractors::warnings::WarningCategory),
