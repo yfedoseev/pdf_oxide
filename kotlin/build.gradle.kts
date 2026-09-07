@@ -63,8 +63,10 @@ tasks.test {
 // come from CI env (ORG_GRADLE_PROJECT_mavenCentralUsername / *Password /
 // signingInMemoryKey / *Password), same secrets family as the Java binding.
 // GPG-signs all publications; autoPublish is left to the release-gate workflow.
+// The host argument is gone from the plugin: post-OSSRH there is only the
+// Central Portal, so `publishToMavenCentral()` targets it unconditionally.
 mavenPublishing {
-    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL, automaticRelease = false)
+    publishToMavenCentral(automaticRelease = false)
     signAllPublications()
     coordinates("fyi.oxide", "pdf-oxide-kotlin", version.toString())
     pom {
