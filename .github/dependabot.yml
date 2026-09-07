@@ -89,3 +89,112 @@ updates:
       - "dependencies"
       - "ruby"
     open-pull-requests-limit: 5
+
+  # Maven / Java binding
+  - package-ecosystem: "maven"
+    directory: "/java"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "java"
+
+  # Gradle / Kotlin binding
+  - package-ecosystem: "gradle"
+    directory: "/kotlin"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "kotlin"
+
+  # Composer / PHP binding. Two manifests: Packagist reads the one at the
+  # repo root, local dev uses php/ — they are kept in sync by hand, so both
+  # are watched.
+  - package-ecosystem: "composer"
+    directories:
+      - "/"
+      - "/php"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "php"
+
+  # Dart / Flutter binding
+  - package-ecosystem: "pub"
+    directory: "/dart"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "dart"
+
+  # Elixir binding
+  - package-ecosystem: "mix"
+    directory: "/elixir"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "elixir"
+
+  # Swift binding
+  - package-ecosystem: "swift"
+    directory: "/swift"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "swift"
+
+  # Runnable examples — they pin their own toolchain versions and drift
+  # out of step with the bindings they demonstrate otherwise.
+  - package-ecosystem: "gomod"
+    directories:
+      - "/examples/go/*"
+      - "/examples/go/09-new-features/*"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "go"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "nuget"
+    directories:
+      - "/examples/csharp/*"
+      - "/examples/csharp/09-new-features/*"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "dotnet"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "npm"
+    directory: "/examples/javascript"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "javascript"
+    open-pull-requests-limit: 3

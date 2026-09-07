@@ -2,6 +2,14 @@
 
 All notable changes to PDFOxide are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Every dependency across every language was refreshed against its registry, and three of the bumps needed code** — the audit queried crates.io, npm, PyPI, NuGet, RubyGems, Maven Central, Clojars, Hex, pub.dev, Packagist, CRAN and the GitHub API for the current release of every declared dependency in all eighteen bindings, then applied what was safe to apply. Three Rust upgrades were breaking at the source level rather than merely at the version number: `taffy` 0.14 retyped `min_size` / `max_size` as `LengthPercentageAuto` (only `size` and `flex_basis` still take `Dimension`), `quick-xml` 0.42 moved element names and attribute values from bytes to `str` and made `xml11_content()` return the `Cow` directly instead of a `Result`, and `tract` 0.23 folded the `Arc` into `into_runnable()` and put flat-slice access behind a plain-storage view. The remaining Rust bumps — `brotli` 9, `office_oxide` 0.1.9, `ort` 2.0.0-rc.13, `regex` 1.13, `uuid` 1.26, `smallvec` 1.16, `bytes` 1.12, `crc32fast` 1.5 — are source-compatible. Java moves to JUnit 5.14.4, AssertJ 3.27.7, SLF4J 2.0.19 and current Maven plugins; Kotlin to 2.4.10; Scala to the 3.3.8 LTS; Clojure to cljfmt 0.16.5 and tools.build 0.10.14; .NET to Test SDK 18.9.0 and xunit.runner.visualstudio 4.0.0; Ruby, PHP and Elixir to their current lines.
+- **The action pins in CI said one version and ran another** — thirty-odd `uses:` lines pinned a SHA with a `# vN` comment that had stopped matching what the SHA actually was: `actions/cache` was commented `v4` while running v6.1.0, `actions/setup-dotnet` `v5` while running v6.0.0, `actions/github-script` `v7` while running v9.0.0. Every pin now carries the exact tag its SHA resolves to, and fifteen actions advanced to their current release. Two were deliberately held back rather than advanced: `gradle/actions` stays on the v5 line because v6 moves its caching component to a proprietary licence whose use requires accepting Gradle's commercial Terms of Use, and `ebitengine/purego` stays on v0.10.2 because v0.11.0 requires Go 1.25, which would raise the Go binding's floor from 1.21.
+- **Dependabot watched seven ecosystems out of the fifteen the repository actually has** — Maven, Gradle, Composer, pub, Hex, Swift and the runnable examples' own manifests had no coverage at all, which is why the Java, Kotlin, Dart and PHP toolchains had drifted years behind while the Rust and GitHub Actions ones stayed current. All of them are now watched.
+
 ## [0.3.78] - 2026-09-05
 
 > Correctness under audit: 144 defects across rendering, text, reading order, files and colour
