@@ -52,12 +52,12 @@ pub fn style_to_taffy(
         height: dimension(styles, "height", ctx, false),
     };
     s.min_size = Size {
-        width: dimension(styles, "min-width", ctx, true),
-        height: dimension(styles, "min-height", ctx, false),
+        width: size_bound(styles, "min-width", ctx, true),
+        height: size_bound(styles, "min-height", ctx, false),
     };
     s.max_size = Size {
-        width: max_dimension(styles, "max-width", ctx, true),
-        height: max_dimension(styles, "max-height", ctx, false),
+        width: size_bound(styles, "max-width", ctx, true),
+        height: size_bound(styles, "max-height", ctx, false),
     };
 
     let padding_sides = box_shorthand_sides(styles, "padding", ctx);
@@ -134,15 +134,17 @@ fn dimension(
     }
 }
 
-fn max_dimension(
+/// `min-*` / `max-*` sizes, which taffy types as `LengthPercentageAuto`
+/// rather than the `Dimension` used for `width` / `height`.
+fn size_bound(
     styles: &ComputedStyles<'_>,
     prop: &str,
     ctx: &CalcContext,
     _width_axis: bool,
-) -> Dimension {
+) -> LengthPercentageAuto {
     match length_value(styles, prop, ctx) {
-        Some(v) => v.to_dimension(),
-        None => Dimension::auto(),
+        Some(v) => v.to_size_bound(),
+        None => LengthPercentageAuto::auto(),
     }
 }
 
@@ -329,6 +331,13 @@ impl LengthOrPercent {
         match self {
             LengthOrPercent::Length(px) => Dimension::length(px),
             LengthOrPercent::Percent(p) => Dimension::percent(p / 100.0),
+        }
+    }
+
+    fn to_size_bound(self) -> LengthPercentageAuto {
+        match self {
+            LengthOrPercent::Length(px) => LengthPercentageAuto::length(px),
+            LengthOrPercent::Percent(p) => LengthPercentageAuto::percent(p / 100.0),
         }
     }
 }
@@ -545,7 +554,7 @@ pub fn run_layout<'sty>(
             // wrapping inline text has a real intrinsic height.
             let h = estimate_block_text_height(tree, id, available.width, body_font_size_px);
             if h > 0.0 {
-                s.min_size.height = Dimension::length(h);
+                s.min_size.height = LengthPercentageAuto::length(h);
             }
             s
         } else {
@@ -568,11 +577,11 @@ pub fn run_layout<'sty>(
             // Taffy leaf and they all sit at y=0.
             if matches!(node.outside, DisplayOutside::Block | DisplayOutside::ListItem)
                 && computed.size.height == Dimension::auto()
-                && computed.min_size.height == Dimension::auto()
+                && computed.min_size.height == LengthPercentageAuto::auto()
             {
                 let h = estimate_block_text_height(tree, id, available.width, body_font_size_px);
                 if h > 0.0 {
-                    computed.min_size.height = Dimension::length(h);
+                    computed.min_size.height = LengthPercentageAuto::length(h);
                 }
             }
             computed

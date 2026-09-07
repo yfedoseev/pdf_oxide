@@ -249,14 +249,14 @@ impl XmpExtractor {
         loop {
             match reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let name = e.name().as_ref().to_string();
                     element_stack.push(name);
                 },
                 Ok(Event::Empty(_)) => {
                     // Empty elements don't have text content
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.xml11_content().unwrap_or_default().trim().to_string();
+                    let text = e.xml11_content().trim().to_string();
                     if text.is_empty() {
                         continue;
                     }

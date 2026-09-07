@@ -314,7 +314,7 @@ impl XfaParser {
         loop {
             match reader.read_event() {
                 Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                    let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                    let local_name = e.local_name().as_ref().to_string();
 
                     match local_name.as_str() {
                         "subform" => {
@@ -382,7 +382,7 @@ impl XfaParser {
                     self.context_stack.push(local_name);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.xml11_content().unwrap_or_default().to_string();
+                    let text = e.xml11_content().to_string();
 
                     if let Some(parent) = self.context_stack.last() {
                         if in_items && parent == "text" {
@@ -412,7 +412,7 @@ impl XfaParser {
                     }
                 },
                 Ok(Event::End(ref e)) => {
-                    let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                    let local_name = e.local_name().as_ref().to_string();
 
                     match local_name.as_str() {
                         "subform" => {
@@ -475,7 +475,7 @@ impl XfaParser {
         loop {
             match reader.read_event() {
                 Ok(Event::Start(ref e)) => {
-                    let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                    let local_name = e.local_name().as_ref().to_string();
 
                     // Skip XFA namespace elements
                     if local_name != "xfa" && local_name != "datasets" && local_name != "data" {
@@ -483,10 +483,10 @@ impl XfaParser {
                     }
                 },
                 Ok(Event::Text(e)) => {
-                    current_text = e.xml11_content().unwrap_or_default().to_string();
+                    current_text = e.xml11_content().to_string();
                 },
                 Ok(Event::End(ref e)) => {
-                    let local_name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                    let local_name = e.local_name().as_ref().to_string();
 
                     if local_name != "xfa" && local_name != "datasets" && local_name != "data" {
                         // Store value if we have text
@@ -552,8 +552,8 @@ impl XfaParser {
         name: &str,
     ) -> Option<String> {
         for attr in e.attributes().flatten() {
-            if attr.key.as_ref() == name.as_bytes() {
-                return Some(String::from_utf8_lossy(&attr.value).to_string());
+            if attr.key.as_ref() == name {
+                return Some(attr.value.to_string());
             }
         }
         None
