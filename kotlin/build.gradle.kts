@@ -62,11 +62,18 @@ tasks.test {
 // Maven Central publishing (Sonatype Central Portal). Credentials + signing key
 // come from CI env (ORG_GRADLE_PROJECT_mavenCentralUsername / *Password /
 // signingInMemoryKey / *Password), same secrets family as the Java binding.
-// GPG-signs all publications; autoPublish is left to the release-gate workflow.
-// The host argument is gone from the plugin: post-OSSRH there is only the
-// Central Portal, so `publishToMavenCentral()` targets it unconditionally.
+// GPG-signs all publications. The host argument is gone from the plugin:
+// post-OSSRH there is only the Central Portal, so `publishToMavenCentral()`
+// targets it unconditionally.
+//
+// `automaticRelease = true` matches the Java binding's `<autoPublish>true` and
+// every other registry this project publishes to. With `false`, the tag job
+// succeeded while leaving the deployment VALIDATED in the Portal for a human
+// to release by hand — and since v0.3.69 nobody ever did, so
+// `fyi.oxide:pdf-oxide-kotlin` has never existed on Central. The release gate
+// is the tag, not a second click.
 mavenPublishing {
-    publishToMavenCentral(automaticRelease = false)
+    publishToMavenCentral(automaticRelease = true)
     signAllPublications()
     coordinates("fyi.oxide", "pdf-oxide-kotlin", version.toString())
     pom {

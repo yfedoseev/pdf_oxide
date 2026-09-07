@@ -702,7 +702,7 @@ jobs:
   # convention: the upload reaches VALIDATED state, then a human
   # flips the Publish button in the Central Portal UI.
   publish-maven:
-    name: Publish to Maven Central (staged)
+    name: Publish to Maven Central
     needs: [package-java-jar, create-release]
     runs-on: ubuntu-latest
     # Same convention as publish-npm / publish-pypi / publish-nuget:
@@ -741,7 +741,7 @@ jobs:
           path: java/src/main/resources/fyi/oxide/pdf/native/
           merge-multiple: true
 
-      - name: mvn deploy to Central Portal (autoPublish=false)
+      - name: mvn deploy to Central Portal (autoPublish=true)
         working-directory: java
         env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
@@ -749,16 +749,16 @@ jobs:
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: |
           # `release` profile turns on GPG signing + central-publishing-
-          # maven-plugin with `autoPublish=false` per pom.xml. The
-          # deployment reaches VALIDATED state in Central Portal; a
-          # maintainer flips "Publish" manually from the UI (matches
-          # feedback_release_gate — human gates the public publish).
+          # maven-plugin, configured in pom.xml with autoPublish=true and
+          # waitUntil=published: the step returns only once the version is
+          # live on Central, so a green job here means it is downloadable.
+          # The human gate is the tag, as it is for the other registries.
           mvn -B -P!dev -Prelease -DskipTests deploy
 
-      - name: Notice — Central Portal staging done
+      - name: Notice — published to Maven Central
         run: |
-          echo "::notice::Java JAR uploaded to Central Portal in VALIDATED state."
-          echo "::notice::Sign in at https://central.sonatype.com/ and flip Publish to release."
+          echo "::notice::Java JAR published to Maven Central (autoPublish, waitUntil=published)."
+          echo "::notice::Verify: https://repo1.maven.org/maven2/fyi/oxide/pdf-oxide/"
 
   # Package per-platform Go FFI tarballs as GitHub Release assets.
   #
@@ -2045,7 +2045,7 @@ jobs:
   # upload reaches VALIDATED and a maintainer flips Publish — same human
   # release-gate as publish-maven (Java).
   publish-kotlin:
-    name: Publish Kotlin to Maven Central (staged)
+    name: Publish Kotlin to Maven Central
     needs: [validate, create-release]
     runs-on: ubuntu-latest
     if: ${{ !contains(needs.validate.outputs.version, '-') && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
@@ -2068,7 +2068,7 @@ jobs:
         working-directory: java
         run: mvn -q -B -P'!dev' -DskipTests install
 
-      - name: Publish to Maven Central Portal (VALIDATED; human flips Publish)
+      - name: Publish to Maven Central Portal
         working-directory: kotlin
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
@@ -2077,10 +2077,10 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: gradle publishToMavenCentral --no-daemon --console=plain
 
-      - name: Notice — Central Portal staging done
+      - name: Notice — published to Maven Central
         run: |
-          echo "::notice::Kotlin artifact uploaded to Central Portal (VALIDATED)."
-          echo "::notice::Sign in at https://central.sonatype.com/ and flip Publish."
+          echo "::notice::Kotlin artifact published to Maven Central (automaticRelease)."
+          echo "::notice::Verify: https://repo1.maven.org/maven2/fyi/oxide/pdf-oxide-kotlin/"
 
   # Scala facade → Maven Central via sbt-ci-release (already in
   # scala/project/plugins.sbt). Credentials reuse the Java GPG/Sonatype

@@ -257,6 +257,19 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
                 <version>${maven.source.plugin.version}</version>
+                <configuration>
+                    <!-- `jar-no-fork` sweeps src/main/resources, and the
+                         release job stages the five platform JNI natives
+                         there before packaging. That put 123 MB of
+                         binaries (50 MB compressed) into a "sources" jar
+                         whose actual sources are 0.18 MB, and shipped
+                         them to Central twice per release — once in the
+                         fat JAR, where they belong, and once here. An IDE
+                         attaches a sources jar to read .java; nothing
+                         reads a .dylib out of one. Nothing else lives
+                         under src/main/resources: it is empty in git. -->
+                    <excludeResources>true</excludeResources>
+                </configuration>
                 <executions>
                     <execution>
                         <id>attach-sources</id>
