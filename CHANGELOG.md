@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.78] - 2026-09-05
+## [0.3.78] - 2026-09-08
 
 > Correctness under audit: 144 defects across rendering, text, reading order, files and colour
 
