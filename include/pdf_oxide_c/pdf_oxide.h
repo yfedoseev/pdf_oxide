@@ -246,6 +246,15 @@
 #define ROW_BAND_TOLERANCE_PT 3.0
 
 /**
+ * A cryptographic primitive `pdf_oxide` can be asked to perform.
+ *
+ * `#[non_exhaustive]` so post-quantum ids (`MlKem*`, `MlDsa*`,
+ * `SlhDsa*`) are an additive, non-breaking future change (CNSA 2.0
+ * roadmap — see the #230 plan).
+ */
+typedef struct AlgorithmId AlgorithmId;
+
+/**
  * RGB color representation.
  */
 typedef struct Color Color;
@@ -481,6 +490,8 @@ typedef uint32_t NodeId;
  * Index into [`BoxTree::boxes`].
  */
 typedef uint32_t BoxId;
+
+
 
 
 
