@@ -6,7 +6,7 @@
 repos:
   # Go code formatting
   - repo: https://github.com/golangci/golangci-lint
-    rev: v1.55.2
+    rev: v2.13.2
     hooks:
       - id: golangci-lint
         name: golangci-lint
@@ -20,7 +20,7 @@ repos:
 
   # Go security
   - repo: https://github.com/securego/gosec
-    rev: v2.18.2
+    rev: v2.29.0
     hooks:
       - id: gosec
         name: gosec
@@ -33,7 +33,7 @@ repos:
 
   # General formatting
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         name: Trim trailing whitespace
@@ -81,7 +81,7 @@ repos:
 
   # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.37.0
+    rev: v0.49.1
     hooks:
       - id: markdownlint
         name: Markdown lint
@@ -91,7 +91,7 @@ repos:
 
   # Shell script linting
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.9.0.6
+    rev: v0.11.0.1
     hooks:
       - id: shellcheck
         name: ShellCheck
@@ -101,7 +101,7 @@ repos:
 
   # YAML linting
   - repo: https://github.com/adrienverge/yamllint
-    rev: v1.33.0
+    rev: v1.38.0
     hooks:
       - id: yamllint
         name: YAML lint

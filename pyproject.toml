@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -74,7 +74,7 @@ dev = [
     "mypy>=1.0",
     "ty>=0.0.15",
     # Build tool for Python bindings
-    "maturin>=1.0,<2.0",
+    "maturin>=1.15,<2.0",
 ]
 test = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 benchmark = [

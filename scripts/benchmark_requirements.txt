@@ -1,13 +1,13 @@
 # Requirements for benchmarking PDF libraries
 
 # Top Python PDF Libraries
-pymupdf>=1.23.0
-pymupdf4llm>=0.0.1
-pdfplumber>=0.10.0
-pypdf>=3.17.0
-pdfminer.six>=20221105
-pikepdf>=8.0.0
-pypdfium2>=4.0.0
+pymupdf>=1.28.2
+pymupdf4llm>=1.28.2
+pdfplumber>=0.11.10
+pypdf>=6.17.0
+pdfminer.six>=20260107
+pikepdf>=10.13.0
+pypdfium2>=5.13.0
 
 # borb - Note: May have complex dependencies
 # borb>=2.1.0

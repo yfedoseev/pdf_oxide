@@ -9,7 +9,7 @@ repos:
 
 # https://docs.rs/cargo-deny/latest/cargo_deny/#pre-commit-hook
 - repo: https://github.com/EmbarkStudios/cargo-deny
-  rev: 0.19.0 # choose your preferred tag
+  rev: 0.20.2 # choose your preferred tag
   hooks:
     - id: cargo-deny
       args: ["check"]
@@ -46,14 +46,14 @@ repos:
       types: [rust]
 
 - repo: https://github.com/allganize/ty-pre-commit
-  rev: v0.0.18
+  rev: v0.0.78
   hooks:
     # Run the type checker.
     - id: ty-check
       exclude: .*test.*.py$
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.5
+  rev: v0.16.6
   hooks:
   - id: ruff-check
     args: [--fix]
