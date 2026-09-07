@@ -53,15 +53,15 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Runtime dependency
-  spec.add_dependency 'ffi', '~> 1.16'
+  spec.add_dependency 'ffi', '~> 1.17'
 
   # Development dependencies
   spec.add_development_dependency 'bundler', '>= 2.0'
-  spec.add_development_dependency 'rake', '~> 13.0'
-  spec.add_development_dependency 'rspec', '~> 3.12'
-  spec.add_development_dependency 'rubocop', '~> 1.86'
-  spec.add_development_dependency 'rubocop-rspec', '~> 3.9'
-  spec.add_development_dependency 'simplecov-lcov', '~> 0.8'
+  spec.add_development_dependency 'rake', '~> 13.4'
+  spec.add_development_dependency 'rspec', '~> 3.13'
+  spec.add_development_dependency 'rubocop', '~> 1.90'
+  spec.add_development_dependency 'rubocop-rspec', '~> 3.10'
+  spec.add_development_dependency 'simplecov-lcov', '~> 0.9'
   spec.add_development_dependency 'yard', '~> 0.9'
   spec.add_development_dependency 'simplecov', '~> 0.22'
 end

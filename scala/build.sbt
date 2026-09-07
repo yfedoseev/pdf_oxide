@@ -5,7 +5,7 @@
 ThisBuild / organization := "fyi.oxide"
 ThisBuild / organizationName := "PDF Oxide"
 ThisBuild / version := "0.3.78"
-ThisBuild / scalaVersion := "3.3.4"
+ThisBuild / scalaVersion := "3.3.8"
 
 // scalafix needs SemanticDB. On Scala 3 it's emitted by the compiler itself
 // (sbt-scalafix wires `-Xsemanticdb` via semanticdbEnabled); no extra compiler

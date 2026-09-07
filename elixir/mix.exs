@@ -28,7 +28,7 @@ defmodule PdfOxide.MixProject do
 
   defp deps do
     [
-      {:elixir_make, "~> 0.8", runtime: false},
+      {:elixir_make, "~> 0.10", runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]

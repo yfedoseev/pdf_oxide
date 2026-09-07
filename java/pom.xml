@@ -103,28 +103,28 @@
         <fyi.oxide.pdf.lib.path>${project.basedir}/../target/release/libpdf_oxide_jni.so</fyi.oxide.pdf.lib.path>
 
         <!-- Plugin versions, pinned for reproducible builds. -->
-        <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
-        <maven.jar.plugin.version>3.4.2</maven.jar.plugin.version>
-        <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
-        <maven.javadoc.plugin.version>3.10.1</maven.javadoc.plugin.version>
-        <maven.surefire.plugin.version>3.5.1</maven.surefire.plugin.version>
-        <maven.gpg.plugin.version>3.2.7</maven.gpg.plugin.version>
-        <central.publishing.plugin.version>0.9.0</central.publishing.plugin.version>
+        <maven.compiler.plugin.version>3.16.0</maven.compiler.plugin.version>
+        <maven.jar.plugin.version>3.5.1</maven.jar.plugin.version>
+        <maven.source.plugin.version>3.4.0</maven.source.plugin.version>
+        <maven.javadoc.plugin.version>3.12.0</maven.javadoc.plugin.version>
+        <maven.surefire.plugin.version>3.6.0</maven.surefire.plugin.version>
+        <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
+        <central.publishing.plugin.version>0.11.0</central.publishing.plugin.version>
 
         <!-- Code-quality gates (parity with the other bindings:
              rustfmt+clippy / gofmt+golangci / biome / dotnet-format /
              ruff). Spotless = formatter (palantir-java-format),
              SpotBugs = static bug analysis. -->
-        <spotless.plugin.version>2.43.0</spotless.plugin.version>
-        <palantir.java.format.version>2.50.0</palantir.java.format.version>
-        <spotbugs.plugin.version>4.8.6.4</spotbugs.plugin.version>
+        <spotless.plugin.version>3.10.2</spotless.plugin.version>
+        <palantir.java.format.version>2.97.0</palantir.java.format.version>
+        <spotbugs.plugin.version>4.10.4.1</spotbugs.plugin.version>
         <rust.maven.plugin.version>1.4.0</rust.maven.plugin.version>
 
         <!-- Dependency versions. -->
-        <jspecify.version>1.0.0</jspecify.version>
-        <slf4j.version>2.0.16</slf4j.version>
-        <junit.version>5.11.3</junit.version>
-        <assertj.version>3.26.3</assertj.version>
+        <jspecify.version>1.0.1</jspecify.version>
+        <slf4j.version>2.0.19</slf4j.version>
+        <junit.version>5.14.4</junit.version>
+        <assertj.version>3.27.7</assertj.version>
     </properties>
 
     <dependencies>
@@ -156,7 +156,7 @@
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
-            <version>20240303</version>
+            <version>20260814</version>
         </dependency>
 
         <!-- Test dependencies. -->

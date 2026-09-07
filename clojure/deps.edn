@@ -33,10 +33,10 @@
   ;; Build + deploy to Clojars: `clojure -T:build jar` / `clojure -T:build deploy`
   ;; (deploy reads CLOJARS_USERNAME / CLOJARS_PASSWORD from the environment).
   :build
-  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
-          slipset/deps-deploy {:mvn/version "0.2.2"}}
+  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}
+          slipset/deps-deploy {:mvn/version "0.2.5"}}
    :ns-default build}
   ;; Format check: `clojure -M:cljfmt check` (and `clojure -M:cljfmt fix`).
   :cljfmt
-  {:deps {dev.weavejester/cljfmt {:mvn/version "0.13.0"}}
+  {:deps {dev.weavejester/cljfmt {:mvn/version "0.16.5"}}
    :main-opts ["-m" "cljfmt.main"]}}}

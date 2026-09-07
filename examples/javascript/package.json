@@ -11,7 +11,7 @@
     "pdf-oxide": "file:../../js"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^7.0.2",
+    "@types/node": "^26.4.1"
   }
 }

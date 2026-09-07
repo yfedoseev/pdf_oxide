@@ -7,12 +7,12 @@
 // The JNI library is loaded by the Java NativeLoader via System.loadLibrary or
 // the `-Dfyi.oxide.pdf.lib.path=<libpdf_oxide_jni.so>` override.
 plugins {
-    kotlin("jvm") version "2.2.20"
+    kotlin("jvm") version "2.4.10"
     `java-library`
     id("io.gitlab.arturbosch.detekt") version "1.23.8"
     // Publishing to Maven Central via the post-OSSRH Sonatype Central Portal
     // (mirrors the Java binding's central-publishing-maven-plugin setup).
-    id("com.vanniktech.maven.publish") version "0.30.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
 }
 
 group = "fyi.oxide"

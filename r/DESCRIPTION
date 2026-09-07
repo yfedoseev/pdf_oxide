@@ -14,4 +14,4 @@ License: MIT + file LICENSE
 URL: https://github.com/yfedoseev/pdf_oxide
 Encoding: UTF-8
 Suggests: tinytest
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 8.1.0
