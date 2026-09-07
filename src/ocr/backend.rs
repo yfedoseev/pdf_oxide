@@ -185,7 +185,7 @@ pub(crate) struct TractBackend {
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
-type TractPlan = tract_onnx::prelude::TypedRunnableModel;
+type TractPlan = tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>;
 
 #[cfg(feature = "ocr-tract")]
 #[cfg_attr(feature = "ocr", allow(dead_code))]
@@ -226,9 +226,9 @@ impl TractBackend {
             .map_err(|e| OcrError::InferenceError(format!("tract: optimize: {}", e)))?
             .into_runnable()
             .map_err(|e| OcrError::InferenceError(format!("tract: runnable: {}", e)))?;
-        // tract 0.23's `into_runnable()` already hands back an `Arc`.
-        plans.insert(key, runnable.clone());
-        Ok(runnable)
+        let arc = std::sync::Arc::new(runnable);
+        plans.insert(key, arc.clone());
+        Ok(arc)
     }
 }
 
@@ -259,13 +259,7 @@ impl InferenceBackend for TractBackend {
             .ok_or_else(|| OcrError::InferenceError("tract: no output tensor".to_string()))?;
 
         let out_shape: Vec<usize> = out.shape().to_vec();
-        // tract 0.23 moved flat-slice access behind a plain-storage view:
-        // a tensor may be backed by non-contiguous storage, so asking for
-        // the slice is now fallible in two steps rather than one.
-        let plain = out
-            .try_as_plain()
-            .map_err(|e| OcrError::InferenceError(format!("tract: output storage: {}", e)))?;
-        let out_data = plain
+        let out_data = out
             .as_slice::<f32>()
             .map_err(|e| OcrError::InferenceError(format!("tract: extract output: {}", e)))?;
         ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&out_shape), out_data.to_vec())

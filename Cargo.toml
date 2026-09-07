@@ -72,9 +72,6 @@ version = "0.3.78"
 #   - nalgebra 0.34.2 → 1.87
 #   - libloading 0.9.0, ort 2.0.0-rc.13, ort-sys 2.0.0-rc.13 → 1.88
 # 1.88 was released 2025-06-26, so this is still a reasonable floor.
-# The floor covers the default feature set, which is what the MSRV CI job
-# builds. `tract-onnx` 0.23 declares 1.91, so the optional `ml` /
-# `ocr-tract` / `table-ml` / `wasm-ocr` features need 1.91 rather than 1.88.
 rust-version = "1.88"
 # Anchor patterns with a leading slash — Cargo uses gitignore-style globs, so
 # a bare "README.md" matches every README.md recursively (was pulling in 20+
@@ -248,7 +245,9 @@ linfa = { version = "0.8", optional = true }
 linfa-clustering = { version = "0.8", optional = true }
 
 # ML (CPU-only)
-tract-onnx = { version = "0.23", optional = true }
+# Held at 0.22: tract 0.23 pulls `dyn-eq` (MPL-2.0) into the graph, which
+# `deny.toml` does not allow, and raises the ML features' rustc floor to 1.91.
+tract-onnx = { version = "0.22", optional = true }
 
 # OCR - PaddleOCR via ONNX Runtime (optional)
 ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = [
