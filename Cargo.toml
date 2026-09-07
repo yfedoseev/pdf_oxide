@@ -187,6 +187,9 @@ base64 = "0.23"                                                                 
 fax = "0.3"                                                                                # CCITT Group 3/4 decompression for scanned PDFs (more lenient with malformed EOFB)
 
 # Encryption support
+# aes 0.9.3 raised its own rust-version to 1.89, above this crate's 1.88
+# floor, so Cargo.lock holds 0.9.2 — the newest release that still builds on
+# the MSRV. The requirement stays open: a consumer on 1.89+ resolves 0.9.3.
 aes = "0.9"                                  # AES encryption for PDF 1.6+
 cbc = "0.2"                                  # CBC mode for AES
 md-5 = { version = "0.11", optional = true } # MD5 for legacy R≤4 key derivation
