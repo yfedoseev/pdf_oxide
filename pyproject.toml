@@ -117,7 +117,11 @@ python_functions = ["test_*"]
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-extend-exclude = [".git", "__pycache__", "build", "dist", ".eggs", "*.egg-info"]
+# ruff 0.16 added Markdown to its default file set, so `ruff format` began
+# restyling the Python blocks inside README.md and the guides — stripping the
+# column alignment those examples use to line up comments and assignments.
+# ruff's job here is our Python; the prose is hand-formatted.
+extend-exclude = [".git", "__pycache__", "build", "dist", ".eggs", "*.egg-info", "*.md"]
 
 [tool.ruff.lint]
 # Enable these rule sets
