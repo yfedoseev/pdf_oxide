@@ -24,7 +24,7 @@ static RE_EMAIL: LazyLock<Regex> =
 /// (which are the very pattern we're trying to escape) do not match.
 fn is_table_separator_line(line: &str) -> bool {
     let trimmed = line.trim();
-    if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+    if trimmed.len() < 2 || !trimmed.starts_with('|') || !trimmed.ends_with('|') {
         return false;
     }
     let inner = &trimmed[1..trimmed.len() - 1];
@@ -5351,6 +5351,19 @@ mod tests {
         let input = "| Col A | Col B |\n|---|---|\n| 1 | 2 |\n";
         let out = escape_stray_leading_pipes(input);
         assert!(!out.contains("\\|"), "real table rows must not be escaped, got:\n{}", out);
+    }
+
+    /// REGRESSION GUARD. A line that is just a single `|` character
+    /// (after trimming) must not panic `is_table_separator_line`.
+    /// `trim()` leaves `"|"`, for which `starts_with('|')` and
+    /// `ends_with('|')` are both true using the *same* byte, so the old
+    /// code sliced `trimmed[1..trimmed.len() - 1]` == `[1..0]` and
+    /// panicked ("byte range starts at 1 but ends at 0").
+    #[test]
+    fn test_lone_pipe_line_does_not_panic() {
+        let input = "Some text\n|\nMore text\n";
+        let out = escape_stray_leading_pipes(input);
+        assert!(out.contains("\\|"), "lone pipe must be escaped, got:\n{}", out);
     }
 
     /// REGRESSION GUARD (70-PDF sweep). A real markdown table with
