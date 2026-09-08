@@ -47,6 +47,14 @@
       "created_at": "2026-08-27T09:37:12Z",
       "repoId": 1090617520,
       "pullRequestNo": 1193
+    },
+    {
+      "name": "thomas-strafrac",
+      "id": 71320037,
+      "comment_id": 5583526929,
+      "created_at": "2026-09-08T10:14:18Z",
+      "repoId": 1090617520,
+      "pullRequestNo": 1432
     }
   ]
 }
