@@ -140,6 +140,18 @@ impl FlateDecoder {
 
 impl StreamDecoder for FlateDecoder {
     fn decode(&self, input: &[u8]) -> Result<Vec<u8>> {
+        // A zero-length stream decodes to zero bytes. Every deflate
+        // implementation this crate has used said so by returning success;
+        // rejecting incomplete streams at EOF turned the empty stream into an
+        // error, and the partial-recovery path below cannot rescue it because
+        // it requires a non-empty buffer to inspect. Real files carry these:
+        // a zero-area transparency group is written as an empty Form XObject,
+        // and failing one aborts the parent content stream part-way through,
+        // dropping every mark that would have been painted after it.
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut decoder = ZlibDecoder::new(input).take(self.max_decompressed_bytes);
         let mut output = Vec::new();
 
@@ -446,6 +458,23 @@ mod tests {
     /// heuristic that only accepts `BT`/`Tj` markers or printable ASCII, and so
     /// rejected exactly this shape.
     #[test]
+    fn test_empty_stream_decodes_to_no_bytes() {
+        // An empty Form XObject — what a zero-area transparency group is
+        // written as — reaches the decoder as a zero-length stream. It must
+        // decode to nothing rather than fail: the caller renders the form, and
+        // an error there abandons the rest of the parent content stream.
+        let decoded = FlateDecoder::default()
+            .decode(&[])
+            .expect("an empty stream must decode to zero bytes, not fail");
+
+        assert!(
+            decoded.is_empty(),
+            "an empty stream must not invent bytes, got {}",
+            decoded.len()
+        );
+    }
+
+    #[test]
     fn test_truncated_deflate_stream_yields_its_decoded_prefix() {
         // Binary payload, compressible, with no content-stream operators.
         let original: Vec<u8> = (0u16..600).map(|i| (i % 251) as u8).collect();
@@ -455,19 +484,13 @@ mod tests {
 
         // Cut the tail off: the final block marker and checksum never arrive.
         let truncated = &complete[..complete.len() * 3 / 4];
-        assert!(
-            truncated.len() < complete.len(),
-            "test needs a genuinely shortened stream"
-        );
+        assert!(truncated.len() < complete.len(), "test needs a genuinely shortened stream");
 
         let decoded = FlateDecoder::default()
             .decode(truncated)
             .expect("a truncated deflate stream must still yield its decoded prefix");
 
-        assert!(
-            !decoded.is_empty(),
-            "recovery returned nothing for a truncated stream"
-        );
+        assert!(!decoded.is_empty(), "recovery returned nothing for a truncated stream");
         assert!(
             original.starts_with(&decoded),
             "recovered bytes must be a prefix of the original, not garbage"

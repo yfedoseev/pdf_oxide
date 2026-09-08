@@ -2,7 +2,7 @@
 
 All notable changes to PDFOxide are documented here.
 
-## [0.3.78] - 2026-09-08
+## [0.3.78] - 2026-09-09
 
 > Correctness under audit: 144 defects across rendering, text, reading order, files and colour
 
@@ -35,6 +35,7 @@ process rather than a catchable error.
 
 ### Fixed
 
+- **A zero-length or truncated compressed stream failed to decode, dropping content the file does depend on** — flate2 1.1.10 rejects a deflate stream that stops without a final block marker, which zlib and every earlier flate2 returned as success. Two shapes of stream in the wild hit this. A truncated cross-reference stream (51 compressed bytes decoding to 70) made xref parsing fail, so the reader fell back to reconstruction, rebuilt the page tree from the wrong objects and assembled page 1 without its header. A *zero-length* stream — what a zero-area transparency group is written as, and which the partial-recovery path could not rescue because all three of its strategies require a non-empty buffer — failed as an empty form XObject, aborting the parent content stream part-way through and losing every mark painted after it, including a figure's only colour. Both now decode: a truncated stream yields the prefix it decoded, and an empty stream yields no bytes.
 - **GitHub source archives of the repository contained only the PHP binding** — `.gitattributes` carried `export-ignore` rules for every other top-level directory, added in v0.3.56 and widened in v0.3.77 to slim the Packagist dist. `git archive` honours them, and so do the release "Source code" assets, "Download ZIP" and codeload tarballs: the v0.3.77 source tarball had 79 entries and no `src/`, and OpenSSF Scorecard, which reads the repository through that tarball, reported no security policy, no fuzzing and no workflows. The rules are removed; slimming the Composer package moves to a subtree split of `php/` (#1347).
 - **Text inside a form XObject whose `/Resources` is an indirect reference was painted with a fallback font as Latin-1 garbage** — §7.3.10 lets any object value be written as a reference and Table 79 keeps a form's resources in its own dictionary, but the renderer seeded its font and colour-space caches only from a direct dictionary, so the form's fonts were never loaded. The reference is now resolved before seeding; images in the same form were never affected, and `extract_text` was already correct, which is what made the loss silent. Reported by @metheglin (#1309).
 - **An exponential (Type 2) shading function was evaluated at its input's position within `/Domain`, not at the input** — Table 40 (`docs/spec/pdf.md`:7068) gives `yⱼ = C0ⱼ + xᴺ × (C1ⱼ − C0ⱼ)` on the input `x` itself, and `/Domain` only clips it. The shading resolver computed `(x − d0) / (d1 − d0)` first, which is invisible while a function's domain is `[0 1]` and wrong for any other: a stitching sub-function declaring `/Domain [-2 5]` and fed `[0 1]` by its `/Encode` was evaluated at `(x + 2) / 7`, so the ramp's first stop came out two sevenths of the way toward the next colour (`(180, 75, 0)` where the file's `C0` is red). Exposed by this release's move from reading `C0`/`C1` to evaluating the function; caught by the resolution-pipeline probes once the rendering tier ran them.
