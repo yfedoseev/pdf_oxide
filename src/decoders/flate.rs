@@ -53,6 +53,25 @@ fn effective_limit() -> u64 {
 /// plus whitespace), the output is also treated as plausible, because stream
 /// contents in the wild include ASCII-only data (hex-encoded images, small
 /// object streams) that do not hit any specific marker.
+/// A deflate stream that simply *stops* — no final block marker — rather than
+/// one whose bits are corrupt.
+///
+/// flate2 1.1.10 began rejecting these outright ("Reject incomplete deflate
+/// streams at EOF", flate2-rs#556); 1.1.9 returned whatever it had decoded.
+/// Real PDFs are full of them: an incremental-update xref stream in the pdf.js
+/// corpus is 51 compressed bytes that decode to 70 and never terminate, and
+/// zlib, poppler and pdf.js all hand back those 70 bytes. Truncation cannot
+/// corrupt the prefix — it only cuts it short — so the bytes decoded before the
+/// end are exactly what a tolerant reader produces.
+fn is_truncation(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+        return true;
+    }
+    // zlib-rs / miniz_oxide report it in the message rather than the kind.
+    let msg = e.to_string();
+    msg.contains("incomplete deflate stream") || msg.contains("unexpected end")
+}
+
 fn looks_like_real_stream(output: &[u8]) -> bool {
     if output.is_empty() {
         return false;
@@ -137,7 +156,13 @@ impl StreamDecoder for FlateDecoder {
                 // misaligned-deflate garbage (`P\xffj!}` × 16 on
                 // nougat_026.pdf pages 1/2/5) that the text extractor then
                 // emitted as zero bytes of output.
-                if !output.is_empty() && looks_like_real_stream(&output) {
+                // `looks_like_real_stream` is a *content-stream* heuristic — it
+                // wants BT/Tj markers or mostly-printable ASCII. A truncated
+                // xref or object stream is binary, so it fails that test and the
+                // whole file then falls back to xref reconstruction, losing
+                // objects. Gate on the failure mode instead: a truncated stream's
+                // prefix is valid, a corrupt one's is not.
+                if !output.is_empty() && (is_truncation(&e) || looks_like_real_stream(&output)) {
                     check_limit(&output, self.max_decompressed_bytes)?;
                     log::warn!(
                         "FlateDecode partial recovery: extracted {} bytes before corruption: {}",
@@ -161,7 +186,9 @@ impl StreamDecoder for FlateDecoder {
                         Ok(output)
                     },
                     Err(deflate_err) => {
-                        if !output.is_empty() && looks_like_real_stream(&output) {
+                        if !output.is_empty()
+                            && (is_truncation(&deflate_err) || looks_like_real_stream(&output))
+                        {
                             check_limit(&output, self.max_decompressed_bytes)?;
                             log::warn!(
                                 "Raw deflate partial recovery: extracted {} bytes before error",
@@ -401,6 +428,50 @@ mod tests {
     #[test]
     fn looks_like_real_stream_rejects_empty() {
         assert!(!looks_like_real_stream(&[]));
+    }
+
+    /// A deflate stream that ends without its final block marker still yields
+    /// the bytes it did encode.
+    ///
+    /// flate2 1.1.10 rejects such a stream where 1.1.9 returned the prefix
+    /// (flate2-rs#556). PDFs in the wild rely on the tolerant behaviour: an
+    /// incremental-update xref stream of 51 compressed bytes decodes to 70 and
+    /// simply stops, and zlib, poppler and pdf.js all accept it. When this
+    /// decoder refused it, xref parsing failed, the reader fell back to
+    /// reconstruction, and a page tree rebuilt from an incomplete object table
+    /// dropped a whole page's worth of text.
+    ///
+    /// The payload here is deliberately BINARY — an xref stream is not text —
+    /// because the partial-recovery path used to be gated on a content-stream
+    /// heuristic that only accepts `BT`/`Tj` markers or printable ASCII, and so
+    /// rejected exactly this shape.
+    #[test]
+    fn test_truncated_deflate_stream_yields_its_decoded_prefix() {
+        // Binary payload, compressible, with no content-stream operators.
+        let original: Vec<u8> = (0u16..600).map(|i| (i % 251) as u8).collect();
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&original).unwrap();
+        let complete = encoder.finish().unwrap();
+
+        // Cut the tail off: the final block marker and checksum never arrive.
+        let truncated = &complete[..complete.len() * 3 / 4];
+        assert!(
+            truncated.len() < complete.len(),
+            "test needs a genuinely shortened stream"
+        );
+
+        let decoded = FlateDecoder::default()
+            .decode(truncated)
+            .expect("a truncated deflate stream must still yield its decoded prefix");
+
+        assert!(
+            !decoded.is_empty(),
+            "recovery returned nothing for a truncated stream"
+        );
+        assert!(
+            original.starts_with(&decoded),
+            "recovered bytes must be a prefix of the original, not garbage"
+        );
     }
 
     #[test]
