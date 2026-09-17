@@ -3685,7 +3685,26 @@ fn x_coherent_rule_families<'a>(wide: &[&'a Edge]) -> Vec<Vec<&'a Edge>> {
     // (overlap/union ≲ 0.8 even when x-starts coincide, since widths
     // differ). 0.85 splits the two populations with margin on both sides.
     const X_COHERENCE: f32 = 0.85;
+    /// Slack on the containment test, matching the rules' own endpoint
+    /// snapping: a nested rule inset by a hairline is still nested.
+    const X_CONTAINMENT_SLACK: f32 = 2.0;
 
+    // overlap/union alone reads a NESTED rule as unrelated. A rule that spans
+    // only the table's columns — a sub-header rule, or a bottom rule inset from
+    // a full-width border — is fully inside the wider rule, so it has no
+    // non-overlapping part of its own; every point it loses to the ratio comes
+    // from the wider rule sticking out past it. An inner rule covering 82% of a
+    // 337pt border scores 0.82 and is split off, taking the table's lower bound
+    // with it and leaving one unpaired rule per family.
+    //
+    // Containment is the stronger signal, so it carries a lower bar. What the
+    // 0.85 ratio is really there to reject is strokes that overlap PARTIALLY —
+    // each sticking out past the other, the signature of two unrelated
+    // structures — and those are unaffected by this. A contained stroke that is
+    // genuinely unrelated (a displayed-equation fraction bar inside a page
+    // border) is short against its container and stays below the coverage bar;
+    // `MIN_RULE_WIDTH` has already dropped the narrow ones.
+    const X_CONTAINED_COVERAGE: f32 = 0.75;
 
     let mut uf = UnionFind::new(wide.len());
     for i in 0..wide.len() {
@@ -3694,6 +3713,21 @@ fn x_coherent_rule_families<'a>(wide: &[&'a Edge]) -> Vec<Vec<&'a Edge>> {
             let overlap = a.end.min(b.end) - a.start.max(b.start);
             let union = a.end.max(b.end) - a.start.min(b.start);
             if union > 0.0 && overlap / union >= X_COHERENCE {
+                uf.union(i, j);
+                continue;
+            }
+            // Contained: the narrower rule lies wholly within the wider one, to
+            // within the same snapping slack the Y clustering allows.
+            let (narrow, wide_span) = {
+                let wa = a.end - a.start;
+                let wb = b.end - b.start;
+                (wa.min(wb), wa.max(wb))
+            };
+            if overlap > 0.0
+                && wide_span > 0.0
+                && overlap >= narrow - X_CONTAINMENT_SLACK
+                && overlap / wide_span >= X_CONTAINED_COVERAGE
+            {
                 uf.union(i, j);
             }
         }
