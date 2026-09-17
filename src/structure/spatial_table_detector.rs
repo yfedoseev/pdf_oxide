@@ -3686,6 +3686,7 @@ fn x_coherent_rule_families<'a>(wide: &[&'a Edge]) -> Vec<Vec<&'a Edge>> {
     // differ). 0.85 splits the two populations with margin on both sides.
     const X_COHERENCE: f32 = 0.85;
 
+
     let mut uf = UnionFind::new(wide.len());
     for i in 0..wide.len() {
         for j in (i + 1)..wide.len() {
@@ -4601,6 +4602,71 @@ mod tests {
     use super::*;
     use crate::geometry::Rect;
     use crate::layout::text_block::{Color, FontWeight};
+
+    /// A rule nested inside a wider one belongs to the same family.
+    ///
+    /// The x-coherence ratio is `overlap / union`, which charges a contained
+    /// rule for the width the wider rule has outside it: an inner rule
+    /// covering 82% of a page-wide border scores 0.82 and falls under the 0.85
+    /// bar, so it lands in its own family. Each family is then short of the
+    /// two rules an adjacent-pair walk needs, and the region between the
+    /// border and the inner rule — where the table is — is never formed.
+    ///
+    /// Geometry below is the arithmetic of that case, not a capture of any
+    /// document: outer rules 41.2..378.6, inner 42.6..320.2, giving
+    /// overlap 277.6 / union 337.4 = 0.822.
+    #[test]
+    fn nested_rule_joins_the_family_of_the_rule_containing_it() {
+        let edges = [
+            Edge { coord: 544.6, start: 41.2, end: 378.6 },
+            Edge { coord: 107.1, start: 42.6, end: 320.2 },
+            Edge { coord: 50.1, start: 41.2, end: 378.6 },
+        ];
+        let wide: Vec<&Edge> = edges.iter().collect();
+
+        let families = x_coherent_rule_families(&wide);
+
+        assert_eq!(
+            families.len(),
+            1,
+            "a rule contained in the page-wide rules is part of their family, \
+             but the families came out as {:?}",
+            families
+                .iter()
+                .map(|f| f.iter().map(|e| e.coord).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(families[0].len(), 3, "all three rules belong to it");
+    }
+
+    /// The ratio still separates rules that overlap only partially — each one
+    /// sticking out past the other, which is what two unrelated structures
+    /// look like. Overlap 100 / union 300 = 0.33, and neither contains the
+    /// other, so containment must not rescue it either.
+    #[test]
+    fn partially_overlapping_rules_stay_in_separate_families() {
+        let edges = [
+            Edge { coord: 500.0, start: 0.0, end: 200.0 },
+            Edge { coord: 400.0, start: 100.0, end: 300.0 },
+        ];
+        let wide: Vec<&Edge> = edges.iter().collect();
+
+        assert_eq!(x_coherent_rule_families(&wide).len(), 2);
+    }
+
+    /// And a short contained stroke — a displayed-equation fraction bar inside
+    /// a page border — stays out: 120 wide against a 340-wide border covers
+    /// 0.35, well under the containment coverage bar.
+    #[test]
+    fn a_short_contained_stroke_is_not_part_of_the_border_family() {
+        let edges = [
+            Edge { coord: 700.0, start: 40.0, end: 380.0 },
+            Edge { coord: 400.0, start: 150.0, end: 270.0 },
+        ];
+        let wide: Vec<&Edge> = edges.iter().collect();
+
+        assert_eq!(x_coherent_rule_families(&wide).len(), 2);
+    }
 
     #[test]
     fn test_is_numeric_cell() {
