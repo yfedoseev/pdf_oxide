@@ -1310,6 +1310,41 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_bfrange_dst_forms() {
+        // `decode_bfrange_dst` consolidates every destination shape a single
+        // concatenated `beginbfrange` line can carry. Cover each branch so a
+        // regression in one form is caught independently of the parsing tests.
+        // BMP code point.
+        assert_eq!(decode_bfrange_dst("4E2D"), Some("中".to_string()));
+        // Supplementary plane (5-hex), e.g. a rare CJK extension code point.
+        assert_eq!(decode_bfrange_dst("20000"), Some("𠀀".to_string()));
+        // Supplementary plane (5-hex) decoded as a direct code point (emoji).
+        assert_eq!(decode_bfrange_dst("1F600"), Some("😀".to_string()));
+        // UTF-16 surrogate pair (8-hex).
+        assert_eq!(decode_bfrange_dst("D83DDE00"), Some("😀".to_string()));
+        // Ligature: two code points packed in 8 hex (not a surrogate pair).
+        assert_eq!(decode_bfrange_dst("00660066"), Some("ff".to_string()));
+        // Multi-code ligature.
+        assert_eq!(decode_bfrange_dst("00660069006C"), Some("fil".to_string()));
+        // An unmappable token must yield None so only that entry is skipped,
+        // rather than discarding the whole (often newline-free) line.
+        assert_eq!(decode_bfrange_dst("ZZZZ"), None);
+    }
+
+    #[test]
+    fn test_parse_bfrange_line_skips_unmappable_array_entry() {
+        // Regression for the `?` → `None` change in this fix: a malformed
+        // destination inside an array on a single line must not discard the whole
+        // line. Only the bad entry is skipped; the valid neighbours survive.
+        let line = "<0001> <0003> [<0041> <ZZZZ> <0043>]";
+        let result = parse_bfrange_line(line).expect("line must still parse");
+        let map: std::collections::HashMap<u32, String> = result.into_iter().collect();
+        assert_eq!(map.get(&0x0001).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x0002), None, "malformed dst entry must be skipped");
+        assert_eq!(map.get(&0x0003).map(String::as_str), Some("C"));
+    }
+
+    #[test]
     fn test_extract_sections() {
         let content =
             "before\nbeginbfchar\ndata1\nendbfchar\nmiddle\nbeginbfchar\ndata2\nendbfchar\nafter";
