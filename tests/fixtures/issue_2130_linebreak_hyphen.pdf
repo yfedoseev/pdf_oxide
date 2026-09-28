@@ -1,0 +1,178 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /MyRepro /Encoding 5 0 R /ToUnicode 9 0 R /DescendantFonts [7 0 R] >>
+endobj
+5 0 obj
+<< /Length 167 >>
+stream
+/CMapName /MyRepro-H
+/CMapType 1
+/WMode 0
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+1 begincidrange
+<20> <7E> 32
+endcidrange
+1 begincidchar
+<1E> 30
+endcidchar
+
+endstream
+endobj
+6 0 obj
+<< /Length 101 >>
+stream
+BT
+/F1 12 Tf
+1 0 0 1 72 720 Tm
+(pre\036) Tj
+0 -18 Td
+(cipitation) Tj
+0 -18 Td
+(lithium\055ion) Tj
+ET
+
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /MyRepro /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /CIDToGIDMap /Identity /FontDescriptor 8 0 R >>
+endobj
+8 0 obj
+<< /Type /FontDescriptor /FontName /MyRepro /Flags 4 /FontBBox [0 0 0 0] /Ascent 1000 /Descent -200 /CapHeight 1000 /ItalicAngle 0 /StemV 80 >>
+endobj
+9 0 obj
+<< /Length 1266 >>
+stream
+/CMapName /Adobe-Identity-UCS
+/CMapType 2
+/WMode 0
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+95 beginbfchar
+<20> <0020>
+<21> <0021>
+<22> <0022>
+<23> <0023>
+<24> <0024>
+<25> <0025>
+<26> <0026>
+<27> <0027>
+<28> <0028>
+<29> <0029>
+<2A> <002A>
+<2B> <002B>
+<2C> <002C>
+<2D> <002D>
+<2E> <002E>
+<2F> <002F>
+<30> <0030>
+<31> <0031>
+<32> <0032>
+<33> <0033>
+<34> <0034>
+<35> <0035>
+<36> <0036>
+<37> <0037>
+<38> <0038>
+<39> <0039>
+<3A> <003A>
+<3B> <003B>
+<3C> <003C>
+<3D> <003D>
+<3E> <003E>
+<3F> <003F>
+<40> <0040>
+<41> <0041>
+<42> <0042>
+<43> <0043>
+<44> <0044>
+<45> <0045>
+<46> <0046>
+<47> <0047>
+<48> <0048>
+<49> <0049>
+<4A> <004A>
+<4B> <004B>
+<4C> <004C>
+<4D> <004D>
+<4E> <004E>
+<4F> <004F>
+<50> <0050>
+<51> <0051>
+<52> <0052>
+<53> <0053>
+<54> <0054>
+<55> <0055>
+<56> <0056>
+<57> <0057>
+<58> <0058>
+<59> <0059>
+<5A> <005A>
+<5B> <005B>
+<5C> <005C>
+<5D> <005D>
+<5E> <005E>
+<5F> <005F>
+<60> <0060>
+<61> <0061>
+<62> <0062>
+<63> <0063>
+<64> <0064>
+<65> <0065>
+<66> <0066>
+<67> <0067>
+<68> <0068>
+<69> <0069>
+<6A> <006A>
+<6B> <006B>
+<6C> <006C>
+<6D> <006D>
+<6E> <006E>
+<6F> <006F>
+<70> <0070>
+<71> <0071>
+<72> <0072>
+<73> <0073>
+<74> <0074>
+<75> <0075>
+<76> <0076>
+<77> <0077>
+<78> <0078>
+<79> <0079>
+<7A> <007A>
+<7B> <007B>
+<7C> <007C>
+<7D> <007D>
+<7E> <007E>
+endbfchar
+
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000367 00000 n 
+0000000585 00000 n 
+0000000737 00000 n 
+0000000931 00000 n 
+0000001090 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+2408
+%%EOF
