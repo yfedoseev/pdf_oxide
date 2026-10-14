@@ -115,7 +115,7 @@
              rustfmt+clippy / gofmt+golangci / biome / dotnet-format /
              ruff). Spotless = formatter (palantir-java-format),
              SpotBugs = static bug analysis. -->
-        <spotless.plugin.version>3.10.2</spotless.plugin.version>
+        <spotless.plugin.version>3.10.4</spotless.plugin.version>
         <palantir.java.format.version>2.97.0</palantir.java.format.version>
         <spotbugs.plugin.version>4.10.4.1</spotbugs.plugin.version>
         <rust.maven.plugin.version>1.4.0</rust.maven.plugin.version>
