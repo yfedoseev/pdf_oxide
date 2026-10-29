@@ -263,7 +263,7 @@ impl InferenceBackend for TractBackend {
         // a tensor may be backed by non-contiguous storage, so asking for
         // the slice is now fallible in two steps rather than one.
         let plain = out
-            .try_as_plain()
+            .try_as_plain_ram()
             .map_err(|e| OcrError::InferenceError(format!("tract: output storage: {}", e)))?;
         let out_data = plain
             .as_slice::<f32>()
