@@ -104,7 +104,9 @@ jobs:
       matrix:
         include:
           # linux-x86_64
-          - os: ubuntu-latest
+          # ubuntu-latest is 26.04, which has no prebuilt Ruby 3.1 for
+          # setup-ruby; run that cell on 24.04 instead of dropping it.
+          - os: ubuntu-24.04
             cargo_target: x86_64-unknown-linux-gnu
             gem_platform: x86_64-linux
             cdylib: libpdf_oxide.so

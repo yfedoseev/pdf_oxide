@@ -38,6 +38,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        exclude:
+          # ubuntu-latest is 26.04, which has no prebuilt Python 3.9 for
+          # setup-python; run that cell on 24.04 instead of dropping it.
+          - os: ubuntu-latest
+            python-version: '3.9'
+        include:
+          - os: ubuntu-24.04
+            python-version: '3.9'
 
 
     steps:
