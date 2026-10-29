@@ -893,15 +893,15 @@ fn collect_inks_from_color_space(
             // here so the colorants loop can filter against it.
             let process_names: std::collections::HashSet<String> = arr
                 .get(4)
-                .map(&deref)
+                .map(deref)
                 .as_ref()
                 .and_then(Object::as_dict)
                 .and_then(|attrs| attrs.get("Process"))
-                .map(&deref)
+                .map(deref)
                 .as_ref()
                 .and_then(Object::as_dict)
                 .and_then(|proc_dict| proc_dict.get("Components"))
-                .map(&deref)
+                .map(deref)
                 .as_ref()
                 .and_then(Object::as_array)
                 .map(|comps| {
