@@ -121,16 +121,8 @@ id = "RUSTSEC-2026-0192"
 # there is no third-party consumer left to wait on. Scheduled work, not a
 # patch-release change.
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0319"
-# `anymap2` -- "unmaintained" (the advisory recommends `anymap3`). Informational,
-# not a CVE; no memory-safety or RCE implication. There is no patched version.
-#
-# Not removable by a version bump. It reaches the tree by exactly ONE path, and
-# only with the ONNX/OCR feature: tract-onnx -> tract-nnef -> liquid ->
-# liquid-core -> anymap2. liquid-core 0.26.11 is the latest release and still
-# depends on it, and tract is held at 0.22 (0.23 brings an MPL-2.0 dependency
-# into the graph), so neither end can move here.
-#
-# Retires when liquid-core switches to `anymap3` (tract-core already uses it),
-# or when tract drops the `liquid` dependency.
+# RUSTSEC-2026-0319 (`anymap2` unmaintained) was ignored while it reached the
+# tree via tract-onnx -> tract-nnef -> liquid -> liquid-core. tract 0.23 drops
+# `liquid` from tract-nnef, so the crate is no longer in Cargo.lock and the
+# suppression is removed rather than carried forward. It will be re-flagged
+# normally if the crate ever returns.
