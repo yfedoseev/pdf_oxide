@@ -18,6 +18,7 @@ import pytest
 
 from pdf_oxide import OfficeConverter, Pdf, PdfDocument
 
+
 _TIMEOUT_SECONDS = 60
 
 # The Office bytes are produced by the library itself from a PDF it built, so
