@@ -25359,8 +25359,9 @@ fn validate_root_loadable<R: Read + Seek>(
 /// would match "endobj" and cause the loop to exit prematurely.
 fn has_standalone_obj_keyword(s: &str) -> bool {
     for (i, _) in s.match_indices("obj") {
-        // Skip "endobj" — check if preceded by "end"
-        if i >= 3 && &s[i - 3..i] == "end" {
+        // Skip "endobj" — check if preceded by "end". Compare bytes: i - 3 may
+        // fall inside a multi-byte character, which would panic on a str slice.
+        if i >= 3 && &s.as_bytes()[i - 3..i] == b"end" {
             continue;
         }
         // Must be at a word boundary: preceded by whitespace, digit, or start of string

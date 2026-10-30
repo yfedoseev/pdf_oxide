@@ -222,6 +222,40 @@ fn test_multiline_header_with_extra_whitespace() {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-byte character immediately before a wrapped "obj" keyword
+// ---------------------------------------------------------------------------
+
+fn build_pdf_with_pages_header(pages_header: &[u8]) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+
+    let off1 = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    let off2 = pdf.len();
+    pdf.extend_from_slice(pages_header);
+    pdf.extend_from_slice(b"\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+
+    finalize_xref(&mut pdf, &[0, off1, off2]);
+    pdf
+}
+
+#[test]
+fn test_multiline_header_invalid_utf8_comment_before_obj() {
+    // 0xFF decodes lossily to the 3-byte U+FFFD, so the byte three positions
+    // before "obj" in the joined header falls inside a multi-byte character.
+    let pdf = build_pdf_with_pages_header(b"2 0 %\xFF\nobj");
+    let doc = PdfDocument::from_bytes(pdf).expect("should open PDF with binary header comment");
+    assert_eq!(doc.page_count().expect("page count"), 0);
+}
+
+#[test]
+fn test_multiline_header_two_byte_utf8_comment_before_obj() {
+    let pdf = build_pdf_with_pages_header("2 0 %é\nobj".as_bytes());
+    let doc = PdfDocument::from_bytes(pdf).expect("should open PDF with UTF-8 header comment");
+    assert_eq!(doc.page_count().expect("page count"), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Test 9: Real-world regression — PDF.js issue9418 (multi-line headers)
 // ---------------------------------------------------------------------------
 
