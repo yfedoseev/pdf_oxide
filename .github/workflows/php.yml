@@ -62,6 +62,13 @@ jobs:
           ini-values: ffi.enable=true, memory_limit=512M
           coverage: none
           tools: composer:v2
+        env:
+          # setup-php does not patch a pre-installed PHP by default. The
+          # runner image can lag the latest patch release, and
+          # roave/security-advisories (a dev requirement) conflicts with PHP
+          # builds that carry known vulnerabilities, so Composer would refuse
+          # to install on a stale image.
+          update: true
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0

@@ -56,7 +56,7 @@ module PdfOxide
     # @param page [Integer] 0-based page index (default 0).
     # @return [String] extracted text.
     def self.extract_text(source, page: 0)
-      # rubocop:disable Security/Open — PdfDocument.open opens a PDF, not a process.
+      # rubocop:disable Security/Open -- PdfDocument.open opens a PDF, not a process.
       open(source) { |d| d.extract_text(page) }
       # rubocop:enable Security/Open
     end

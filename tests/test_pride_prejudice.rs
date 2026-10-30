@@ -68,7 +68,7 @@ mod pride_tests {
                         println!("✓ Text extracted: {} characters", text_len);
                         if text_len > 200 {
                             println!("  Sample (first 200 chars):");
-                            println!("  {}", &text[..200].replace('\n', " "));
+                            println!("  {}", text[..200].replace('\n', " "));
                         }
                     },
                     Err(e) => println!("✗ Error extracting text: {:?}", e),

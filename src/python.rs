@@ -3729,6 +3729,21 @@ impl PyPdf {
 )]
 pub struct PyOfficeConverter;
 
+/// Run an Office-to-PDF conversion with the GIL released.
+///
+/// `office_oxide` parses each document on a helper thread and joins it, and
+/// that thread logs through `pyo3_log`, which takes the GIL to reach Python's
+/// `logging`. A caller that still holds the GIL while it waits for the join
+/// therefore deadlocks against its own helper thread.
+fn convert_office<F>(py: Python<'_>, convert: F) -> PyResult<PyPdf>
+where
+    F: FnOnce(&crate::converters::office::OfficeConverter) -> crate::error::Result<Vec<u8>> + Send,
+{
+    py.detach(|| convert(&crate::converters::office::OfficeConverter::new()))
+        .map(|b| PyPdf { bytes: b })
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 #[pymethods]
 impl PyOfficeConverter {
     #[new]
@@ -3736,53 +3751,35 @@ impl PyOfficeConverter {
         PyOfficeConverter
     }
     #[staticmethod]
-    fn from_docx(path: &str) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_docx(path)
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_docx(py: Python<'_>, path: &str) -> PyResult<PyPdf> {
+        convert_office(py, |c| c.convert_docx(path))
     }
     #[staticmethod]
-    fn from_docx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_docx_bytes(data.as_bytes())
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_docx_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
+        let bytes = data.as_bytes();
+        convert_office(py, |c| c.convert_docx_bytes(bytes))
     }
     #[staticmethod]
-    fn from_xlsx(path: &str) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_xlsx(path)
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_xlsx(py: Python<'_>, path: &str) -> PyResult<PyPdf> {
+        convert_office(py, |c| c.convert_xlsx(path))
     }
     #[staticmethod]
-    fn from_xlsx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_xlsx_bytes(data.as_bytes())
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_xlsx_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
+        let bytes = data.as_bytes();
+        convert_office(py, |c| c.convert_xlsx_bytes(bytes))
     }
     #[staticmethod]
-    fn from_pptx(path: &str) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_pptx(path)
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_pptx(py: Python<'_>, path: &str) -> PyResult<PyPdf> {
+        convert_office(py, |c| c.convert_pptx(path))
     }
     #[staticmethod]
-    fn from_pptx_bytes(data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert_pptx_bytes(data.as_bytes())
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn from_pptx_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<PyPdf> {
+        let bytes = data.as_bytes();
+        convert_office(py, |c| c.convert_pptx_bytes(bytes))
     }
     #[staticmethod]
-    fn convert(path: &str) -> PyResult<PyPdf> {
-        crate::converters::office::OfficeConverter::new()
-            .convert(path)
-            .map(|b| PyPdf { bytes: b })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    fn convert(py: Python<'_>, path: &str) -> PyResult<PyPdf> {
+        convert_office(py, |c| c.convert(path))
     }
 }
 
