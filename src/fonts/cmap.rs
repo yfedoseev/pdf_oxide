@@ -847,27 +847,91 @@ fn parse_bfchar_line(line: &str) -> Vec<(u32, String)> {
 /// 2. `<start> <end> [<dst1> <dst2> ...]` - Array of individual destinations
 ///
 /// This function supports both formats and flexible whitespace within angle brackets.
+/// Decode a single `beginbfrange` destination token into its Unicode `String`.
+///
+/// `dst_hex` is one destination produced by a bfrange entry: a single BMP code
+/// point, a supplementary (5–6 hex) code point, a UTF-16 surrogate pair (8 hex),
+/// or a multi-code ligature. Returns `None` for an unmappable token so callers
+/// can skip just that entry instead of discarding the (often newline-free) line.
+fn decode_bfrange_dst(dst_hex: &str) -> Option<String> {
+    if dst_hex.len() <= 4 {
+        let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
+        char::from_u32(dst_code).map(|c| c.to_string())
+    } else if dst_hex.len() <= 6 {
+        let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
+        char::from_u32(dst_code).map(|c| c.to_string())
+    } else if dst_hex.len() == 8 {
+        let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
+        if let Some(decoded) = decode_utf16_surrogate_pair(dst_code) {
+            Some(decoded)
+        } else {
+            let mut unicode_string = String::new();
+            if let Ok(code) = u32::from_str_radix(&dst_hex[0..4], 16) {
+                if let Some(ch) = char::from_u32(code) {
+                    unicode_string.push(ch);
+                }
+            }
+            if let Ok(code) = u32::from_str_radix(&dst_hex[4..8], 16) {
+                if let Some(ch) = char::from_u32(code) {
+                    unicode_string.push(ch);
+                }
+            }
+            if unicode_string.is_empty() {
+                None
+            } else {
+                Some(unicode_string)
+            }
+        }
+    } else {
+        let mut unicode_string = String::new();
+        for chunk_start in (0..dst_hex.len()).step_by(4) {
+            let chunk_end = (chunk_start + 4).min(dst_hex.len());
+            if let Ok(code) = u32::from_str_radix(&dst_hex[chunk_start..chunk_end], 16) {
+                if let Some(ch) = char::from_u32(code) {
+                    unicode_string.push(ch);
+                }
+            }
+        }
+        if unicode_string.is_empty() {
+            None
+        } else {
+            Some(unicode_string)
+        }
+    }
+}
+
 fn parse_bfrange_line(line: &str) -> Option<Vec<(u32, String)>> {
     static RE_SEQ: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"<([^>]*)>\s*<([^>]*)>\s*<([^>]*)>").unwrap());
     static RE_ARRAY: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r"<([^>]*)>\s*<([^>]*)>\s*\[((?:\s*<[^>]+>\s*)+)\]").unwrap()
     });
+    static RE_HEX: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"<([^>]*)>").unwrap());
 
-    // Try format 2 first (array format)
-    // Example: <005F> <0061> [<00660066> <00660069> <00660066006C>]
-    // Maps codes 0x5F, 0x60, 0x61 to "ff", "fi", "ffl" respectively
-    if let Some(caps) = RE_ARRAY.captures(line) {
+    let mut result: Vec<(u32, String)> = Vec::new();
+
+    // Format 2 (array) entries can coexist with Format 1 (sequential) triples on
+    // the same newline-free line. Capture every array entry first and record its
+    // span so we can mask it out before scanning for sequential triples — the
+    // sequential regex would otherwise swallow the `[...]` array body.
+    let mut array_spans: Vec<(usize, usize)> = Vec::new();
+    for caps in RE_ARRAY.captures_iter(line) {
+        let span = caps.get(0).unwrap();
+        array_spans.push((span.start(), span.end()));
+
         let start_str = caps[1].trim().replace(char::is_whitespace, "");
         let end_str = caps[2].trim().replace(char::is_whitespace, "");
-        let start = u32::from_str_radix(&start_str, 16).ok()?;
-        let end = u32::from_str_radix(&end_str, 16).ok()?;
+        let start = match u32::from_str_radix(&start_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end = match u32::from_str_radix(&end_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         let array_str = &caps[3];
 
-        // Extract all destination hex strings from array
-        // Each can be a single Unicode code point OR multiple code points (for ligatures)
-        static RE_HEX: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"<([^>]*)>").unwrap());
         let dst_hexes: Vec<String> = RE_HEX
             .captures_iter(array_str)
             .filter_map(|cap| {
@@ -885,13 +949,10 @@ fn parse_bfrange_line(line: &str) -> Option<Vec<(u32, String)>> {
             })
             .collect();
 
-        let mut result = Vec::new();
-        let range_size = (end - start + 1) as usize;
-
-        // SPEC VALIDATION: PDF Spec ISO 32000-1:2008, Section 9.10.3
-        // The array must have exactly (end - start + 1) entries.
-        // Current behavior (lenient): Use what's available, ignore extras/missing.
-        // Proper strict mode: Should fail if array size doesn't match range_size.
+        let range_size = (end.saturating_sub(start) + 1) as usize;
+        // SPEC VALIDATION: PDF Spec ISO 32000-1:2008, Section 9.10.3 — the array
+        // must have exactly (end - start + 1) entries. Lenient: use what's
+        // available and warn on mismatch rather than dropping the whole entry.
         if dst_hexes.len() != range_size {
             log::warn!(
                 "ToUnicode bfrange array size mismatch: expected {} entries for range 0x{:X}-0x{:X}, got {}",
@@ -904,81 +965,48 @@ fn parse_bfrange_line(line: &str) -> Option<Vec<(u32, String)>> {
 
         for (i, dst_hex) in dst_hexes.iter().take(range_size).enumerate() {
             let src = start + i as u32;
-
-            // Parse destination - could be one Unicode code point, UTF-16 surrogate, or multiple (ligature)
-            let dst = if dst_hex.len() <= 4 {
-                // Single Unicode code point (BMP)
-                let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
-                char::from_u32(dst_code)?.to_string()
-            } else if dst_hex.len() <= 6 {
-                // 5-6 hex digits: supplementary Unicode code point (e.g., 020BB7 = U+20BB7)
-                let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
-                if let Some(ch) = char::from_u32(dst_code) {
-                    ch.to_string()
-                } else {
-                    continue;
-                }
-            } else if dst_hex.len() == 8 {
-                // 8 hex digits - try UTF-16 surrogate pair first
-                let dst_code = u32::from_str_radix(dst_hex, 16).ok()?;
-                if let Some(decoded) = decode_utf16_surrogate_pair(dst_code) {
-                    decoded
-                } else {
-                    // Fall back to two separate code points (ligature)
-                    let mut unicode_string = String::new();
-                    if let Ok(code) = u32::from_str_radix(&dst_hex[0..4], 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            unicode_string.push(ch);
-                        }
-                    }
-                    if let Ok(code) = u32::from_str_radix(&dst_hex[4..8], 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            unicode_string.push(ch);
-                        }
-                    }
-                    if unicode_string.is_empty() {
-                        continue;
-                    }
-                    unicode_string
-                }
-            } else {
-                // Multi-character mapping (e.g., "ffi", "ffl" for ligatures)
-                // Split into 4-char chunks, each representing one Unicode code point
-                let mut unicode_string = String::new();
-                for chunk_start in (0..dst_hex.len()).step_by(4) {
-                    let chunk_end = (chunk_start + 4).min(dst_hex.len());
-                    if let Ok(code) = u32::from_str_radix(&dst_hex[chunk_start..chunk_end], 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            unicode_string.push(ch);
-                        }
-                    }
-                }
-                if unicode_string.is_empty() {
-                    continue; // Skip this mapping if parsing failed
-                }
-                unicode_string
-            };
-
-            result.push((src, dst));
+            if let Some(dst) = decode_bfrange_dst(dst_hex) {
+                result.push((src, dst));
+            }
         }
-        return Some(result);
     }
 
-    // Try format 1 (sequential format)
-    if let Some(caps) = RE_SEQ.captures(line) {
+    // Mask array spans (replace with spaces) so RE_SEQ only matches sequential
+    // triples and never the array interiors.
+    let mut masked = String::with_capacity(line.len());
+    let mut last = 0;
+    for (s, e) in array_spans {
+        masked.push_str(&line[last..s]);
+        masked.push_str(&" ".repeat(e - s));
+        last = e;
+    }
+    masked.push_str(&line[last..]);
+
+    // Format 1 (sequential): `<start> <end> <dst>` — may repeat many times on a
+    // single newline-free line (e.g. a `100 beginbfrange` block emitted as one
+    // line with all 100 triples concatenated).
+    for caps in RE_SEQ.captures_iter(&masked) {
         let start_str = caps[1].trim().replace(char::is_whitespace, "");
         let end_str = caps[2].trim().replace(char::is_whitespace, "");
         let dst_start_str = caps[3].trim().replace(char::is_whitespace, "");
-        let start = u32::from_str_radix(&start_str, 16).ok()?;
-        let end = u32::from_str_radix(&end_str, 16).ok()?;
-        let dst_start = u32::from_str_radix(&dst_start_str, 16).ok()?;
+        let start = match u32::from_str_radix(&start_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end = match u32::from_str_radix(&end_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let dst_start = match u32::from_str_radix(&dst_start_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
-        let mut result = Vec::new();
         let range_size = end.saturating_sub(start).min(10000); // Safety limit
 
-        // For surrogate pair destinations (8 hex digits), decode to Unicode code point
-        // first, then increment the code point. Naively incrementing the raw u32 would
-        // overflow across the low surrogate boundary (0xDFFF → 0xE000).
+        // For surrogate pair destinations (8 hex digits), decode to Unicode code
+        // point first, then increment the code point. Naively incrementing the
+        // raw u32 would overflow across the low surrogate boundary (0xDFFF → 0xE000).
         let base_codepoint = if dst_start > 0xFFFF {
             if let Some(decoded) = decode_utf16_surrogate_pair(dst_start) {
                 // It's a surrogate pair — use decoded code point as base
@@ -1000,10 +1028,13 @@ fn parse_bfrange_line(line: &str) -> Option<Vec<(u32, String)>> {
                 }
             }
         }
-        return Some(result);
     }
 
-    None
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Parse a notdefrange line: `<start> <end> <dst>`
@@ -1019,39 +1050,60 @@ fn parse_notdefrange_line(line: &str) -> Option<Vec<(u32, String)>> {
     static RE_SEQ: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"<([^>]*)>\s*<([^>]*)>\s*<([^>]*)>").unwrap());
 
-    if let Some(caps) = RE_SEQ.captures(line) {
+    let mut result: Vec<(u32, String)> = Vec::new();
+
+    // A notdefrange block may list many `<start> <end> <dst>` triples on a single
+    // newline-free line; iterate every triple rather than only the first.
+    for caps in RE_SEQ.captures_iter(line) {
         let start_str = caps[1].trim().replace(char::is_whitespace, "");
         let end_str = caps[2].trim().replace(char::is_whitespace, "");
         let dst_str = caps[3].trim();
 
-        let start = u32::from_str_radix(&start_str, 16).ok()?;
-        let end = u32::from_str_radix(&end_str, 16).ok()?;
+        let start = match u32::from_str_radix(&start_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end = match u32::from_str_radix(&end_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
         // Parse destination - try escape sequence first, then hex
         let dst = if let Some(escape) = parse_escape_sequence(&format!("<{}>", dst_str)) {
-            escape
+            Some(escape)
         } else {
             let dst_hex = dst_str.replace(char::is_whitespace, "");
-            let dst_code = u32::from_str_radix(&dst_hex, 16).ok()?;
-            if dst_code > 0xFFFF {
-                // Try surrogate pair decoding first, then direct code point
-                decode_utf16_surrogate_pair(dst_code)
-                    .or_else(|| char::from_u32(dst_code).map(|ch| ch.to_string()))?
-            } else {
-                char::from_u32(dst_code)?.to_string()
+            match u32::from_str_radix(&dst_hex, 16) {
+                Ok(dst_code) => {
+                    if dst_code > 0xFFFF {
+                        // Try surrogate pair decoding first, then direct code point
+                        decode_utf16_surrogate_pair(dst_code)
+                            .or_else(|| char::from_u32(dst_code).map(|ch| ch.to_string()))
+                    } else {
+                        char::from_u32(dst_code).map(|ch| ch.to_string())
+                    }
+                }
+                Err(_) => None,
             }
         };
 
-        let mut result = Vec::new();
+        let dst = match dst {
+            Some(d) => d,
+            None => continue,
+        };
+
         let range_size = end.saturating_sub(start).min(10000); // Safety limit
         for i in 0..=range_size {
             let src = start.wrapping_add(i);
             result.push((src, dst.clone()));
         }
-        return Some(result);
     }
 
-    None
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Parse a CID to Unicode mapping (simplified version for CID fonts).
@@ -1201,6 +1253,95 @@ mod tests {
     #[test]
     fn test_parse_bfrange_line_invalid() {
         assert!(parse_bfrange_line("invalid").is_none());
+    }
+
+    #[test]
+    fn test_parse_bfrange_line_multiple_triples_one_line() {
+        // Regression: some producers emit a `beginbfrange` block as a single
+        // newline-free line with every `<src> <end> <dst>` triple concatenated
+        // (e.g. `100 beginbfrange` in Founder/PKU subset CMaps). The parser must
+        // decode EVERY triple, not just the first — previously only the first was
+        // read, leaving the rest as U+FFFD.
+        let line = "<0bb9> <0bb9> <788d><0bba> <0bba> <7231><1581> <1581> <4e66>";
+        let result = parse_bfrange_line(line).expect("should parse");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], (0x0bb9, char::from_u32(0x788d).unwrap().to_string()));
+        assert_eq!(result[1], (0x0bba, char::from_u32(0x7231).unwrap().to_string()));
+        assert_eq!(result[2], (0x1581, char::from_u32(0x4e66).unwrap().to_string()));
+    }
+
+    #[test]
+    fn test_parse_tounicode_concatenated_bfrange() {
+        // End-to-end regression: a full ToUnicode CMap whose `beginbfrange` block
+        // is a single concatenated line must resolve codes that are not the first
+        // triple (here 0x1581 → 书). Before the fix this returned U+FFFD.
+        let data = b"100 beginbfrange\n<0bb9> <0bb9> <788d><0bba> <0bba> <7231><1581> <1581> <4e66>\nendbfrange";
+        let cmap = parse_tounicode_cmap(data).unwrap();
+        assert_eq!(cmap.get(&0x0bb9).as_deref(), Some(char::from_u32(0x788d).unwrap().to_string()).as_deref());
+        assert_eq!(cmap.get(&0x0bba).as_deref(), Some(char::from_u32(0x7231).unwrap().to_string()).as_deref());
+        assert_eq!(cmap.get(&0x1581).as_deref(), Some(char::from_u32(0x4e66).unwrap().to_string()).as_deref());
+    }
+
+    #[test]
+    fn test_parse_bfrange_mixed_array_and_sequential_one_line() {
+        // A line mixing a sequential triple and an array entry must decode both
+        // without the sequential regex swallowing the array body.
+        let line = "<0061> <0063> [<0061> <0062> <0063>]<0041> <0043> <0041>";
+        let result = parse_bfrange_line(line).expect("should parse");
+        let map: std::collections::HashMap<u32, String> = result.into_iter().collect();
+        assert_eq!(map.get(&0x41).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x42).map(String::as_str), Some("B"));
+        assert_eq!(map.get(&0x43).map(String::as_str), Some("C"));
+        assert_eq!(map.get(&0x61).map(String::as_str), Some("a"));
+        assert_eq!(map.get(&0x62).map(String::as_str), Some("b"));
+        assert_eq!(map.get(&0x63).map(String::as_str), Some("c"));
+    }
+
+    #[test]
+    fn test_parse_notdefrange_multiple_triples_one_line() {
+        // notdefrange shares the single-line multiple-triple shape; ensure it also
+        // decodes every triple on one line.
+        let line = "<0000> <0001> <fffd><0002> <0002> <fffd>";
+        let result = parse_notdefrange_line(line).expect("should parse");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].0, 0x0000);
+        assert_eq!(result[2].0, 0x0002);
+        assert_eq!(result[0].1, "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_decode_bfrange_dst_forms() {
+        // `decode_bfrange_dst` consolidates every destination shape a single
+        // concatenated `beginbfrange` line can carry. Cover each branch so a
+        // regression in one form is caught independently of the parsing tests.
+        // BMP code point.
+        assert_eq!(decode_bfrange_dst("4E2D"), Some("中".to_string()));
+        // Supplementary plane (5-hex), e.g. a rare CJK extension code point.
+        assert_eq!(decode_bfrange_dst("20000"), Some("𠀀".to_string()));
+        // Supplementary plane (5-hex) decoded as a direct code point (emoji).
+        assert_eq!(decode_bfrange_dst("1F600"), Some("😀".to_string()));
+        // UTF-16 surrogate pair (8-hex).
+        assert_eq!(decode_bfrange_dst("D83DDE00"), Some("😀".to_string()));
+        // Ligature: two code points packed in 8 hex (not a surrogate pair).
+        assert_eq!(decode_bfrange_dst("00660066"), Some("ff".to_string()));
+        // Multi-code ligature.
+        assert_eq!(decode_bfrange_dst("00660069006C"), Some("fil".to_string()));
+        // An unmappable token must yield None so only that entry is skipped,
+        // rather than discarding the whole (often newline-free) line.
+        assert_eq!(decode_bfrange_dst("ZZZZ"), None);
+    }
+
+    #[test]
+    fn test_parse_bfrange_line_skips_unmappable_array_entry() {
+        // Regression for the `?` → `None` change in this fix: a malformed
+        // destination inside an array on a single line must not discard the whole
+        // line. Only the bad entry is skipped; the valid neighbours survive.
+        let line = "<0001> <0003> [<0041> <ZZZZ> <0043>]";
+        let result = parse_bfrange_line(line).expect("line must still parse");
+        let map: std::collections::HashMap<u32, String> = result.into_iter().collect();
+        assert_eq!(map.get(&0x0001).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x0002), None, "malformed dst entry must be skipped");
+        assert_eq!(map.get(&0x0003).map(String::as_str), Some("C"));
     }
 
     #[test]
