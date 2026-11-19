@@ -131,3 +131,13 @@ fn test_a_span_beside_a_far_ruling_does_not_grow_the_cell_index() {
     eprintln!("peak heap with a span beside a far ruling: {mib:.1} MiB");
     assert!(peak < 64 << 20, "peak heap with a span beside a far ruling was {mib:.1} MiB");
 }
+
+/// A negative font size inverts the span's probe range; it must probe no cells
+/// rather than panic. Guards the ordered-map range probe.
+#[test]
+fn test_a_negative_height_span_beside_a_ruled_table_is_extracted() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, text) = extract(ruled_table(2, 300.0, "BT /F1 -80 Tf 400 600 Td (X) Tj ET\n"));
+    assert_cells_present(&text, 2);
+    assert!(text.contains('X'), "negative-height span missing from {text:?}");
+}
