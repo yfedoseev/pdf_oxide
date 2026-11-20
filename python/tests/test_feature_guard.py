@@ -189,18 +189,19 @@ def test_signature_count_unsigned_pdf():
 
 
 def _find_any_ttf():
-    """Return a Path to any TTF on the test system, or None."""
+    """Path to the repository's DejaVu Sans test font, or None outside a checkout.
+
+    A fixed font with Latin outlines keeps these tests independent of the
+    runner: the first ``*.ttf`` found under a system font directory can be a
+    colour-bitmap emoji font with no letter glyphs.
+    """
     import pathlib
 
-    search_dirs = [
-        "/usr/share/fonts",
-        "/usr/local/share/fonts",
-        "/System/Library/Fonts",
-        "C:/Windows/Fonts",
-    ]
-    for d in search_dirs:
-        p = pathlib.Path(d)
-        if p.is_dir():
-            for ttf in p.rglob("*.ttf"):
-                return ttf
-    return None
+    font = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "tests"
+        / "fixtures"
+        / "fonts"
+        / "DejaVuSans.ttf"
+    )
+    return font if font.is_file() else None

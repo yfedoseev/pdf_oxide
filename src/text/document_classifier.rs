@@ -278,11 +278,7 @@ impl DocumentClassifier {
         let word_count = line.split_whitespace().count();
 
         // Justified text often has 1-2+ occurrences of double spacing
-        if word_count > 5 && double_space_count > 0 {
-            return true;
-        }
-
-        false
+        word_count > 5 && double_space_count > 0
     }
 
     /// Detect form field markers (underscores, brackets, etc.)

@@ -1816,16 +1816,11 @@ fn is_email_context(preceding_text: &str, following_text: &str) -> bool {
     }
 
     // Pattern 2: Previous ends with @ (immediate after @)
-    if prev.ends_with('@')
+    prev.ends_with('@')
         && next
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphanumeric())
-    {
-        return true;
-    }
-
-    false
 }
 
 /// Detect if bounding boxes indicate citation marker context.
