@@ -978,11 +978,7 @@ impl XYCutStrategy {
         // Drop singleton/noise clusters (< 2 lines) before counting, so a
         // lone outlier left-edge doesn't inflate the count.
         let dominant_left_clusters = clusters.iter().filter(|(_, n)| *n >= 2).count();
-        if dominant_left_clusters >= 3 {
-            return false;
-        }
-
-        true
+        dominant_left_clusters < 3
     }
 
     /// Two-column-prose probe (#534) — does this region look like two
