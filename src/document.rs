@@ -16979,16 +16979,12 @@ impl PdfDocument {
                 // recurrence AND the narrow citation/URL shape gate, so substantive
                 // repeated content (facility names, titles) is never suppressed.
                 let strict = (page_count as f32 * 0.6).ceil() as usize;
-                if *count >= strict.max(2)
+                *count >= strict.max(2)
                     && variants < 2
                     && literal_variants
                         .get(sig)
                         .and_then(|s| s.iter().next())
                         .is_some_and(|lit| Self::looks_like_stable_pagination(lit))
-                {
-                    return true;
-                }
-                false
             })
             .map(|(sig, (_, first_seen_page))| {
                 let occurrences = signature_positions

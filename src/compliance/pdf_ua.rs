@@ -780,11 +780,7 @@ fn is_valid_language_tag(tag: &str) -> bool {
 
     // Primary language subtag should be 2-3 letters
     let primary = parts[0];
-    if primary.len() < 2 || primary.len() > 3 || !primary.chars().all(|c| c.is_ascii_alphabetic()) {
-        return false;
-    }
-
-    true
+    (2..=3).contains(&primary.len()) && primary.chars().all(|c| c.is_ascii_alphabetic())
 }
 
 /// Convenience function to validate a document against PDF/UA-1.

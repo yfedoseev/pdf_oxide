@@ -126,3 +126,17 @@ id = "RUSTSEC-2026-0192"
 # `liquid` from tract-nnef, so the crate is no longer in Cargo.lock and the
 # suppression is removed rather than carried forward. It will be re-flagged
 # normally if the crate ever returns.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+# `chrono` — "unmaintained". Informational, not a CVE: no remote-code-execution
+# and no memory-safety implication. All versions are covered and none is fixed;
+# the advisory exists to flag maintenance status and recommends `time` or `jiff`.
+#
+# A direct dependency, for timestamps (XMP metadata, page templates, the crypto
+# bill of materials, the benchmark binary) and the local time-zone offset.
+#
+# Retired when the crate no longer depends on `chrono`: the move to `time` or
+# `jiff` is tracked as its own task, after which this entry is removed.
+reason = "chrono is unmaintained (informational, no fixed version); replacing it is tracked separately"
+

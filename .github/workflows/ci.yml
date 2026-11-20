@@ -960,9 +960,10 @@ jobs:
           # (golang.org/x/net/idna Punycode validation), all fixed in
           # go1.26.6. Later patch releases (1.26.9, 1.26.10) fix further
           # crypto/x509, crypto/tls, net/http and net/textproto advisories
-          # that govulncheck reports against 1.26.6. Bump as new patch
-          # releases land.
-          go-version: '1.26.10'
+          # that govulncheck reports against 1.26.6, and 1.26.11 fixes
+          # GO-2026-6859 (net/http), reported against 1.26.10. Bump as new
+          # patch releases land.
+          go-version: '1.26.11'
 
       # Download the pre-built native lib (extended features: barcodes,
       # rendering, signatures, tsa-client, system-fonts). Artifact preserves
