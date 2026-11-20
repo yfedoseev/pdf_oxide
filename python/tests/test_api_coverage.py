@@ -35,19 +35,22 @@ def _make_simple_doc() -> PdfDocument:
 
 
 def _find_any_ttf():
+    """Bytes of the repository's DejaVu Sans test font, or None outside a checkout.
+
+    A fixed font with Latin outlines keeps these tests independent of the
+    runner: the first ``*.ttf`` found under a system font directory can be a
+    colour-bitmap emoji font with no letter glyphs.
+    """
     import pathlib
 
-    for d in (
-        "/usr/share/fonts",
-        "/usr/local/share/fonts",
-        "/System/Library/Fonts",
-        "C:/Windows/Fonts",
-    ):
-        p = pathlib.Path(d)
-        if p.is_dir():
-            for ttf in p.rglob("*.ttf"):
-                return ttf.read_bytes()
-    return None
+    font = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "tests"
+        / "fixtures"
+        / "fonts"
+        / "DejaVuSans.ttf"
+    )
+    return font.read_bytes() if font.is_file() else None
 
 
 # ── PdfDocument: open / metadata ─────────────────────────────────────────────
