@@ -882,6 +882,17 @@ jobs:
       - name: Build static lib with FIPS feature
         run: cargo build --release --target ${{ matrix.target }} --no-default-features --features fips,icc
 
+      # Strip the per-object LLVM bitcode (.llvmbc / __LLVM,__bitcode) and
+      # DWARF, as release.yml does for the non-FIPS Go libs. Go 1.26's cgo
+      # refuses an archive in #cgo LDFLAGS that carries an LTO section
+      # ("disallowed LTO section .llvmbc"), so an unstripped lib failed the
+      # bundle smoke test. MSVC .lib is left as is (no binutils on Windows),
+      # as in release.yml.
+      - name: Shrink staticlib
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/shrink-staticlib.sh "target/${{ matrix.target }}/release/libpdf_oxide.a" "${{ matrix.target }}"
+
       - name: Stage go-fips lib
         shell: bash
         run: |
