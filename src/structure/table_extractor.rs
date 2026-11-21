@@ -387,16 +387,28 @@ fn collect_table_elements<'a>(
 }
 
 /// Walk the structure tree once and bucket every `Table` element by each page
-/// it has content on (owned clones), so the converter table path can do an
-/// O(1) per-page lookup instead of `find_table_elements`'s per-page walk
-/// (≈ O(pages²) on a tagged document). For a given page the result matches
+/// it has content on (owned clones), so a caller can do an O(1) per-page
+/// lookup instead of `find_table_elements`'s per-page walk (≈ O(pages²) on a
+/// tagged document). For a given page the result matches
 /// `find_table_elements(tree, page)`: same DFS pre-order, and like
 /// `collect_table_elements` it does not recurse into a Table's children.
+///
+/// Each bucket holds its own copy, so a table on N pages is copied N times.
 pub fn find_table_elements_all_pages(
     struct_tree: &crate::structure::types::StructTreeRoot,
 ) -> std::collections::HashMap<u32, Vec<StructElem>> {
-    let mut by_page: std::collections::HashMap<u32, Vec<StructElem>> =
-        std::collections::HashMap::new();
+    find_table_elements_all_pages_shared(struct_tree)
+        .into_iter()
+        .map(|(page, elems)| (page, elems.iter().map(|e| StructElem::clone(e)).collect()))
+        .collect()
+}
+
+/// Like [`find_table_elements_all_pages`], but each `Table` subtree is copied
+/// once and shared by every page bucket it appears in.
+pub(crate) fn find_table_elements_all_pages_shared(
+    struct_tree: &crate::structure::types::StructTreeRoot,
+) -> std::collections::HashMap<u32, Vec<std::sync::Arc<StructElem>>> {
+    let mut by_page = std::collections::HashMap::new();
     for elem in &struct_tree.root_elements {
         collect_table_elements_all_pages(elem, &mut by_page);
     }
@@ -405,15 +417,21 @@ pub fn find_table_elements_all_pages(
 
 fn collect_table_elements_all_pages(
     elem: &StructElem,
-    by_page: &mut std::collections::HashMap<u32, Vec<StructElem>>,
+    by_page: &mut std::collections::HashMap<u32, Vec<std::sync::Arc<StructElem>>>,
 ) {
     if elem.struct_type == StructType::Table {
         // Pages this table (or any descendant) has content on — the exact set
         // for which `element_has_page_content(elem, page)` is true.
         let mut pages = std::collections::BTreeSet::new();
         collect_content_pages(elem, &mut pages);
-        for p in pages {
-            by_page.entry(p).or_default().push(elem.clone());
+        if !pages.is_empty() {
+            let shared = std::sync::Arc::new(elem.clone());
+            for p in pages {
+                by_page
+                    .entry(p)
+                    .or_default()
+                    .push(std::sync::Arc::clone(&shared));
+            }
         }
         return; // mirror collect_table_elements: don't recurse into table children
     }

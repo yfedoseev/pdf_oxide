@@ -481,10 +481,11 @@ pub struct PdfDocument {
     /// element must NOT override it.
     pub(crate) mc_actualtext_mcids: Mutex<HashMap<usize, HashSet<u32>>>,
     /// `Table` structure elements bucketed by page, built once via
-    /// `find_table_elements_all_pages` (one tree walk) so the converter table
-    /// path does an O(1) lookup instead of walking the tree per page.
+    /// `find_table_elements_all_pages_shared` (one tree walk) so the converter
+    /// table path does an O(1) lookup instead of walking the tree per page.
+    /// Each table is stored once and shared by every page it has content on.
     /// `None` = not yet built.
-    table_elements_cache: Mutex<Option<HashMap<u32, Vec<crate::structure::StructElem>>>>,
+    table_elements_cache: Mutex<Option<Arc<HashMap<u32, Vec<Arc<crate::structure::StructElem>>>>>>,
     /// Page object cache keyed by page index to avoid re-traversing the page tree.
     /// The page tree structure is static (§7.7.3.2), so pages can be safely cached.
     /// Mutex provides interior mutability for `&self` read-path methods (#398).
@@ -21423,20 +21424,23 @@ impl PdfDocument {
         };
         if let Some(ref struct_tree) = struct_tree_opt {
             // Build the per-page Table-element buckets once, then look up.
-            if self.table_elements_cache.lock_or_recover().is_none() {
-                let all = crate::structure::find_table_elements_all_pages(struct_tree);
-                *self.table_elements_cache.lock_or_recover() = Some(all);
-            }
-            let table_elems: Vec<crate::structure::StructElem> = self
-                .table_elements_cache
-                .lock_or_recover()
-                .as_ref()
-                .and_then(|c| c.get(&(page_index as u32)))
-                .cloned()
+            let by_page = {
+                let mut cache = self.table_elements_cache.lock_or_recover();
+                Arc::clone(cache.get_or_insert_with(|| {
+                    Arc::new(
+                        crate::structure::table_extractor::find_table_elements_all_pages_shared(
+                            struct_tree,
+                        ),
+                    )
+                }))
+            };
+            let table_elems: &[Arc<crate::structure::StructElem>] = by_page
+                .get(&(page_index as u32))
+                .map(Vec::as_slice)
                 .unwrap_or_default();
             if !table_elems.is_empty() {
                 let mut tables = Vec::new();
-                for table_elem in &table_elems {
+                for table_elem in table_elems {
                     match crate::structure::extract_table_from_spans_on_page(
                         table_elem,
                         spans,
