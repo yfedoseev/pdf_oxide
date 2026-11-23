@@ -18,6 +18,20 @@ fn build_and_extract(build_fn: impl FnOnce(&mut PdfWriter)) -> String {
 }
 
 #[test]
+fn test_numerator_subscript_keeps_its_drawn_baseline_beside_an_operator() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "=", 150.38, 700.0, "Helvetica", 12.96);
+    put(&mut page, "Q", 163.7, 707.7, "Helvetica", 9.0);
+    put(&mut page, "3", 169.46, 705.9, "Helvetica", 7.56);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let spans = doc.extract_spans(0).unwrap();
+    let digit = spans.iter().find(|span| span.text == "3").unwrap();
+    assert!((digit.bbox.y - 705.9).abs() < 0.01, "subscript at {}", digit.bbox.y);
+}
+
+#[test]
 fn superscript_12pt_offset_stays_on_one_line() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();
