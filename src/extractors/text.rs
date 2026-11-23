@@ -3477,7 +3477,7 @@ impl<'doc> TextExtractor<'doc> {
             );
         }
 
-        // Snap super/subscript glyph spans onto the baseline of an
+        // Snap superscript glyph spans onto the baseline of an
         // adjacent base span BEFORE row-aware sorting. PDFs raise
         // or lower the text matrix via the `Ts` (text-rise) operator
         // for super/subscripts (§9.3.7); the rendered glyphs end up
@@ -3718,7 +3718,7 @@ impl<'doc> TextExtractor<'doc> {
         );
     }
 
-    /// Snap super/subscript glyph spans onto the baseline of an
+    /// Snap superscript glyph spans onto the baseline of an
     /// adjacent base span so downstream row-aware sorting keeps
     /// them inline.
     ///
@@ -3733,9 +3733,8 @@ impl<'doc> TextExtractor<'doc> {
     /// puts them back in the same Y-band.
     ///
     /// A span is a snap candidate when:
-    /// - its font_size is < 85 % of a nearby larger-font span,
-    /// - its Y is above that base by ≤ 50 % of the base's font_size
-    ///   (or below it by the same — covers subscript too), and
+    /// - its closest eligible base in Y has a font_size > 1.15 times its own,
+    /// - its Y is above that base by ≤ 50 % of the base's font_size, and
     /// - its X falls between the base's right edge and one base
     ///   font_size beyond (the position a superscript would
     ///   appear when typeset directly after the base).
@@ -3753,15 +3752,8 @@ impl<'doc> TextExtractor<'doc> {
             .map(|s| (s.bbox.x, s.bbox.y, s.bbox.width, s.font_size))
             .collect();
 
-        // A valid base candidate `j` always has `y_offset = sy - by` in
-        // `[0, bfs*0.5]` (see the gates below), so `by` lies in
-        // `[sy - bfs*0.5, sy] ⊆ [sy - max_fs*0.5, sy]`. Sort span indices by
-        // Y once and, per candidate, binary-search that Y-window instead of
-        // rescanning all spans — this turns the previous O(n²) double loop
-        // (which hung for >30 s on archive.org / Google-Books pages whose
-        // invisible hOCR layer emits thousands of spans, #575) into roughly
-        // O(n log n + n·window). The window is a strict superset of the
-        // acceptable bases, so the result is identical to the full scan.
+        // A base lies within half its font size on either side of the script.
+        // Binary-search the Y-sorted index to visit only that band.
         let max_fs = snapshot.iter().map(|s| s.3).fold(0.0f32, f32::max);
         let max_half_em = max_fs * 0.5;
         let mut by_order: Vec<usize> = (0..n).collect();
@@ -3770,61 +3762,46 @@ impl<'doc> TextExtractor<'doc> {
 
         for i in 0..n {
             let (sx, sy, _sw, sfs) = snapshot[i];
-            if sfs <= 0.0 {
+            let min_base_size = sfs * 1.15;
+            if sfs <= 0.0 || max_fs <= min_base_size {
                 continue;
             }
-            // Find the closest base candidate (in Y) that satisfies
-            // the super/subscript geometry. Pick the smallest |y_offset|
-            // tie-breaker so a candidate sandwiched between two body
-            // lines snaps onto the nearer one.
-            let mut best_base_y: Option<f32> = None;
-            let mut best_abs_offset = f32::MAX;
-            // Candidates have `by ∈ [sy - max_half_em, sy]`; restrict the scan
-            // to that contiguous slice of the Y-sorted index.
+            let mut base = None;
             let lo = ys_sorted.partition_point(|&y| y < sy - max_half_em);
             let hi = ys_sorted.partition_point(|&y| y <= sy);
-            for &j in &by_order[lo..hi] {
-                if i == j {
-                    continue;
-                }
+            // The index is sorted by Y, so the last matching base is closest.
+            for &j in by_order[lo..hi].iter().rev() {
                 let (bx, by, bw, bfs) = snapshot[j];
-                if bfs <= sfs * 1.15 {
-                    continue;
-                }
-                let y_offset = sy - by;
-                let half_em = bfs * 0.5;
-                if y_offset.abs() > half_em {
-                    continue;
-                }
-                // Skip subscripts (lowered glyphs). The document-level
-                // pass `apply_super_sub_script_substitutions` needs to
-                // see them at their original lowered baseline so it can
-                // substitute ASCII digits with U+2080..U+2089 (e.g.
-                // H2O -> H\u{2082}O). Snapping them onto the base
-                // baseline would defeat that substitution.
-                if y_offset < 0.0 {
-                    continue;
-                }
-                // X adjacency: the candidate's left edge must sit
-                // near the base's right edge — within one base
-                // font_size to the right and a small slack to the
-                // left for kerning. Combining diacritics are
-                // excluded by the size-ratio gate above (they
-                // typically share font_size with their base
-                // letter, failing `bfs > sfs * 1.15`).
-                let base_right = bx + bw;
-                let dx = sx - base_right;
-                if dx < -bfs * 0.25 || dx > bfs {
-                    continue;
-                }
-                let abs_off = y_offset.abs();
-                if abs_off < best_abs_offset {
-                    best_abs_offset = abs_off;
-                    best_base_y = Some(by);
+                let gap = sx - (bx + bw);
+                if bfs > min_base_size && sy - by <= bfs * 0.5 && (-bfs * 0.25..=bfs).contains(&gap)
+                {
+                    base = Some((bx + bw, by, bfs));
+                    break;
                 }
             }
-            if let Some(by) = best_base_y {
-                self.spans[i].bbox.y = by;
+            let Some((base_right, base_y, base_size)) = base else {
+                continue;
+            };
+
+            // A smaller base between this row and the script can carry its own
+            // subscript. A full-size delimiter around a stacked expression can
+            // occupy the same gap without being the script's base.
+            let has_upper_base = sx > base_right
+                && by_order[hi..]
+                    .iter()
+                    .map(|&j| snapshot[j])
+                    .take_while(|&(_, y, _, _)| y - sy < sy - base_y)
+                    .any(|(x, y, width, size)| {
+                        size > min_base_size
+                            && size < base_size
+                            && y > base_y + base_size * 0.5
+                            && y - sy <= size * 0.5
+                            && x >= base_right
+                            && x < sx
+                            && (sx - (x + width)).abs() <= size * 0.25
+                    });
+            if !has_upper_base {
+                self.spans[i].bbox.y = base_y;
             }
         }
     }

@@ -32,6 +32,34 @@ fn test_numerator_subscript_keeps_its_drawn_baseline_beside_an_operator() {
 }
 
 #[test]
+fn test_superscript_stays_with_its_base_beside_an_offset_upper_glyph() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "f", 310.0, 698.5, "Helvetica", 9.2);
+    put(&mut page, "x", 316.2, 694.5, "Helvetica", 9.2);
+    put(&mut page, "2", 321.6, 697.4, "Helvetica", 7.0);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let spans = doc.extract_spans(0).unwrap();
+    let digit = spans.iter().find(|span| span.text == "2").unwrap();
+    assert!((digit.bbox.y - 694.5).abs() < 0.01, "superscript at {}", digit.bbox.y);
+}
+
+#[test]
+fn test_full_size_delimiter_in_the_gap_does_not_capture_a_script() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "as", 288.0, 334.7, "Helvetica", 10.0);
+    put(&mut page, "(", 300.6, 342.7, "Helvetica", 10.0);
+    put(&mut page, "n", 305.2, 339.1, "Helvetica", 7.0);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let spans = doc.extract_spans(0).unwrap();
+    let n = spans.iter().find(|span| span.text == "n").unwrap();
+    assert!((n.bbox.y - 334.7).abs() < 0.01, "numerator at {}", n.bbox.y);
+}
+
+#[test]
 fn superscript_12pt_offset_stays_on_one_line() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();
