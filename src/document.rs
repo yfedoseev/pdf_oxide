@@ -6264,8 +6264,8 @@ impl PdfDocument {
                 // test below scans only the cells in the span's y-band
                 // instead of every cell on the page (was O(spans x cells) on
                 // untagged table pages). A cell that contains a span
-                // necessarily shares the span's y-band, so this is
-                // byte-identical to the full scan.
+                // necessarily shares the span's y-band, so the index only
+                // prunes cells that would fail containment anyway.
                 let flushed_cells: Vec<(
                     crate::geometry::Rect,
                     &crate::structure::table_extractor::TableCell,
@@ -6290,13 +6290,65 @@ impl PdfDocument {
                         cell_text_index.entry(text).or_default().push(ci);
                     }
                 }
+                // A cell is indexed only over the bins some span probes, so a
+                // far-off ruling can't make it millions of bins tall. If that
+                // still exceeds the budget (spans far apart), the bin height
+                // doubles until it fits; coarser bins only add candidates.
                 const CELL_Y_BIN: f32 = 18.0;
-                let cell_bin = |y: f32| (y / CELL_Y_BIN).floor() as i32;
-                let mut cell_y_index: std::collections::HashMap<i32, Vec<usize>> =
-                    std::collections::HashMap::new();
-                for (ci, (b, _)) in flushed_cells.iter().enumerate() {
-                    for bin in cell_bin(b.y)..=cell_bin(b.y + b.height) {
-                        cell_y_index.entry(bin).or_default().push(ci);
+                const CELL_INDEX_MAX_ENTRIES: i64 = 1 << 18;
+                let bin_of = |y: f32, h: f32| (y / h).floor() as i32;
+                // `None` for an inverted range (a negative font size gives a
+                // negative height); `BTreeMap::range` would panic on it.
+                let probe_range = |r: &crate::geometry::Rect, h: f32| {
+                    let lo = bin_of(r.y, h).saturating_sub(1);
+                    let hi = bin_of(r.y + r.height, h).saturating_add(1);
+                    (lo <= hi).then_some((lo, hi))
+                };
+                let probe_window = |h: f32| {
+                    spans.iter().filter_map(|s| probe_range(&s.bbox, h)).fold(
+                        None,
+                        |acc: Option<(i32, i32)>, (lo, hi)| {
+                            Some(acc.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))))
+                        },
+                    )
+                };
+                let clamped_cell_bins = |b: &crate::geometry::Rect, h: f32, w: (i32, i32)| {
+                    let lo = bin_of(b.y, h).max(w.0);
+                    let hi = bin_of(b.y + b.height, h).min(w.1);
+                    (lo <= hi).then_some((lo, hi))
+                };
+                // Four bins per cell, so a large table isn't coarsened just for
+                // its cell count.
+                let entry_budget = CELL_INDEX_MAX_ENTRIES.max(4 * flushed_cells.len() as i64);
+                let mut cell_bin_h = CELL_Y_BIN;
+                let mut window = probe_window(cell_bin_h);
+                while let Some(w) = window {
+                    let entries: i64 = flushed_cells
+                        .iter()
+                        .filter_map(|(b, _)| clamped_cell_bins(b, cell_bin_h, w))
+                        .map(|(lo, hi)| i64::from(hi) - i64::from(lo) + 1)
+                        .sum();
+                    if entries <= entry_budget {
+                        break;
+                    }
+                    // Infinite coordinates never fit at a finite height; an
+                    // infinite one puts every cell in one bin.
+                    cell_bin_h = match cell_bin_h * 2.0 {
+                        h if h.is_finite() => h,
+                        _ => f32::INFINITY,
+                    };
+                    window = probe_window(cell_bin_h);
+                }
+                // Ordered, so a probe visits only populated bins, ascending.
+                let mut cell_y_index: std::collections::BTreeMap<i32, Vec<usize>> =
+                    std::collections::BTreeMap::new();
+                if let Some(w) = window {
+                    for (ci, (b, _)) in flushed_cells.iter().enumerate() {
+                        if let Some((lo, hi)) = clamped_cell_bins(b, cell_bin_h, w) {
+                            for bin in lo..=hi {
+                                cell_y_index.entry(bin).or_default().push(ci);
+                            }
+                        }
                     }
                 }
                 // Per-cell token budgets. `render_text()` emits each cell's
@@ -6536,15 +6588,12 @@ impl PdfDocument {
                             }
                         }
                         // Probe only the cells in the span's y-band (±1 bin
-                        // guards the containment tolerance). Equivalent to
-                        // scanning every cell.
-                        let slo = cell_bin(s.bbox.y) - 1;
-                        let shi = cell_bin(s.bbox.y + s.bbox.height) + 1;
+                        // guards the containment tolerance).
                         let mut decided = false;
-                        'cells: for bin in slo..=shi {
-                            let Some(cands) = cell_y_index.get(&bin) else {
-                                continue;
-                            };
+                        'cells: for (_, cands) in probe_range(&s.bbox, cell_bin_h)
+                            .into_iter()
+                            .flat_map(|(lo, hi)| cell_y_index.range(lo..=hi))
+                        {
                             for &ci in cands {
                                 let (cell_bbox, _) = &flushed_cells[ci];
                                 if !Self::contains_rect_with_tolerance(
