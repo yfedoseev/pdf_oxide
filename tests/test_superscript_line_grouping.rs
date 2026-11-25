@@ -26,9 +26,18 @@ fn test_numerator_subscript_keeps_its_drawn_baseline_beside_an_operator() {
     put(&mut page, "3", 169.46, 705.9, "Helvetica", 7.56);
 
     let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let chars = doc.extract_chars(0).unwrap();
+    let drawn = chars.iter().find(|ch| ch.char == '3').unwrap();
+    assert!((drawn.bbox.y - 705.9).abs() < 0.01, "glyph at {}", drawn.bbox.y);
+
     let spans = doc.extract_spans(0).unwrap();
     let digit = spans.iter().find(|span| span.text == "3").unwrap();
-    assert!((digit.bbox.y - 705.9).abs() < 0.01, "subscript at {}", digit.bbox.y);
+    assert!(
+        (digit.bbox.y - drawn.bbox.y).abs() < 0.01,
+        "subscript span at {}, drawn glyph at {}",
+        digit.bbox.y,
+        drawn.bbox.y
+    );
 }
 
 #[test]
