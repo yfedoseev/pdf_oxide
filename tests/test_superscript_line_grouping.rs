@@ -18,6 +18,57 @@ fn build_and_extract(build_fn: impl FnOnce(&mut PdfWriter)) -> String {
 }
 
 #[test]
+fn test_numerator_subscript_keeps_its_drawn_baseline_beside_an_operator() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "=", 150.38, 700.0, "Helvetica", 12.96);
+    put(&mut page, "Q", 163.7, 707.7, "Helvetica", 9.0);
+    put(&mut page, "3", 169.46, 705.9, "Helvetica", 7.56);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let chars = doc.extract_chars(0).unwrap();
+    let drawn = chars.iter().find(|ch| ch.char == '3').unwrap();
+    assert!((drawn.bbox.y - 705.9).abs() < 0.01, "glyph at {}", drawn.bbox.y);
+
+    let spans = doc.extract_spans(0).unwrap();
+    let digit = spans.iter().find(|span| span.text == "3").unwrap();
+    assert!(
+        (digit.bbox.y - drawn.bbox.y).abs() < 0.01,
+        "subscript span at {}, drawn glyph at {}",
+        digit.bbox.y,
+        drawn.bbox.y
+    );
+}
+
+#[test]
+fn test_superscript_stays_with_its_base_beside_an_offset_upper_glyph() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "f", 310.0, 698.5, "Helvetica", 9.2);
+    put(&mut page, "x", 316.2, 694.5, "Helvetica", 9.2);
+    put(&mut page, "2", 321.6, 697.4, "Helvetica", 7.0);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let spans = doc.extract_spans(0).unwrap();
+    let digit = spans.iter().find(|span| span.text == "2").unwrap();
+    assert!((digit.bbox.y - 694.5).abs() < 0.01, "superscript at {}", digit.bbox.y);
+}
+
+#[test]
+fn test_full_size_delimiter_in_the_gap_does_not_capture_a_script() {
+    let mut writer = PdfWriter::new();
+    let mut page = writer.add_letter_page();
+    put(&mut page, "as", 288.0, 334.7, "Helvetica", 10.0);
+    put(&mut page, "(", 300.6, 342.7, "Helvetica", 10.0);
+    put(&mut page, "n", 305.2, 339.1, "Helvetica", 7.0);
+
+    let doc = PdfDocument::from_bytes(writer.finish().unwrap()).unwrap();
+    let spans = doc.extract_spans(0).unwrap();
+    let n = spans.iter().find(|span| span.text == "n").unwrap();
+    assert!((n.bbox.y - 334.7).abs() < 0.01, "numerator at {}", n.bbox.y);
+}
+
+#[test]
 fn superscript_12pt_offset_stays_on_one_line() {
     let out = build_and_extract(|w| {
         let mut page = w.add_letter_page();
