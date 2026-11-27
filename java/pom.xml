@@ -122,7 +122,7 @@
 
         <!-- Dependency versions. -->
         <jspecify.version>1.0.1</jspecify.version>
-        <slf4j.version>2.0.19</slf4j.version>
+        <slf4j.version>2.0.20</slf4j.version>
         <junit.version>5.14.4</junit.version>
         <assertj.version>3.27.7</assertj.version>
     </properties>
