@@ -2291,12 +2291,7 @@ impl PyPdfDocument {
 
     /// Extract text with OCR, even when the page has a text layer.
     ///
-    /// `extract_text_ocr` returns the native text of a page with a usable
-    /// text layer and runs OCR only on scanned pages. This method always
-    /// runs `engine` on the largest embedded image of the page, so it can
-    /// replace a poor invisible OCR layer from a scanner pipeline. It does
-    /// not render the page. A page with no embedded image gives an empty
-    /// string, never the native text.
+    /// OCRs the largest embedded image; a page with no image gives "".
     fn extract_text_ocr_only(
         &mut self,
         _py: Python<'_>,
