@@ -258,7 +258,7 @@ fn extract_text_ocr_only_companion_present() {
     );
 }
 
-/// #3335: the Python binding exposes `extract_text_ocr_only`, calls the
+/// The Python binding exposes `extract_text_ocr_only`, calls the
 /// OCR-always Rust method, and turns off its fallback to the native text.
 #[test]
 fn test_python_binding_exposes_extract_text_ocr_only() {

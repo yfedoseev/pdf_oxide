@@ -143,9 +143,9 @@ def test_extract_text_ocr_error_is_actionable_not_opaque_513():
 
 
 def test_extract_text_ocr_only_requires_an_ocr_engine():
-    """#3335: ``extract_text_ocr_only(page, engine)`` has no default engine,
-    and it accepts only an ``OcrEngine``. A build without the ``ocr``
-    feature raises the actionable error of #513 instead."""
+    """``extract_text_ocr_only(page, engine)`` has no default engine, and
+    it accepts only an ``OcrEngine``. A build without the ``ocr`` feature
+    raises the same actionable error as ``extract_text_ocr`` instead."""
     doc = _make_doc()
     with pytest.raises(TypeError):
         doc.extract_text_ocr_only(0)
@@ -154,7 +154,7 @@ def test_extract_text_ocr_only_requires_an_ocr_engine():
     if info.type is RuntimeError:
         low = str(info.value).lower()
         assert "pip install" in low and "[ocr]" in low, (
-            f"#3335: extract_text_ocr_only error must say how to fix it: {info.value!r}"
+            f"extract_text_ocr_only error must say how to fix it: {info.value!r}"
         )
 
 

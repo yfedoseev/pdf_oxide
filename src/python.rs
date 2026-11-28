@@ -2318,7 +2318,7 @@ impl PyPdfDocument {
         #[cfg(not(feature = "ocr"))]
         {
             let _ = (engine, page);
-            // Same actionable message as extract_text_ocr (#513).
+            // Keep the same actionable message as extract_text_ocr.
             Err(PyRuntimeError::new_err(
                 "OCR is unavailable: this pdf_oxide build was compiled \
                  without the `ocr` feature. Fix: install the OCR-enabled \
