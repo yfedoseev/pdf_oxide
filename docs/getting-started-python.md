@@ -311,6 +311,17 @@ for page in range(doc.page_count()):
         print(text)
 ```
 
+### OCR on Pages with a Text Layer
+
+`extract_text_ocr` returns the native text of a page that has a usable text layer, and runs OCR only on scanned pages. A searchable PDF from a scanner pipeline has a text layer, so `extract_text_ocr` returns that layer, even when it is poor. To OCR the page in any case, use `extract_text_ocr_only`:
+
+```python
+doc = PdfDocument("searchable.pdf")
+text = doc.extract_text_ocr_only(page=0, engine=engine)
+```
+
+`extract_text_ocr_only` runs OCR on the largest embedded image of the page. It does not render the page, so it suits PDFs with one scanned image per page. A page with no embedded image gives an empty string.
+
 ### Using PP-OCRv5 Detection
 
 If you use the full PP-OCRv5 stack (v5 detection + v5 recognition), pass `use_v5=True` to `OcrConfig`. This preserves the original image resolution instead of downscaling to 960px, which the larger v5 detection model needs:

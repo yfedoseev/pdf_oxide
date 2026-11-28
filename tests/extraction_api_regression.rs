@@ -258,6 +258,25 @@ fn extract_text_ocr_only_companion_present() {
     );
 }
 
+/// #3335: the Python binding exposes `extract_text_ocr_only`, calls the
+/// OCR-always Rust method, and turns off its fallback to the native text.
+#[test]
+fn test_python_binding_exposes_extract_text_ocr_only() {
+    let source = include_str!("../src/python.rs");
+    assert!(
+        source.contains("fn extract_text_ocr_only("),
+        "the Python binding must define extract_text_ocr_only",
+    );
+    assert!(
+        source.contains(".extract_text_ocr_only("),
+        "the binding must call PdfDocument::extract_text_ocr_only",
+    );
+    assert!(
+        source.contains("fallback_to_native: false"),
+        "the binding must not return the native text for a page with no image",
+    );
+}
+
 /// `set_preserve_unmapped_glyphs` global atomic
 /// gating all 8 filter sites in `src/extractors/text.rs`. When the
 /// flag is true, `extract_text` / `extract_words` / `extract_spans`
