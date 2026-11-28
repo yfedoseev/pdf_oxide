@@ -4,6 +4,10 @@ All notable changes to PDFOxide are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Python: `PdfDocument.extract_text_ocr_only(page, engine)`** — runs OCR on the largest embedded image of the page, even when the page has a text layer. It calls the Rust `PdfDocument::extract_text_ocr_only`. `extract_text_ocr` returns the native text of such a page. Thus Python had no way to replace a poor invisible OCR layer from a scanner pipeline. A page with no embedded image gives an empty string, not the native text (#3335).
+
 ### Fixed
 
 - **A tagged table spanning many pages was held in memory once per page** — table detection on a tagged page reads the page's `Table` structure elements from a cache kept for the life of the document, and that cache stored a deep copy of each table subtree under every page the table had content on. A table with content on N pages was therefore held N times, so memory grew as table size × pages: converting every page of a 600-page document whose one table has a row per page peaked at 168.2 MiB of heap growth. Each table is now stored once and shared by every page it appears on, a page lookup no longer copies its bucket, and the cache is built under a single lock so concurrent first calls no longer both build it. The same 600-page conversion now peaks at 5.8 MiB, and 200 and 400 pages with four cells each went from 50.0 MiB and 191.6 MiB to 3.7 MiB and 5.8 MiB. Output is unchanged, and the public `find_table_elements_all_pages` still returns owned copies (#3110).

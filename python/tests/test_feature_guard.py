@@ -142,6 +142,22 @@ def test_extract_text_ocr_error_is_actionable_not_opaque_513():
     # OCR-enabled build (or any other outcome) → no opaque error: pass.
 
 
+def test_extract_text_ocr_only_requires_an_ocr_engine():
+    """``extract_text_ocr_only(page, engine)`` has no default engine, and
+    it accepts only an ``OcrEngine``. A build without the ``ocr`` feature
+    raises the same actionable error as ``extract_text_ocr`` instead."""
+    doc = _make_doc()
+    with pytest.raises(TypeError):
+        doc.extract_text_ocr_only(0)
+    with pytest.raises((TypeError, RuntimeError)) as info:
+        doc.extract_text_ocr_only(0, object())
+    if info.type is RuntimeError:
+        low = str(info.value).lower()
+        assert "pip install" in low and "[ocr]" in low, (
+            f"extract_text_ocr_only error must say how to fix it: {info.value!r}"
+        )
+
+
 # ── HTML + CSS creation (always available) ────────────────────────────────────
 
 

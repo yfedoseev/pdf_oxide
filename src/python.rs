@@ -2289,6 +2289,42 @@ impl PyPdfDocument {
         }
     }
 
+    /// Extract text with OCR, even when the page has a text layer.
+    ///
+    /// OCRs the largest embedded image; a page with no image gives "".
+    fn extract_text_ocr_only(
+        &mut self,
+        _py: Python<'_>,
+        page: usize,
+        engine: Bound<'_, PyAny>,
+    ) -> PyResult<String> {
+        #[cfg(feature = "ocr")]
+        {
+            let ocr_engine = engine.extract::<PyRef<PyOcrEngine>>()?;
+            // The caller asked for OCR text, so a page with no image must not give the native text instead.
+            let options = crate::ocr::OcrExtractOptions {
+                fallback_to_native: false,
+                ..Default::default()
+            };
+            self.inner
+                .extract_text_ocr_only(page, &ocr_engine.inner, options)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        }
+        #[cfg(not(feature = "ocr"))]
+        {
+            let _ = (engine, page);
+            // Keep the same actionable message as extract_text_ocr.
+            Err(PyRuntimeError::new_err(
+                "OCR is unavailable: this pdf_oxide build was compiled \
+                 without the `ocr` feature. Fix: install the OCR-enabled \
+                 wheel with `pip install 'pdf_oxide[ocr]'`, then build an \
+                 OcrEngine with detection/recognition/dictionary model \
+                 paths and pass it as extract_text_ocr_only(page, engine) — \
+                 see examples/python/09-new-features/ocr_scanned_pdf.",
+            ))
+        }
+    }
+
     /// Python wrapper: returns True if the page has a
     /// text layer; False for image-only / genuinely-empty pages.
     /// Callers route image-only pages to OCR.
